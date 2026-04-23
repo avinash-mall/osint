@@ -29,6 +29,8 @@
     "react-dom": "^19.2.5",
     "react-force-graph-2d": "^1.29.1",
     "react-leaflet": "^5.0.0",
+    "react-globe.gl": "^2.27.2",
+    "three": "0.150.1",
     "tailwind-merge": "^3.5.0"
   }
 }

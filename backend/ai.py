@@ -1,7 +1,10 @@
 import os
+from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_community.graphs import Neo4jGraph
 from langchain_community.chains.graph_qa.cypher import GraphCypherQAChain
+
+load_dotenv()
 
 URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 USERNAME = os.getenv("NEO4J_USERNAME", "neo4j")

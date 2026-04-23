@@ -1,24 +1,74 @@
+import random
+import time
+from datetime import datetime, timedelta
 from database import db
+
+def generate_tactical_data(session):
+    print("Clearing existing database...")
+    session.run("MATCH (n) DETACH DELETE n")
+
+    print("Generating base entities...")
+    # Base entities: Regions, LaunchPoints, Bases
+    session.run("""
+    CREATE (b1:Base {name: 'CENTCOM Main', latitude: 25.2, longitude: 55.2})
+    CREATE (lp1:LaunchPoint {name: 'LaunchPoint Tango', latitude: 25.5, longitude: 55.1, threatRadius: 100000})
+    CREATE (lp2:LaunchPoint {name: 'LaunchPoint X-Ray', latitude: 25.1, longitude: 55.4, threatRadius: 150000})
+    CREATE (tg1:Target {name: 'Target Alpha', priority: 'High', status: 'Active'})
+    """)
+
+    # Generate Vessels and Aircraft
+    print("Generating Tracks and Observations...")
+    now = datetime.utcnow()
+    
+    for i in range(20):
+        asset_id = f"Vessel-{i}"
+        asset_type = random.choice(["Vessel", "Aircraft"])
+        speed = random.uniform(20, 500) if asset_type == "Aircraft" else random.uniform(5, 30)
+        
+        session.run(f"CREATE (a:Asset:{asset_type} {{id: '{asset_id}', callsign: 'Callsign-{i}', speed: {speed}}})")
+
+        # Generate a track history for each asset
+        lat = random.uniform(24.0, 26.0)
+        lon = random.uniform(54.0, 56.0)
+        
+        for min_offset in range(60): # last 60 minutes
+            obs_time = now - timedelta(minutes=60 - min_offset)
+            # simulate movement
+            lat += random.uniform(-0.01, 0.01)
+            lon += random.uniform(-0.01, 0.01)
+            
+            session.run("""
+            MATCH (a:Asset {id: $asset_id})
+            CREATE (o:Observation {
+                timestamp: $timestamp, 
+                isoTime: $isoTime,
+                latitude: $lat, 
+                longitude: $lon,
+                heading: $heading
+            })
+            CREATE (a)-[:OBSERVED_AT]->(o)
+            """, {
+                "asset_id": asset_id,
+                "timestamp": int(obs_time.timestamp()),
+                "isoTime": obs_time.isoformat(),
+                "lat": lat,
+                "lon": lon,
+                "heading": random.uniform(0, 360)
+            })
+            
+            # create communication events
+            if random.random() < 0.05:
+                target_i = random.randint(0, 19)
+                if target_i != i:
+                    session.run("""
+                    MATCH (a1:Asset {id: $id1}), (a2:Asset {id: $id2})
+                    CREATE (a1)-[:COMMUNICATED_WITH {time: $time}]->(a2)
+                    """, {"id1": asset_id, "id2": f"Vessel-{target_i}", "time": obs_time.isoformat()})
 
 def seed():
     with db.get_session() as session:
-        # Clear existing
-        session.run("MATCH (n) DETACH DELETE n")
-        
-        # Create some nodes
-        session.run("""
-        CREATE (p1:Person {name: 'John Doe', role: 'Operative'})
-        CREATE (p2:Person {name: 'Jane Smith', role: 'Analyst'})
-        CREATE (l1:Location {name: 'Forward Operating Base Alpha', latitude: 34.0522, longitude: -118.2437})
-        CREATE (l2:Location {name: 'Central Command', latitude: 38.8951, longitude: -77.0364})
-        CREATE (e1:Event {name: 'Operation Midnight', date: '2023-10-15'})
-        
-        CREATE (p1)-[:STATIONED_AT]->(l1)
-        CREATE (p2)-[:STATIONED_AT]->(l2)
-        CREATE (p1)-[:PARTICIPATED_IN]->(e1)
-        CREATE (e1)-[:OCCURRED_AT]->(l1)
-        """)
-        print("Database seeded successfully.")
+        generate_tactical_data(session)
+        print("Database seeded successfully with tactical dataset.")
 
 if __name__ == "__main__":
     seed()

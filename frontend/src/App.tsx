@@ -1,9 +1,11 @@
 import { useState } from 'react';
-import { Activity, Map as MapIcon, Database, MessageSquare, Hexagon } from 'lucide-react';
+import { Activity, Map as MapIcon, Database, MessageSquare, Hexagon, Target, Globe } from 'lucide-react';
 import GraphExplorer from './components/GraphExplorer';
 import GaiaMap from './components/GaiaMap';
 import Browser from './components/Browser';
 import AvaChat from './components/AvaChat';
+import TargetWorkbench from './components/TargetWorkbench';
+import ConstellationView from './components/ConstellationView';
 
 function App() {
   const [activeTab, setActiveTab] = useState('graph');
@@ -13,6 +15,8 @@ function App() {
       case 'graph': return <GraphExplorer />;
       case 'map': return <GaiaMap />;
       case 'browser': return <Browser />;
+      case 'targets': return <TargetWorkbench />;
+      case 'space': return <ConstellationView />;
       case 'ava': return <AvaChat />;
       default: return <GraphExplorer />;
     }
@@ -33,6 +37,12 @@ function App() {
           <button onClick={() => setActiveTab('map')} className={`p-3 w-full flex justify-center rounded-xl transition-all duration-200 ${activeTab === 'map' ? 'bg-blue-500/20 text-blue-400 shadow-[inset_2px_0_0_0_#3b82f6]' : 'text-slate-400 hover:bg-slate-700 hover:text-white'}`} title="Gaia Map">
             <MapIcon size={22} />
           </button>
+          <button onClick={() => setActiveTab('targets')} className={`p-3 w-full flex justify-center rounded-xl transition-all duration-200 ${activeTab === 'targets' ? 'bg-blue-500/20 text-red-400 shadow-[inset_2px_0_0_0_#ef4444]' : 'text-slate-400 hover:bg-slate-700 hover:text-white'}`} title="Target Workbench">
+            <Target size={22} />
+          </button>
+          <button onClick={() => setActiveTab('space')} className={`p-3 w-full flex justify-center rounded-xl transition-all duration-200 ${activeTab === 'space' ? 'bg-blue-500/20 text-indigo-400 shadow-[inset_2px_0_0_0_#818cf8]' : 'text-slate-400 hover:bg-slate-700 hover:text-white'}`} title="Constellation">
+            <Globe size={22} />
+          </button>
           <button onClick={() => setActiveTab('browser')} className={`p-3 w-full flex justify-center rounded-xl transition-all duration-200 ${activeTab === 'browser' ? 'bg-blue-500/20 text-blue-400 shadow-[inset_2px_0_0_0_#3b82f6]' : 'text-slate-400 hover:bg-slate-700 hover:text-white'}`} title="Data Browser">
             <Database size={22} />
           </button>
@@ -50,6 +60,8 @@ function App() {
             <h1 className="text-sm font-bold text-slate-100 tracking-widest uppercase">
               {activeTab === 'graph' && 'Titanium :: Ontology Explorer'}
               {activeTab === 'map' && 'Gaia :: Geospatial Platform'}
+              {activeTab === 'targets' && 'TWB :: Target Workbench'}
+              {activeTab === 'space' && 'Space :: Constellation Tracking'}
               {activeTab === 'browser' && 'Browser :: Raw Telemetry'}
               {activeTab === 'ava' && 'Ava :: Cognitive Engine'}
             </h1>
@@ -74,5 +86,4 @@ function App() {
     </div>
   );
 }
-
 export default App;

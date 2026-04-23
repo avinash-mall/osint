@@ -6,3 +6,5 @@ langchain-openai
 langchain-community
 python-dotenv
 pydantic
+celery
+redis
