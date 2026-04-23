@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+@theme {
+  --color-gotham-bg: #0f172a;
+  --color-gotham-panel: #1e293b;
+  --color-gotham-border: #334155;
+  --color-gotham-primary: #3b82f6;
+  --color-gotham-accent: #10b981;
+}
+
+body {
+  background-color: var(--color-gotham-bg);
+  color: #f8fafc;
+  margin: 0;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+/* Custom scrollbar for a darker aesthetic */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-gotham-bg); 
+}
+ 
+::-webkit-scrollbar-thumb {
+  background: var(--color-gotham-border); 
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #475569; 
+}
