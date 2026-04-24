@@ -8,3 +8,13 @@ python-dotenv
 pydantic
 celery
 redis
+psycopg2-binary
+geoalchemy2
+shapely
+rasterio
+rioxarray
+sahi
+ultralytics
+pillow
+numpy
+requests

@@ -1,18 +1,42 @@
 import { useEffect, useState } from 'react';
 import axios from 'axios';
-import { Target, AlertTriangle, CheckCircle, Eye, Edit2 } from 'lucide-react';
+import { Target, AlertTriangle, CheckCircle, Eye, Edit2, Satellite, Image as ImageIcon, ExternalLink } from 'lucide-react';
+
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+
+interface DetectionInfo {
+  id: number;
+  class: string;
+  confidence: number;
+  pass_id: number;
+  pass_name: string;
+  acquisition_time: string;
+  file_path: string;
+}
 
 export default function TargetWorkbench() {
   const [targets, setTargets] = useState<any[]>([]);
   const [selectedTarget, setSelectedTarget] = useState<any>(null);
+  const [detections, setDetections] = useState<DetectionInfo[]>([]);
 
   const fetchTargets = async () => {
     try {
-      const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8080';
-      const response = await axios.get(`${apiUrl}/api/targets`);
+      const response = await axios.get(`${API_URL}/api/targets`);
       setTargets(response.data.targets || []);
     } catch (error) {
       console.error("Error fetching targets:", error);
+    }
+  };
+
+  const fetchTargetDetections = async (targetId: string) => {
+    try {
+      // Fetch detections that might be linked to this target
+      // For now, we fetch recent detections and the backend can link them
+      const response = await axios.get(`${API_URL}/api/detections?limit=50`);
+      const allDetections = response.data.detections || [];
+      setDetections(allDetections);
+    } catch (error) {
+      console.error("Error fetching detections:", error);
     }
   };
 
@@ -20,16 +44,36 @@ export default function TargetWorkbench() {
     fetchTargets();
   }, []);
 
+  useEffect(() => {
+    if (selectedTarget) {
+      fetchTargetDetections(selectedTarget.id);
+    } else {
+      setDetections([]);
+    }
+  }, [selectedTarget]);
+
   const updateStatus = async (id: string, newStatus: string) => {
     try {
-      const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8080';
-      await axios.put(`${apiUrl}/api/targets/${id}/status`, { status: newStatus });
+      await axios.put(`${API_URL}/api/targets/${id}/status`, { status: newStatus });
       fetchTargets();
       if (selectedTarget && selectedTarget.id === id) {
          setSelectedTarget({...selectedTarget, properties: {...selectedTarget.properties, status: newStatus}});
       }
     } catch (error) {
       console.error("Error updating status:", error);
+    }
+  };
+
+  const triggerIngest = async () => {
+    try {
+      await axios.post(`${API_URL}/api/ingest`, {
+        image_url: '/data/imagery/incoming/usgs_pass_001.tif',
+        sensor_type: 'Optical'
+      });
+      alert('Satellite ingestion pipeline triggered. Check back shortly for new targets.');
+    } catch (error) {
+      console.error("Error triggering ingest:", error);
+      alert('Failed to trigger ingestion pipeline.');
     }
   };
 
@@ -65,14 +109,10 @@ export default function TargetWorkbench() {
           </div>
           <div className="flex items-center gap-4">
             <button 
-              onClick={async () => {
-                const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8080';
-                await axios.post(`${apiUrl}/api/ingest`, { image_url: 's3://satellites/usgs_pass_001.tif' });
-                alert('Satellite ingestion pipeline triggered. Check back shortly for new targets.');
-              }}
-              className="px-3 py-1 bg-indigo-500/20 text-indigo-400 border border-indigo-500/50 rounded hover:bg-indigo-500/40 transition text-xs font-bold uppercase tracking-wider"
+              onClick={triggerIngest}
+              className="px-3 py-1 bg-indigo-500/20 text-indigo-400 border border-indigo-500/50 rounded hover:bg-indigo-500/40 transition text-xs font-bold uppercase tracking-wider flex items-center gap-2"
             >
-              TRIGGER SATELLITE PASS
+              <Satellite className="w-3 h-3" /> Trigger Satellite Pass
             </button>
             <div className="text-sm font-mono bg-slate-800 px-3 py-1 border border-slate-700 rounded">
               TOTAL: <span className="text-blue-400">{targets.length}</span>
@@ -99,6 +139,11 @@ export default function TargetWorkbench() {
                   <div>
                     <div className="font-bold tracking-wide">{target.properties.name}</div>
                     <div className="text-xs font-mono text-slate-500">ID: {target.id}</div>
+                    {target.properties.latitude && (
+                      <div className="text-[10px] font-mono text-slate-600 mt-0.5">
+                        {target.properties.latitude.toFixed(4)}, {target.properties.longitude.toFixed(4)}
+                      </div>
+                    )}
                   </div>
                 </div>
                 
@@ -132,6 +177,11 @@ export default function TargetWorkbench() {
                <div className={`inline-block text-xs font-bold uppercase tracking-wider px-2 py-1 rounded border mb-4 ${getPriorityColor(selectedTarget.properties.priority)}`}>
                   PRIORITY: {selectedTarget.properties.priority}
                </div>
+               {selectedTarget.properties.latitude && (
+                 <div className="text-xs font-mono text-slate-500 mb-2">
+                   LAT: {selectedTarget.properties.latitude.toFixed(6)} | LON: {selectedTarget.properties.longitude.toFixed(6)}
+                 </div>
+               )}
             </div>
 
             <div className="p-6 flex-1 overflow-auto">
@@ -156,6 +206,28 @@ export default function TargetWorkbench() {
                      </button>
                   </div>
                </div>
+
+               {/* Detections linked to this target */}
+               {detections.length > 0 && (
+                 <div className="mb-6">
+                    <div className="text-xs text-slate-500 font-mono uppercase mb-2 flex items-center gap-2">
+                      <ImageIcon className="w-3 h-3" /> Recent Detections
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      {detections.slice(0, 5).map((det) => (
+                        <div key={det.id} className="bg-slate-950 p-3 rounded border border-slate-800 text-xs">
+                          <div className="flex justify-between items-start mb-1">
+                            <span className="font-bold text-slate-300">{det.class}</span>
+                            <span className="text-slate-500">{(det.confidence * 100).toFixed(0)}%</span>
+                          </div>
+                          <div className="text-slate-600 font-mono">
+                            Pass: {det.pass_name} | {new Date(det.acquisition_time).toLocaleString()}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                 </div>
+               )}
             </div>
           </>
         )}

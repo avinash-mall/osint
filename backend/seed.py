@@ -2,6 +2,7 @@ import random
 import time
 from datetime import datetime, timedelta
 from database import db
+import os
 
 def generate_tactical_data(session):
     print("Clearing existing database...")
@@ -64,6 +65,29 @@ def generate_tactical_data(session):
                     MATCH (a1:Asset {id: $id1}), (a2:Asset {id: $id2})
                     CREATE (a1)-[:COMMUNICATED_WITH {time: $time}]->(a2)
                     """, {"id1": asset_id, "id2": f"Vessel-{target_i}", "time": obs_time.isoformat()})
+
+    # Generate Satellite Constellation
+    print("Generating Satellite Constellation...")
+    satellites = [
+        {"name": "Sentinel-2A", "type": "Optical", "lat": 25.0, "lon": 55.0, "orbit_alt": 786000, "status": "Active"},
+        {"name": "Landsat-9", "type": "Optical", "lat": 24.5, "lon": 54.5, "orbit_alt": 705000, "status": "Active"},
+        {"name": "WorldView-3", "type": "Optical", "lat": 25.5, "lon": 55.5, "orbit_alt": 617000, "status": "Active"},
+        {"name": "SAR-Lupe 1", "type": "Radar", "lat": 24.0, "lon": 56.0, "orbit_alt": 500000, "status": "Active"},
+        {"name": "NOAA-20", "type": "Optical", "lat": 26.0, "lon": 54.0, "orbit_alt": 824000, "status": "Standby"},
+        {"name": "GOES-16", "type": "Optical", "lat": 0.0, "lon": -75.0, "orbit_alt": 35786000, "status": "Active"},
+    ]
+    
+    for sat in satellites:
+        session.run("""
+        CREATE (s:Satellite {
+            name: $name,
+            type: $type,
+            lat: $lat,
+            lon: $lon,
+            orbit_alt: $orbit_alt,
+            status: $status
+        })
+        """, sat)
 
 def seed():
     with db.get_session() as session:

@@ -18,6 +18,23 @@ services:
       retries: 5
       start_period: 30s
 
+  postgis:
+    image: postgis/postgis:16-3.4
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=gotham
+      - POSTGRES_PASSWORD=gotham
+      - POSTGRES_DB=gotham
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./backend/init_postgis.sql:/docker-entrypoint-initdb.d/init_postgis.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gotham -d gotham"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   backend:
     build: ./backend
     image: gotham-backend:latest
@@ -28,13 +45,20 @@ services:
       - NEO4J_USERNAME=neo4j
       - NEO4J_PASSWORD=password
       - REDIS_URL=redis://redis:6379/0
+      - POSTGIS_URI=postgresql://gotham:gotham@postgis:5432/gotham
+      - TITILER_URL=http://titiler:8080
+      - INFERENCE_URL=http://inference:8001
+      - IMAGERY_PATH=/data/imagery
     env_file:
       - .env
     depends_on:
       neo4j:
         condition: service_healthy
+      postgis:
+        condition: service_healthy
     volumes:
       - ./backend:/app
+      - imagery_data:/data/imagery
 
   frontend:
     build: ./frontend
@@ -45,20 +69,49 @@ services:
       - backend
     environment:
       - VITE_API_URL=http://localhost:8080
+      - VITE_TITILER_URL=http://localhost:8081
+      - VITE_MARTIN_URL=http://localhost:3001
     volumes:
       - ./frontend/src:/app/src
       - ./frontend/public:/app/public
       - ./frontend/index.html:/app/index.html
 
+  titiler:
+    image: developmentseed/titiler:latest
+    ports:
+      - "8081:8080"
+    volumes:
+      - imagery_data:/data/imagery:ro
+    environment:
+      - PORT=8080
+      - WORKERS_PER_CORE=1
+
+  martin:
+    image: maplibre/martin:latest
+    ports:
+      - "3001:3000"
+    environment:
+      - DATABASE_URL=postgresql://gotham:gotham@postgis:5432/gotham
+    depends_on:
+      postgis:
+        condition: service_healthy
+
   inference:
-    image: python:3.11-slim
-    command: >
-      bash -c "pip install fastapi uvicorn pydantic && uvicorn main:app --host 0.0.0.0 --port 8001"
+    build: ./inference
+    image: gotham-inference:latest
     ports:
       - "8001:8001"
     volumes:
       - ./inference:/app
+      - imagery_data:/data/imagery:ro
     working_dir: /app
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   redis:
     image: redis:alpine
@@ -68,19 +121,38 @@ services:
   worker:
     build: ./backend
     image: gotham-backend:latest
-    command: celery -A worker.celery_app worker --loglevel=info
+    command: celery -A worker.celery_app worker --loglevel=info -Q imagery,default
     environment:
       - NEO4J_URI=bolt://neo4j:7687
       - NEO4J_USERNAME=neo4j
       - NEO4J_PASSWORD=password
       - REDIS_URL=redis://redis:6379/0
+      - POSTGIS_URI=postgresql://gotham:gotham@postgis:5432/gotham
       - INFERENCE_URL=http://inference:8001
+      - IMAGERY_PATH=/data/imagery
     depends_on:
-      - neo4j
-      - redis
-      - inference
+      neo4j:
+        condition: service_healthy
+      postgis:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      inference:
+        condition: service_started
     volumes:
       - ./backend:/app
+      - imagery_data:/data/imagery
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "8090:80"
+    volumes:
+      - ./nginx/tile-proxy.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - titiler
 
 volumes:
   neo4j_data:
+  pg_data:
+  imagery_data:
