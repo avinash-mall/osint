@@ -1,14 +1,13 @@
-FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
+FROM python:3.11-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV DEVICE=cpu
 
-# Install Python and system dependencies
+# Install system dependencies for OpenCV and image processing
 RUN apt-get update && apt-get install -y \
-    python3-pip \
-    python3-dev \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
@@ -20,10 +19,15 @@ WORKDIR /app
 
 # Install Python dependencies
 COPY requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt
+
+# Install CPU-only PyTorch first to prevent CUDA wheels from being pulled in
+RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+# Install remaining dependencies (ultralytics, sahi, etc.)
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Download a default YOLOv8 model (will be cached in image)
-RUN python3 -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
+RUN python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
 
 COPY . .
 

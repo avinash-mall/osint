@@ -101,17 +101,14 @@ services:
     image: gotham-inference:latest
     ports:
       - "8001:8001"
+    environment:
+      - DEVICE=cpu
+      - MODEL_PATH=yolov8n.pt
+      - CONFIDENCE_THRESHOLD=0.25
     volumes:
       - ./inference:/app
       - imagery_data:/data/imagery:ro
     working_dir: /app
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
 
   redis:
     image: redis:alpine
