@@ -49,6 +49,7 @@ services:
       - TITILER_URL=http://titiler:8080
       - INFERENCE_URL=http://inference:8001
       - IMAGERY_PATH=/data/imagery
+      - FMV_PATH=/data/fmv
     env_file:
       - .env
     depends_on:
@@ -59,6 +60,7 @@ services:
     volumes:
       - ./backend:/app
       - imagery_data:/data/imagery
+      - fmv_data:/data/fmv
 
   frontend:
     build: ./frontend
@@ -127,6 +129,7 @@ services:
       - POSTGIS_URI=postgresql://gotham:gotham@postgis:5432/gotham
       - INFERENCE_URL=http://inference:8001
       - IMAGERY_PATH=/data/imagery
+      - FMV_PATH=/data/fmv
     depends_on:
       neo4j:
         condition: service_healthy
@@ -139,6 +142,7 @@ services:
     volumes:
       - ./backend:/app
       - imagery_data:/data/imagery
+      - fmv_data:/data/fmv
 
   nginx:
     image: nginx:alpine
@@ -146,6 +150,7 @@ services:
       - "8090:80"
     volumes:
       - ./nginx/tile-proxy.conf:/etc/nginx/conf.d/default.conf
+      - fmv_data:/data/fmv:ro
     depends_on:
       - titiler
 
@@ -153,3 +158,4 @@ volumes:
   neo4j_data:
   pg_data:
   imagery_data:
+  fmv_data:

@@ -18,7 +18,8 @@
     "tailwindcss": "^4.2.4",
     "typescript": "~6.0.2",
     "vite": "^8.0.9",
-    "@tailwindcss/vite": "^4.0.0"
+    "@tailwindcss/vite": "^4.0.0",
+    "vite-plugin-cesium": "^1.2.22"
   },
   "dependencies": {
     "axios": "^1.15.2",
@@ -31,6 +32,7 @@
     "react-leaflet": "^5.0.0",
     "react-globe.gl": "^2.27.2",
     "three": "0.150.1",
-    "tailwind-merge": "^3.5.0"
+    "tailwind-merge": "^3.5.0",
+    "cesium": "^1.124.0"
   }
 }
