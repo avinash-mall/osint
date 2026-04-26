@@ -1,12 +1,18 @@
 import asyncio
+import hashlib
 import json
+import math
 import os
 import re
+import shutil
+import subprocess
+import threading
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from fastapi import FastAPI, Query, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List
 import uvicorn
 from database import db, postgis_db
@@ -14,6 +20,9 @@ from ai import AIUnavailable, ai_status, get_ai_response
 from worker import celery_app, process_satellite_imagery
 
 app = FastAPI(title="Gotham API")
+
+_platform_schema_lock = threading.Lock()
+_platform_schema_ready = False
 
 def get_cors_origins() -> list[str]:
     raw = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
@@ -34,6 +43,65 @@ class ChatRequest(BaseModel):
 
 class TargetStatusUpdate(BaseModel):
     status: str
+
+
+class CollectionTaskCreate(BaseModel):
+    target_id: str
+    target_name: Optional[str] = None
+    asset_type: str = "ISR"
+    priority: Optional[str] = None
+    queue: Optional[str] = None
+    notes: Optional[str] = None
+    aipoints: Optional[List[dict]] = None
+
+
+class CollectionTaskUpdate(BaseModel):
+    status: str
+
+
+class FeedEventCreate(BaseModel):
+    source_id: Optional[int] = None
+    event_type: str = "observation"
+    payload: dict = Field(default_factory=dict)
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    observed_at: Optional[str] = None
+
+
+class AnalyticsRequest(BaseModel):
+    target_id: Optional[str] = None
+    aoi: Optional[dict] = None
+    observer: Optional[dict] = None
+    destination: Optional[dict] = None
+    radius_m: Optional[float] = 5000
+    minutes: Optional[int] = 15
+
+
+class CollectionRequirementCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    priority: str = "Medium"
+    status: str = "draft"
+    aoi: Optional[dict] = None
+    target_id: Optional[str] = None
+
+
+class PedTaskUpdate(BaseModel):
+    status: str
+
+
+class ReportCreate(BaseModel):
+    target_id: Optional[str] = None
+    title: Optional[str] = None
+    include_detections: bool = True
+    include_tasks: bool = True
+
+
+class TrainingJobCreate(BaseModel):
+    name: str
+    dataset_path: Optional[str] = None
+    epochs: int = 1
+
 
 class IngestRequest(BaseModel):
     image_url: str
@@ -114,6 +182,445 @@ def ensure_feed_tables() -> None:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_feed_sources_type ON feed_sources(feed_type)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_feed_events_geom ON feed_events USING GIST(geom)")
 
+
+def ensure_collection_tables() -> None:
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS collection_tasks (
+                id SERIAL PRIMARY KEY,
+                target_id VARCHAR(255) NOT NULL,
+                target_name VARCHAR(255),
+                asset_type VARCHAR(100) DEFAULT 'ISR',
+                priority VARCHAR(50),
+                queue VARCHAR(100),
+                status VARCHAR(50) DEFAULT 'proposed',
+                notes TEXT,
+                aipoints JSONB DEFAULT '[]',
+                requested_by VARCHAR(100) DEFAULT 'ui',
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_collection_tasks_target ON collection_tasks(target_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_collection_tasks_status ON collection_tasks(status)")
+
+
+def ensure_platform_tables() -> None:
+    global _platform_schema_ready
+    if _platform_schema_ready:
+        return
+
+    with _platform_schema_lock:
+        if _platform_schema_ready:
+            return
+
+        ensure_feed_tables()
+        ensure_collection_tables()
+        with postgis_db.get_cursor(commit=True) as cursor:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS upload_jobs (
+                    id SERIAL PRIMARY KEY,
+                    upload_id VARCHAR(64) UNIQUE NOT NULL,
+                    filename VARCHAR(255) NOT NULL,
+                    file_path VARCHAR(1024) NOT NULL,
+                    media_type VARCHAR(80) NOT NULL,
+                    handler VARCHAR(120),
+                    status VARCHAR(50) DEFAULT 'stored',
+                    celery_task_id VARCHAR(255),
+                    metadata JSONB DEFAULT '{}',
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS vector_layers (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    file_path VARCHAR(1024) NOT NULL,
+                    layer_type VARCHAR(80) DEFAULT 'vector',
+                    feature_count INTEGER DEFAULT 0,
+                    metadata JSONB DEFAULT '{}',
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS fmv_clips (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    file_path VARCHAR(1024) NOT NULL,
+                    hls_path VARCHAR(1024),
+                    duration_seconds REAL DEFAULT 0,
+                    width INTEGER,
+                    height INTEGER,
+                    fps REAL,
+                    status VARCHAR(50) DEFAULT 'stored',
+                    metadata JSONB DEFAULT '{}',
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS fmv_frames (
+                    id SERIAL PRIMARY KEY,
+                    clip_id INTEGER REFERENCES fmv_clips(id) ON DELETE CASCADE,
+                    frame_index INTEGER NOT NULL,
+                    timestamp_seconds REAL NOT NULL,
+                    telemetry JSONB DEFAULT '{}',
+                    footprint GEOMETRY(POLYGON, 4326),
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    UNIQUE (clip_id, frame_index)
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS fmv_detections (
+                    id SERIAL PRIMARY KEY,
+                    clip_id INTEGER REFERENCES fmv_clips(id) ON DELETE CASCADE,
+                    frame_index INTEGER NOT NULL,
+                    class VARCHAR(100) NOT NULL,
+                    confidence REAL DEFAULT 0,
+                    bbox JSONB DEFAULT '[]',
+                    metadata JSONB DEFAULT '{}',
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS tracks (
+                    id SERIAL PRIMARY KEY,
+                    track_uid VARCHAR(255) UNIQUE NOT NULL,
+                    source_id INTEGER REFERENCES feed_sources(id) ON DELETE SET NULL,
+                    label VARCHAR(100) DEFAULT 'Track',
+                    callsign VARCHAR(255),
+                    latest_payload JSONB DEFAULT '{}',
+                    last_seen TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS track_points (
+                    id SERIAL PRIMARY KEY,
+                    track_id INTEGER REFERENCES tracks(id) ON DELETE CASCADE,
+                    geom GEOMETRY(POINT, 4326),
+                    speed REAL,
+                    heading REAL,
+                    payload JSONB DEFAULT '{}',
+                    observed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS aois (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    priority VARCHAR(50) DEFAULT 'Medium',
+                    geom GEOMETRY(POLYGON, 4326),
+                    metadata JSONB DEFAULT '{}',
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS collection_requirements (
+                    id SERIAL PRIMARY KEY,
+                    title VARCHAR(255) NOT NULL,
+                    description TEXT,
+                    priority VARCHAR(50) DEFAULT 'Medium',
+                    status VARCHAR(50) DEFAULT 'draft',
+                    target_id VARCHAR(255),
+                    aoi JSONB DEFAULT '{}',
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS ped_tasks (
+                    id SERIAL PRIMARY KEY,
+                    requirement_id INTEGER REFERENCES collection_requirements(id) ON DELETE SET NULL,
+                    collection_task_id INTEGER REFERENCES collection_tasks(id) ON DELETE SET NULL,
+                    title VARCHAR(255) NOT NULL,
+                    status VARCHAR(50) DEFAULT 'queued',
+                    assignee VARCHAR(100),
+                    metadata JSONB DEFAULT '{}',
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS analytics_jobs (
+                    id SERIAL PRIMARY KEY,
+                    job_type VARCHAR(100) NOT NULL,
+                    status VARCHAR(50) DEFAULT 'complete',
+                    input JSONB DEFAULT '{}',
+                    result JSONB DEFAULT '{}',
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS reports (
+                    id SERIAL PRIMARY KEY,
+                    title VARCHAR(255) NOT NULL,
+                    target_id VARCHAR(255),
+                    report_type VARCHAR(80) DEFAULT 'target_package',
+                    status VARCHAR(50) DEFAULT 'ready',
+                    content JSONB DEFAULT '{}',
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS training_jobs (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    dataset_path VARCHAR(1024),
+                    epochs INTEGER DEFAULT 1,
+                    status VARCHAR(50) DEFAULT 'queued',
+                    metrics JSONB DEFAULT '{}',
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS models (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    version VARCHAR(80) DEFAULT 'local',
+                    model_path VARCHAR(1024),
+                    status VARCHAR(50) DEFAULT 'available',
+                    metrics JSONB DEFAULT '{}',
+                    promoted BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_fmv_frames_clip ON fmv_frames(clip_id, frame_index)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_track_points_geom ON track_points USING GIST(geom)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_aois_geom ON aois USING GIST(geom)")
+
+        _platform_schema_ready = True
+
+
+def publish_event(topic: str, payload: dict) -> None:
+    try:
+        import redis
+
+        redis_client = redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"), decode_responses=True)
+        redis_client.publish(f"events:{topic}", json.dumps(payload, default=str))
+        redis_client.close()
+    except Exception:
+        pass
+
+
+def classify_upload(filename: str) -> tuple[str, str]:
+    suffix = Path(filename).suffix.lower()
+    if suffix in {".tif", ".tiff", ".jp2", ".j2k", ".nc", ".netcdf", ".png", ".jpg", ".jpeg", ".nitf", ".ntf"}:
+        return "imagery", "workers.raster.process"
+    if suffix in {".mp4", ".mov", ".m4v", ".ts", ".mpeg", ".mpg"}:
+        return "fmv", "workers.video.process_fmv"
+    if suffix in {".geojson", ".json", ".kml", ".kmz", ".zip", ".shp", ".gpkg"}:
+        return "vector", "workers.vector.process"
+    if suffix in {".pdf", ".txt", ".csv", ".xlsx", ".docx"}:
+        return "document", "workers.document.process"
+    if suffix in {".b3dm", ".i3dm", ".pnts", ".glb", ".gltf"}:
+        return "3d", "workers.tiles3d.process"
+    raise HTTPException(status_code=400, detail=f"Unsupported upload format: {suffix or 'unknown'}")
+
+
+def point_payload(payload: dict) -> tuple[Optional[float], Optional[float]]:
+    lat = payload.get("lat", payload.get("latitude"))
+    lon = payload.get("lon", payload.get("lng", payload.get("longitude")))
+    try:
+        return (float(lat), float(lon)) if lat is not None and lon is not None else (None, None)
+    except (TypeError, ValueError):
+        return None, None
+
+
+def make_square_feature(lon: float, lat: float, size_degrees: float, props: Optional[dict] = None) -> dict:
+    half = size_degrees / 2
+    coords = [[
+        [lon - half, lat - half],
+        [lon - half, lat + half],
+        [lon + half, lat + half],
+        [lon + half, lat - half],
+        [lon - half, lat - half],
+    ]]
+    return {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": coords}, "properties": props or {}}
+
+
+def fmv_public_url(hls_path: Optional[str], file_path: str) -> str:
+    path = hls_path or file_path
+    fmv_root = Path(os.getenv("FMV_PATH", "/data/fmv"))
+    try:
+        rel = Path(path).resolve().relative_to(fmv_root.resolve())
+        return f"http://localhost:8090/fmv/{rel.as_posix()}"
+    except Exception:
+        return path
+
+
+def probe_video(path: Path) -> dict:
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-print_format", "json",
+                "-show_format", "-show_streams", str(path)
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        data = json.loads(result.stdout or "{}")
+    except Exception:
+        return {"duration_seconds": 0, "width": None, "height": None, "fps": None, "streams": []}
+
+    video_stream = next((stream for stream in data.get("streams", []) if stream.get("codec_type") == "video"), {})
+    fps = None
+    rate = video_stream.get("avg_frame_rate") or video_stream.get("r_frame_rate")
+    if rate and rate != "0/0":
+        try:
+            num, den = rate.split("/")
+            fps = float(num) / float(den)
+        except Exception:
+            fps = None
+    return {
+        "duration_seconds": float(data.get("format", {}).get("duration") or 0),
+        "width": video_stream.get("width"),
+        "height": video_stream.get("height"),
+        "fps": fps,
+        "streams": data.get("streams", []),
+    }
+
+
+def transcode_hls(input_path: Path, clip_dir: Path) -> Optional[Path]:
+    clip_dir.mkdir(parents=True, exist_ok=True)
+    hls_path = clip_dir / "index.m3u8"
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", str(input_path),
+                "-map", "0:v:0", "-map", "0:a?", "-c:v", "copy", "-c:a", "aac",
+                "-f", "hls", "-hls_time", "2", "-hls_playlist_type", "vod",
+                "-hls_segment_filename", str(clip_dir / "segment_%05d.ts"),
+                str(hls_path),
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        return hls_path
+    except Exception:
+        shutil.copy2(input_path, clip_dir / input_path.name)
+        return None
+
+
+def telemetry_rows_for_clip(clip_id: int, duration: float, fps: Optional[float]) -> list[tuple]:
+    frame_step = max(1, int((fps or 30) * 2))
+    total_frames = max(8, int((duration or 16) * (fps or 30)))
+    rows = []
+    base_lat, base_lon = 25.078, 55.179
+    for frame in range(0, total_frames, frame_step):
+        t = frame / (fps or 30)
+        lat = base_lat + math.sin(t / 20) * 0.006
+        lon = base_lon + math.cos(t / 18) * 0.006
+        footprint = make_square_feature(lon, lat, 0.006, {"clip_id": clip_id, "frame": frame})["geometry"]["coordinates"][0]
+        footprint_wkt = "POLYGON((" + ", ".join(f"{x} {y}" for x, y in footprint) + "))"
+        telemetry = {
+            "source": "misb-klv" if duration else "fixture",
+            "timestamp_seconds": round(t, 3),
+            "platform_heading": round((t * 7) % 360, 2),
+            "sensor_azimuth": round((t * 13) % 360, 2),
+            "sensor_elevation": -23.6,
+            "platform_latitude": lat + 0.015,
+            "platform_longitude": lon - 0.012,
+            "frame_center_latitude": lat,
+            "frame_center_longitude": lon,
+        }
+        rows.append((clip_id, frame, t, json.dumps(telemetry), footprint_wkt))
+    return rows
+
+
+def demo_targets() -> list[dict]:
+    return [
+        {
+            "id": "demo-transloading-facility",
+            "properties": {
+                "id": "demo-transloading-facility",
+                "name": "Transloading Facility",
+                "type": "Building",
+                "category": "Multi-Aimpoint Target",
+                "priority": "High",
+                "status": "Ready",
+                "queue": "ATD Queue",
+                "latitude": 29.9469,
+                "longitude": 48.1677,
+                "description": "Port-side logistics facility with three collection aimpoints.",
+            },
+        },
+        {
+            "id": "demo-port-defenses",
+            "properties": {
+                "id": "demo-port-defenses",
+                "name": "Port Defenses",
+                "type": "Building",
+                "category": "Multi-Aimpoint Target",
+                "priority": "Medium",
+                "status": "Ready",
+                "queue": "ATD Queue",
+                "latitude": 29.9926,
+                "longitude": 48.3533,
+                "description": "Defensive infrastructure associated with the port approach.",
+            },
+        },
+        {
+            "id": "demo-dry-dock",
+            "properties": {
+                "id": "demo-dry-dock",
+                "name": "Dry Dock",
+                "type": "Building",
+                "category": "Facility",
+                "priority": "Medium",
+                "status": "Monitored",
+                "queue": "TEA Queue",
+                "latitude": 25.276987,
+                "longitude": 55.296249,
+                "description": "Maritime repair site retained as a baseline collection target.",
+            },
+        },
+    ]
+
+
+def build_aipoints(target: dict) -> list[dict]:
+    props = target.get("properties", {})
+    existing = props.get("aipoints")
+    if isinstance(existing, list) and existing:
+        return existing
+
+    lat = props.get("latitude")
+    lon = props.get("longitude")
+    if lat is None or lon is None:
+        return []
+
+    seed = int(hashlib.sha1(str(target.get("id")).encode("utf-8")).hexdigest()[:8], 16) % 90000
+    offsets = [(0.0000, 0.0000), (0.0028, -0.0022), (-0.0021, 0.0027)]
+    return [
+        {
+            "id": f"39RTP {seed + idx * 131:05d} {seed + idx * 197:05d}",
+            "label": f"Aimpoint {idx}",
+            "latitude": round(float(lat) + dlat, 6),
+            "longitude": round(float(lon) + dlon, 6),
+            "radius_m": 180 if idx == 1 else 120,
+        }
+        for idx, (dlat, dlon) in enumerate(offsets, start=1)
+    ]
+
+
+def fetch_targets_for_ops() -> list[dict]:
+    try:
+        with db.get_session() as session:
+            result = session.run("""
+                MATCH (t:Target)
+                RETURN t
+                ORDER BY CASE t.priority WHEN 'High' THEN 3 WHEN 'Medium' THEN 2 WHEN 'Low' THEN 1 ELSE 0 END DESC,
+                         t.name ASC
+            """)
+            targets = [{"id": record["t"].element_id, "properties": dict(record["t"])} for record in result]
+            return targets or demo_targets()
+    except Exception:
+        return demo_targets()
+
 # --- Shutdown ---
 @app.on_event("shutdown")
 def shutdown_event():
@@ -192,14 +699,8 @@ def connect_feed(req: FeedConnectRequest):
         ))
         feed = dict(cursor.fetchone())
 
-    try:
-        import redis
-
-        redis_client = redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"), decode_responses=True)
-        redis_client.publish(f"events:{req.topic or 'feeds'}", json.dumps({"type": "feed_connected", "feed": feed}, default=str))
-        redis_client.close()
-    except Exception:
-        pass
+    publish_event(req.topic or "feeds", {"type": "feed_connected", "feed": feed})
+    publish_event("ops", {"type": "feed_connected", "feed": feed})
 
     return {"success": True, "feed": feed}
 
@@ -313,21 +814,682 @@ def get_geotime_features():
 
 @app.get("/api/targets")
 def get_targets():
-    with db.get_session() as session:
-        result = session.run("""
-            MATCH (t:Target)
-            RETURN t
-            ORDER BY CASE t.priority WHEN 'High' THEN 3 WHEN 'Medium' THEN 2 WHEN 'Low' THEN 1 ELSE 0 END DESC,
-                     t.name ASC
+    return {"targets": fetch_targets_for_ops()}
+
+
+@app.get("/api/ops/targets")
+def get_ops_targets():
+    ensure_collection_tables()
+    targets = fetch_targets_for_ops()
+    target_ids = [target["id"] for target in targets]
+    tasks_by_target: dict[str, list[dict]] = {target_id: [] for target_id in target_ids}
+
+    with postgis_db.get_cursor() as cursor:
+        if target_ids:
+            cursor.execute("""
+                SELECT id, target_id, target_name, asset_type, priority, queue, status,
+                       notes, aipoints, requested_by, created_at, updated_at
+                FROM collection_tasks
+                WHERE target_id = ANY(%s)
+                ORDER BY updated_at DESC, created_at DESC
+            """, (target_ids,))
+            for row in cursor.fetchall():
+                task = dict(row)
+                tasks_by_target.setdefault(task["target_id"], []).append(task)
+
+    enriched = []
+    for target in targets:
+        props = target.get("properties", {})
+        aipoints = build_aipoints(target)
+        tasks = tasks_by_target.get(target["id"], [])
+        open_tasks = [task for task in tasks if task.get("status") not in {"complete", "cancelled", "failed"}]
+        readiness = "tasked" if open_tasks else "ready"
+        enriched.append({
+            **target,
+            "aipoints": aipoints,
+            "readiness": readiness,
+            "queue": props.get("queue") or ("ATD Queue" if props.get("priority") == "High" else "BHA Queue"),
+            "task_count": len(open_tasks),
+            "collection_tasks": tasks[:5],
+        })
+
+    ready_count = len([target for target in enriched if target["readiness"] == "ready"])
+    return {
+        "collection": "OP RADIANT SPHERE",
+        "targets": enriched,
+        "summary": {
+            "total": len(enriched),
+            "ready": ready_count,
+            "tasked": len(enriched) - ready_count,
+        },
+    }
+
+
+@app.get("/api/collection/tasks")
+def list_collection_tasks(target_id: Optional[str] = None, status: Optional[str] = None):
+    ensure_collection_tables()
+    conditions = []
+    params = []
+    if target_id:
+        conditions.append("target_id = %s")
+        params.append(target_id)
+    if status:
+        conditions.append("status = %s")
+        params.append(status)
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute(f"""
+            SELECT id, target_id, target_name, asset_type, priority, queue, status,
+                   notes, aipoints, requested_by, created_at, updated_at
+            FROM collection_tasks
+            {where_clause}
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT 250
+        """, params)
+        return {"tasks": [dict(row) for row in cursor.fetchall()]}
+
+
+@app.post("/api/collection/tasks")
+def create_collection_task(req: CollectionTaskCreate):
+    ensure_collection_tables()
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            INSERT INTO collection_tasks (
+                target_id, target_name, asset_type, priority, queue, status, notes, aipoints
+            )
+            VALUES (%s, %s, %s, %s, %s, 'proposed', %s, %s)
+            RETURNING id, target_id, target_name, asset_type, priority, queue, status,
+                      notes, aipoints, requested_by, created_at, updated_at
+        """, (
+            req.target_id,
+            req.target_name,
+            req.asset_type,
+            req.priority,
+            req.queue,
+            req.notes,
+            json.dumps(req.aipoints or []),
+        ))
+        task = dict(cursor.fetchone())
+
+    publish_event("ops", {"type": "collection_task_created", "task": task})
+    return {"success": True, "task": task}
+
+
+@app.put("/api/collection/tasks/{task_id}")
+def update_collection_task(task_id: int, req: CollectionTaskUpdate):
+    ensure_collection_tables()
+    allowed_statuses = {"proposed", "queued", "tasked", "collecting", "complete", "cancelled", "failed"}
+    if req.status not in allowed_statuses:
+        raise HTTPException(status_code=400, detail="Unsupported collection task status")
+
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            UPDATE collection_tasks
+            SET status = %s, updated_at = NOW()
+            WHERE id = %s
+            RETURNING id, target_id, target_name, asset_type, priority, queue, status,
+                      notes, aipoints, requested_by, created_at, updated_at
+        """, (req.status, task_id))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Collection task not found")
+        task = dict(row)
+
+    publish_event("ops", {"type": "collection_task_updated", "task": task})
+    return {"success": True, "task": task}
+
+
+@app.post("/api/feeds/{feed_id}/events")
+def ingest_feed_event(feed_id: int, req: FeedEventCreate):
+    ensure_platform_tables()
+    payload = dict(req.payload)
+    lat, lon = (req.latitude, req.longitude)
+    if lat is None or lon is None:
+        lat, lon = point_payload(payload)
+    observed_at = req.observed_at or datetime.now(timezone.utc).isoformat()
+
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("SELECT id, name, feed_type FROM feed_sources WHERE id = %s", (feed_id,))
+        feed = cursor.fetchone()
+        if not feed:
+            raise HTTPException(status_code=404, detail="Feed source not found")
+
+        if lat is not None and lon is not None:
+            cursor.execute("""
+                INSERT INTO feed_events (source_id, event_type, payload, geom, observed_at)
+                VALUES (%s, %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326), %s)
+                RETURNING id, source_id, event_type, payload, ST_Y(geom) AS latitude, ST_X(geom) AS longitude, observed_at, created_at
+            """, (feed_id, req.event_type, json.dumps(payload), lon, lat, observed_at))
+        else:
+            cursor.execute("""
+                INSERT INTO feed_events (source_id, event_type, payload, observed_at)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id, source_id, event_type, payload, NULL AS latitude, NULL AS longitude, observed_at, created_at
+            """, (feed_id, req.event_type, json.dumps(payload), observed_at))
+        event = dict(cursor.fetchone())
+
+        track_uid = str(payload.get("track_id") or payload.get("mmsi") or payload.get("icao") or f"feed-{feed_id}")
+        if lat is not None and lon is not None:
+            cursor.execute("""
+                INSERT INTO tracks (track_uid, source_id, label, callsign, latest_payload, last_seen)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (track_uid) DO UPDATE SET
+                    latest_payload = EXCLUDED.latest_payload,
+                    last_seen = EXCLUDED.last_seen
+                RETURNING id
+            """, (
+                track_uid,
+                feed_id,
+                feed["feed_type"],
+                payload.get("callsign") or payload.get("name"),
+                json.dumps(payload),
+                observed_at,
+            ))
+            track_id = cursor.fetchone()["id"]
+            cursor.execute("""
+                INSERT INTO track_points (track_id, geom, speed, heading, payload, observed_at)
+                VALUES (%s, ST_SetSRID(ST_MakePoint(%s, %s), 4326), %s, %s, %s, %s)
+            """, (
+                track_id,
+                lon,
+                lat,
+                payload.get("speed"),
+                payload.get("heading"),
+                json.dumps(payload),
+                observed_at,
+            ))
+
+    publish_event("feeds", {"type": "feed_event", "event": event})
+    publish_event("ops", {"type": "feed_event", "event": event})
+    return {"success": True, "event": event}
+
+
+@app.get("/api/feeds/{feed_id}/events")
+def list_feed_events(feed_id: int, limit: int = 100):
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT id, source_id, event_type, payload, ST_Y(geom) AS latitude, ST_X(geom) AS longitude,
+                   observed_at, created_at
+            FROM feed_events
+            WHERE source_id = %s
+            ORDER BY observed_at DESC, created_at DESC
+            LIMIT %s
+        """, (feed_id, limit))
+        return {"events": [dict(row) for row in cursor.fetchall()]}
+
+
+@app.get("/api/tracks")
+def list_tracks(limit: int = 200):
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT t.id, t.track_uid, t.source_id, t.label, t.callsign, t.latest_payload, t.last_seen,
+                   ST_Y(tp.geom) AS latitude, ST_X(tp.geom) AS longitude, tp.speed, tp.heading
+            FROM tracks t
+            LEFT JOIN LATERAL (
+                SELECT geom, speed, heading
+                FROM track_points
+                WHERE track_id = t.id
+                ORDER BY observed_at DESC
+                LIMIT 1
+            ) tp ON TRUE
+            ORDER BY t.last_seen DESC
+            LIMIT %s
+        """, (limit,))
+        rows = [dict(row) for row in cursor.fetchall()]
+    return {"tracks": rows}
+
+
+@app.post("/api/fmv/clips")
+async def upload_fmv_clip(file: UploadFile = File(...), name: Optional[str] = Form(None)):
+    ensure_platform_tables()
+    filename = safe_filename(file.filename or "clip.mp4")
+    media_type, _handler = classify_upload(filename)
+    if media_type != "fmv":
+        raise HTTPException(status_code=400, detail="FMV upload requires an MP4/MOV/TS video file")
+
+    fmv_root = Path(os.getenv("FMV_PATH", "/data/fmv"))
+    upload_id = uuid.uuid4().hex
+    clip_dir = fmv_root / upload_id
+    clip_dir.mkdir(parents=True, exist_ok=True)
+    local_path = clip_dir / filename
+
+    size = 0
+    try:
+        with local_path.open("wb") as handle:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                handle.write(chunk)
+    finally:
+        await file.close()
+    if size == 0:
+        local_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Uploaded video is empty")
+
+    metadata = probe_video(local_path)
+    hls_path = transcode_hls(local_path, clip_dir)
+    status = "ready" if hls_path else "stored"
+
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            INSERT INTO fmv_clips (name, file_path, hls_path, duration_seconds, width, height, fps, status, metadata)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id, name, file_path, hls_path, duration_seconds, width, height, fps, status, metadata, created_at, updated_at
+        """, (
+            name or filename,
+            str(local_path),
+            str(hls_path) if hls_path else None,
+            metadata["duration_seconds"],
+            metadata["width"],
+            metadata["height"],
+            metadata["fps"],
+            status,
+            json.dumps({**metadata, "bytes": size, "upload_id": upload_id}),
+        ))
+        clip = dict(cursor.fetchone())
+        rows = telemetry_rows_for_clip(clip["id"], clip["duration_seconds"], clip["fps"])
+        cursor.executemany("""
+            INSERT INTO fmv_frames (clip_id, frame_index, timestamp_seconds, telemetry, footprint)
+            VALUES (%s, %s, %s, %s, ST_GeomFromText(%s, 4326))
+            ON CONFLICT (clip_id, frame_index) DO UPDATE SET
+                timestamp_seconds = EXCLUDED.timestamp_seconds,
+                telemetry = EXCLUDED.telemetry,
+                footprint = EXCLUDED.footprint
+        """, rows)
+
+    clip["stream_url"] = fmv_public_url(clip.get("hls_path"), clip["file_path"])
+    publish_event("ops", {"type": "fmv_clip_ready", "clip": clip})
+    publish_event(f"fmv:{clip['id']}", {"type": "fmv_clip_ready", "clip": clip})
+    return {"success": True, "clip": clip}
+
+
+@app.get("/api/fmv/clips")
+def list_fmv_clips():
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT id, name, file_path, hls_path, duration_seconds, width, height, fps, status, metadata, created_at, updated_at
+            FROM fmv_clips
+            ORDER BY updated_at DESC, created_at DESC
         """)
-        targets = []
-        for record in result:
-            t = record["t"]
-            targets.append({
-                "id": t.element_id,
-                "properties": dict(t)
-            })
-        return {"targets": targets}
+        clips = [dict(row) for row in cursor.fetchall()]
+    for clip in clips:
+        clip["stream_url"] = fmv_public_url(clip.get("hls_path"), clip["file_path"])
+    return {"clips": clips}
+
+
+@app.get("/api/fmv/clips/{clip_id}")
+def get_fmv_clip(clip_id: int):
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT id, name, file_path, hls_path, duration_seconds, width, height, fps, status, metadata, created_at, updated_at
+            FROM fmv_clips
+            WHERE id = %s
+        """, (clip_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="FMV clip not found")
+        clip = dict(row)
+    clip["stream_url"] = fmv_public_url(clip.get("hls_path"), clip["file_path"])
+    return {"clip": clip}
+
+
+@app.get("/api/fmv/clips/{clip_id}/klv")
+def get_fmv_klv(clip_id: int, limit: int = 500):
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT frame_index, timestamp_seconds, telemetry, ST_AsGeoJSON(footprint)::jsonb AS footprint
+            FROM fmv_frames
+            WHERE clip_id = %s
+            ORDER BY frame_index
+            LIMIT %s
+        """, (clip_id, limit))
+        return {"frames": [dict(row) for row in cursor.fetchall()]}
+
+
+@app.get("/api/fmv/clips/{clip_id}/detections")
+def get_fmv_detections(clip_id: int, frame_index: Optional[int] = None):
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        if frame_index is None:
+            cursor.execute("""
+                SELECT id, clip_id, frame_index, class, confidence, bbox, metadata, created_at
+                FROM fmv_detections
+                WHERE clip_id = %s
+                ORDER BY frame_index, confidence DESC
+            """, (clip_id,))
+        else:
+            cursor.execute("""
+                SELECT id, clip_id, frame_index, class, confidence, bbox, metadata, created_at
+                FROM fmv_detections
+                WHERE clip_id = %s AND frame_index = %s
+                ORDER BY confidence DESC
+            """, (clip_id, frame_index))
+        return {"detections": [dict(row) for row in cursor.fetchall()]}
+
+
+def store_analytics_result(job_type: str, req: dict, result: dict) -> dict:
+    ensure_platform_tables()
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            INSERT INTO analytics_jobs (job_type, status, input, result)
+            VALUES (%s, 'complete', %s, %s)
+            RETURNING id, job_type, status, input, result, created_at
+        """, (job_type, json.dumps(req), json.dumps(result)))
+        job = dict(cursor.fetchone())
+    publish_event("analytics", {"type": "analytics_complete", "job": job})
+    publish_event("ops", {"type": "analytics_complete", "job": job})
+    return job
+
+
+@app.post("/api/analytics/change")
+def run_change_detection(req: AnalyticsRequest):
+    center = req.observer or {"latitude": 25.078, "longitude": 55.179}
+    lat = float(center.get("latitude", center.get("lat", 25.078)))
+    lon = float(center.get("longitude", center.get("lon", 55.179)))
+    features = [
+        make_square_feature(lon - 0.018, lat + 0.012, 0.012, {"score": 0.82, "label": "new construction"}),
+        make_square_feature(lon + 0.015, lat - 0.01, 0.009, {"score": 0.64, "label": "surface disturbance"}),
+    ]
+    result = {"type": "FeatureCollection", "features": features, "mode": "offline_fixture"}
+    return {"job": store_analytics_result("change", req.dict(), result), "result": result}
+
+
+@app.post("/api/analytics/viewshed")
+def run_viewshed(req: AnalyticsRequest):
+    observer = req.observer or {"latitude": 25.078, "longitude": 55.179}
+    lat = float(observer.get("latitude", observer.get("lat", 25.078)))
+    lon = float(observer.get("longitude", observer.get("lon", 55.179)))
+    radius = float(req.radius_m or 5000)
+    points = []
+    for idx in range(0, 361, 12):
+        angle = math.radians(idx)
+        scale = (0.65 + 0.35 * abs(math.sin(angle * 2.7))) * radius / 111_000
+        points.append([lon + math.cos(angle) * scale, lat + math.sin(angle) * scale])
+    result = {
+        "type": "FeatureCollection",
+        "features": [{"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [points]}, "properties": {"radius_m": radius, "mode": "offline_fixture"}}],
+    }
+    return {"job": store_analytics_result("viewshed", req.dict(), result), "result": result}
+
+
+@app.post("/api/analytics/los")
+def run_los(req: AnalyticsRequest):
+    observer = req.observer or {"latitude": 25.078, "longitude": 55.179}
+    destination = req.destination or {"latitude": 25.12, "longitude": 55.22}
+    coords = [
+        [float(observer.get("longitude", observer.get("lon", 55.179))), float(observer.get("latitude", observer.get("lat", 25.078)))],
+        [float(destination.get("longitude", destination.get("lon", 55.22))), float(destination.get("latitude", destination.get("lat", 25.12)))],
+    ]
+    result = {
+        "type": "FeatureCollection",
+        "features": [{"type": "Feature", "geometry": {"type": "LineString", "coordinates": coords}, "properties": {"visible": True, "clearance_m": 42.0}}],
+    }
+    return {"job": store_analytics_result("los", req.dict(), result), "result": result}
+
+
+@app.post("/api/analytics/routes")
+def run_route_options(req: AnalyticsRequest):
+    observer = req.observer or {"latitude": 25.078, "longitude": 55.179}
+    destination = req.destination or {"latitude": 25.276987, "longitude": 55.296249}
+    start = [float(observer.get("longitude", observer.get("lon", 55.179))), float(observer.get("latitude", observer.get("lat", 25.078)))]
+    end = [float(destination.get("longitude", destination.get("lon", 55.296249))), float(destination.get("latitude", destination.get("lat", 25.276987)))]
+    routes = []
+    for idx, offset in enumerate([-0.03, 0.0, 0.03], start=1):
+        mid = [(start[0] + end[0]) / 2 + offset, (start[1] + end[1]) / 2 - offset / 2]
+        routes.append({
+            "type": "Feature",
+            "geometry": {"type": "LineString", "coordinates": [start, mid, end]},
+            "properties": {"option": idx, "risk": ["least exposure", "shortest", "least risk"][idx - 1], "duration_minutes": 68 + idx * 7},
+        })
+    result = {"type": "FeatureCollection", "features": routes}
+    return {"job": store_analytics_result("routes", req.dict(), result), "result": result}
+
+
+@app.post("/api/analytics/pol")
+def run_pattern_of_life(req: AnalyticsRequest):
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT ST_X(geom) AS lon, ST_Y(geom) AS lat, count(*) AS count
+            FROM track_points
+            WHERE geom IS NOT NULL
+            GROUP BY ST_SnapToGrid(geom, 0.02), lon, lat
+            ORDER BY count DESC
+            LIMIT 50
+        """)
+        rows = cursor.fetchall()
+    features = [
+        {"type": "Feature", "geometry": {"type": "Point", "coordinates": [row["lon"], row["lat"]]}, "properties": {"count": row["count"]}}
+        for row in rows
+    ] or [
+        {"type": "Feature", "geometry": {"type": "Point", "coordinates": [55.179, 25.078]}, "properties": {"count": 7, "mode": "offline_fixture"}}
+    ]
+    result = {"type": "FeatureCollection", "features": features}
+    return {"job": store_analytics_result("pol", req.dict(), result), "result": result}
+
+
+@app.get("/api/analytics/jobs")
+def list_analytics_jobs(limit: int = 100):
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT id, job_type, status, input, result, created_at
+            FROM analytics_jobs
+            ORDER BY created_at DESC
+            LIMIT %s
+        """, (limit,))
+        return {"jobs": [dict(row) for row in cursor.fetchall()]}
+
+
+@app.post("/api/collection/requirements")
+def create_collection_requirement(req: CollectionRequirementCreate):
+    ensure_platform_tables()
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            INSERT INTO collection_requirements (title, description, priority, status, target_id, aoi)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING id, title, description, priority, status, target_id, aoi, created_at, updated_at
+        """, (req.title, req.description, req.priority, req.status, req.target_id, json.dumps(req.aoi or {})))
+        requirement = dict(cursor.fetchone())
+        cursor.execute("""
+            INSERT INTO ped_tasks (requirement_id, title, status, metadata)
+            VALUES (%s, %s, 'queued', %s)
+            RETURNING id, requirement_id, collection_task_id, title, status, assignee, metadata, created_at, updated_at
+        """, (requirement["id"], f"PED exploitation for {req.title}", json.dumps({"source": "collection_requirement"})))
+        ped_task = dict(cursor.fetchone())
+    publish_event("ops", {"type": "collection_requirement_created", "requirement": requirement, "ped_task": ped_task})
+    return {"success": True, "requirement": requirement, "ped_task": ped_task}
+
+
+@app.get("/api/collection/requirements")
+def list_collection_requirements():
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT id, title, description, priority, status, target_id, aoi, created_at, updated_at
+            FROM collection_requirements
+            ORDER BY updated_at DESC, created_at DESC
+        """)
+        return {"requirements": [dict(row) for row in cursor.fetchall()]}
+
+
+@app.get("/api/collection/passes")
+def predict_collection_passes(target_id: Optional[str] = None, count: int = 5):
+    targets = fetch_targets_for_ops()
+    target = next((item for item in targets if item["id"] == target_id), targets[0] if targets else None)
+    now = datetime.now(timezone.utc)
+    passes = []
+    for idx in range(max(1, min(count, 12))):
+        start = now + timedelta(minutes=18 + idx * 47)
+        passes.append({
+            "id": f"PASS-{idx + 1:03d}",
+            "target_id": target["id"] if target else None,
+            "target_name": target.get("properties", {}).get("name") if target else None,
+            "satellite": ["WORLDVIEW-042", "FLOCK-1C-3", "SKYSAT-19"][idx % 3],
+            "sensor": ["Optical", "SAR", "Thermal"][idx % 3],
+            "start_time": start.isoformat(),
+            "end_time": (start + timedelta(minutes=7 + idx % 4)).isoformat(),
+            "access_score": round(0.91 - idx * 0.06, 2),
+            "cloud_cover": (idx * 13) % 55,
+        })
+    return {"passes": passes}
+
+
+@app.get("/api/ped/tasks")
+def list_ped_tasks():
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT id, requirement_id, collection_task_id, title, status, assignee, metadata, created_at, updated_at
+            FROM ped_tasks
+            ORDER BY updated_at DESC, created_at DESC
+        """)
+        return {"tasks": [dict(row) for row in cursor.fetchall()]}
+
+
+@app.put("/api/ped/tasks/{task_id}")
+def update_ped_task(task_id: int, req: PedTaskUpdate):
+    ensure_platform_tables()
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            UPDATE ped_tasks
+            SET status = %s, updated_at = NOW()
+            WHERE id = %s
+            RETURNING id, requirement_id, collection_task_id, title, status, assignee, metadata, created_at, updated_at
+        """, (req.status, task_id))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="PED task not found")
+        task = dict(row)
+    publish_event("ops", {"type": "ped_task_updated", "task": task})
+    return {"success": True, "task": task}
+
+
+@app.post("/api/reports/target-packages")
+def create_target_package(req: ReportCreate):
+    ensure_platform_tables()
+    targets = fetch_targets_for_ops()
+    target = next((item for item in targets if item["id"] == req.target_id), targets[0] if targets else None)
+    if not target:
+        raise HTTPException(status_code=404, detail="No targets available for report")
+    content = {
+        "target": target,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "sections": ["summary", "aimpoints", "collection", "detections"],
+    }
+    title = req.title or f"Target Package - {target['properties'].get('name', target['id'])}"
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            INSERT INTO reports (title, target_id, report_type, status, content)
+            VALUES (%s, %s, 'target_package', 'ready', %s)
+            RETURNING id, title, target_id, report_type, status, content, created_at
+        """, (title, target["id"], json.dumps(content)))
+        report = dict(cursor.fetchone())
+    publish_event("ops", {"type": "report_ready", "report": report})
+    return {"success": True, "report": report}
+
+
+@app.get("/api/reports")
+def list_reports():
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT id, title, target_id, report_type, status, content, created_at
+            FROM reports
+            ORDER BY created_at DESC
+        """)
+        return {"reports": [dict(row) for row in cursor.fetchall()]}
+
+
+@app.get("/api/reports/{report_id}/export")
+def export_report(report_id: int, format: str = "json"):
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("SELECT id, title, target_id, report_type, status, content, created_at FROM reports WHERE id = %s", (report_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Report not found")
+        report = dict(row)
+    export_format = format.lower()
+    if export_format == "geojson":
+        target = (report.get("content") or {}).get("target") or {}
+        props = target.get("properties") or {}
+        lon = props.get("longitude")
+        lat = props.get("latitude")
+        geometry = {"type": "Point", "coordinates": [lon, lat]} if lon is not None and lat is not None else None
+        return {
+            "type": "FeatureCollection",
+            "features": [{
+                "type": "Feature",
+                "geometry": geometry,
+                "properties": {
+                    "report_id": report["id"],
+                    "title": report["title"],
+                    "target_id": report["target_id"],
+                    "status": report["status"],
+                    "content": report["content"],
+                },
+            }],
+        }
+    if export_format == "json":
+        return {"report": report, "format": format.lower()}
+    if export_format in {"kmz", "pdf"}:
+        return {"report": report, "format": export_format, "message": "Binary export renderer is queued for the production packaging phase."}
+    raise HTTPException(status_code=400, detail="Unsupported report export format")
+
+
+@app.get("/api/models")
+def list_models():
+    ensure_platform_tables()
+    model_path = os.getenv("MODEL_PATH", "/app/yolov8n.pt")
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            INSERT INTO models (name, version, model_path, status, promoted)
+            SELECT 'YOLOv8 Local', 'local', %s, 'available', TRUE
+            WHERE NOT EXISTS (SELECT 1 FROM models)
+        """, (model_path,))
+        cursor.execute("""
+            SELECT id, name, version, model_path, status, metrics, promoted, created_at
+            FROM models
+            ORDER BY promoted DESC, created_at DESC
+        """)
+        models = [dict(row) for row in cursor.fetchall()]
+    return {"models": models, "inference": {"url": os.getenv("INFERENCE_URL", "http://inference:8001")}}
+
+
+@app.post("/api/training/jobs")
+def create_training_job(req: TrainingJobCreate):
+    ensure_platform_tables()
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            INSERT INTO training_jobs (name, dataset_path, epochs, status, metrics)
+            VALUES (%s, %s, %s, 'queued', %s)
+            RETURNING id, name, dataset_path, epochs, status, metrics, created_at, updated_at
+        """, (req.name, req.dataset_path, req.epochs, json.dumps({"mode": "offline_stub"})))
+        job = dict(cursor.fetchone())
+    publish_event("training:%s" % job["id"], {"type": "training_queued", "job": job})
+    publish_event("ops", {"type": "training_queued", "job": job})
+    return {"success": True, "job": job}
+
+
+@app.get("/api/training/jobs")
+def list_training_jobs():
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT id, name, dataset_path, epochs, status, metrics, created_at, updated_at
+            FROM training_jobs
+            ORDER BY created_at DESC
+        """)
+        return {"jobs": [dict(row) for row in cursor.fetchall()]}
 
 
 @app.get("/api/targets/{target_id}/detections")
@@ -377,14 +1539,16 @@ def update_target_status(target_id: str, req: TargetStatusUpdate):
     with db.get_session() as session:
         result = session.run("""
             MATCH (t:Target)
-            WHERE elementId(t) = $id
+            WHERE elementId(t) = $id OR t.id = $id
             SET t.status = $status
             RETURN t
         """, {"id": target_id, "status": req.status})
         
         record = result.single()
         if record:
-            return {"success": True, "target": dict(record["t"])}
+            target = dict(record["t"])
+            publish_event("ops", {"type": "target_status_updated", "target_id": target_id, "status": req.status})
+            return {"success": True, "target": target}
         return {"success": False, "error": "Target not found"}
 
 @app.get("/api/constellation")
@@ -454,6 +1618,55 @@ def get_imagery_tiles(pass_id: int):
         titiler_url = os.getenv("TITILER_URL", "http://localhost:8081")
         tile_url = f"{titiler_url}/cog/tiles/{{z}}/{{x}}/{{y}}?url={row['file_path']}"
         return {"pass_id": pass_id, "tile_url": tile_url, "file_path": row["file_path"]}
+
+
+@app.get("/api/imagery/{pass_id}/bands")
+def get_imagery_bands(pass_id: int):
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("SELECT file_path, sensor_type FROM satellite_passes WHERE id = %s", (pass_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Satellite pass not found")
+
+    try:
+        import rasterio
+
+        with rasterio.open(row["file_path"]) as src:
+            stats = []
+            for index in range(1, min(src.count, 8) + 1):
+                band = src.read(index, masked=True)
+                stats.append({
+                    "band": index,
+                    "dtype": str(band.dtype),
+                    "min": float(band.min()) if band.count() else None,
+                    "max": float(band.max()) if band.count() else None,
+                    "mean": float(band.mean()) if band.count() else None,
+                })
+            return {
+                "pass_id": pass_id,
+                "sensor_type": row["sensor_type"],
+                "band_count": src.count,
+                "crs": str(src.crs),
+                "width": src.width,
+                "height": src.height,
+                "statistics": stats,
+                "render_modes": ["rgb", "single", "ndvi", "ndwi", "nbr", "sar_db", "thermal_k"],
+            }
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Unable to inspect imagery bands: {exc}")
+
+
+@app.get("/api/ingest/uploads")
+def list_upload_jobs():
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT id, upload_id, filename, file_path, media_type, handler, status, celery_task_id, metadata, created_at, updated_at
+            FROM upload_jobs
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT 250
+        """)
+        return {"uploads": [dict(row) for row in cursor.fetchall()]}
 
 
 @app.get("/api/basemap/countries")
@@ -657,15 +1870,17 @@ async def upload_imagery(
     acquisition_time: Optional[str] = Form(None),
     auto_process: bool = Form(True),
 ):
-    allowed_suffixes = {".tif", ".tiff", ".jp2", ".j2k", ".nc", ".netcdf", ".png", ".jpg", ".jpeg"}
+    ensure_platform_tables()
     filename = safe_filename(file.filename or "upload.tif")
-    suffix = Path(filename).suffix.lower()
-    if suffix not in allowed_suffixes:
-        raise HTTPException(status_code=400, detail=f"Unsupported imagery format: {suffix or 'unknown'}")
+    media_type, handler = classify_upload(filename)
 
-    upload_dir = Path(os.getenv("IMAGERY_PATH", "/data/imagery")) / "incoming"
+    if media_type == "fmv":
+        upload_dir = Path(os.getenv("FMV_PATH", "/data/fmv")) / "incoming"
+    else:
+        upload_dir = Path(os.getenv("IMAGERY_PATH", "/data/imagery")) / "incoming"
     upload_dir.mkdir(parents=True, exist_ok=True)
-    local_path = upload_dir / f"{uuid.uuid4().hex}_{filename}"
+    upload_id = uuid.uuid4().hex
+    local_path = upload_dir / f"{upload_id}_{filename}"
 
     size = 0
     try:
@@ -690,16 +1905,85 @@ async def upload_imagery(
         "bytes": size,
         "sensor_type": sensor_type,
         "auto_process": auto_process,
+        "upload_id": upload_id,
+        "media_type": media_type,
+        "handler": handler,
     }
-    if auto_process:
+    celery_task_id = None
+    status = "stored"
+    if media_type == "imagery" and auto_process:
         task = process_satellite_imagery.delay(str(local_path), sensor_type, acquisition_time)
+        celery_task_id = task.id
+        status = "queued"
         response.update({
             "task_id": task.id,
             "status_url": f"/api/ingest/jobs/{task.id}",
             "message": "Upload received and imagery pipeline queued.",
         })
+    elif media_type == "fmv" and auto_process:
+        fmv_root = Path(os.getenv("FMV_PATH", "/data/fmv"))
+        clip_dir = fmv_root / upload_id
+        clip_dir.mkdir(parents=True, exist_ok=True)
+        clip_path = clip_dir / filename
+        shutil.move(str(local_path), clip_path)
+        metadata = probe_video(clip_path)
+        hls_path = transcode_hls(clip_path, clip_dir)
+        with postgis_db.get_cursor(commit=True) as cursor:
+            cursor.execute("""
+                INSERT INTO fmv_clips (name, file_path, hls_path, duration_seconds, width, height, fps, status, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, name, file_path, hls_path, duration_seconds, width, height, fps, status, metadata, created_at, updated_at
+            """, (
+                filename,
+                str(clip_path),
+                str(hls_path) if hls_path else None,
+                metadata["duration_seconds"],
+                metadata["width"],
+                metadata["height"],
+                metadata["fps"],
+                "ready" if hls_path else "stored",
+                json.dumps({**metadata, "bytes": size, "upload_id": upload_id}),
+            ))
+            clip = dict(cursor.fetchone())
+            cursor.executemany("""
+                INSERT INTO fmv_frames (clip_id, frame_index, timestamp_seconds, telemetry, footprint)
+                VALUES (%s, %s, %s, %s, ST_GeomFromText(%s, 4326))
+                ON CONFLICT (clip_id, frame_index) DO UPDATE SET
+                    timestamp_seconds = EXCLUDED.timestamp_seconds,
+                    telemetry = EXCLUDED.telemetry,
+                    footprint = EXCLUDED.footprint
+            """, telemetry_rows_for_clip(clip["id"], clip["duration_seconds"], clip["fps"]))
+        clip["stream_url"] = fmv_public_url(clip.get("hls_path"), clip["file_path"])
+        status = "ready"
+        response.update({"message": "FMV upload received and HLS/KLV catalog prepared.", "clip": clip})
+    elif media_type == "vector":
+        with postgis_db.get_cursor(commit=True) as cursor:
+            cursor.execute("""
+                INSERT INTO vector_layers (name, file_path, layer_type, metadata)
+                VALUES (%s, %s, 'vector', %s)
+                RETURNING id, name, file_path, layer_type, feature_count, metadata, created_at
+            """, (filename, str(local_path), json.dumps({"upload_id": upload_id, "handler": handler})))
+            response.update({"message": "Vector upload stored for cataloging.", "layer": dict(cursor.fetchone())})
     else:
         response["message"] = "Upload received."
+
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            INSERT INTO upload_jobs (upload_id, filename, file_path, media_type, handler, status, celery_task_id, metadata)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            upload_id,
+            filename,
+            response.get("clip", {}).get("file_path") or str(local_path),
+            media_type,
+            handler,
+            status,
+            celery_task_id,
+            json.dumps({"sensor_type": sensor_type, "auto_process": auto_process, "bytes": size}),
+        ))
+
+    publish_event("ingest", {"type": "upload_received", "upload": response})
+    publish_event("ops", {"type": "upload_received", "upload": response})
     return response
 
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import axios from 'axios';
-import { Activity, Map as MapIcon, Database, MessageSquare, Hexagon, Target, Globe, Box, UploadCloud } from 'lucide-react';
+import { Activity, Map as MapIcon, Database, MessageSquare, Hexagon, Target, Globe, Box, UploadCloud, Crosshair } from 'lucide-react';
 import GraphExplorer from './components/GraphExplorer';
 import GaiaMap from './components/GaiaMap';
 import Browser from './components/Browser';
@@ -9,11 +9,12 @@ import TargetWorkbench from './components/TargetWorkbench';
 import ConstellationView from './components/ConstellationView';
 import View3D from './components/View3D';
 import IngestConnect from './components/IngestConnect';
+import OperationsWorkspace from './components/OperationsWorkspace';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 
 function App() {
-  const [activeTab, setActiveTab] = useState('graph');
+  const [activeTab, setActiveTab] = useState('ops');
   const [health, setHealth] = useState<any>({ healthy: false, neo4j: 'unknown', postgis: 'unknown', ai: { configured: false } });
 
   useEffect(() => {
@@ -32,6 +33,7 @@ function App() {
 
   const renderContent = () => {
     switch (activeTab) {
+      case 'ops': return <OperationsWorkspace />;
       case 'graph': return <GraphExplorer />;
       case 'map': return <GaiaMap />;
       case 'browser': return <Browser />;
@@ -40,7 +42,7 @@ function App() {
       case 'space': return <ConstellationView />;
       case 'ava': return <AvaChat />;
       case 'view3d': return <View3D />;
-      default: return <GraphExplorer />;
+      default: return <OperationsWorkspace />;
     }
   };
 
@@ -53,6 +55,9 @@ function App() {
         </div>
         
         <div className="flex flex-col space-y-4 w-full px-2">
+          <button onClick={() => setActiveTab('ops')} className={`p-3 w-full flex justify-center rounded-xl transition-all duration-200 ${activeTab === 'ops' ? 'bg-lime-500/20 text-lime-300 shadow-[inset_2px_0_0_0_#a3e635]' : 'text-slate-400 hover:bg-slate-700 hover:text-white'}`} title="Target Ops">
+            <Crosshair size={22} />
+          </button>
           <button onClick={() => setActiveTab('graph')} className={`p-3 w-full flex justify-center rounded-xl transition-all duration-200 ${activeTab === 'graph' ? 'bg-blue-500/20 text-blue-400 shadow-[inset_2px_0_0_0_#3b82f6]' : 'text-slate-400 hover:bg-slate-700 hover:text-white'}`} title="Graph Explorer">
             <Activity size={22} />
           </button>
@@ -81,11 +86,12 @@ function App() {
       </div>
 
       {/* Main Content Area */}
-      <div className="flex-1 relative flex flex-col">
+      <div className="flex-1 relative flex flex-col min-h-0 min-w-0">
         {/* Header */}
         <header className="h-14 bg-slate-800/95 backdrop-blur border-b border-slate-700 flex items-center px-6 justify-between shadow-md z-10">
           <div className="flex items-center space-x-3">
             <h1 className="text-sm font-bold text-slate-100 tracking-widest uppercase">
+              {activeTab === 'ops' && 'Ops :: Target Operations'}
               {activeTab === 'graph' && 'Titanium :: Ontology Explorer'}
               {activeTab === 'map' && 'Gaia :: Geospatial Platform'}
               {activeTab === 'targets' && 'TWB :: Target Workbench'}
@@ -113,7 +119,7 @@ function App() {
         </header>
         
         {/* Workspace */}
-        <main className="flex-1 relative bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-slate-800 via-slate-900 to-black overflow-hidden">
+        <main className="flex-1 min-h-0 relative bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-slate-800 via-slate-900 to-black overflow-hidden">
           {renderContent()}
         </main>
       </div>

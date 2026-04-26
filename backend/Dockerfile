@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y \
     libgomp1 \
     gdal-bin \
     libgdal-dev \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
