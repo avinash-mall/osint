@@ -13,23 +13,23 @@ export default function View3D({ fmvClipId: _fmvClipId }: { fmvClipId?: number }
     if (!containerRef.current) return;
     let viewer: { destroy?: () => void } | null = null;
 
-    import('cesium').then(({ Viewer, Ion, createWorldImageryAsync, TileMapServiceImageryProvider, buildModuleUrl }) => {
+    import('cesium').then(({ Viewer, Ion, ImageryLayer, TileMapServiceImageryProvider, buildModuleUrl }) => {
       try {
         // Disable Ion telemetry — we serve assets locally
         Ion.defaultAccessToken = '';
 
-        // Try offline TMS basemap first; fall back to no imagery
-        let imageryProvider;
+        // Try offline TMS basemap first; fall back to no imagery (Cesium 1.117+ API)
+        let baseLayer: InstanceType<typeof ImageryLayer> | undefined;
         try {
-          imageryProvider = new TileMapServiceImageryProvider({
-            url: buildModuleUrl('Assets/Textures/NaturalEarthII'),
-          });
+          baseLayer = ImageryLayer.fromProviderAsync(
+            TileMapServiceImageryProvider.fromUrl(buildModuleUrl('Assets/Textures/NaturalEarthII'))
+          );
         } catch {
-          imageryProvider = false as unknown as undefined;
+          baseLayer = undefined;
         }
 
         viewer = new Viewer(containerRef.current!, {
-          imageryProvider: imageryProvider as ReturnType<typeof createWorldImageryAsync> | undefined,
+          baseLayer,
           baseLayerPicker: false,
           geocoder: false,
           homeButton: false,

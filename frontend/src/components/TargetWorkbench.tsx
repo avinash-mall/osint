@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import axios from 'axios';
-import { Target, AlertTriangle, CheckCircle, Eye, Edit2, Satellite, Image as ImageIcon, ExternalLink } from 'lucide-react';
+import { Target, AlertTriangle, CheckCircle, Eye, Edit2, Satellite, Image as ImageIcon } from 'lucide-react';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 
@@ -28,7 +28,7 @@ export default function TargetWorkbench() {
     }
   };
 
-  const fetchTargetDetections = async (targetId: string) => {
+  const fetchTargetDetections = async (_targetId: string) => {
     try {
       // Fetch detections that might be linked to this target
       // For now, we fetch recent detections and the backend can link them

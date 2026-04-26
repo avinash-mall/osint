@@ -252,18 +252,17 @@ def get_detections_geojson(
     det_class: Optional[str] = None
 ):
     """Return detections as GeoJSON FeatureCollection."""
-    bbox_geom = None
-    if bbox:
-        try:
-            min_lon, min_lat, max_lon, max_lat = map(float, bbox.split(","))
-            bbox_geom = f"ST_MakeEnvelope({min_lon}, {min_lat}, {max_lon}, {max_lat}, 4326)"
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid bbox format")
-    
-    query = "SELECT get_detections_geojson(%s, %s, %s, %s) as geojson"
-    
     with postgis_db.get_cursor() as cursor:
-        cursor.execute(query, (bbox_geom, start_time, end_time, det_class))
+        if bbox:
+            try:
+                min_lon, min_lat, max_lon, max_lat = map(float, bbox.split(","))
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid bbox format")
+            query = "SELECT get_detections_geojson(ST_MakeEnvelope(%s, %s, %s, %s, 4326), %s, %s, %s) as geojson"
+            cursor.execute(query, (min_lon, min_lat, max_lon, max_lat, start_time, end_time, det_class))
+        else:
+            query = "SELECT get_detections_geojson(%s, %s, %s, %s) as geojson"
+            cursor.execute(query, (None, start_time, end_time, det_class))
         row = cursor.fetchone()
         return row["geojson"] if row else {"type": "FeatureCollection", "features": []}
 

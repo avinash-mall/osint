@@ -1,5 +1,5 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
-import { MapContainer, TileLayer, ImageOverlay, Marker, Popup, ZoomControl, Polyline, Circle, GeoJSON, LayersControl, useMap } from 'react-leaflet';
+import { useEffect, useState, useCallback } from 'react';
+import { MapContainer, TileLayer, Marker, Popup, ZoomControl, Polyline, Circle, GeoJSON, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import axios from 'axios';
 import { Crosshair, Navigation, ShieldAlert, Activity, Layers, Clock, Eye, Satellite, Filter } from 'lucide-react';

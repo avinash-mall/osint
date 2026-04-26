@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import axios from 'axios';
 import Globe from 'react-globe.gl';
-import { Satellite, Radio, Wifi, Map as MapIcon, Globe2, ScanEye } from 'lucide-react';
+import { Satellite, Radio, Wifi, Globe2, ScanEye } from 'lucide-react';
 
 export default function ConstellationView() {
   const [satellites, setSatellites] = useState<any[]>([]);
@@ -117,20 +117,20 @@ export default function ConstellationView() {
             globeImageUrl="/earth-night.jpg"
             backgroundImageUrl="/night-sky.png"
             labelsData={satellites}
-            labelLat={d => d.lat}
-            labelLng={d => d.lng}
-            labelAltitude={d => d.alt}
+            labelLat={(d: any) => d.lat}
+            labelLng={(d: any) => d.lng}
+            labelAltitude={(d: any) => d.alt}
             labelDotRadius={0.4}
             labelDotOrientation={() => 'bottom'}
-            labelColor={d => d.color}
+            labelColor={(d: any) => d.color}
             labelText="name"
             labelSize={1.5}
             labelResolution={2}
             arcsData={arcsData}
-            arcStartLat={d => d.startLat}
-            arcStartLng={d => d.startLng}
-            arcEndLat={d => d.endLat}
-            arcEndLng={d => d.endLng}
+            arcStartLat={(d: any) => d.startLat}
+            arcStartLng={(d: any) => d.startLng}
+            arcEndLat={(d: any) => d.endLat}
+            arcEndLng={(d: any) => d.endLng}
             arcColor="color"
             arcDashLength={0.4}
             arcDashGap={0.2}

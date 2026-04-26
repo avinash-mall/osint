@@ -1,4 +1,5 @@
 import os
+import json
 import requests
 import subprocess
 import uuid
@@ -8,7 +9,7 @@ from database import db, postgis_db
 import rasterio
 from rasterio.windows import Window
 from rasterio.transform import xy
-from shapely.geometry import Polygon, mapping
+from shapely.geometry import Polygon, MultiPolygon, mapping
 import numpy as np
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -62,13 +63,13 @@ def get_raster_footprint(cog_path: str):
         else:
             min_lon, min_lat, max_lon, max_lat = bounds.left, bounds.bottom, bounds.right, bounds.top
         
-        footprint = Polygon([
+        footprint = MultiPolygon([Polygon([
             (min_lon, min_lat),
             (min_lon, max_lat),
             (max_lon, max_lat),
             (max_lon, min_lat),
             (min_lon, min_lat)
-        ])
+        ])])
         return footprint, min_lon, min_lat, max_lon, max_lat
 
 
@@ -96,7 +97,7 @@ def slice_and_infer(cog_path: str, pass_id: int, chip_size: int = 640, overlap: 
                 chip = src.read(window=window)
                 
                 # Skip mostly empty / nodata chips
-                if np.all(chip == 0) or np.all(chip == src.nodata):
+                if np.all(chip == 0) or (src.nodata is not None and np.all(chip == src.nodata)):
                     continue
                 
                 # Save temporary chip image
@@ -104,16 +105,25 @@ def slice_and_infer(cog_path: str, pass_id: int, chip_size: int = 640, overlap: 
                 chip_path = os.path.join(IMAGERY_PATH, "chips", chip_filename)
                 os.makedirs(os.path.dirname(chip_path), exist_ok=True)
                 
-                # Write chip as PNG for inference service
-                profile = src.profile.copy()
-                profile.update({
+                # Write chip as 3-band uint8 PNG for inference service (N3 fix)
+                chip_rgb = chip[:3] if chip.shape[0] >= 3 else np.repeat(chip[:1], 3, axis=0)
+                if chip_rgb.dtype != np.uint8:
+                    c_min, c_max = chip_rgb.min(), chip_rgb.max()
+                    if c_max > c_min:
+                        chip_rgb = ((chip_rgb - c_min) / (c_max - c_min) * 255).astype(np.uint8)
+                    else:
+                        chip_rgb = np.zeros_like(chip_rgb, dtype=np.uint8)
+                png_profile = {
                     "driver": "PNG",
+                    "dtype": "uint8",
                     "height": win_height,
                     "width": win_width,
-                    "transform": rasterio.windows.transform(window, transform)
-                })
-                with rasterio.open(chip_path, "w", **profile) as dst:
-                    dst.write(chip)
+                    "count": 3,
+                    "transform": rasterio.windows.transform(window, transform),
+                    "crs": src.crs,
+                }
+                with rasterio.open(chip_path, "w", **png_profile) as dst:
+                    dst.write(chip_rgb)
                 
                 # Inference
                 try:
@@ -192,8 +202,8 @@ def store_detections(detections: list, pass_id: int):
                 confidence,
                 geom_wkt,
                 centroid_wkt,
-                {"bbox": pixel_bbox},
-                {"source": "inference", "chip_size": 640}
+                json.dumps({"bbox": pixel_bbox}),
+                json.dumps({"source": "inference", "chip_size": 640})
             ))
             
             det_id = cursor.fetchone()["id"]

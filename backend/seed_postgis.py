@@ -3,6 +3,7 @@ Seed PostGIS with sample satellite pass data and detections for demonstration.
 Run this after PostGIS is initialized: docker exec -it osint-backend-1 python seed_postgis.py
 """
 import os
+import json
 from database import postgis_db
 from datetime import datetime, timedelta
 import random
@@ -81,8 +82,8 @@ def seed_postgis():
                     confidence,
                     geom_wkt,
                     centroid_wkt,
-                    {"bbox": [random.randint(0, 1000), random.randint(0, 1000), 640, 640]},
-                    {"source": "seed", "chip_size": 640}
+                    json.dumps({"bbox": [random.randint(0, 1000), random.randint(0, 1000), 640, 640]}),
+                    json.dumps({"source": "seed", "chip_size": 640})
                 ))
         
         print(f"Inserted {len(passes)} satellite passes and sample detections into PostGIS.")
