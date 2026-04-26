@@ -26,9 +26,6 @@ RUN pip install --no-cache-dir torch torchvision --index-url https://download.py
 # Install remaining dependencies (ultralytics, sahi, etc.)
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Download a default YOLOv8 model (will be cached in image)
-RUN python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
-
 COPY . .
 
 EXPOSE 8001

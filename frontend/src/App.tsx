@@ -1,23 +1,45 @@
-import { useState } from 'react';
-import { Activity, Map as MapIcon, Database, MessageSquare, Hexagon, Target, Globe } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import axios from 'axios';
+import { Activity, Map as MapIcon, Database, MessageSquare, Hexagon, Target, Globe, Box, UploadCloud } from 'lucide-react';
 import GraphExplorer from './components/GraphExplorer';
 import GaiaMap from './components/GaiaMap';
 import Browser from './components/Browser';
 import AvaChat from './components/AvaChat';
 import TargetWorkbench from './components/TargetWorkbench';
 import ConstellationView from './components/ConstellationView';
+import View3D from './components/View3D';
+import IngestConnect from './components/IngestConnect';
+
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 
 function App() {
   const [activeTab, setActiveTab] = useState('graph');
+  const [health, setHealth] = useState<any>({ healthy: false, neo4j: 'unknown', postgis: 'unknown', ai: { configured: false } });
+
+  useEffect(() => {
+    const fetchHealth = async () => {
+      try {
+        const response = await axios.get(`${API_URL}/api/health`);
+        setHealth(response.data);
+      } catch {
+        setHealth({ healthy: false, neo4j: 'error', postgis: 'error', ai: { configured: false } });
+      }
+    };
+    fetchHealth();
+    const id = window.setInterval(fetchHealth, 15000);
+    return () => window.clearInterval(id);
+  }, []);
 
   const renderContent = () => {
     switch (activeTab) {
       case 'graph': return <GraphExplorer />;
       case 'map': return <GaiaMap />;
       case 'browser': return <Browser />;
+      case 'ingest': return <IngestConnect />;
       case 'targets': return <TargetWorkbench />;
       case 'space': return <ConstellationView />;
       case 'ava': return <AvaChat />;
+      case 'view3d': return <View3D />;
       default: return <GraphExplorer />;
     }
   };
@@ -46,6 +68,12 @@ function App() {
           <button onClick={() => setActiveTab('browser')} className={`p-3 w-full flex justify-center rounded-xl transition-all duration-200 ${activeTab === 'browser' ? 'bg-blue-500/20 text-blue-400 shadow-[inset_2px_0_0_0_#3b82f6]' : 'text-slate-400 hover:bg-slate-700 hover:text-white'}`} title="Data Browser">
             <Database size={22} />
           </button>
+          <button onClick={() => setActiveTab('ingest')} className={`p-3 w-full flex justify-center rounded-xl transition-all duration-200 ${activeTab === 'ingest' ? 'bg-blue-500/20 text-emerald-400 shadow-[inset_2px_0_0_0_#10b981]' : 'text-slate-400 hover:bg-slate-700 hover:text-white'}`} title="Ingest & Streams">
+            <UploadCloud size={22} />
+          </button>
+          <button onClick={() => setActiveTab('view3d')} className={`p-3 w-full flex justify-center rounded-xl transition-all duration-200 ${activeTab === 'view3d' ? 'bg-blue-500/20 text-cyan-400 shadow-[inset_2px_0_0_0_#22d3ee]' : 'text-slate-400 hover:bg-slate-700 hover:text-white'}`} title="3D View">
+            <Box size={22} />
+          </button>
           <button onClick={() => setActiveTab('ava')} className={`p-3 w-full flex justify-center rounded-xl transition-all duration-200 ${activeTab === 'ava' ? 'bg-emerald-500/20 text-emerald-400 shadow-[inset_2px_0_0_0_#10b981]' : 'text-slate-400 hover:bg-slate-700 hover:text-white'}`} title="Ava Assistant">
             <MessageSquare size={22} />
           </button>
@@ -63,17 +91,23 @@ function App() {
               {activeTab === 'targets' && 'TWB :: Target Workbench'}
               {activeTab === 'space' && 'Space :: Constellation Tracking'}
               {activeTab === 'browser' && 'Browser :: Raw Telemetry'}
+              {activeTab === 'ingest' && 'Ingest :: Collections & Streams'}
+              {activeTab === 'view3d' && 'Cesium :: 3D View'}
               {activeTab === 'ava' && 'Ava :: Cognitive Engine'}
             </h1>
           </div>
           <div className="flex items-center space-x-6 text-xs text-slate-400 font-mono">
             <div className="flex items-center space-x-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              <span>NETWORK <span className="text-emerald-400">SECURE</span></span>
+              <span className={`w-2 h-2 rounded-full ${health.healthy ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}`}></span>
+              <span>API <span className={health.healthy ? 'text-emerald-400' : 'text-red-400'}>{health.healthy ? 'ONLINE' : 'DEGRADED'}</span></span>
             </div>
             <div className="flex items-center space-x-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-              <span>ONTOLOGY <span className="text-emerald-400">SYNCED</span></span>
+              <span className={`w-2 h-2 rounded-full ${health.neo4j === 'ok' ? 'bg-emerald-500' : 'bg-red-500'}`}></span>
+              <span>ONTOLOGY <span className={health.neo4j === 'ok' ? 'text-emerald-400' : 'text-red-400'}>{health.neo4j === 'ok' ? 'SYNCED' : 'OFFLINE'}</span></span>
+            </div>
+            <div className="flex items-center space-x-2">
+              <span className={`w-2 h-2 rounded-full ${health.ai?.configured ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
+              <span>AVA <span className={health.ai?.configured ? 'text-emerald-400' : 'text-amber-400'}>{health.ai?.configured ? 'READY' : 'LOCAL'}</span></span>
             </div>
           </div>
         </header>

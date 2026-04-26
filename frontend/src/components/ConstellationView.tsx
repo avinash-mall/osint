@@ -3,6 +3,28 @@ import axios from 'axios';
 import Globe from 'react-globe.gl';
 import { Satellite, Radio, Wifi, Globe2, ScanEye } from 'lucide-react';
 
+const EARTH_RADIUS_KM = 6371;
+
+function altitudeKm(rawAltitude: number | undefined): number {
+  const value = Number(rawAltitude || 0);
+  return value > 2000 ? value / 1000 : value;
+}
+
+function orbitalPeriodMinutes(altKm: number): number {
+  const mu = 398600.4418;
+  const semiMajorAxis = EARTH_RADIUS_KM + altKm;
+  return 2 * Math.PI * Math.sqrt(Math.pow(semiMajorAxis, 3) / mu) / 60;
+}
+
+function futureGroundPoint(sat: any, minutesAhead: number) {
+  const period = orbitalPeriodMinutes(sat.altKm);
+  const phase = (minutesAhead / period) * 360;
+  return {
+    lat: Math.max(-82, Math.min(82, sat.lat + Math.sin((phase * Math.PI) / 180) * 8)),
+    lng: ((((sat.lng + phase) + 180) % 360) + 360) % 360 - 180,
+  };
+}
+
 export default function ConstellationView() {
   const [satellites, setSatellites] = useState<any[]>([]);
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
@@ -31,7 +53,7 @@ export default function ConstellationView() {
         const satData = response.data.satellites.map((s: any) => ({
           lat: s.properties.lat,
           lng: s.properties.lon,
-          alt: s.properties.orbit_alt / 1000, // Normalize altitude
+          altKm: altitudeKm(s.properties.orbit_alt),
           name: s.properties.name,
           type: s.properties.type,
           status: s.properties.status,
@@ -54,13 +76,16 @@ export default function ConstellationView() {
     }
   }, [globeRef.current]);
 
-  const arcsData = satellites.map(sat => ({
-    startLat: sat.lat,
-    startLng: sat.lng,
-    endLat: sat.lat + 10, // Simulated future position
-    endLng: sat.lng + 20,
-    color: sat.color
-  }));
+  const arcsData = satellites.map(sat => {
+    const future = futureGroundPoint(sat, 15);
+    return {
+      startLat: sat.lat,
+      startLng: sat.lng,
+      endLat: future.lat,
+      endLng: future.lng,
+      color: sat.color
+    };
+  });
 
   return (
     <div className="w-full h-full flex bg-slate-950 text-slate-200">
@@ -88,8 +113,8 @@ export default function ConstellationView() {
                  </div>
                  <div className="grid grid-cols-2 gap-2 text-xs font-mono text-slate-500">
                    <div>TYPE: <span style={{color: sat.color}}>{sat.type}</span></div>
-                   <div>ALT: <span className="text-slate-300">{sat.alt * 1000}km</span></div>
-                   <div>TCA: <span className="text-blue-400">T-{15 + i*12}m</span></div>
+                   <div>ALT: <span className="text-slate-300">{sat.altKm.toFixed(0)}km</span></div>
+                   <div>TCA: <span className="text-blue-400">T-{Math.round((orbitalPeriodMinutes(sat.altKm) / satellites.length) * (i + 1))}m</span></div>
                  </div>
               </div>
             ))}
@@ -119,7 +144,7 @@ export default function ConstellationView() {
             labelsData={satellites}
             labelLat={(d: any) => d.lat}
             labelLng={(d: any) => d.lng}
-            labelAltitude={(d: any) => d.alt}
+            labelAltitude={(d: any) => d.altKm / EARTH_RADIUS_KM}
             labelDotRadius={0.4}
             labelDotOrientation={() => 'bottom'}
             labelColor={(d: any) => d.color}

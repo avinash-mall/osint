@@ -1,11 +1,13 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import ForceGraph2D from 'react-force-graph-2d';
 import axios from 'axios';
 import { Search, Info, Activity, Maximize2, Share2, Filter } from 'lucide-react';
 
 export default function GraphExplorer() {
-  const [data, setData] = useState({ nodes: [], links: [] });
+  const [data, setData] = useState<any>({ nodes: [], links: [] });
+  const [filteredData, setFilteredData] = useState<any | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const graphRef = useRef<any>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
   const [selectedNode, setSelectedNode] = useState<any>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, node: any } | null>(null);
@@ -65,6 +67,58 @@ export default function GraphExplorer() {
     setSelectedNode(null);
   }, []);
 
+  const graphData = filteredData || data;
+
+  const focusNode = useCallback((node: any) => {
+    if (!graphRef.current || node.x === undefined || node.y === undefined) return;
+    graphRef.current.centerAt(node.x, node.y, 700);
+    graphRef.current.zoom(3, 700);
+  }, []);
+
+  const neighborhood = useCallback((node: any) => {
+    const neighborIds = new Set<string>([node.id]);
+    data.links.forEach((link: any) => {
+      const source = typeof link.source === 'object' ? link.source.id : link.source;
+      const target = typeof link.target === 'object' ? link.target.id : link.target;
+      if (source === node.id) neighborIds.add(target);
+      if (target === node.id) neighborIds.add(source);
+    });
+    setFilteredData({
+      nodes: data.nodes.filter((item: any) => neighborIds.has(item.id)),
+      links: data.links.filter((link: any) => {
+        const source = typeof link.source === 'object' ? link.source.id : link.source;
+        const target = typeof link.target === 'object' ? link.target.id : link.target;
+        return neighborIds.has(source) && neighborIds.has(target);
+      })
+    });
+    setContextMenu(null);
+  }, [data]);
+
+  const exportSelected = useCallback(() => {
+    const payload = selectedNode || graphData;
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = selectedNode ? `${selectedNode.label}-${selectedNode.id}.json` : 'graph-export.json';
+    link.click();
+    URL.revokeObjectURL(url);
+  }, [graphData, selectedNode]);
+
+  const labelIndex = useMemo<Map<string, any>>(() => new Map(data.nodes.map((node: any) => [node.id, node])), [data.nodes]);
+
+  const expandNode = useCallback(async (node: any) => {
+    try {
+      const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+      const response = await axios.post(`${apiUrl}/api/graph/neighborhood`, { node_id: node.id });
+      setFilteredData(response.data);
+      setContextMenu(null);
+    } catch (error) {
+      console.error("Error expanding node:", error);
+      neighborhood(node);
+    }
+  }, [neighborhood]);
+
   return (
     <div className="w-full h-full relative overflow-hidden flex bg-slate-950" ref={containerRef} onClick={handleBackgroundClick}>
       {/* Graph Area */}
@@ -82,7 +136,8 @@ export default function GraphExplorer() {
         <ForceGraph2D
           width={selectedNode ? dimensions.width - 320 : dimensions.width}
           height={dimensions.height}
-          graphData={data}
+          ref={graphRef}
+          graphData={graphData}
           nodeId="id"
           nodeLabel="label"
           nodeAutoColorBy="label"
@@ -94,7 +149,7 @@ export default function GraphExplorer() {
           onNodeRightClick={handleNodeRightClick}
           onBackgroundClick={handleBackgroundClick}
           nodeCanvasObject={(node: any, ctx, globalScale) => {
-            const label = node.properties?.name || node.properties?.id || node.label;
+            const label = node.properties?.name || node.properties?.id || labelIndex.get(node.id)?.label || node.label;
             const isSelected = selectedNode && selectedNode.id === node.id;
             const fontSize = 12/globalScale;
             ctx.font = `${fontSize}px Sans-Serif`;
@@ -155,10 +210,10 @@ export default function GraphExplorer() {
           </div>
           
           <div className="p-4 border-t border-slate-800 flex gap-2">
-             <button className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs py-2 rounded border border-slate-700 transition flex items-center justify-center gap-1">
+             <button onClick={() => focusNode(selectedNode)} className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs py-2 rounded border border-slate-700 transition flex items-center justify-center gap-1">
                <Maximize2 className="w-3 h-3" /> Focus
              </button>
-             <button className="flex-1 bg-blue-600 hover:bg-blue-500 text-white text-xs py-2 rounded transition flex items-center justify-center gap-1">
+             <button onClick={exportSelected} className="flex-1 bg-blue-600 hover:bg-blue-500 text-white text-xs py-2 rounded transition flex items-center justify-center gap-1">
                <Share2 className="w-3 h-3" /> Export
              </button>
           </div>
@@ -175,15 +230,20 @@ export default function GraphExplorer() {
           <div className="px-3 py-1.5 text-xs text-slate-400 font-mono border-b border-slate-700/50 mb-1 truncate">
             {contextMenu.node.properties?.name || contextMenu.node.id}
           </div>
-          <button className="w-full text-left px-4 py-2 text-slate-200 hover:bg-blue-600 hover:text-white flex items-center gap-2 transition">
+          <button onClick={() => neighborhood(contextMenu.node)} className="w-full text-left px-4 py-2 text-slate-200 hover:bg-blue-600 hover:text-white flex items-center gap-2 transition">
             <Search className="w-4 h-4" /> Search Around
           </button>
-          <button className="w-full text-left px-4 py-2 text-slate-200 hover:bg-blue-600 hover:text-white flex items-center gap-2 transition">
+          <button onClick={() => neighborhood(contextMenu.node)} className="w-full text-left px-4 py-2 text-slate-200 hover:bg-blue-600 hover:text-white flex items-center gap-2 transition">
             <Filter className="w-4 h-4" /> Add to Filter
           </button>
-          <button className="w-full text-left px-4 py-2 text-slate-200 hover:bg-blue-600 hover:text-white flex items-center gap-2 transition">
+          <button onClick={() => expandNode(contextMenu.node)} className="w-full text-left px-4 py-2 text-slate-200 hover:bg-blue-600 hover:text-white flex items-center gap-2 transition">
             <Maximize2 className="w-4 h-4" /> Expand Node
           </button>
+          {filteredData && (
+            <button onClick={() => setFilteredData(null)} className="w-full text-left px-4 py-2 text-slate-400 hover:bg-slate-700 hover:text-white transition">
+              Clear Filter
+            </button>
+          )}
         </div>
       )}
     </div>

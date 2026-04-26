@@ -25,9 +25,9 @@ except ImportError:
 app = FastAPI(title="Magritte AIP Node - Satellite Imagery Inference")
 
 # Configuration
-MODEL_PATH = os.getenv("MODEL_PATH", "yolov8n.pt")
+MODEL_PATH = os.getenv("MODEL_PATH") or ("yolov8n.pt" if os.path.exists("yolov8n.pt") else "/app/yolov8n.pt")
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.25"))
-DEVICE = os.getenv("DEVICE", "cuda:0")
+DEVICE = os.getenv("DEVICE", "cpu")
 
 detection_model = None
 
@@ -44,13 +44,19 @@ def load_model():
             print(f"[INFERENCE] SAHI + YOLOv8 model loaded from {MODEL_PATH} on {DEVICE}")
         except Exception as e:
             print(f"[INFERENCE] SAHI load failed: {e}. Falling back to plain YOLOv8.")
-            if YOLO_AVAILABLE:
-                detection_model = YOLO(MODEL_PATH)
+            if YOLO_AVAILABLE and os.path.exists(MODEL_PATH):
+                try:
+                    detection_model = YOLO(MODEL_PATH)
+                except Exception as yolo_error:
+                    print(f"[INFERENCE] Plain YOLOv8 fallback failed: {yolo_error}")
     elif YOLO_AVAILABLE:
-        detection_model = YOLO(MODEL_PATH)
-        print(f"[INFERENCE] Plain YOLOv8 model loaded from {MODEL_PATH}")
-    else:
-        print("[INFERENCE] WARNING: No detection model available. Using mock mode.")
+        if os.path.exists(MODEL_PATH):
+            detection_model = YOLO(MODEL_PATH)
+            print(f"[INFERENCE] Plain YOLOv8 model loaded from {MODEL_PATH}")
+        else:
+            print(f"[INFERENCE] WARNING: Model file does not exist: {MODEL_PATH}")
+    if detection_model is None:
+        print("[INFERENCE] WARNING: No detection model available. /detect will return 503.")
 
 def run_inference(image: Image.Image, metadata: dict = None):
     """
@@ -129,24 +135,7 @@ def run_inference(image: Image.Image, metadata: dict = None):
             print(f"[INFERENCE] YOLO inference error: {e}")
     
     else:
-        # Mock mode for testing without model
-        import random
-        num_detections = random.randint(0, 2)
-        classes = ["Vessel", "Aircraft", "Facility"]
-        for _ in range(num_detections):
-            det_class = random.choice(classes)
-            bbox = [
-                random.uniform(0.2, 0.8),
-                random.uniform(0.2, 0.8),
-                random.uniform(0.05, 0.3),
-                random.uniform(0.05, 0.3)
-            ]
-            confidence = random.uniform(0.7, 0.99)
-            detections.append({
-                "class": det_class,
-                "bbox": bbox,
-                "confidence": confidence
-            })
+        raise HTTPException(status_code=503, detail="No detection model is loaded; refusing to fabricate detections.")
     
     processing_time = time.time() - start_time
     
@@ -155,7 +144,7 @@ def run_inference(image: Image.Image, metadata: dict = None):
         "detections": detections,
         "processing_time_ms": round(processing_time * 1000, 2),
         "model": MODEL_PATH,
-        "device": DEVICE if detection_model else "cpu_mock"
+        "device": DEVICE
     }
 
 
@@ -200,6 +189,7 @@ def health():
         "status": "ok",
         "model_loaded": detection_model is not None,
         "model_path": MODEL_PATH,
+        "model_exists": os.path.exists(MODEL_PATH),
         "device": DEVICE,
         "sahi_available": SAHI_AVAILABLE,
         "yolo_available": YOLO_AVAILABLE

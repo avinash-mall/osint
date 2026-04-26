@@ -14,7 +14,7 @@ def generate_tactical_data(session):
     CREATE (b1:Base {name: 'CENTCOM Main', latitude: 25.2, longitude: 55.2})
     CREATE (lp1:LaunchPoint {name: 'LaunchPoint Tango', latitude: 25.5, longitude: 55.1, threatRadius: 100000})
     CREATE (lp2:LaunchPoint {name: 'LaunchPoint X-Ray', latitude: 25.1, longitude: 55.4, threatRadius: 150000})
-    CREATE (tg1:Target {name: 'Target Alpha', priority: 'High', status: 'Active'})
+    CREATE (tg1:Target {name: 'Target Alpha', priority: 'High', status: 'Active', latitude: 25.25, longitude: 55.25})
     """)
 
     # Generate Vessels and Aircraft

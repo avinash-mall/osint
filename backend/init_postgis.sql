@@ -54,6 +54,54 @@ CREATE TABLE IF NOT EXISTS ne_coastline (
 );
 CREATE INDEX IF NOT EXISTS idx_ne_coastline_geom ON ne_coastline USING GIST(geom);
 
+-- Streaming feed connectors and normalized live events
+CREATE TABLE IF NOT EXISTS feed_sources (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    feed_type VARCHAR(100) NOT NULL,
+    protocol VARCHAR(50) NOT NULL,
+    endpoint VARCHAR(1024) NOT NULL,
+    topic VARCHAR(255) DEFAULT 'feeds',
+    parser VARCHAR(100),
+    enabled BOOLEAN DEFAULT TRUE,
+    status VARCHAR(50) DEFAULT 'configured',
+    last_error TEXT,
+    last_seen TIMESTAMP WITH TIME ZONE,
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_feed_sources_type ON feed_sources(feed_type);
+
+CREATE TABLE IF NOT EXISTS feed_events (
+    id SERIAL PRIMARY KEY,
+    source_id INTEGER REFERENCES feed_sources(id) ON DELETE CASCADE,
+    event_type VARCHAR(100),
+    payload JSONB DEFAULT '{}',
+    geom GEOMETRY(POINT, 4326),
+    observed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_feed_events_geom ON feed_events USING GIST(geom);
+
+-- Minimal offline fallback basemap. Real Natural Earth imports can replace these
+-- rows, but Martin will not start with empty advertised layers.
+INSERT INTO ne_countries (name, admin, iso_a3, pop_est, gdp_md_est, geom)
+SELECT * FROM (
+    VALUES
+    ('United Arab Emirates', 'United Arab Emirates', 'ARE', 9890000, 421000,
+     ST_Multi(ST_GeomFromText('POLYGON((51.5 22.6, 51.5 26.5, 56.6 26.5, 56.6 22.6, 51.5 22.6))', 4326))),
+    ('Oman', 'Oman', 'OMN', 4640000, 88000,
+     ST_Multi(ST_GeomFromText('POLYGON((52.0 16.5, 52.0 26.5, 60.0 26.5, 60.0 16.5, 52.0 16.5))', 4326))),
+    ('Saudi Arabia', 'Saudi Arabia', 'SAU', 36000000, 1108000,
+     ST_Multi(ST_GeomFromText('POLYGON((34.5 16.0, 34.5 32.5, 55.7 32.5, 55.7 16.0, 34.5 16.0))', 4326)))
+) AS seed(name, admin, iso_a3, pop_est, gdp_md_est, geom)
+WHERE NOT EXISTS (SELECT 1 FROM ne_countries);
+
+INSERT INTO ne_coastline (geom)
+SELECT ST_Multi(ST_GeomFromText('LINESTRING(34.5 16.0, 42.0 15.0, 48.0 25.0, 56.6 26.5, 60.0 22.0)', 4326))
+WHERE NOT EXISTS (SELECT 1 FROM ne_coastline);
+
 -- Function to get detections as GeoJSON FeatureCollection
 CREATE OR REPLACE FUNCTION get_detections_geojson(
     bbox_geom GEOMETRY DEFAULT NULL,

@@ -5,11 +5,15 @@ from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
 
 # Neo4j Configuration
-NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-NEO4J_AUTH = (os.getenv("NEO4J_USERNAME", "neo4j"), os.getenv("NEO4J_PASSWORD", "password"))
+NEO4J_URI = os.getenv("NEO4J_URI", "bolt://neo4j:7687")
+NEO4J_AUTH = (
+    os.getenv("NEO4J_USERNAME", "neo4j"),
+    os.getenv("NEO4J_PASSWORD", os.getenv("NEO4J_AUTH_PASSWORD", "change-me")),
+)
 
 # PostGIS Configuration
-POSTGIS_URI = os.getenv("POSTGIS_URI", "postgresql://gotham:gotham@localhost:5432/gotham")
+POSTGIS_URI = os.getenv("POSTGIS_URI", "postgresql://gotham:gotham@postgis:5432/gotham")
+ASYNC_POSTGIS_URI = POSTGIS_URI.replace("postgresql://", "postgresql+asyncpg://", 1)
 
 class Neo4jConnection:
     def __init__(self, uri, user, pwd):

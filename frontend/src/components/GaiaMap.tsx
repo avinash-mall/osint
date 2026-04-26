@@ -1,14 +1,14 @@
 import { useEffect, useState, useCallback } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, ZoomControl, Polyline, Circle, GeoJSON, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, ZoomControl, Polyline, Circle, GeoJSON, ImageOverlay, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import axios from 'axios';
 import { Crosshair, Navigation, ShieldAlert, Activity, Layers, Clock, Eye, Satellite, Filter } from 'lucide-react';
 import 'leaflet/dist/leaflet.css';
+import { useEventStream } from '../hooks/useEventStream';
 
 // API Configuration
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
-const TITILER_URL = import.meta.env.VITE_TITILER_URL || 'http://localhost:8081';
-const MARTIN_URL = import.meta.env.VITE_MARTIN_URL || 'http://localhost:3001';
+const TILE_PROXY_URL = import.meta.env.VITE_TILE_PROXY_URL || 'http://localhost:8090';
 
 // Removed external CDN merge for offline support
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -65,6 +65,7 @@ export default function GaiaMap() {
   const [data, setData] = useState<{ static: any[], tracks: any[] }>({ static: [], tracks: [] });
   const [imagery, setImagery] = useState<any[]>([]);
   const [detectionsGeoJSON, setDetectionsGeoJSON] = useState<any>({ type: 'FeatureCollection', features: [] });
+  const [basemapGeoJSON, setBasemapGeoJSON] = useState<any>({ type: 'FeatureCollection', features: [] });
   const [selectedImagery, setSelectedImagery] = useState<number | null>(null);
   const [imageryOpacity, setImageryOpacity] = useState(0.8);
   const [timeRange, setTimeRange] = useState<{ start: string; end: string }>(() => {
@@ -85,19 +86,34 @@ export default function GaiaMap() {
   });
   const [isLoading, setIsLoading] = useState(false);
 
-  // Fetch static tracks and features
-  useEffect(() => {
-    const fetchData = async () => {
+  const fetchData = useCallback(async () => {
       try {
         const response = await axios.get(`${API_URL}/api/geotime/features`);
         setData(response.data || { static: [], tracks: [] });
       } catch (error) {
         console.error("Error fetching geotime data:", error);
       }
-    };
+  }, []);
+
+  // Fetch static tracks and features
+  useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 10000);
-    return () => clearInterval(interval);
+  }, [fetchData]);
+
+  useEventStream('geotime', useCallback(() => {
+    fetchData();
+  }, [fetchData]));
+
+  useEffect(() => {
+    const fetchBasemap = async () => {
+      try {
+        const response = await axios.get(`${API_URL}/api/basemap/countries`);
+        setBasemapGeoJSON(response.data || { type: 'FeatureCollection', features: [] });
+      } catch (error) {
+        console.error("Error fetching offline basemap:", error);
+      }
+    };
+    fetchBasemap();
   }, []);
 
   // Fetch imagery catalog
@@ -140,6 +156,11 @@ export default function GaiaMap() {
   useEffect(() => {
     fetchDetections();
   }, [fetchDetections]);
+
+  useEventStream('detections', useCallback(() => {
+    fetchDetections();
+    fetchImagery();
+  }, [fetchDetections, fetchImagery]));
 
   const onEachDetection = (feature: any, layer: L.Layer) => {
     const props = feature.properties;
@@ -267,25 +288,30 @@ export default function GaiaMap() {
           <MapBoundsUpdater onBoundsChange={setMapBounds} />
 
           {/* Base Layer */}
-          <TileLayer
-            url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
-            subdomains='abcd'
-            maxZoom={20}
+          <ImageOverlay
+            url="/world_map.svg"
+            bounds={[[-85, -180], [85, 180]]}
+            opacity={0.28}
           />
 
-          {/* Martin Vector Grid (optional) */}
+          {/* Offline vector basemap fallback */}
           {activeLayers.grid && (
-            <TileLayer
-              url={`${MARTIN_URL}/ne_countries/{z}/{x}/{y}`}
-              opacity={0.3}
+            <GeoJSON
+              data={basemapGeoJSON}
+              style={() => ({
+                color: '#64748b',
+                weight: 1,
+                opacity: 0.55,
+                fillColor: '#1e293b',
+                fillOpacity: 0.12
+              })}
             />
           )}
 
           {/* Satellite Imagery Layer */}
           {activeLayers.satellite && selectedImageryData && (
             <TileLayer
-              url={`${TITILER_URL}/cog/tiles/{z}/{x}/{y}?url=${encodeURIComponent(selectedImageryData.file_path)}`}
+              url={`${TILE_PROXY_URL}/cog/tiles/{z}/{x}/{y}?url=${encodeURIComponent(selectedImageryData.file_path)}`}
               opacity={imageryOpacity}
               maxZoom={22}
             />
@@ -399,6 +425,19 @@ export default function GaiaMap() {
              />
              <div className="flex-1 h-2 bg-slate-800 rounded relative">
                <div className="absolute top-0 left-0 right-0 bottom-0 bg-blue-500/30 rounded border border-blue-500"></div>
+               <input
+                 type="range"
+                 min="0"
+                 max="168"
+                 value={Math.round((Date.now() - new Date(timeRange.end).getTime()) / (60 * 60 * 1000))}
+                 onChange={(e) => {
+                   const hoursAgo = Number(e.target.value);
+                   const end = new Date(Date.now() - hoursAgo * 60 * 60 * 1000);
+                   const start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
+                   setTimeRange({ start: start.toISOString(), end: end.toISOString() });
+                 }}
+                 className="absolute inset-x-0 -top-1 w-full h-4 opacity-80 cursor-pointer"
+               />
              </div>
              <input
                type="datetime-local"

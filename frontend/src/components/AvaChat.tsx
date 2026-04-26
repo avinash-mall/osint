@@ -8,11 +8,25 @@ export default function AvaChat() {
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [online, setOnline] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  useEffect(() => {
+    const checkStatus = async () => {
+      try {
+        const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+        const response = await axios.get(`${apiUrl}/api/health`);
+        setOnline(Boolean(response.data.ai?.configured));
+      } catch {
+        setOnline(false);
+      }
+    };
+    checkStatus();
+  }, []);
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
@@ -26,9 +40,10 @@ export default function AvaChat() {
       const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8080';
       const response = await axios.post(`${apiUrl}/api/chat`, { message: userMsg });
       setMessages(prev => [...prev, { role: 'bot', content: response.data.reply }]);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Chat error:", error);
-      setMessages(prev => [...prev, { role: 'bot', content: 'SYSTEM ERROR: Unable to reach cognitive engine.' }]);
+      const detail = error.response?.data?.detail || 'Unable to reach cognitive engine.';
+      setMessages(prev => [...prev, { role: 'bot', content: detail }]);
     } finally {
       setLoading(false);
     }
@@ -44,8 +59,8 @@ export default function AvaChat() {
           </div>
           <div>
             <h2 className="font-bold text-slate-100 tracking-wide">Ava Cognitive Engine</h2>
-            <p className="text-xs text-emerald-400 font-mono tracking-widest flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> ONLINE
+            <p className={`text-xs font-mono tracking-widest flex items-center gap-1 ${online ? 'text-emerald-400' : 'text-amber-400'}`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${online ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`}></span> {online ? 'ONLINE' : 'READ-ONLY LOCAL'}
             </p>
           </div>
         </div>

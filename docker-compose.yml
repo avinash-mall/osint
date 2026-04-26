@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   neo4j:
     image: neo4j:5.20.0
@@ -57,6 +55,10 @@ services:
         condition: service_healthy
       postgis:
         condition: service_healthy
+      redis:
+        condition: service_started
+      titiler:
+        condition: service_started
     volumes:
       - ./backend:/app
       - imagery_data:/data/imagery
@@ -72,11 +74,8 @@ services:
     environment:
       - VITE_API_URL=http://localhost:8080
       - VITE_TITILER_URL=http://localhost:8081
+      - VITE_TILE_PROXY_URL=http://localhost:8090
       - VITE_MARTIN_URL=http://localhost:3001
-    volumes:
-      - ./frontend/src:/app/src
-      - ./frontend/public:/app/public
-      - ./frontend/index.html:/app/index.html
 
   titiler:
     image: developmentseed/titiler:latest
@@ -102,10 +101,10 @@ services:
     build: ./inference
     image: gotham-inference:latest
     ports:
-      - "8001:8001"
+      - "8002:8001"
     environment:
       - DEVICE=cpu
-      - MODEL_PATH=yolov8n.pt
+      - MODEL_PATH=/app/yolov8n.pt
       - CONFIDENCE_THRESHOLD=0.25
     volumes:
       - ./inference:/app

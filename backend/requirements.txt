@@ -6,15 +6,15 @@ langchain-openai
 langchain-community
 python-dotenv
 pydantic
+python-multipart
 celery
 redis
 psycopg2-binary
+asyncpg
 geoalchemy2
 shapely
 rasterio
 rioxarray
-sahi
-ultralytics
 pillow
 numpy
 requests

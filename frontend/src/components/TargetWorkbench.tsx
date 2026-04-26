@@ -18,6 +18,9 @@ export default function TargetWorkbench() {
   const [targets, setTargets] = useState<any[]>([]);
   const [selectedTarget, setSelectedTarget] = useState<any>(null);
   const [detections, setDetections] = useState<DetectionInfo[]>([]);
+  const [imagery, setImagery] = useState<any[]>([]);
+  const [selectedImagePath, setSelectedImagePath] = useState('');
+  const [ingestStatus, setIngestStatus] = useState('');
 
   const fetchTargets = async () => {
     try {
@@ -28,20 +31,31 @@ export default function TargetWorkbench() {
     }
   };
 
-  const fetchTargetDetections = async (_targetId: string) => {
+  const fetchTargetDetections = async (targetId: string) => {
     try {
-      // Fetch detections that might be linked to this target
-      // For now, we fetch recent detections and the backend can link them
-      const response = await axios.get(`${API_URL}/api/detections?limit=50`);
-      const allDetections = response.data.detections || [];
-      setDetections(allDetections);
+      const response = await axios.get(`${API_URL}/api/targets/${targetId}/detections?limit=50`);
+      setDetections(response.data.detections || []);
     } catch (error) {
       console.error("Error fetching detections:", error);
     }
   };
 
+  const fetchImagery = async () => {
+    try {
+      const response = await axios.get(`${API_URL}/api/imagery`);
+      const rows = response.data.imagery || [];
+      setImagery(rows);
+      if (!selectedImagePath && rows[0]?.file_path) {
+        setSelectedImagePath(rows[0].file_path);
+      }
+    } catch (error) {
+      console.error("Error fetching imagery:", error);
+    }
+  };
+
   useEffect(() => {
     fetchTargets();
+    fetchImagery();
   }, []);
 
   useEffect(() => {
@@ -65,15 +79,19 @@ export default function TargetWorkbench() {
   };
 
   const triggerIngest = async () => {
+    if (!selectedImagePath.trim()) {
+      setIngestStatus('Select or enter an imagery path first.');
+      return;
+    }
     try {
-      await axios.post(`${API_URL}/api/ingest`, {
-        image_url: '/data/imagery/incoming/usgs_pass_001.tif',
+      const response = await axios.post(`${API_URL}/api/ingest`, {
+        image_url: selectedImagePath.trim(),
         sensor_type: 'Optical'
       });
-      alert('Satellite ingestion pipeline triggered. Check back shortly for new targets.');
+      setIngestStatus(`Ingest queued: ${response.data.task_id}`);
     } catch (error) {
       console.error("Error triggering ingest:", error);
-      alert('Failed to trigger ingestion pipeline.');
+      setIngestStatus('Failed to queue ingestion.');
     }
   };
 
@@ -108,6 +126,24 @@ export default function TargetWorkbench() {
             <p className="text-xs text-slate-500 font-mono mt-1">HPTL (High Priority Target List) Management</p>
           </div>
           <div className="flex items-center gap-4">
+            <div className="flex flex-col gap-1">
+              <select
+                value={selectedImagePath}
+                onChange={(event) => setSelectedImagePath(event.target.value)}
+                className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-slate-300 max-w-64"
+              >
+                {imagery.map((img) => (
+                  <option key={img.id} value={img.file_path}>{img.name}</option>
+                ))}
+                {imagery.length === 0 && <option value="">No cataloged imagery</option>}
+              </select>
+              <input
+                value={selectedImagePath}
+                onChange={(event) => setSelectedImagePath(event.target.value)}
+                placeholder="/data/imagery/incoming/collection.tif"
+                className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-[11px] text-slate-400 max-w-64"
+              />
+            </div>
             <button 
               onClick={triggerIngest}
               className="px-3 py-1 bg-indigo-500/20 text-indigo-400 border border-indigo-500/50 rounded hover:bg-indigo-500/40 transition text-xs font-bold uppercase tracking-wider flex items-center gap-2"
@@ -119,6 +155,11 @@ export default function TargetWorkbench() {
             </div>
           </div>
         </div>
+        {ingestStatus && (
+          <div className="px-6 py-2 bg-slate-950 border-b border-slate-800 text-xs font-mono text-indigo-300">
+            {ingestStatus}
+          </div>
+        )}
 
         <div className="flex-1 overflow-auto custom-scrollbar p-6">
           <div className="grid grid-cols-1 gap-2">
