@@ -58,7 +58,12 @@ OVERLAP = 0.2
 DEFAULT_SPLIT = (0.8, 0.1, 0.1)
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp", ".jp2"}
 ARCHIVE_SUFFIXES = {".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz"}
-XVIEW_ARCHIVES = {"train_images.zip", "train_labels.zip", "val_images.zip"}
+XVIEW_ARCHIVE_STEMS = {"train_images", "train_labels", "val_images"}
+XVIEW_ARCHIVES = {
+    f"{stem}{suffix}"
+    for stem in XVIEW_ARCHIVE_STEMS
+    for suffix in (".zip", ".tgz", ".tar.gz", ".tar")
+}
 
 
 XVIEW_TYPE_ID_TO_NAME = {
@@ -391,6 +396,14 @@ def is_archive(path: Path) -> bool:
     return path.suffix.lower() in ARCHIVE_SUFFIXES or name.endswith((".tar.gz", ".tar.bz2", ".tar.xz"))
 
 
+def archive_destination_name(path: Path) -> str:
+    name = path.name
+    for suffix in (".tar.gz", ".tar.bz2", ".tar.xz", ".zip", ".tgz", ".tar", ".gz", ".bz2", ".xz"):
+        if name.lower().endswith(suffix):
+            return name[: -len(suffix)]
+    return path.stem
+
+
 def parse_number_list(value: Any) -> list[float]:
     if isinstance(value, str):
         value = value.replace(";", ",").replace(" ", ",")
@@ -549,7 +562,7 @@ def process_xview(raw_root: Path) -> dict[Path, list[Annotation]]:
     )
     if not geojson_candidates:
         print("xView: no GeoJSON labels found")
-        print(f"Expected train_labels.zip extracted under {raw_root}, containing xView train GeoJSON labels.")
+        print(f"Expected train_labels archive extracted under {raw_root}, containing xView_train.geojson.")
         return {}
     geojson_path = geojson_candidates[0]
     images = find_images(raw_root)
@@ -738,18 +751,28 @@ def process_dota(raw_root: Path) -> dict[Path, list[Annotation]]:
 
 def process_fair1m(raw_root: Path) -> dict[Path, list[Annotation]]:
     images = find_images(raw_root)
+    xml_files = list(raw_root.rglob("*.xml"))
     grouped: dict[Path, list[Annotation]] = {}
-    for xml_path in raw_root.rglob("*.xml"):
-        image_path = images.get(xml_path.stem)
-        if not image_path:
-            continue
+    matched_xml = 0
+    parsed_annotations = 0
+    for xml_path in xml_files:
         try:
             root = ET.parse(xml_path).getroot()
         except ET.ParseError:
             continue
+        filename_node = root.find(".//source/filename")
+        if filename_node is None:
+            filename_node = root.find(".//filename")
+        image_name = filename_node.text.strip() if filename_node is not None and filename_node.text else xml_path.stem
+        image_path = image_lookup(Path(image_name), images) or image_lookup(xml_path, images)
+        if not image_path:
+            continue
+        matched_xml += 1
         annotations: list[Annotation] = []
         for obj in root.findall(".//object"):
-            name_node = obj.find(".//possibleresult/name") or obj.find("name")
+            name_node = obj.find(".//possibleresult/name")
+            if name_node is None:
+                name_node = obj.find("name")
             label = f"fair1m_{sanitize_label(name_node.text if name_node is not None else 'unknown')}"
             points = []
             for point in obj.findall(".//point"):
@@ -762,8 +785,25 @@ def process_fair1m(raw_root: Path) -> dict[Path, list[Annotation]]:
             polygon = values_to_polygon(points)
             if polygon:
                 annotations.append(Annotation(label, polygon, "fair1m"))
+                parsed_annotations += 1
         if annotations:
             grouped[image_path] = annotations
+    if not grouped:
+        unique_images = sorted({path for path in images.values()})
+        print("FAIR1M: no usable image/XML pairs found")
+        print(f"  raw root: {raw_root}")
+        print(f"  images found: {len(unique_images)}")
+        print(f"  XML files found: {len(xml_files)}")
+        print(f"  XML files matched to images: {matched_xml}")
+        print(f"  parsed annotations: {parsed_annotations}")
+        if unique_images:
+            print("  sample images:")
+            for path in unique_images[:5]:
+                print(f"    {path.relative_to(raw_root) if path.is_relative_to(raw_root) else path}")
+        if xml_files:
+            print("  sample XML files:")
+            for path in xml_files[:5]:
+                print(f"    {path.relative_to(raw_root) if path.is_relative_to(raw_root) else path}")
     return grouped
 
 
@@ -920,7 +960,7 @@ def extract_nested_archives(root: Path, archive_names: set[str] | None = None) -
         marker = archive.with_suffix(archive.suffix + ".extracted")
         if marker.exists():
             continue
-        destination = archive.parent / archive.stem
+        destination = archive.parent / archive_destination_name(archive)
         print(f"Extracting nested archive {archive.name} -> {destination}")
         extract_archive(archive, destination)
         marker.write_text("ok\n", encoding="utf-8")
@@ -929,15 +969,15 @@ def extract_nested_archives(root: Path, archive_names: set[str] | None = None) -
 def normalize_xview_layout(raw_root: Path) -> None:
     extract_nested_archives(raw_root, XVIEW_ARCHIVES)
 
-    train_images = raw_root / "train_images.zip"
-    train_labels = raw_root / "train_labels.zip"
-    val_images = raw_root / "val_images.zip"
-    for archive in (train_images, train_labels, val_images):
-        if archive.exists():
-            marker = archive.with_suffix(archive.suffix + ".extracted")
-            if not marker.exists():
-                extract_archive(archive, raw_root / archive.stem)
-                marker.write_text("ok\n", encoding="utf-8")
+    for archive_name in XVIEW_ARCHIVES:
+        archive = raw_root / archive_name
+        if not archive.exists():
+            continue
+        marker = archive.with_suffix(archive.suffix + ".extracted")
+        if marker.exists():
+            continue
+        extract_archive(archive, raw_root / archive_destination_name(archive))
+        marker.write_text("ok\n", encoding="utf-8")
 
 
 def run_aws_sync(bucket_uri: str, destination: Path, extra_args: list[str] | None = None) -> None:
@@ -952,7 +992,7 @@ def download_dataset(dataset: str, raw_root: Path, args: argparse.Namespace) -> 
     if dataset == "xview":
         print("xView requires registration/terms acceptance. Download from https://xviewdataset.org/ and place files under:")
         print(f"  {raw_root}")
-        print("Expected archives: train_images.zip, train_labels.zip, val_images.zip.")
+        print("Expected archives: train_images, train_labels, and val_images as .tgz, .tar.gz, .tar, or .zip.")
         return
     if dataset == "dota":
         print("DOTA downloads are distributed from the official DOTA site and mirrors. Place extracted images and labelTxt under:")
@@ -995,7 +1035,7 @@ def import_archives(dataset: str, raw_root: Path, archives: list[str]) -> None:
                 print(f"WARNING: source does not exist: {item}", file=sys.stderr)
                 continue
         if dataset == "xview" and source.name in XVIEW_ARCHIVES:
-            destination = raw_root / source.stem
+            destination = raw_root / archive_destination_name(source)
             extract_archive(source, destination)
             marker = source.with_suffix(source.suffix + ".extracted")
             if source.parent == raw_root:
