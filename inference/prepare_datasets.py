@@ -612,23 +612,75 @@ def parse_dota_line(line: str, image_size: tuple[int, int] | None) -> Annotation
     return Annotation(label, polygon, "dota") if polygon else None
 
 
+def parse_point_pairs(value: Any) -> list[float]:
+    if not isinstance(value, list):
+        return parse_number_list(value)
+    flat: list[float] = []
+    for item in value:
+        if isinstance(item, dict):
+            if item.get("x") is not None and item.get("y") is not None:
+                flat.extend([float(item["x"]), float(item["y"])])
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            flat.extend(parse_number_list(item[:2]))
+        else:
+            flat.extend(parse_number_list(item))
+    return flat
+
+
+def parse_dota_json(json_path: Path) -> list[Annotation]:
+    try:
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+
+    annotations: list[Annotation] = []
+    for obj in data.get("objects", []):
+        if not isinstance(obj, dict):
+            continue
+        label_value = (
+            obj.get("classTitle")
+            or obj.get("class_name")
+            or obj.get("className")
+            or obj.get("label")
+            or obj.get("name")
+            or obj.get("category")
+            or "unknown"
+        )
+        points_value = obj.get("points") or obj.get("polygon") or obj.get("bbox") or obj.get("bndbox")
+        if isinstance(points_value, dict):
+            points_value = (
+                points_value.get("exterior")
+                or points_value.get("points")
+                or points_value.get("vertices")
+                or points_value.get("bbox")
+            )
+        polygon = values_to_polygon(parse_point_pairs(points_value))
+        if polygon:
+            annotations.append(Annotation(f"dota_{sanitize_label(label_value)}", polygon, "dota"))
+    return annotations
+
+
 def dota_label_files(raw_root: Path) -> list[Path]:
-    label_dirs = [
+    annotation_dirs = [
         path for path in raw_root.rglob("*")
-        if path.is_dir() and "label" in path.name.lower()
+        if path.is_dir()
+        and (path.name.lower() in {"ann", "anns", "annotation", "annotations", "labeltxt"}
+             or "label" in path.name.lower())
     ]
     files: list[Path] = []
-    for directory in label_dirs:
+    for directory in annotation_dirs:
         files.extend(directory.rglob("*.txt"))
+        files.extend(directory.rglob("*.json"))
     if not files:
         files = list(raw_root.rglob("*.txt"))
+        files.extend(raw_root.rglob("*.json"))
     return sorted(set(files))
 
 
 def print_dota_empty_diagnostics(
     raw_root: Path,
     images: dict[str, Path],
-    label_files: list[Path],
+    annotation_files: list[Path],
     matched_labels: int,
     parsed_annotations: int,
 ) -> None:
@@ -636,16 +688,16 @@ def print_dota_empty_diagnostics(
     print("DOTA: no usable image/label pairs found")
     print(f"  raw root: {raw_root}")
     print(f"  images found: {len(unique_images)}")
-    print(f"  label txt files found: {len(label_files)}")
-    print(f"  label files matched to images: {matched_labels}")
+    print(f"  annotation files found: {len(annotation_files)}")
+    print(f"  annotation files matched to images: {matched_labels}")
     print(f"  parsed annotations: {parsed_annotations}")
     if unique_images:
         print("  sample images:")
         for path in unique_images[:5]:
             print(f"    {path.relative_to(raw_root) if path.is_relative_to(raw_root) else path}")
-    if label_files:
-        print("  sample label files:")
-        for path in label_files[:5]:
+    if annotation_files:
+        print("  sample annotation files:")
+        for path in annotation_files[:5]:
             print(f"    {path.relative_to(raw_root) if path.is_relative_to(raw_root) else path}")
 
 
@@ -667,12 +719,16 @@ def process_dota(raw_root: Path) -> dict[Path, list[Annotation]]:
                 image_size = image.size
         except Exception:
             pass
-        annotations: list[Annotation] = []
-        for line in label_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-            annotation = parse_dota_line(line, image_size)
-            if annotation:
-                annotations.append(annotation)
-                parsed_annotations += 1
+        if label_path.suffix.lower() == ".json":
+            annotations = parse_dota_json(label_path)
+            parsed_annotations += len(annotations)
+        else:
+            annotations = []
+            for line in label_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                annotation = parse_dota_line(line, image_size)
+                if annotation:
+                    annotations.append(annotation)
+                    parsed_annotations += 1
         if annotations:
             grouped[image_path] = annotations
     if not grouped:
