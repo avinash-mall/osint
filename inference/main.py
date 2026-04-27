@@ -45,7 +45,32 @@ def resolve_model_path() -> str:
 MODEL_PATH = resolve_model_path()
 MODEL_TASK = os.getenv("MODEL_TASK") or ("obb" if "obb" in os.path.basename(MODEL_PATH).lower() else "detect")
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.25"))
-DEVICE = os.getenv("DEVICE", "cpu")
+
+
+def resolve_device() -> str:
+    requested = os.getenv("DEVICE", "auto").strip().lower()
+    if requested and requested != "auto":
+        return requested
+    try:
+        import torch
+    except ImportError:
+        print("[INFERENCE] WARNING: torch is unavailable; falling back to CPU.")
+        return "cpu"
+
+    cuda_version = getattr(torch.version, "cuda", None)
+    if torch.cuda.is_available():
+        device_name = torch.cuda.get_device_name(0)
+        print(f"[INFERENCE] Using CUDA device 0: {device_name} (torch CUDA {cuda_version})")
+        return "cuda:0"
+
+    print(
+        "[INFERENCE] WARNING: PyTorch reports CUDA is unavailable; using CPU. "
+        f"torch={torch.__version__}, torch CUDA={cuda_version}"
+    )
+    return "cpu"
+
+
+DEVICE = resolve_device()
 
 detection_model = None
 
@@ -54,6 +79,10 @@ def load_model():
     if MODEL_TASK == "obb":
         if YOLO_AVAILABLE and os.path.exists(MODEL_PATH):
             detection_model = YOLO(MODEL_PATH)
+            try:
+                detection_model.to(DEVICE)
+            except Exception as exc:
+                print(f"[INFERENCE] WARNING: unable to move YOLO OBB model to {DEVICE}: {exc}")
             print(f"[INFERENCE] YOLO OBB model loaded from {MODEL_PATH} on {DEVICE}")
         else:
             print(f"[INFERENCE] WARNING: OBB model file does not exist or ultralytics is unavailable: {MODEL_PATH}")
@@ -71,12 +100,17 @@ def load_model():
             if YOLO_AVAILABLE and os.path.exists(MODEL_PATH):
                 try:
                     detection_model = YOLO(MODEL_PATH)
+                    detection_model.to(DEVICE)
                 except Exception as yolo_error:
                     print(f"[INFERENCE] Plain YOLOv8 fallback failed: {yolo_error}")
     elif YOLO_AVAILABLE:
         if os.path.exists(MODEL_PATH):
             detection_model = YOLO(MODEL_PATH)
-            print(f"[INFERENCE] Plain YOLOv8 model loaded from {MODEL_PATH}")
+            try:
+                detection_model.to(DEVICE)
+            except Exception as exc:
+                print(f"[INFERENCE] WARNING: unable to move YOLO model to {DEVICE}: {exc}")
+            print(f"[INFERENCE] Plain YOLOv8 model loaded from {MODEL_PATH} on {DEVICE}")
         else:
             print(f"[INFERENCE] WARNING: Model file does not exist: {MODEL_PATH}")
     if detection_model is None:
@@ -133,7 +167,7 @@ def run_inference(image: Image.Image, metadata: dict = None):
     elif YOLO_AVAILABLE and detection_model is not None:
         # Plain YOLOv8 mode
         try:
-            results = detection_model(img_array, verbose=False)
+            results = detection_model(img_array, device=DEVICE, verbose=False)
             for r in results:
                 img_w, img_h = image.size
                 obb = getattr(r, "obb", None)

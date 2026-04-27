@@ -3,7 +3,8 @@ FROM python:3.11-slim
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
-ENV DEVICE=cpu
+ENV DEVICE=auto
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
 
 # Install system dependencies for OpenCV and image processing
 RUN apt-get update && apt-get install -y \
@@ -20,15 +21,15 @@ WORKDIR /app
 # Install Python dependencies
 COPY requirements.txt .
 
-# Install CPU-only PyTorch first to prevent CUDA wheels from being pulled in.
-# --extra-index-url keeps normal dependencies such as filelock resolvable from PyPI.
+# Install CUDA-capable PyTorch by default. Override TORCH_INDEX_URL at build time
+# if your NVIDIA driver requires a different CUDA wheel family.
 RUN pip install --no-cache-dir \
-    --extra-index-url https://download.pytorch.org/whl/cpu \
+    --index-url ${TORCH_INDEX_URL} \
+    --extra-index-url https://pypi.org/simple \
     torch torchvision
 
 # Install remaining dependencies (ultralytics, sahi, etc.)
 RUN pip install --no-cache-dir \
-    --extra-index-url https://download.pytorch.org/whl/cpu \
     -r requirements.txt
 
 COPY . .

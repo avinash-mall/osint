@@ -104,8 +104,9 @@ services:
     image: sentinelos-inference:latest
     ports:
       - "8002:8001"
+    gpus: all
     environment:
-      - DEVICE=cpu
+      - DEVICE=auto
       - TRAINED_MODEL_PATH=/app/models/geoint_yolov8_obb.pt
       - CONFIDENCE_THRESHOLD=0.25
     volumes:

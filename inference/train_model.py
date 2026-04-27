@@ -16,6 +16,7 @@ import json
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA = REPO_ROOT / "training_dataset" / "yolo" / "data.yaml"
@@ -35,6 +36,31 @@ def parse_batch(value: str) -> int | float:
         raise argparse.ArgumentTypeError("batch must be 'auto', an int, or a float fraction") from exc
 
 
+def resolve_device(requested: str | None) -> str | None:
+    if requested and requested.lower() != "auto":
+        return requested
+    try:
+        import torch
+    except ImportError:
+        if requested == "auto":
+            print("WARNING: torch is not installed, leaving Ultralytics device selection unchanged.")
+        return None
+
+    cuda_available = torch.cuda.is_available()
+    cuda_version = getattr(torch.version, "cuda", None)
+    if cuda_available:
+        device_name = torch.cuda.get_device_name(0)
+        print(f"Using CUDA device 0: {device_name} (torch CUDA {cuda_version})")
+        return "0"
+
+    if requested == "auto" or requested is None:
+        print(
+            "WARNING: PyTorch reports CUDA is unavailable; training will run on CPU. "
+            f"torch={torch.__version__}, torch CUDA={cuda_version}"
+        )
+    return "cpu" if requested == "auto" else None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train YOLOv8 for SentinelOS GEOINT inference.")
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA, help="YOLO data.yaml path.")
@@ -42,7 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--imgsz", type=int, default=640)
     parser.add_argument("--batch", type=parse_batch, default=-1, help="Batch size, GPU memory fraction, or auto.")
-    parser.add_argument("--device", default=None, help="Ultralytics device, e.g. cpu, 0, 0,1.")
+    parser.add_argument("--device", default="auto", help="Ultralytics device, e.g. auto, cpu, 0, 0,1.")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--patience", type=int, default=25)
     parser.add_argument("--project", type=Path, default=DEFAULT_PROJECT)
@@ -64,7 +90,9 @@ def main() -> int:
         raise SystemExit("ultralytics is required for training. Install inference/requirements.txt first.") from exc
 
     model = YOLO(args.base_model)
-    train_kwargs = {
+    resolved_device = resolve_device(args.device)
+
+    train_kwargs: dict[str, Any] = {
         "data": str(data_path),
         "epochs": args.epochs,
         "imgsz": args.imgsz,
@@ -76,8 +104,8 @@ def main() -> int:
         "exist_ok": True,
         "task": "obb",
     }
-    if args.device:
-        train_kwargs["device"] = args.device
+    if resolved_device:
+        train_kwargs["device"] = resolved_device
 
     results = model.train(**train_kwargs)
     save_dir = Path(getattr(results, "save_dir", args.project / args.name))
@@ -96,6 +124,7 @@ def main() -> int:
             "epochs": args.epochs,
             "imgsz": args.imgsz,
             "batch": args.batch,
+            "device": resolved_device or args.device,
         }
         args.output.with_suffix(".json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
         print(f"Promoted trained model to {args.output}")
