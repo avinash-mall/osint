@@ -23,13 +23,25 @@ DEFAULT_OUTPUT = Path(__file__).resolve().parent / "models" / "geoint_yolov8_obb
 DEFAULT_PROJECT = REPO_ROOT / "training_dataset" / "runs"
 
 
+def parse_batch(value: str) -> int | float:
+    normalized = value.strip().lower()
+    if normalized == "auto":
+        return -1
+    try:
+        if any(char in normalized for char in (".", "e")):
+            return float(normalized)
+        return int(normalized)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("batch must be 'auto', an int, or a float fraction") from exc
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train YOLOv8 for SentinelOS GEOINT inference.")
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA, help="YOLO data.yaml path.")
     parser.add_argument("--base-model", default="yolov8n-obb.pt", help="Base OBB checkpoint, e.g. yolov8n-obb.pt/yolov8s-obb.pt.")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--imgsz", type=int, default=640)
-    parser.add_argument("--batch", default="auto", help="Batch size or auto.")
+    parser.add_argument("--batch", type=parse_batch, default=-1, help="Batch size, GPU memory fraction, or auto.")
     parser.add_argument("--device", default=None, help="Ultralytics device, e.g. cpu, 0, 0,1.")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--patience", type=int, default=25)
@@ -83,6 +95,7 @@ def main() -> int:
             "base_model": args.base_model,
             "epochs": args.epochs,
             "imgsz": args.imgsz,
+            "batch": args.batch,
         }
         args.output.with_suffix(".json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
         print(f"Promoted trained model to {args.output}")
