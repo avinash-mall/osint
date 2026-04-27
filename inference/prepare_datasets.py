@@ -56,7 +56,8 @@ DEFAULT_RAW_ROOT = DEFAULT_ROOT / "raw"
 TILE_SIZE = 640
 OVERLAP = 0.2
 DEFAULT_SPLIT = (0.8, 0.1, 0.1)
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp", ".jp2"}
+ARCHIVE_SUFFIXES = {".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz"}
 XVIEW_ARCHIVES = {"train_images.zip", "train_labels.zip", "val_images.zip"}
 
 
@@ -381,6 +382,15 @@ def find_images(root: Path) -> dict[str, Path]:
     return images
 
 
+def image_lookup(path: Path, images: dict[str, Path]) -> Path | None:
+    return images.get(path.name) or images.get(path.stem) or images.get(path.with_suffix("").name)
+
+
+def is_archive(path: Path) -> bool:
+    name = path.name.lower()
+    return path.suffix.lower() in ARCHIVE_SUFFIXES or name.endswith((".tar.gz", ".tar.bz2", ".tar.xz"))
+
+
 def parse_number_list(value: Any) -> list[float]:
     if isinstance(value, str):
         value = value.replace(";", ",").replace(" ", ",")
@@ -548,7 +558,7 @@ def process_xview(raw_root: Path) -> dict[Path, list[Annotation]]:
     for feature in data.get("features", []):
         props = feature.get("properties", {})
         image_id = str(props.get("image_id") or props.get("IMAGE_ID") or "")
-        image_path = images.get(image_id) or images.get(Path(image_id).stem)
+        image_path = image_lookup(Path(image_id), images)
         if not image_path:
             continue
         type_id = props.get("type_id", props.get("TYPE_ID"))
@@ -572,29 +582,101 @@ def process_xview(raw_root: Path) -> dict[Path, list[Annotation]]:
     return grouped
 
 
+def parse_dota_line(line: str, image_size: tuple[int, int] | None) -> Annotation | None:
+    parts = line.strip().lstrip("\ufeff").split()
+    if len(parts) < 9:
+        return None
+    if parts[0].lower().startswith(("imagesource", "gsd")):
+        return None
+
+    try:
+        class_id = int(parts[0])
+        coords = [float(part) for part in parts[1:9]]
+    except ValueError:
+        class_id = -1
+        coords = []
+
+    if image_size and class_id >= 0 and len(coords) == 8 and all(0.0 <= value <= 1.0 for value in coords):
+        width, height = image_size
+        scaled = [value * (width if index % 2 == 0 else height) for index, value in enumerate(coords)]
+        label = DOTA_CLASSES[class_id] if 0 <= class_id < len(DOTA_CLASSES) else f"dota_class_{class_id}"
+        polygon = values_to_polygon(scaled)
+        return Annotation(label, polygon, "dota") if polygon else None
+
+    try:
+        coords = [float(part) for part in parts[:8]]
+    except ValueError:
+        return None
+    label = f"dota_{sanitize_label(parts[8])}"
+    polygon = values_to_polygon(coords)
+    return Annotation(label, polygon, "dota") if polygon else None
+
+
+def dota_label_files(raw_root: Path) -> list[Path]:
+    label_dirs = [
+        path for path in raw_root.rglob("*")
+        if path.is_dir() and "label" in path.name.lower()
+    ]
+    files: list[Path] = []
+    for directory in label_dirs:
+        files.extend(directory.rglob("*.txt"))
+    if not files:
+        files = list(raw_root.rglob("*.txt"))
+    return sorted(set(files))
+
+
+def print_dota_empty_diagnostics(
+    raw_root: Path,
+    images: dict[str, Path],
+    label_files: list[Path],
+    matched_labels: int,
+    parsed_annotations: int,
+) -> None:
+    unique_images = sorted({path for path in images.values()})
+    print("DOTA: no usable image/label pairs found")
+    print(f"  raw root: {raw_root}")
+    print(f"  images found: {len(unique_images)}")
+    print(f"  label txt files found: {len(label_files)}")
+    print(f"  label files matched to images: {matched_labels}")
+    print(f"  parsed annotations: {parsed_annotations}")
+    if unique_images:
+        print("  sample images:")
+        for path in unique_images[:5]:
+            print(f"    {path.relative_to(raw_root) if path.is_relative_to(raw_root) else path}")
+    if label_files:
+        print("  sample label files:")
+        for path in label_files[:5]:
+            print(f"    {path.relative_to(raw_root) if path.is_relative_to(raw_root) else path}")
+
+
 def process_dota(raw_root: Path) -> dict[Path, list[Annotation]]:
+    extract_nested_archives(raw_root)
     images = find_images(raw_root)
-    label_files = list(raw_root.rglob("labelTxt/*.txt")) or list(raw_root.rglob("*.txt"))
+    label_files = dota_label_files(raw_root)
     grouped: dict[Path, list[Annotation]] = {}
+    matched_labels = 0
+    parsed_annotations = 0
     for label_path in label_files:
-        image_path = images.get(label_path.stem)
+        image_path = image_lookup(label_path, images)
         if not image_path:
             continue
+        matched_labels += 1
+        image_size = None
+        try:
+            with Image.open(image_path) as image:
+                image_size = image.size
+        except Exception:
+            pass
         annotations: list[Annotation] = []
         for line in label_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-            parts = line.strip().split()
-            if len(parts) < 9 or parts[0].lower().startswith("imagesource"):
-                continue
-            try:
-                coords = [float(part) for part in parts[:8]]
-            except ValueError:
-                continue
-            label = f"dota_{sanitize_label(parts[8])}"
-            polygon = values_to_polygon(coords)
-            if polygon:
-                annotations.append(Annotation(label, polygon, "dota"))
+            annotation = parse_dota_line(line, image_size)
+            if annotation:
+                annotations.append(annotation)
+                parsed_annotations += 1
         if annotations:
             grouped[image_path] = annotations
+    if not grouped:
+        print_dota_empty_diagnostics(raw_root, images, label_files, matched_labels, parsed_annotations)
     return grouped
 
 
@@ -770,13 +852,13 @@ def extract_archive(archive: Path, destination: Path) -> None:
     if archive.suffix.lower() == ".zip":
         with zipfile.ZipFile(archive) as zf:
             zf.extractall(destination)
-    elif archive.suffix.lower() in {".tar", ".gz", ".tgz", ".bz2", ".xz"} or archive.name.endswith((".tar.gz", ".tar.bz2")):
+    elif is_archive(archive):
         with tarfile.open(archive, "r:*") as tf:
             tf.extractall(destination)
 
 
 def extract_nested_archives(root: Path, archive_names: set[str] | None = None) -> None:
-    for archive in list(root.rglob("*.zip")):
+    for archive in [path for path in root.rglob("*") if path.is_file() and is_archive(path)]:
         if archive_names and archive.name not in archive_names:
             continue
         marker = archive.with_suffix(archive.suffix + ".extracted")
@@ -866,6 +948,8 @@ def import_archives(dataset: str, raw_root: Path, archives: list[str]) -> None:
             extract_archive(source, raw_root)
     if dataset == "xview":
         normalize_xview_layout(raw_root)
+    else:
+        extract_nested_archives(raw_root)
 
 
 def parse_split(value: str) -> tuple[float, float, float]:
@@ -876,6 +960,19 @@ def parse_split(value: str) -> tuple[float, float, float]:
     if total <= 0:
         raise argparse.ArgumentTypeError("split sum must be > 0")
     return parts[0] / total, parts[1] / total, parts[2] / total
+
+
+def datasets_from_archive_args(items: list[str]) -> list[str]:
+    names: list[str] = []
+    for item in items:
+        if "=" not in item:
+            raise SystemExit(f"Invalid --dataset-archive value: {item}")
+        name, _source = item.split("=", 1)
+        if name not in PROCESSORS:
+            raise SystemExit(f"Unsupported dataset in --dataset-archive: {name}")
+        if name not in names:
+            names.append(name)
+    return names
 
 
 def write_summary(root: Path, stats: list[ConversionStats], registry: ClassRegistry) -> None:
@@ -903,7 +1000,7 @@ def write_summary(root: Path, stats: list[ConversionStats], registry: ClassRegis
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Download and prepare GEOINT datasets for YOLOv8 + SAHI.")
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT, help="Dataset workspace root. Defaults to repo/training_dataset.")
-    parser.add_argument("--datasets", nargs="+", default=list(PROCESSORS), choices=list(PROCESSORS), help="Datasets to prepare.")
+    parser.add_argument("--datasets", nargs="+", default=None, choices=list(PROCESSORS), help="Datasets to prepare.")
     parser.add_argument("--download", action="store_true", help="Best-effort download/sync public datasets before conversion.")
     parser.add_argument("--archive", action="append", default=[], help="Archive, directory, or HTTP URL to import into every selected dataset raw folder.")
     parser.add_argument("--dataset-archive", action="append", default=[], help="Per-dataset import in the form dataset=path_or_url.")
@@ -919,6 +1016,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+    selected_datasets = args.datasets
+    if selected_datasets is None:
+        selected_datasets = datasets_from_archive_args(args.dataset_archive) or list(PROCESSORS)
     root = args.root.resolve()
     raw_root = root / "raw"
     yolo_root = root / "yolo"
@@ -929,7 +1029,7 @@ def main() -> int:
     registry.preload(DOTA_CLASSES)
     registry.preload(FMOW_CLASSES)
 
-    for dataset in args.datasets:
+    for dataset in selected_datasets:
         dataset_raw = raw_root / dataset
         if args.archive:
             import_archives(dataset, dataset_raw, args.archive)
@@ -945,7 +1045,7 @@ def main() -> int:
     stats: list[ConversionStats] = []
     manifest_path = yolo_root / "manifest.jsonl"
     with manifest_path.open("w", encoding="utf-8") as manifest:
-        for dataset in args.datasets:
+        for dataset in selected_datasets:
             dataset_raw = raw_root / dataset
             if not dataset_raw.exists():
                 print(f"{dataset}: raw directory not found, skipping: {dataset_raw}")
