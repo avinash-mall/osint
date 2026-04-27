@@ -34,6 +34,7 @@ import {
 import 'leaflet/dist/leaflet.css';
 import { useEventStream } from '../hooks/useEventStream';
 import View3D from './View3D';
+import { type UploadJob, uploadMessage, uploadProgress, uploadProgressClass, uploadStage } from '../utils/uploadProgress';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 const TILE_PROXY_URL = import.meta.env.VITE_TILE_PROXY_URL || 'http://localhost:8090';
@@ -89,18 +90,6 @@ interface ImageryRow {
   acquisition_time?: string;
   cloud_cover?: number;
   footprint_geojson?: string | Record<string, any>;
-}
-
-interface UploadJob {
-  id: number;
-  upload_id: string;
-  filename: string;
-  media_type: string;
-  status: string;
-  celery_task_id?: string;
-  metadata?: Record<string, any> | string;
-  updated_at?: string;
-  created_at?: string;
 }
 
 interface FmvClip {
@@ -209,45 +198,6 @@ function MapFitToImagery({ imagery }: { imagery: ImageryRow | null }) {
     }
   }, [map, imagery?.id]);
   return null;
-}
-
-function uploadMetadata(job: UploadJob): Record<string, any> {
-  if (!job.metadata) return {};
-  if (typeof job.metadata === 'string') {
-    try {
-      return JSON.parse(job.metadata);
-    } catch {
-      return {};
-    }
-  }
-  return job.metadata;
-}
-
-function uploadProgress(job: UploadJob): number {
-  const metadata = uploadMetadata(job);
-  const progress = Number(metadata.progress);
-  if (Number.isFinite(progress)) return Math.max(0, Math.min(100, progress));
-  if (job.status === 'ready') return 100;
-  if (job.status === 'failed') return 100;
-  if (job.status === 'processing') return 15;
-  if (job.status === 'queued') return 5;
-  return 0;
-}
-
-function uploadStage(job: UploadJob): string {
-  const metadata = uploadMetadata(job);
-  return String(metadata.stage || job.status || 'stored').replace(/_/g, ' ');
-}
-
-function uploadMessage(job: UploadJob): string {
-  const metadata = uploadMetadata(job);
-  return String(metadata.message || metadata.error || '');
-}
-
-function uploadProgressClass(job: UploadJob): string {
-  if (job.status === 'failed') return 'bg-rose-500';
-  if (job.status === 'ready') return 'bg-emerald-400';
-  return 'bg-blue-400';
 }
 
 export default function OperationsWorkspace() {

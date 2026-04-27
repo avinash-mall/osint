@@ -1,10 +1,11 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, ZoomControl, Polyline, Circle, GeoJSON, ImageOverlay, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import axios from 'axios';
 import { Crosshair, Navigation, ShieldAlert, Activity, Layers, Clock, Eye, Satellite, Filter } from 'lucide-react';
 import 'leaflet/dist/leaflet.css';
 import { useEventStream } from '../hooks/useEventStream';
+import { type UploadJob, isUploadActive, uploadMessage, uploadProgress, uploadProgressClass, uploadStage } from '../utils/uploadProgress';
 
 // API Configuration
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
@@ -90,6 +91,7 @@ export default function GaiaMap() {
   const [imagery, setImagery] = useState<any[]>([]);
   const [detectionsGeoJSON, setDetectionsGeoJSON] = useState<any>({ type: 'FeatureCollection', features: [] });
   const [basemapGeoJSON, setBasemapGeoJSON] = useState<any>({ type: 'FeatureCollection', features: [] });
+  const [uploadJobs, setUploadJobs] = useState<UploadJob[]>([]);
   const [selectedImagery, setSelectedImagery] = useState<number | null>(null);
   const [imageryOpacity, setImageryOpacity] = useState(0.8);
   const [timeRange, setTimeRange] = useState<{ start: string; end: string }>(() => {
@@ -106,9 +108,13 @@ export default function GaiaMap() {
     detections: true,
     tracks: true,
     static: true,
-    grid: false
+    grid: true
   });
   const [isLoading, setIsLoading] = useState(false);
+  const processingUploads = useMemo(
+    () => uploadJobs.filter((job) => job.media_type === 'imagery' && isUploadActive(job)).slice(0, 3),
+    [uploadJobs],
+  );
 
   const fetchData = useCallback(async () => {
       try {
@@ -139,6 +145,27 @@ export default function GaiaMap() {
     };
     fetchBasemap();
   }, []);
+
+  const fetchUploadJobs = useCallback(async () => {
+    try {
+      const response = await axios.get(`${API_URL}/api/ingest/uploads`);
+      setUploadJobs(response.data.uploads || []);
+    } catch (error) {
+      console.error("Error fetching upload jobs:", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchUploadJobs();
+  }, [fetchUploadJobs]);
+
+  useEffect(() => {
+    if (processingUploads.length === 0) return;
+    const timer = window.setInterval(() => {
+      fetchUploadJobs();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [processingUploads.length, fetchUploadJobs]);
 
   // Fetch imagery catalog
   const fetchImagery = useCallback(async () => {
@@ -184,11 +211,19 @@ export default function GaiaMap() {
   useEventStream('detections', useCallback(() => {
     fetchDetections();
     fetchImagery();
-  }, [fetchDetections, fetchImagery]));
+    fetchUploadJobs();
+  }, [fetchDetections, fetchImagery, fetchUploadJobs]));
 
   useEventStream('imagery', useCallback(() => {
     fetchImagery();
-  }, [fetchImagery]));
+    fetchUploadJobs();
+  }, [fetchImagery, fetchUploadJobs]));
+
+  useEventStream('ops', useCallback((message: any) => {
+    if (String(message?.type || '').startsWith('imagery_') || message?.type === 'upload_received') {
+      fetchUploadJobs();
+    }
+  }, [fetchUploadJobs]));
 
   const onEachDetection = (feature: any, layer: L.Layer) => {
     const props = feature.properties;
@@ -211,7 +246,7 @@ export default function GaiaMap() {
   const selectedImageryData = imagery.find(img => img.id === selectedImagery);
 
   return (
-    <div className="w-full h-full relative bg-slate-950 flex flex-col">
+    <div className="w-full h-full relative bg-slate-900 flex flex-col">
       {/* Top Overlay Panel */}
       <div className="absolute top-4 left-4 z-[400] bg-slate-900/90 p-4 rounded border border-slate-700 backdrop-blur-md shadow-2xl w-80 pointer-events-auto">
         <h2 className="text-slate-100 font-bold tracking-widest text-sm mb-3 flex items-center gap-2 uppercase">
@@ -309,7 +344,7 @@ export default function GaiaMap() {
         <MapContainer 
           center={[25.0, 55.0]} 
           zoom={6} 
-          style={{ height: '100%', width: '100%', background: '#020617' }}
+          style={{ height: '100%', width: '100%', background: '#0f172a' }}
           zoomControl={false}
         >
           <ZoomControl position="bottomright" />
@@ -320,7 +355,7 @@ export default function GaiaMap() {
           <ImageOverlay
             url="/world_map.svg"
             bounds={[[-85, -180], [85, 180]]}
-            opacity={0.28}
+            opacity={0.58}
           />
 
           {/* Offline vector basemap fallback */}
@@ -328,11 +363,11 @@ export default function GaiaMap() {
             <GeoJSON
               data={basemapGeoJSON}
               style={() => ({
-                color: '#64748b',
-                weight: 1,
-                opacity: 0.55,
-                fillColor: '#1e293b',
-                fillOpacity: 0.12
+                color: '#93c5fd',
+                weight: 1.2,
+                opacity: 0.92,
+                fillColor: '#1d4ed8',
+                fillOpacity: 0.18
               })}
             />
           )}
@@ -430,6 +465,35 @@ export default function GaiaMap() {
             <div className="flex items-center gap-2">
               <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div>
               Loading detections...
+            </div>
+          </div>
+        )}
+
+        {processingUploads.length > 0 && (
+          <div className="absolute bottom-4 left-4 z-[500] w-96 max-w-[calc(100%-2rem)] bg-slate-900/94 border border-slate-700 shadow-2xl p-3 pointer-events-auto">
+            <div className="text-xs font-bold uppercase tracking-widest text-slate-400 mb-2 flex items-center justify-between">
+              <span>Imagery Processing</span>
+              <span>{processingUploads.length}</span>
+            </div>
+            <div className="space-y-2">
+              {processingUploads.map((job) => {
+                const progress = uploadProgress(job);
+                return (
+                  <div key={job.upload_id} className="border border-slate-800 bg-slate-950/80 px-2 py-2">
+                    <div className="flex items-center justify-between gap-2 text-xs">
+                      <span className="text-slate-200 font-semibold truncate">{job.filename}</span>
+                      <span className="font-mono text-slate-400">{progress}%</span>
+                    </div>
+                    <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-slate-500">
+                      <span className="uppercase">{uploadStage(job)}</span>
+                      <span className="truncate">{uploadMessage(job)}</span>
+                    </div>
+                    <div className="mt-2 h-1.5 w-full bg-slate-800 overflow-hidden">
+                      <div className={`h-full transition-all duration-500 ${uploadProgressClass(job)}`} style={{ width: `${progress}%` }} />
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}

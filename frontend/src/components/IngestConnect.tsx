@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import axios from 'axios';
 import { Cable, CheckCircle2, DatabaseZap, FileImage, RadioTower, UploadCloud } from 'lucide-react';
+import { useEventStream } from '../hooks/useEventStream';
+import { type UploadJob, isUploadActive, uploadMessage, uploadProgress, uploadProgressClass, uploadStage } from '../utils/uploadProgress';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 
@@ -25,6 +27,9 @@ export default function IngestConnect() {
   const [autoProcess, setAutoProcess] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState('');
+  const [uploadTransferProgress, setUploadTransferProgress] = useState(0);
+  const [activeUploadId, setActiveUploadId] = useState<string | null>(null);
+  const [uploadJobs, setUploadJobs] = useState<UploadJob[]>([]);
   const [feeds, setFeeds] = useState<FeedSource[]>([]);
   const [feedForm, setFeedForm] = useState({
     name: 'AIS Gulf Feed',
@@ -45,13 +50,47 @@ export default function IngestConnect() {
     }
   };
 
+  const fetchUploadJobs = useCallback(async () => {
+    try {
+      const response = await axios.get(`${API_URL}/api/ingest/uploads`);
+      setUploadJobs(response.data.uploads || []);
+    } catch (error) {
+      console.error('Error fetching uploads:', error);
+    }
+  }, []);
+
   useEffect(() => {
     fetchFeeds();
-  }, []);
+    fetchUploadJobs();
+  }, [fetchUploadJobs]);
+
+  useEventStream('imagery', useCallback(() => {
+    fetchUploadJobs();
+  }, [fetchUploadJobs]));
+
+  useEventStream('ops', useCallback((message: any) => {
+    if (String(message?.type || '').startsWith('imagery_') || message?.type === 'upload_received') {
+      fetchUploadJobs();
+    }
+  }, [fetchUploadJobs]));
+
+  const activeJob = uploadJobs.find((job) => job.upload_id === activeUploadId)
+    || uploadJobs.find((job) => job.media_type === 'imagery' && isUploadActive(job))
+    || uploadJobs.find((job) => job.media_type === 'imagery')
+    || null;
+
+  useEffect(() => {
+    if (!activeJob || !isUploadActive(activeJob)) return;
+    const timer = window.setInterval(() => {
+      fetchUploadJobs();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [activeJob?.upload_id, activeJob?.status, fetchUploadJobs]);
 
   const uploadImage = async () => {
     if (!file || uploading) return;
     setUploading(true);
+    setUploadTransferProgress(0);
     setUploadStatus('');
     try {
       const form = new FormData();
@@ -59,9 +98,16 @@ export default function IngestConnect() {
       form.append('sensor_type', sensorType);
       form.append('auto_process', String(autoProcess));
       const response = await axios.post(`${API_URL}/api/ingest/upload`, form, {
-        headers: { 'Content-Type': 'multipart/form-data' }
+        headers: { 'Content-Type': 'multipart/form-data' },
+        onUploadProgress: (event) => {
+          if (event.total) {
+            setUploadTransferProgress(Math.round((event.loaded / event.total) * 100));
+          }
+        },
       });
+      setActiveUploadId(response.data.upload_id || null);
       setUploadStatus(autoProcess ? `Queued ${response.data.task_id}` : `Stored ${response.data.filename}`);
+      await fetchUploadJobs();
       setFile(null);
     } catch (error: any) {
       setUploadStatus(error.response?.data?.detail || 'Upload failed');
@@ -143,6 +189,33 @@ export default function IngestConnect() {
           {uploadStatus && (
             <div className="border border-slate-800 bg-slate-900 rounded px-4 py-3 text-sm font-mono text-blue-300">
               {uploadStatus}
+            </div>
+          )}
+
+          {(uploading || activeJob) && (
+            <div className="border border-slate-800 bg-slate-900/80 rounded px-4 py-3 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-xs uppercase tracking-wider text-slate-400">
+                    {uploading ? 'upload transfer' : uploadStage(activeJob)}
+                  </div>
+                  <div className="mt-1 font-mono text-xs text-slate-300 truncate">
+                    {uploading ? `${uploadTransferProgress}% uploaded` : uploadMessage(activeJob)}
+                  </div>
+                </div>
+                <div className="font-mono text-xs text-slate-400">
+                  {uploading ? uploadTransferProgress : uploadProgress(activeJob)}%
+                </div>
+              </div>
+              <div className="mt-3 h-2 w-full bg-slate-800 overflow-hidden rounded">
+                <div
+                  className={`h-full transition-all duration-500 ${uploading ? 'bg-sky-400' : uploadProgressClass(activeJob)}`}
+                  style={{ width: `${uploading ? uploadTransferProgress : uploadProgress(activeJob)}%` }}
+                />
+              </div>
+              {activeJob?.celery_task_id && (
+                <div className="mt-2 text-[10px] font-mono text-slate-500 truncate">task {activeJob.celery_task_id}</div>
+              )}
             </div>
           )}
         </section>
