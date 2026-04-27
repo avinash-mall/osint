@@ -100,11 +100,13 @@ services:
         condition: service_healthy
 
   inference:
-    build: ./inference
+    build:
+      context: ./inference
+      args:
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}
     image: sentinelos-inference:latest
     ports:
       - "8002:8001"
-    gpus: all
     environment:
       - DEVICE=auto
       - TRAINED_MODEL_PATH=/app/models/geoint_yolov8_obb.pt

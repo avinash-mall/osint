@@ -188,6 +188,29 @@ http://localhost:3001/ne_countries/{z}/{x}/{y}
 - **Output**: `{"status": "success", "detections": [{class, bbox, confidence}], "processing_time_ms": ...}`
 - **Health**: `GET /health` returns model path, model availability, SAHI availability, and device
 
+### GPU Portability
+
+Inference and training use `DEVICE=auto` by default: CUDA is preferred when the installed PyTorch build can use the host driver, otherwise inference falls back to CPU and training stops unless `--device cpu` is explicit. PyTorch CUDA wheels are not universal across all NVIDIA drivers, so choose the wheel index that matches the target machine when building or preparing an environment.
+
+```bash
+# Driver reports CUDA 12.4, for example NVIDIA driver 550.x
+TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124 docker compose -f docker-compose.yml -f docker-compose.gpu.yml build inference
+
+# Newer CUDA wheel families can be selected the same way
+TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128 docker compose -f docker-compose.yml -f docker-compose.gpu.yml build inference
+
+# CPU-only fallback for machines without NVIDIA GPUs
+TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu docker compose build inference
+```
+
+For direct `.venv` usage, install the matching PyTorch wheel before training or running `uvicorn`:
+
+```bash
+pip uninstall -y torch torchvision torchaudio
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
+```
+
 ### GEOINT Model Training
 
 Large public GEOINT datasets have different access models. xView and DOTA commonly require manual download/terms acceptance; fMoW and RarePlanes can be synced from public S3; FAIR1M can be pulled from available mirrors such as Hugging Face when permitted.

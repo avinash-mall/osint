@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,20 @@ def parse_batch(value: str) -> int | float:
         raise argparse.ArgumentTypeError("batch must be 'auto', an int, or a float fraction") from exc
 
 
+def nvidia_smi_summary() -> str | None:
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return "; ".join(lines) if lines else None
+
+
 def resolve_device(requested: str | None) -> str | None:
     if requested and requested.lower() != "auto":
         return requested
@@ -53,12 +68,21 @@ def resolve_device(requested: str | None) -> str | None:
         print(f"Using CUDA device 0: {device_name} (torch CUDA {cuda_version})")
         return "0"
 
+    message = (
+        "PyTorch reports CUDA is unavailable, so GPU training cannot start.\n"
+        f"  torch: {torch.__version__}\n"
+        f"  torch CUDA: {cuda_version}\n"
+    )
+    gpu_summary = nvidia_smi_summary()
+    if gpu_summary:
+        message += f"  nvidia-smi: {gpu_summary}\n"
+    message += (
+        "\nFix the CUDA/driver mismatch, then rerun training. "
+        "Use --device cpu only if you intentionally want CPU training."
+    )
     if requested == "auto" or requested is None:
-        print(
-            "WARNING: PyTorch reports CUDA is unavailable; training will run on CPU. "
-            f"torch={torch.__version__}, torch CUDA={cuda_version}"
-        )
-    return "cpu" if requested == "auto" else None
+        raise SystemExit(message)
+    return None
 
 
 def build_parser() -> argparse.ArgumentParser:
