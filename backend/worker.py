@@ -536,6 +536,7 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
         with db.get_session() as session:
             session.run("""
                 MERGE (sp:SatellitePass {postgis_id: $pass_id})
+                ON CREATE SET sp.created_at = datetime()
                 SET sp.name = $name,
                     sp.sensor_type = $sensor_type,
                     sp.acquisition_time = $acq_time,
@@ -545,7 +546,6 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
                     sp.max_lon = $max_lon,
                     sp.max_lat = $max_lat,
                     sp.updated_at = datetime()
-                ON CREATE SET sp.created_at = datetime()
             """, {
                 "pass_id": pass_id,
                 "name": filename,

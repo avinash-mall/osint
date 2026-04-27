@@ -87,6 +87,11 @@ export default function IngestConnect() {
     return () => window.clearInterval(timer);
   }, [activeJob?.upload_id, activeJob?.status, fetchUploadJobs]);
 
+  useEffect(() => {
+    if (!activeJob || activeJob.upload_id !== activeUploadId) return;
+    setUploadStatus(`${uploadStage(activeJob)} ${uploadProgress(activeJob)}%`);
+  }, [activeJob, activeUploadId]);
+
   const uploadImage = async () => {
     if (!file || uploading) return;
     setUploading(true);

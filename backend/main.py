@@ -2140,7 +2140,7 @@ def list_upload_jobs():
             ORDER BY updated_at DESC, created_at DESC
             LIMIT 250
         """)
-        return {"uploads": [dict(row) for row in cursor.fetchall()]}
+        return {"uploads": [reconciled_upload_job(dict(row)) for row in cursor.fetchall()]}
 
 
 @app.get("/api/basemap/countries")
@@ -2569,6 +2569,65 @@ def get_ingest_job(task_id: str):
     elif isinstance(result.info, dict):
         payload["progress"] = result.info
     return payload
+
+
+def celery_status_for_task(task_id: Optional[str]) -> Optional[dict]:
+    if not task_id:
+        return None
+    try:
+        from celery.result import AsyncResult
+
+        result = AsyncResult(task_id, app=celery_app)
+        payload = {
+            "task_id": task_id,
+            "celery_state": result.state.lower(),
+            "ready": result.ready(),
+        }
+        if isinstance(result.info, dict):
+            payload.update(result.info)
+        elif result.ready() and not result.successful():
+            payload["error"] = str(result.result)
+            payload["message"] = f"Imagery processing failed: {result.result}"
+        elif result.successful() and isinstance(result.result, dict):
+            payload.update(result.result)
+        return payload
+    except Exception as exc:
+        return {"task_id": task_id, "celery_state": "unknown", "message": f"Unable to inspect task state: {exc}"}
+
+
+def reconciled_upload_job(row: dict) -> dict:
+    job = dict(row)
+    metadata = job.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    task_status = celery_status_for_task(job.get("celery_task_id"))
+    if not task_status:
+        return job
+
+    celery_state = task_status.get("celery_state")
+    next_status = job.get("status")
+    next_metadata = {**metadata, **task_status}
+
+    if celery_state == "progress":
+        next_status = "processing"
+    elif celery_state == "success":
+        next_status = "ready"
+        next_metadata.setdefault("progress", 100)
+        next_metadata.setdefault("stage", "ready")
+        next_metadata.setdefault("message", "Imagery processing complete.")
+    elif celery_state == "failure":
+        next_status = "failed"
+        next_metadata.setdefault("stage", "failed")
+        next_metadata.setdefault("message", next_metadata.get("error", "Imagery processing failed."))
+    elif celery_state in {"pending", "received", "started", "retry"}:
+        next_metadata.setdefault("stage", "queued" if celery_state == "pending" else celery_state)
+        next_metadata.setdefault("progress", 5 if celery_state == "pending" else 10)
+        next_metadata.setdefault("message", "Waiting for imagery worker." if celery_state == "pending" else "Imagery worker accepted the task.")
+
+    job["status"] = next_status
+    job["metadata"] = next_metadata
+    return job
 
 
 @app.post("/api/ingest/url")
