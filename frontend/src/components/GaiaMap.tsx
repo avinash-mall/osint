@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, ZoomControl, Polyline, Circle, GeoJSON, ImageOverlay, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import axios from 'axios';
-import { Crosshair, Navigation, ShieldAlert, Activity, Layers, Clock, Eye, Satellite, Filter } from 'lucide-react';
+import { Crosshair, Navigation, ShieldAlert, Activity, Layers, Clock, Eye, EyeOff, Satellite, Filter, Search } from 'lucide-react';
 import 'leaflet/dist/leaflet.css';
 import { useEventStream } from '../hooks/useEventStream';
 import { type UploadJob, isUploadActive, uploadMessage, uploadProgress, uploadProgressClass, uploadStage } from '../utils/uploadProgress';
@@ -26,16 +26,35 @@ const blueIcon = createIcon('#3b82f6');
 const redIcon = createIcon('#ef4444');
 const emeraldIcon = createIcon('#10b981');
 
+function detectionLabel(feature: any) {
+  return String(feature?.properties?.class || feature?.properties?.label || 'Unknown');
+}
+
+function detectionColor(label: string) {
+  const colors: Record<string, string> = {
+    Vessel: '#3b82f6',
+    Aircraft: '#ef4444',
+    Facility: '#10b981',
+    Vehicle: '#60a5fa',
+    Ship: '#22d3ee',
+    Plane: '#fb7185',
+    Building: '#a78bfa',
+    Unknown: '#f59e0b',
+  };
+  if (colors[label]) return colors[label];
+  let hash = 0;
+  for (let i = 0; i < label.length; i += 1) hash = (hash * 31 + label.charCodeAt(i)) % 360;
+  return `hsl(${hash}, 78%, 62%)`;
+}
+
+function confidenceValue(feature: any) {
+  const confidence = Number(feature?.properties?.confidence);
+  return Number.isFinite(confidence) ? confidence : 0;
+}
+
 // Detection style by class
 const getDetectionStyle = (feature: any) => {
-  const cls = feature.properties?.class || 'Unknown';
-  const colors: Record<string, string> = {
-    'Vessel': '#3b82f6',
-    'Aircraft': '#ef4444',
-    'Facility': '#10b981',
-    'Unknown': '#f59e0b'
-  };
-  const color = colors[cls] || '#f59e0b';
+  const color = detectionColor(detectionLabel(feature));
   return {
     color: color,
     weight: 2,
@@ -94,6 +113,8 @@ export default function GaiaMap() {
   const [uploadJobs, setUploadJobs] = useState<UploadJob[]>([]);
   const [selectedImagery, setSelectedImagery] = useState<number | null>(null);
   const [imageryOpacity, setImageryOpacity] = useState(0.8);
+  const [hiddenDetectionLabels, setHiddenDetectionLabels] = useState<string[]>([]);
+  const [detectionLabelSearch, setDetectionLabelSearch] = useState('');
   const [timeRange, setTimeRange] = useState<{ start: string; end: string }>(() => {
     const now = new Date();
     const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
@@ -115,6 +136,29 @@ export default function GaiaMap() {
     () => uploadJobs.filter((job) => job.media_type === 'imagery' && isUploadActive(job)).slice(0, 3),
     [uploadJobs],
   );
+  const detectionLabelStats = useMemo(() => {
+    const stats = new Map<string, { label: string; count: number; maxConfidence: number; color: string }>();
+    for (const feature of detectionsGeoJSON.features || []) {
+      const label = detectionLabel(feature);
+      const existing = stats.get(label) || { label, count: 0, maxConfidence: 0, color: detectionColor(label) };
+      existing.count += 1;
+      existing.maxConfidence = Math.max(existing.maxConfidence, confidenceValue(feature));
+      stats.set(label, existing);
+    }
+    return Array.from(stats.values()).sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+  }, [detectionsGeoJSON]);
+  const filteredDetectionsGeoJSON = useMemo(() => ({
+    ...detectionsGeoJSON,
+    features: (detectionsGeoJSON.features || []).filter((feature: any) => !hiddenDetectionLabels.includes(detectionLabel(feature))),
+  }), [detectionsGeoJSON, hiddenDetectionLabels]);
+  const filteredDetectionLabelStats = useMemo(() => {
+    const query = detectionLabelSearch.trim().toLowerCase();
+    return query
+      ? detectionLabelStats.filter((item) => item.label.toLowerCase().includes(query))
+      : detectionLabelStats;
+  }, [detectionLabelSearch, detectionLabelStats]);
+  const maxDetectionLabelCount = Math.max(1, ...detectionLabelStats.map((item) => item.count));
+  const visibleDetectionCount = filteredDetectionsGeoJSON.features?.length || 0;
 
   const fetchData = useCallback(async () => {
       try {
@@ -247,29 +291,131 @@ export default function GaiaMap() {
 
   return (
     <div className="w-full h-full relative bg-slate-900 flex flex-col">
-      {/* Top Overlay Panel */}
-      <div className="absolute top-4 left-4 z-[400] bg-slate-900/90 p-4 rounded border border-slate-700 backdrop-blur-md shadow-2xl w-80 pointer-events-auto">
-        <h2 className="text-slate-100 font-bold tracking-widest text-sm mb-3 flex items-center gap-2 uppercase">
-          <Activity className="w-4 h-4 text-emerald-500" /> Gaia Geo-Spatial
-        </h2>
-        <div className="flex flex-col gap-2">
-          <div className="flex justify-between items-center p-2 bg-slate-800/50 rounded border border-slate-800">
-             <span className="text-xs text-slate-400 font-semibold flex items-center gap-2"><Navigation className="w-3 h-3 text-blue-400"/> ACTIVE TRACKS</span>
-             <span className="text-sm font-mono text-slate-200">{data.tracks.length}</span>
-          </div>
-          <div className="flex justify-between items-center p-2 bg-slate-800/50 rounded border border-slate-800">
-             <span className="text-xs text-slate-400 font-semibold flex items-center gap-2"><ShieldAlert className="w-3 h-3 text-red-400"/> LAUNCH POINTS</span>
-             <span className="text-sm font-mono text-slate-200">{data.static.filter((s: any) => s.label === 'LaunchPoint').length}</span>
-          </div>
-          <div className="flex justify-between items-center p-2 bg-slate-800/50 rounded border border-slate-800">
-             <span className="text-xs text-slate-400 font-semibold flex items-center gap-2"><Eye className="w-3 h-3 text-emerald-400"/> DETECTIONS</span>
-             <span className="text-sm font-mono text-slate-200">{detectionsGeoJSON.features?.length || 0}</span>
-          </div>
-          <div className="flex justify-between items-center p-2 bg-slate-800/50 rounded border border-slate-800">
-             <span className="text-xs text-slate-400 font-semibold flex items-center gap-2"><Satellite className="w-3 h-3 text-indigo-400"/> SAT PASSES</span>
-             <span className="text-sm font-mono text-slate-200">{imagery.length}</span>
+      <div className="absolute top-4 left-4 z-[400] w-80 max-h-[calc(100%-7rem)] flex flex-col gap-3 pointer-events-none">
+        {/* Top Overlay Panel */}
+        <div className="bg-slate-900/92 p-4 rounded border border-slate-700 backdrop-blur-md shadow-2xl pointer-events-auto">
+          <h2 className="text-slate-100 font-bold tracking-widest text-sm mb-3 flex items-center gap-2 uppercase">
+            <Activity className="w-4 h-4 text-emerald-500" /> Gaia Geo-Spatial
+          </h2>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="flex justify-between items-center p-2 bg-slate-800/60 rounded border border-slate-800">
+              <span className="text-[10px] text-slate-400 font-semibold flex items-center gap-1.5"><Navigation className="w-3 h-3 text-blue-400"/> TRACKS</span>
+              <span className="text-sm font-mono text-slate-200">{data.tracks.length}</span>
+            </div>
+            <div className="flex justify-between items-center p-2 bg-slate-800/60 rounded border border-slate-800">
+              <span className="text-[10px] text-slate-400 font-semibold flex items-center gap-1.5"><ShieldAlert className="w-3 h-3 text-red-400"/> LAUNCH</span>
+              <span className="text-sm font-mono text-slate-200">{data.static.filter((s: any) => s.label === 'LaunchPoint').length}</span>
+            </div>
+            <div className="flex justify-between items-center p-2 bg-slate-800/60 rounded border border-slate-800">
+              <span className="text-[10px] text-slate-400 font-semibold flex items-center gap-1.5"><Eye className="w-3 h-3 text-emerald-400"/> DETECTIONS</span>
+              <span className="text-sm font-mono text-slate-200">{visibleDetectionCount}/{detectionsGeoJSON.features?.length || 0}</span>
+            </div>
+            <div className="flex justify-between items-center p-2 bg-slate-800/60 rounded border border-slate-800">
+              <span className="text-[10px] text-slate-400 font-semibold flex items-center gap-1.5"><Satellite className="w-3 h-3 text-indigo-400"/> PASSES</span>
+              <span className="text-sm font-mono text-slate-200">{imagery.length}</span>
+            </div>
           </div>
         </div>
+
+        <div className="bg-slate-900/92 p-3 rounded border border-slate-700 backdrop-blur-md shadow-2xl pointer-events-auto">
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <h3 className="text-xs font-bold text-slate-300 tracking-widest uppercase flex items-center gap-2">
+              <Filter className="w-3 h-3 text-emerald-400" /> Detection Labels
+            </h3>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setHiddenDetectionLabels([])}
+                className="h-6 px-2 border border-slate-700 bg-slate-800 text-[10px] text-slate-300 hover:text-white"
+              >
+                All
+              </button>
+              <button
+                type="button"
+                onClick={() => setHiddenDetectionLabels(detectionLabelStats.map((item) => item.label))}
+                className="h-6 px-2 border border-slate-700 bg-slate-800 text-[10px] text-slate-300 hover:text-white"
+              >
+                None
+              </button>
+            </div>
+          </div>
+          <div className="h-8 mb-2 border border-slate-700 bg-slate-950/80 flex items-center px-2 gap-2">
+            <Search className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+            <input
+              value={detectionLabelSearch}
+              onChange={(event) => setDetectionLabelSearch(event.target.value)}
+              placeholder="Search labels"
+              className="min-w-0 flex-1 bg-transparent text-xs text-slate-200 placeholder:text-slate-600 focus:outline-none"
+            />
+          </div>
+          <div className="max-h-56 overflow-y-auto pr-1 space-y-1">
+            {filteredDetectionLabelStats.length === 0 && (
+              <div className="h-16 border border-dashed border-slate-700 grid place-items-center text-xs text-slate-500">
+                No detections in view
+              </div>
+            )}
+            {filteredDetectionLabelStats.map((item) => {
+              const hidden = hiddenDetectionLabels.includes(item.label);
+              return (
+                <button
+                  key={item.label}
+                  type="button"
+                  onClick={() => setHiddenDetectionLabels((current) => (
+                    current.includes(item.label)
+                      ? current.filter((label) => label !== item.label)
+                      : [...current, item.label]
+                  ))}
+                  className={`w-full text-left border px-2 py-2 transition ${hidden ? 'border-slate-800 bg-slate-950/70 text-slate-500' : 'border-slate-700 bg-slate-800/70 text-slate-200 hover:border-slate-500'}`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="h-2.5 w-2.5 shrink-0" style={{ backgroundColor: item.color }} />
+                    <span className="min-w-0 flex-1 truncate text-xs font-semibold">{item.label}</span>
+                    <span className="font-mono text-xs">{item.count}</span>
+                    {hidden ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </div>
+                  <div className="mt-1 flex items-center gap-2">
+                    <div className="h-1.5 flex-1 bg-slate-950 overflow-hidden">
+                      <div
+                        className="h-full"
+                        style={{ width: `${Math.max(4, (item.count / maxDetectionLabelCount) * 100)}%`, backgroundColor: item.color }}
+                      />
+                    </div>
+                    <span className="w-12 text-right text-[10px] font-mono text-slate-500">
+                      {Math.round(item.maxConfidence * 100)}%
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Imagery Selector Panel */}
+        {imagery.length > 0 && (
+          <div className="bg-slate-900/92 p-3 rounded border border-slate-700 backdrop-blur-md shadow-2xl pointer-events-auto min-h-0 overflow-y-auto">
+            <h3 className="text-xs font-bold text-slate-400 tracking-widest uppercase mb-2 flex items-center gap-2">
+              <Satellite className="w-3 h-3" /> Available Imagery
+            </h3>
+            <div className="flex flex-col gap-1">
+              {imagery.map((img) => (
+                <button
+                  key={img.id}
+                  onClick={() => setSelectedImagery(selectedImagery === img.id ? null : img.id)}
+                  className={`text-left p-2 rounded text-xs transition border ${
+                    selectedImagery === img.id
+                      ? 'bg-indigo-500/20 border-indigo-500 text-indigo-300'
+                      : 'bg-slate-800/50 border-slate-700 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
+                  }`}
+                >
+                  <div className="font-semibold truncate">{img.name}</div>
+                  <div className="text-[10px] opacity-70 mt-0.5">
+                    {img.sensor_type} | {new Date(img.acquisition_time).toLocaleString()} | {img.cloud_cover}% cloud
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Layer Control Panel */}
@@ -312,33 +458,6 @@ export default function GaiaMap() {
           </div>
         )}
       </div>
-
-      {/* Imagery Selector Panel */}
-      {imagery.length > 0 && (
-        <div className="absolute top-48 left-4 z-[400] bg-slate-900/90 p-3 rounded border border-slate-700 backdrop-blur-md shadow-2xl w-80 pointer-events-auto max-h-64 overflow-y-auto">
-          <h3 className="text-xs font-bold text-slate-400 tracking-widest uppercase mb-2 flex items-center gap-2">
-            <Satellite className="w-3 h-3" /> Available Imagery
-          </h3>
-          <div className="flex flex-col gap-1">
-            {imagery.map((img) => (
-              <button
-                key={img.id}
-                onClick={() => setSelectedImagery(selectedImagery === img.id ? null : img.id)}
-                className={`text-left p-2 rounded text-xs transition border ${
-                  selectedImagery === img.id
-                    ? 'bg-indigo-500/20 border-indigo-500 text-indigo-300'
-                    : 'bg-slate-800/50 border-slate-700 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
-                }`}
-              >
-                <div className="font-semibold truncate">{img.name}</div>
-                <div className="text-[10px] opacity-70 mt-0.5">
-                  {img.sensor_type} | {new Date(img.acquisition_time).toLocaleString()} | {img.cloud_cover}% cloud
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
 
       <div className="flex-1 relative">
         <MapContainer 
@@ -417,9 +536,10 @@ export default function GaiaMap() {
           })}
 
           {/* Detection Overlay */}
-          {activeLayers.detections && detectionsGeoJSON.features && detectionsGeoJSON.features.length > 0 && (
+          {activeLayers.detections && filteredDetectionsGeoJSON.features && filteredDetectionsGeoJSON.features.length > 0 && (
             <GeoJSON
-              data={detectionsGeoJSON}
+              key={`detections-${hiddenDetectionLabels.join('|')}-${filteredDetectionsGeoJSON.features.length}`}
+              data={filteredDetectionsGeoJSON}
               style={getDetectionStyle}
               onEachFeature={onEachDetection}
             />
