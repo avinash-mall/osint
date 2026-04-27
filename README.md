@@ -211,6 +211,10 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
 ```
 
+On multi-GPU machines, training auto-selects all visible GPUs by passing `device=0,1,...` to Ultralytics. Override with `--device 0`, `--device 1`, or `--device 0,1` to limit training to specific GPUs. Dataloader workers and CPU compute threads are calculated automatically unless `--workers`, `OMP_NUM_THREADS`, or `MKL_NUM_THREADS` are set.
+
+Inference also auto-selects all visible GPUs. The service loads one model replica per GPU and round-robins concurrent requests across those replicas. To restrict inference devices, set `DEVICE=0`, `DEVICE=0,1`, `DEVICE=cuda:2`, or `DEVICE=cpu`. The `/detect` endpoint offloads model work to a threadpool, while each model replica is locked so concurrent requests do not share the same model object unsafely. On CPU-only machines, start inference with `python inference/serve.py`; it automatically calculates Uvicorn worker processes and CPU threads per process. Override with `WEB_CONCURRENCY` or `CPU_THREADS` only when needed.
+
 ### GEOINT Model Training
 
 Large public GEOINT datasets have different access models. xView and DOTA commonly require manual download/terms acceptance; fMoW and RarePlanes can be synced from public S3; FAIR1M can be pulled from available mirrors such as Hugging Face when permitted.
