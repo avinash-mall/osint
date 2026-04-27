@@ -20,11 +20,16 @@ WORKDIR /app
 # Install Python dependencies
 COPY requirements.txt .
 
-# Install CPU-only PyTorch first to prevent CUDA wheels from being pulled in
-RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# Install CPU-only PyTorch first to prevent CUDA wheels from being pulled in.
+# --extra-index-url keeps normal dependencies such as filelock resolvable from PyPI.
+RUN pip install --no-cache-dir \
+    --extra-index-url https://download.pytorch.org/whl/cpu \
+    torch torchvision
 
 # Install remaining dependencies (ultralytics, sahi, etc.)
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir \
+    --extra-index-url https://download.pytorch.org/whl/cpu \
+    -r requirements.txt
 
 COPY . .
 

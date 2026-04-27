@@ -11,9 +11,13 @@ Default output is the repository-level training_dataset/ directory:
     yolo/classes.json
     yolo/manifest.jsonl
 
-The script converts available raw datasets into YOLO horizontal bounding boxes.
-DOTA and FAIR1M oriented boxes are converted to enclosing horizontal boxes because
-the current inference service uses standard YOLOv8 + SAHI detection, not YOLO-OBB.
+The script converts available raw datasets into YOLO OBB labels:
+
+  class x1 y1 x2 y2 x3 y3 x4 y4
+
+Coordinates are normalized by tile size. DOTA and FAIR1M keep their native
+oriented corners. Datasets with horizontal boxes are represented as axis-aligned
+OBB polygons so all classes can train in one YOLO OBB model.
 
 Several source datasets require registration or very large cloud downloads. The
 download command is therefore best-effort and does not bypass dataset terms. If a
@@ -53,6 +57,7 @@ TILE_SIZE = 640
 OVERLAP = 0.2
 DEFAULT_SPLIT = (0.8, 0.1, 0.1)
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
+XVIEW_ARCHIVES = {"train_images.zip", "train_labels.zip", "val_images.zip"}
 
 
 XVIEW_TYPE_ID_TO_NAME = {
@@ -208,8 +213,12 @@ FMOW_CLASSES = [
 @dataclass(frozen=True)
 class Annotation:
     label: str
-    bbox: tuple[float, float, float, float]
+    polygon: tuple[float, float, float, float, float, float, float, float]
     source: str
+
+    @property
+    def bbox(self) -> tuple[float, float, float, float]:
+        return polygon_bbox(self.polygon)
 
 
 @dataclass
@@ -294,28 +303,71 @@ def clamp_bbox(bbox: tuple[float, float, float, float], width: int, height: int)
     return x1, y1, x2, y2
 
 
-def polygon_to_bbox(values: list[float]) -> tuple[float, float, float, float] | None:
+def rect_to_polygon(bbox: tuple[float, float, float, float]) -> tuple[float, float, float, float, float, float, float, float]:
+    x1, y1, x2, y2 = bbox
+    return x1, y1, x2, y1, x2, y2, x1, y2
+
+
+def polygon_bbox(polygon: tuple[float, float, float, float, float, float, float, float]) -> tuple[float, float, float, float]:
+    xs = polygon[0::2]
+    ys = polygon[1::2]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def values_to_polygon(values: list[float]) -> tuple[float, float, float, float, float, float, float, float] | None:
     if len(values) < 4:
         return None
     if len(values) == 4:
         x1, y1, x2, y2 = values
-        return min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)
-    xs = values[0::2]
-    ys = values[1::2]
-    return min(xs), min(ys), max(xs), max(ys)
+        return rect_to_polygon((min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)))
+    if len(values) >= 8:
+        return tuple(values[:8])  # type: ignore[return-value]
+    return None
 
 
-def yolo_line(class_id: int, bbox: tuple[float, float, float, float], tile_size: int) -> str | None:
-    x1, y1, x2, y2 = bbox
-    if x2 <= x1 or y2 <= y1:
+def yolo_obb_line(class_id: int, polygon: tuple[float, float, float, float, float, float, float, float], tile_size: int) -> str | None:
+    bbox = polygon_bbox(polygon)
+    if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
         return None
-    cx = ((x1 + x2) / 2.0) / tile_size
-    cy = ((y1 + y2) / 2.0) / tile_size
-    width = (x2 - x1) / tile_size
-    height = (y2 - y1) / tile_size
-    if width <= 0 or height <= 0:
+    normalized = []
+    for index, value in enumerate(polygon):
+        norm = value / tile_size
+        if norm < 0.0 or norm > 1.0:
+            return None
+        normalized.append(norm)
+    if polygon_area(polygon) <= 0:
         return None
-    return f"{class_id} {cx:.6f} {cy:.6f} {width:.6f} {height:.6f}"
+    coords = " ".join(f"{value:.6f}" for value in normalized)
+    return f"{class_id} {coords}"
+
+
+def polygon_area(polygon: tuple[float, float, float, float, float, float, float, float]) -> float:
+    points = list(zip(polygon[0::2], polygon[1::2]))
+    total = 0.0
+    for index, (x1, y1) in enumerate(points):
+        x2, y2 = points[(index + 1) % len(points)]
+        total += x1 * y2 - x2 * y1
+    return abs(total) / 2.0
+
+
+def polygon_inside_tile(
+    polygon: tuple[float, float, float, float, float, float, float, float],
+    tile_bbox: tuple[int, int, int, int],
+) -> bool:
+    x1, y1, x2, y2 = tile_bbox
+    points = list(zip(polygon[0::2], polygon[1::2]))
+    return all(x1 <= px <= x2 and y1 <= py <= y2 for px, py in points)
+
+
+def shift_polygon(
+    polygon: tuple[float, float, float, float, float, float, float, float],
+    x_offset: int,
+    y_offset: int,
+) -> tuple[float, float, float, float, float, float, float, float]:
+    shifted = []
+    for index, value in enumerate(polygon):
+        shifted.append(value - (x_offset if index % 2 == 0 else y_offset))
+    return tuple(shifted)  # type: ignore[return-value]
 
 
 def find_images(root: Path) -> dict[str, Path]:
@@ -356,6 +408,7 @@ def write_data_yaml(yolo_root: Path, registry: ClassRegistry) -> None:
     names = [name.replace("'", "") for name in registry.names]
     lines = [
         f"path: {yolo_root.resolve().as_posix()}",
+        "task: obb",
         "train: train/images",
         "val: val/images",
         "test: test/images",
@@ -391,9 +444,9 @@ def convert_image_to_tiles(
 
     width, height = image.size
     valid_annotations = [
-        Annotation(ann.label, clamped, ann.source)
+        ann
         for ann in annotations
-        if (clamped := clamp_bbox(ann.bbox, width, height)) is not None
+        if clamp_bbox(ann.bbox, width, height) is not None
     ]
 
     stride = max(1, int(tile_size * (1.0 - overlap)))
@@ -415,13 +468,10 @@ def convert_image_to_tiles(
                 ann_area = area(ann.bbox)
                 if ann_area <= 0 or area(intersection) / ann_area < min_visibility:
                     continue
-                local = (
-                    intersection[0] - x0,
-                    intersection[1] - y0,
-                    intersection[2] - x0,
-                    intersection[3] - y0,
-                )
-                line = yolo_line(registry.add(ann.label), local, tile_size)
+                if not polygon_inside_tile(ann.polygon, tile_bbox):
+                    continue
+                local = shift_polygon(ann.polygon, x0, y0)
+                line = yolo_obb_line(registry.add(ann.label), local, tile_size)
                 if line:
                     label_lines.append(line)
 
@@ -481,9 +531,15 @@ def area(bbox: tuple[float, float, float, float]) -> float:
 
 
 def process_xview(raw_root: Path) -> dict[Path, list[Annotation]]:
-    geojson_candidates = list(raw_root.rglob("*train*.geojson")) + list(raw_root.rglob("*.geojson"))
+    normalize_xview_layout(raw_root)
+    geojson_candidates = (
+        list(raw_root.rglob("*train*.geojson"))
+        + list(raw_root.rglob("*xview*.geojson"))
+        + list(raw_root.rglob("*.geojson"))
+    )
     if not geojson_candidates:
         print("xView: no GeoJSON labels found")
+        print(f"Expected train_labels.zip extracted under {raw_root}, containing xView train GeoJSON labels.")
         return {}
     geojson_path = geojson_candidates[0]
     images = find_images(raw_root)
@@ -503,16 +559,16 @@ def process_xview(raw_root: Path) -> dict[Path, list[Annotation]]:
         if type_id_int in {75, 82}:
             continue
         label = XVIEW_TYPE_ID_TO_NAME.get(type_id_int, f"xview_type_{type_id_int}")
-        bbox = None
+        polygon = None
         for key in ("bounds_imcoords", "BOUNDS_IMCOORDS"):
             if props.get(key):
-                bbox = polygon_to_bbox(parse_number_list(props[key]))
+                polygon = values_to_polygon(parse_number_list(props[key]))
                 break
-        if bbox is None:
+        if polygon is None:
             coords = feature.get("geometry", {}).get("coordinates", [])
-            bbox = polygon_to_bbox(parse_number_list(coords))
-        if bbox:
-            grouped.setdefault(image_path, []).append(Annotation(label, bbox, "xview"))
+            polygon = values_to_polygon(parse_number_list(coords))
+        if polygon:
+            grouped.setdefault(image_path, []).append(Annotation(label, polygon, "xview"))
     return grouped
 
 
@@ -534,9 +590,9 @@ def process_dota(raw_root: Path) -> dict[Path, list[Annotation]]:
             except ValueError:
                 continue
             label = f"dota_{sanitize_label(parts[8])}"
-            bbox = polygon_to_bbox(coords)
-            if bbox:
-                annotations.append(Annotation(label, bbox, "dota"))
+            polygon = values_to_polygon(coords)
+            if polygon:
+                annotations.append(Annotation(label, polygon, "dota"))
         if annotations:
             grouped[image_path] = annotations
     return grouped
@@ -565,9 +621,9 @@ def process_fair1m(raw_root: Path) -> dict[Path, list[Annotation]]:
                     node = obj.find(f".//{tag}")
                     if node is not None:
                         points.extend(parse_number_list([child.text for child in node if child.text]))
-            bbox = polygon_to_bbox(points)
-            if bbox:
-                annotations.append(Annotation(label, bbox, "fair1m"))
+            polygon = values_to_polygon(points)
+            if polygon:
+                annotations.append(Annotation(label, polygon, "fair1m"))
         if annotations:
             grouped[image_path] = annotations
     return grouped
@@ -603,7 +659,7 @@ def process_coco(raw_root: Path, dataset_prefix: str) -> dict[Path, list[Annotat
                 continue
             x, y, w, h = [float(v) for v in bbox[:4]]
             label = categories.get(ann.get("category_id"), f"{dataset_prefix}_category_{ann.get('category_id')}")
-            grouped.setdefault(image_path, []).append(Annotation(label, (x, y, x + w, y + h), dataset_prefix))
+            grouped.setdefault(image_path, []).append(Annotation(label, rect_to_polygon((x, y, x + w, y + h)), dataset_prefix))
         if grouped:
             break
     return grouped
@@ -631,14 +687,14 @@ def process_fmow(raw_root: Path) -> dict[Path, list[Annotation]]:
         for item in boxes:
             raw_box = item.get("box") if isinstance(item, dict) else item
             values = parse_number_list(raw_box)
-            bbox = polygon_to_bbox(values)
-            if bbox:
-                annotations.append(Annotation(label, bbox, "fmow"))
+            polygon = values_to_polygon(values)
+            if polygon:
+                annotations.append(Annotation(label, polygon, "fmow"))
         if not annotations:
             try:
                 with Image.open(image_path) as image:
                     width, height = image.size
-                annotations.append(Annotation(label, (0.0, 0.0, float(width), float(height)), "fmow"))
+                annotations.append(Annotation(label, rect_to_polygon((0.0, 0.0, float(width), float(height))), "fmow"))
             except Exception:
                 continue
         grouped[image_path] = annotations
@@ -719,6 +775,33 @@ def extract_archive(archive: Path, destination: Path) -> None:
             tf.extractall(destination)
 
 
+def extract_nested_archives(root: Path, archive_names: set[str] | None = None) -> None:
+    for archive in list(root.rglob("*.zip")):
+        if archive_names and archive.name not in archive_names:
+            continue
+        marker = archive.with_suffix(archive.suffix + ".extracted")
+        if marker.exists():
+            continue
+        destination = archive.parent / archive.stem
+        print(f"Extracting nested archive {archive.name} -> {destination}")
+        extract_archive(archive, destination)
+        marker.write_text("ok\n", encoding="utf-8")
+
+
+def normalize_xview_layout(raw_root: Path) -> None:
+    extract_nested_archives(raw_root, XVIEW_ARCHIVES)
+
+    train_images = raw_root / "train_images.zip"
+    train_labels = raw_root / "train_labels.zip"
+    val_images = raw_root / "val_images.zip"
+    for archive in (train_images, train_labels, val_images):
+        if archive.exists():
+            marker = archive.with_suffix(archive.suffix + ".extracted")
+            if not marker.exists():
+                extract_archive(archive, raw_root / archive.stem)
+                marker.write_text("ok\n", encoding="utf-8")
+
+
 def run_aws_sync(bucket_uri: str, destination: Path, extra_args: list[str] | None = None) -> None:
     destination.mkdir(parents=True, exist_ok=True)
     command = ["aws", "s3", "sync", "--no-sign-request", bucket_uri, str(destination)]
@@ -731,7 +814,7 @@ def download_dataset(dataset: str, raw_root: Path, args: argparse.Namespace) -> 
     if dataset == "xview":
         print("xView requires registration/terms acceptance. Download from https://xviewdataset.org/ and place files under:")
         print(f"  {raw_root}")
-        print("Expected files include xView_train.geojson and train/validation image archives.")
+        print("Expected archives: train_images.zip, train_labels.zip, val_images.zip.")
         return
     if dataset == "dota":
         print("DOTA downloads are distributed from the official DOTA site and mirrors. Place extracted images and labelTxt under:")
@@ -773,7 +856,16 @@ def import_archives(dataset: str, raw_root: Path, archives: list[str]) -> None:
             else:
                 print(f"WARNING: source does not exist: {item}", file=sys.stderr)
                 continue
-        extract_archive(source, raw_root)
+        if dataset == "xview" and source.name in XVIEW_ARCHIVES:
+            destination = raw_root / source.stem
+            extract_archive(source, destination)
+            marker = source.with_suffix(source.suffix + ".extracted")
+            if source.parent == raw_root:
+                marker.write_text("ok\n", encoding="utf-8")
+        else:
+            extract_archive(source, raw_root)
+    if dataset == "xview":
+        normalize_xview_layout(raw_root)
 
 
 def parse_split(value: str) -> tuple[float, float, float]:

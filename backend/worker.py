@@ -294,19 +294,39 @@ def slice_and_infer(cog_path: str, pass_id: int, chip_size: int = 640, overlap: 
                         abs_px_x2 = abs_px_x1 + chip_px_w
                         abs_px_y2 = abs_px_y1 + chip_px_h
 
-                        # Convert pixel coords to geo coords
-                        lon1, lat1 = xy(transform, abs_px_y1, abs_px_x1, offset="center")
-                        lon2, lat2 = xy(transform, abs_px_y2, abs_px_x2, offset="center")
+                        pixel_obb = []
+                        if det.get("obb") and len(det["obb"]) == 8:
+                            for index, value in enumerate(det["obb"]):
+                                if index % 2 == 0:
+                                    pixel_obb.append(x + float(value) * win_width)
+                                else:
+                                    pixel_obb.append(y + float(value) * win_height)
+                        else:
+                            pixel_obb = [
+                                abs_px_x1, abs_px_y1,
+                                abs_px_x2, abs_px_y1,
+                                abs_px_x2, abs_px_y2,
+                                abs_px_x1, abs_px_y2,
+                            ]
 
-                        # Reproject to EPSG:4326 if needed
+                        pixel_points = list(zip(pixel_obb[0::2], pixel_obb[1::2]))
+                        lons, lats = [], []
+                        for px, py in pixel_points:
+                            lon, lat = xy(transform, py, px, offset="center")
+                            lons.append(lon)
+                            lats.append(lat)
+
                         if crs and crs.to_string() != "EPSG:4326":
                             from rasterio.warp import transform as rasterio_transform
-                            (lon1, lon2), (lat1, lat2) = rasterio_transform(
-                                crs, "EPSG:4326", [lon1, lon2], [lat1, lat2]
-                            )
+                            lons, lats = rasterio_transform(crs, "EPSG:4326", lons, lats)
+
+                        geo_polygon = [coord for point in zip(lons, lats) for coord in point]
+                        lon1, lat1, lon2, lat2 = min(lons), min(lats), max(lons), max(lats)
 
                         det["pixel_bbox"] = [abs_px_x1, abs_px_y1, abs_px_x2, abs_px_y2]
+                        det["pixel_obb"] = pixel_obb
                         det["geo_bbox"] = [lon1, lat1, lon2, lat2]
+                        det["geo_polygon"] = geo_polygon
                         detections.append(det)
                     
                 except Exception as e:
@@ -330,10 +350,14 @@ def store_detections(detections: list, pass_id: int):
             confidence = det.get("confidence", 0.0)
             det_class = det.get("class", "Unknown")
             pixel_bbox = det.get("pixel_bbox", [])
+            geo_polygon = det.get("geo_polygon") or [lon1, lat1, lon1, lat2, lon2, lat2, lon2, lat1]
             
             # Create WKT polygons
-            geom_wkt = f"POLYGON(({lon1} {lat1}, {lon1} {lat2}, {lon2} {lat2}, {lon2} {lat1}, {lon1} {lat1}))"
-            centroid_wkt = f"POINT({(lon1+lon2)/2} {(lat1+lat2)/2})"
+            pairs = list(zip(geo_polygon[0::2], geo_polygon[1::2]))
+            if pairs[0] != pairs[-1]:
+                pairs.append(pairs[0])
+            geom_wkt = "POLYGON((" + ", ".join(f"{lon} {lat}" for lon, lat in pairs) + "))"
+            centroid_wkt = f"POINT({sum(lon for lon, _lat in pairs[:-1]) / max(1, len(pairs) - 1)} {sum(lat for _lon, lat in pairs[:-1]) / max(1, len(pairs) - 1)})"
             
             cursor.execute("""
                 INSERT INTO detections (pass_id, class, confidence, geom, centroid, pixel_bbox, metadata)
@@ -345,8 +369,8 @@ def store_detections(detections: list, pass_id: int):
                 confidence,
                 geom_wkt,
                 centroid_wkt,
-                json.dumps({"bbox": pixel_bbox}),
-                json.dumps({"source": "inference", "chip_size": 640})
+                json.dumps({"bbox": pixel_bbox, "obb": det.get("pixel_obb", [])}),
+                json.dumps({"source": "inference", "chip_size": 640, "geo_polygon": geo_polygon})
             ))
             
             det_id = cursor.fetchone()["id"]

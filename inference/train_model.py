@@ -6,7 +6,7 @@ Default input:
   training_dataset/yolo/data.yaml
 
 Default promoted output:
-  inference/models/geoint_yolov8.pt
+  inference/models/geoint_yolov8_obb.pt
 """
 
 from __future__ import annotations
@@ -19,14 +19,14 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA = REPO_ROOT / "training_dataset" / "yolo" / "data.yaml"
-DEFAULT_OUTPUT = Path(__file__).resolve().parent / "models" / "geoint_yolov8.pt"
+DEFAULT_OUTPUT = Path(__file__).resolve().parent / "models" / "geoint_yolov8_obb.pt"
 DEFAULT_PROJECT = REPO_ROOT / "training_dataset" / "runs"
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train YOLOv8 for SentinelOS GEOINT inference.")
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA, help="YOLO data.yaml path.")
-    parser.add_argument("--base-model", default="yolov8n.pt", help="Base checkpoint, e.g. yolov8n.pt/yolov8s.pt.")
+    parser.add_argument("--base-model", default="yolov8n-obb.pt", help="Base OBB checkpoint, e.g. yolov8n-obb.pt/yolov8s-obb.pt.")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--imgsz", type=int, default=640)
     parser.add_argument("--batch", default="auto", help="Batch size or auto.")
@@ -62,6 +62,7 @@ def main() -> int:
         "project": str(args.project.resolve()),
         "name": args.name,
         "exist_ok": True,
+        "task": "obb",
     }
     if args.device:
         train_kwargs["device"] = args.device

@@ -106,7 +106,7 @@ services:
       - "8002:8001"
     environment:
       - DEVICE=cpu
-      - TRAINED_MODEL_PATH=/app/models/geoint_yolov8.pt
+      - TRAINED_MODEL_PATH=/app/models/geoint_yolov8_obb.pt
       - CONFIDENCE_THRESHOLD=0.25
     volumes:
       - ./inference:/app

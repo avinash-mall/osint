@@ -182,8 +182,8 @@ http://localhost:3001/ne_countries/{z}/{x}/{y}
 
 ## AI Inference Service
 
-- **Model**: prefers `inference/models/geoint_yolov8.pt`; falls back to bundled `inference/yolov8n.pt`
-- **Modes**: SAHI sliced prediction (preferred), then plain YOLOv8
+- **Model**: prefers OBB checkpoint `inference/models/geoint_yolov8_obb.pt`; falls back to bundled `inference/yolov8n.pt`
+- **Modes**: YOLOv8 OBB for trained GEOINT models; SAHI sliced prediction remains available for horizontal fallback models
 - **Input**: `multipart/form-data` with `image` (PNG/JPEG, RGB) + `metadata` (JSON string)
 - **Output**: `{"status": "success", "detections": [{class, bbox, confidence}], "processing_time_ms": ...}`
 - **Health**: `GET /health` returns model path, model availability, SAHI availability, and device
@@ -193,16 +193,18 @@ http://localhost:3001/ne_countries/{z}/{x}/{y}
 Large public GEOINT datasets have different access models. xView and DOTA commonly require manual download/terms acceptance; fMoW and RarePlanes can be synced from public S3; FAIR1M can be pulled from available mirrors such as Hugging Face when permitted.
 
 ```bash
-# Prepare raw data into YOLOv8 format under ./training_dataset/yolo
+# Prepare raw data into YOLOv8 OBB format under ./training_dataset/yolo
 python inference/prepare_datasets.py --datasets xview dota fmow rareplanes fair1m --clean
 
-# Import manually downloaded archives/directories
-python inference/prepare_datasets.py --dataset-archive xview=D:\data\xview_train.zip --dataset-archive dota=D:\data\DOTA-v1.0
+# Import manually downloaded archives/directories.
+# xView expects train_images.zip, train_labels.zip, and val_images.zip.
+python inference/prepare_datasets.py --dataset-archive xview=D:\data\xview\train_images.zip --dataset-archive xview=D:\data\xview\train_labels.zip --dataset-archive xview=D:\data\xview\val_images.zip
+python inference/prepare_datasets.py --dataset-archive dota=D:\data\DOTA-v1.0
 
 # Best-effort public downloads for datasets that support open CLI access
 python inference/prepare_datasets.py --datasets fmow rareplanes fair1m --download
 
-# Train and promote best.pt to inference/models/geoint_yolov8.pt
+# Train and promote best.pt to inference/models/geoint_yolov8_obb.pt
 python inference/train_model.py --data training_dataset/yolo/data.yaml --epochs 100 --imgsz 640 --device 0
 ```
 

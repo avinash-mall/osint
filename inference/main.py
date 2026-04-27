@@ -29,6 +29,8 @@ def resolve_model_path() -> str:
     candidates = [
         os.getenv("MODEL_PATH"),
         os.getenv("TRAINED_MODEL_PATH"),
+        "/app/models/geoint_yolov8_obb.pt",
+        "models/geoint_yolov8_obb.pt",
         "/app/models/geoint_yolov8.pt",
         "models/geoint_yolov8.pt",
         "/app/yolov8n.pt",
@@ -41,6 +43,7 @@ def resolve_model_path() -> str:
 
 
 MODEL_PATH = resolve_model_path()
+MODEL_TASK = os.getenv("MODEL_TASK") or ("obb" if "obb" in os.path.basename(MODEL_PATH).lower() else "detect")
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.25"))
 DEVICE = os.getenv("DEVICE", "cpu")
 
@@ -48,7 +51,13 @@ detection_model = None
 
 def load_model():
     global detection_model
-    if SAHI_AVAILABLE:
+    if MODEL_TASK == "obb":
+        if YOLO_AVAILABLE and os.path.exists(MODEL_PATH):
+            detection_model = YOLO(MODEL_PATH)
+            print(f"[INFERENCE] YOLO OBB model loaded from {MODEL_PATH} on {DEVICE}")
+        else:
+            print(f"[INFERENCE] WARNING: OBB model file does not exist or ultralytics is unavailable: {MODEL_PATH}")
+    elif SAHI_AVAILABLE:
         try:
             detection_model = AutoDetectionModel.from_pretrained(
                 model_type='yolov8',
@@ -126,12 +135,39 @@ def run_inference(image: Image.Image, metadata: dict = None):
         try:
             results = detection_model(img_array, verbose=False)
             for r in results:
+                img_w, img_h = image.size
+                obb = getattr(r, "obb", None)
+                if obb is not None and getattr(obb, "xyxyxyxy", None) is not None:
+                    points_batch = obb.xyxyxyxy.cpu().numpy()
+                    classes = obb.cls.cpu().numpy() if obb.cls is not None else []
+                    confidences = obb.conf.cpu().numpy() if obb.conf is not None else []
+                    for index, points in enumerate(points_batch):
+                        flat = points.reshape(-1).tolist()
+                        xs = flat[0::2]
+                        ys = flat[1::2]
+                        x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
+                        cx = (x1 + x2) / 2 / img_w
+                        cy = (y1 + y2) / 2 / img_h
+                        w = (x2 - x1) / img_w
+                        h = (y2 - y1) / img_h
+                        cls_id = int(classes[index]) if len(classes) > index else 0
+                        cls_name = detection_model.names.get(cls_id, f"class_{cls_id}")
+                        detections.append({
+                            "class": cls_name,
+                            "bbox": [cx, cy, w, h],
+                            "obb": [
+                                max(0.0, min(1.0, flat[i] / (img_w if i % 2 == 0 else img_h)))
+                                for i in range(8)
+                            ],
+                            "confidence": float(confidences[index]) if len(confidences) > index else 0.0,
+                        })
+                    continue
+
                 boxes = r.boxes
                 if boxes is None:
                     continue
                 for box in boxes:
                     x1, y1, x2, y2 = box.xyxy[0].tolist()
-                    img_w, img_h = image.size
                     
                     cx = (x1 + x2) / 2 / img_w
                     cy = (y1 + y2) / 2 / img_h
@@ -159,6 +195,7 @@ def run_inference(image: Image.Image, metadata: dict = None):
         "detections": detections,
         "processing_time_ms": round(processing_time * 1000, 2),
         "model": MODEL_PATH,
+        "task": MODEL_TASK,
         "device": DEVICE
     }
 
@@ -204,6 +241,7 @@ def health():
         "status": "ok",
         "model_loaded": detection_model is not None,
         "model_path": MODEL_PATH,
+        "model_task": MODEL_TASK,
         "model_exists": os.path.exists(MODEL_PATH),
         "device": DEVICE,
         "sahi_available": SAHI_AVAILABLE,
