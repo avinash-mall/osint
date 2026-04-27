@@ -640,7 +640,17 @@ export default function OperationsWorkspace() {
         </div>
 
         {viewMode === 'globe' ? (
-          <View3D />
+          <View3D
+            targets={targets}
+            selectedTarget={selectedTarget}
+            imagery={imagery}
+            selectedImagery={selectedImagery}
+            imageryOpacity={imageryOpacity}
+            showAimpoints={showAimpoints}
+            showRanges={showRanges}
+            events={events}
+            onSelectTarget={setSelectedTargetId}
+          />
         ) : (
           <MapContainer center={mapCenter} zoom={selectedLatLon ? 5 : 4} style={{ height: '100%', width: '100%', background: '#020617' }} zoomControl={false}>
             <ZoomControl position="bottomright" />
