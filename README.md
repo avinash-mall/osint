@@ -182,11 +182,29 @@ http://localhost:3001/ne_countries/{z}/{x}/{y}
 
 ## AI Inference Service
 
-- **Model**: YOLOv8n bundled at `inference/yolov8n.pt` — no runtime download needed
-- **Modes**: SAHI sliced prediction (preferred) → plain YOLOv8 → mock (0–2 random detections when no model)
+- **Model**: prefers `inference/models/geoint_yolov8.pt`; falls back to bundled `inference/yolov8n.pt`
+- **Modes**: SAHI sliced prediction (preferred), then plain YOLOv8
 - **Input**: `multipart/form-data` with `image` (PNG/JPEG, RGB) + `metadata` (JSON string)
-- **Output**: `{"status": "success", "detections": [{class, bbox, confidence}], "processing_time_ms": …}`
-- **Health**: `GET /health` → `{"model_loaded": true, "sahi_available": true, …}`
+- **Output**: `{"status": "success", "detections": [{class, bbox, confidence}], "processing_time_ms": ...}`
+- **Health**: `GET /health` returns model path, model availability, SAHI availability, and device
+
+### GEOINT Model Training
+
+Large public GEOINT datasets have different access models. xView and DOTA commonly require manual download/terms acceptance; fMoW and RarePlanes can be synced from public S3; FAIR1M can be pulled from available mirrors such as Hugging Face when permitted.
+
+```bash
+# Prepare raw data into YOLOv8 format under ./training_dataset/yolo
+python inference/prepare_datasets.py --datasets xview dota fmow rareplanes fair1m --clean
+
+# Import manually downloaded archives/directories
+python inference/prepare_datasets.py --dataset-archive xview=D:\data\xview_train.zip --dataset-archive dota=D:\data\DOTA-v1.0
+
+# Best-effort public downloads for datasets that support open CLI access
+python inference/prepare_datasets.py --datasets fmow rareplanes fair1m --download
+
+# Train and promote best.pt to inference/models/geoint_yolov8.pt
+python inference/train_model.py --data training_dataset/yolo/data.yaml --epochs 100 --imgsz 640 --device 0
+```
 
 ---
 

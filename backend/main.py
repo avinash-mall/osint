@@ -2386,10 +2386,54 @@ async def upload_imagery(
     domain = domain_for_media(media_type, sensor_type)
     celery_task_id = None
     status = "stored"
+    upload_job_recorded = False
+    if media_type == "imagery":
+        with postgis_db.get_cursor(commit=True) as cursor:
+            cursor.execute("""
+                INSERT INTO upload_jobs (upload_id, filename, file_path, media_type, handler, status, celery_task_id, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                upload_id,
+                filename,
+                str(local_path),
+                media_type,
+                handler,
+                status,
+                None,
+                json.dumps({
+                    "sensor_type": sensor_type,
+                    "auto_process": auto_process,
+                    "bytes": size,
+                    "stage": "stored",
+                    "progress": 0,
+                    "message": "Upload stored.",
+                }),
+            ))
+        upload_job_recorded = True
+
     if media_type == "imagery" and auto_process:
-        task = process_satellite_imagery.delay(str(local_path), sensor_type, acquisition_time)
+        task = process_satellite_imagery.delay(str(local_path), sensor_type, acquisition_time, upload_id)
         celery_task_id = task.id
         status = "queued"
+        with postgis_db.get_cursor(commit=True) as cursor:
+            cursor.execute("""
+                UPDATE upload_jobs
+                SET status = %s,
+                    celery_task_id = %s,
+                    metadata = coalesce(metadata, '{}'::jsonb) || %s::jsonb,
+                    updated_at = NOW()
+                WHERE upload_id = %s
+            """, (
+                status,
+                celery_task_id,
+                json.dumps({
+                    "task_id": celery_task_id,
+                    "stage": "queued",
+                    "progress": 5,
+                    "message": "Imagery processing queued.",
+                }),
+                upload_id,
+            ))
         response.update({
             "task_id": task.id,
             "status_url": f"/api/ingest/jobs/{task.id}",
@@ -2476,20 +2520,28 @@ async def upload_imagery(
     else:
         response["message"] = "Upload received."
 
-    with postgis_db.get_cursor(commit=True) as cursor:
-        cursor.execute("""
-            INSERT INTO upload_jobs (upload_id, filename, file_path, media_type, handler, status, celery_task_id, metadata)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        """, (
-            upload_id,
-            filename,
-            response.get("clip", {}).get("file_path") or str(local_path),
-            media_type,
-            handler,
-            status,
-            celery_task_id,
-            json.dumps({"sensor_type": sensor_type, "auto_process": auto_process, "bytes": size}),
-        ))
+    if not upload_job_recorded:
+        with postgis_db.get_cursor(commit=True) as cursor:
+            cursor.execute("""
+                INSERT INTO upload_jobs (upload_id, filename, file_path, media_type, handler, status, celery_task_id, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                upload_id,
+                filename,
+                response.get("clip", {}).get("file_path") or str(local_path),
+                media_type,
+                handler,
+                status,
+                celery_task_id,
+                json.dumps({
+                    "sensor_type": sensor_type,
+                    "auto_process": auto_process,
+                    "bytes": size,
+                    "stage": status,
+                    "progress": 100 if status == "ready" else 0,
+                    "message": f"{media_type.title()} upload {status}.",
+                }),
+            ))
 
     publish_event("ingest", {"type": "upload_received", "upload": response})
     publish_event("ops", {"type": "upload_received", "upload": response})
@@ -2514,6 +2566,8 @@ def get_ingest_job(task_id: str):
             payload["result"] = result.result
         else:
             payload["error"] = str(result.result)
+    elif isinstance(result.info, dict):
+        payload["progress"] = result.info
     return payload
 
 

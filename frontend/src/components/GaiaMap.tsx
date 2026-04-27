@@ -61,6 +61,30 @@ function MapBoundsUpdater({ onBoundsChange }: { onBoundsChange: (bounds: string)
   return null;
 }
 
+function imageryBounds(imagery: any): L.LatLngBounds | null {
+  if (!imagery?.footprint_geojson) return null;
+  try {
+    const geometry = typeof imagery.footprint_geojson === 'string'
+      ? JSON.parse(imagery.footprint_geojson)
+      : imagery.footprint_geojson;
+    const bounds = L.geoJSON(geometry).getBounds();
+    return bounds.isValid() ? bounds : null;
+  } catch {
+    return null;
+  }
+}
+
+function MapFitToImagery({ imagery }: { imagery: any }) {
+  const map = useMap();
+  useEffect(() => {
+    const bounds = imageryBounds(imagery);
+    if (bounds) {
+      map.fitBounds(bounds.pad(0.15), { animate: true, maxZoom: 13 });
+    }
+  }, [map, imagery?.id]);
+  return null;
+}
+
 export default function GaiaMap() {
   const [data, setData] = useState<{ static: any[], tracks: any[] }>({ static: [], tracks: [] });
   const [imagery, setImagery] = useState<any[]>([]);
@@ -118,18 +142,18 @@ export default function GaiaMap() {
 
   // Fetch imagery catalog
   const fetchImagery = useCallback(async () => {
-    if (!mapBounds) return;
     try {
       const params = new URLSearchParams();
-      params.append('bbox', mapBounds);
       params.append('start_time', timeRange.start);
       params.append('end_time', timeRange.end);
       const response = await axios.get(`${API_URL}/api/imagery?${params.toString()}`);
-      setImagery(response.data.imagery || []);
+      const rows = response.data.imagery || [];
+      setImagery(rows);
+      setSelectedImagery((current) => (current && rows.some((row: any) => row.id === current) ? current : rows[0]?.id || null));
     } catch (error) {
       console.error("Error fetching imagery:", error);
     }
-  }, [mapBounds, timeRange]);
+  }, [timeRange]);
 
   useEffect(() => {
     fetchImagery();
@@ -161,6 +185,10 @@ export default function GaiaMap() {
     fetchDetections();
     fetchImagery();
   }, [fetchDetections, fetchImagery]));
+
+  useEventStream('imagery', useCallback(() => {
+    fetchImagery();
+  }, [fetchImagery]));
 
   const onEachDetection = (feature: any, layer: L.Layer) => {
     const props = feature.properties;
@@ -286,6 +314,7 @@ export default function GaiaMap() {
         >
           <ZoomControl position="bottomright" />
           <MapBoundsUpdater onBoundsChange={setMapBounds} />
+          <MapFitToImagery imagery={selectedImageryData} />
 
           {/* Base Layer */}
           <ImageOverlay

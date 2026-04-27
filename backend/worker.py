@@ -34,6 +34,52 @@ def publish_event(topic: str, payload: dict) -> None:
     except Exception as e:
         logger.warning("Failed to publish %s event: %s", topic, e)
 
+
+def update_upload_job(upload_id: str = None, file_path: str = None, status: str = None, metadata: dict = None) -> None:
+    if not upload_id and not file_path:
+        return
+
+    clauses = []
+    params = []
+    if status:
+        clauses.append("status = %s")
+        params.append(status)
+    if metadata:
+        clauses.append("metadata = coalesce(metadata, '{}'::jsonb) || %s::jsonb")
+        params.append(json.dumps(metadata, default=str))
+    clauses.append("updated_at = NOW()")
+
+    where = []
+    if upload_id:
+        where.append("upload_id = %s")
+        params.append(upload_id)
+    if file_path:
+        where.append("file_path = %s")
+        params.append(file_path)
+
+    try:
+        with postgis_db.get_cursor(commit=True) as cursor:
+            cursor.execute(f"UPDATE upload_jobs SET {', '.join(clauses)} WHERE {' OR '.join(where)}", params)
+    except Exception as exc:
+        logger.warning("Failed to update upload job status: %s", exc)
+
+
+def report_progress(task, upload_id: str, file_path: str, stage: str, progress: int, message: str, extra: dict = None) -> None:
+    progress = max(0, min(100, int(progress)))
+    payload = {
+        "upload_id": upload_id,
+        "stage": stage,
+        "progress": progress,
+        "message": message,
+        **(extra or {}),
+    }
+    update_upload_job(upload_id=upload_id, file_path=file_path, metadata=payload)
+    if task:
+        task.update_state(state="PROGRESS", meta=payload)
+    publish_event("imagery", {"type": "imagery_progress", **payload})
+    publish_event("ops", {"type": "imagery_progress", **payload})
+
+
 def ensure_cog(input_path: str, output_path: str) -> str:
     """Convert any raster to Cloud Optimized GeoTIFF."""
     if input_path.endswith(".nc") or input_path.endswith(".netcdf"):
@@ -169,7 +215,7 @@ def deduplicate_detections(detections: list, iou_threshold: float = 0.45) -> lis
     return kept
 
 
-def slice_and_infer(cog_path: str, pass_id: int, chip_size: int = 640, overlap: int = 100):
+def slice_and_infer(cog_path: str, pass_id: int, chip_size: int = 640, overlap: int = 100, progress_callback=None):
     """
     Slice COG into chips, send to inference service, and store results in PostGIS + Neo4j.
     """
@@ -183,8 +229,25 @@ def slice_and_infer(cog_path: str, pass_id: int, chip_size: int = 640, overlap: 
         
         # Calculate steps with overlap
         step = chip_size - overlap
-        for y in range(0, height, step):
-            for x in range(0, width, step):
+        y_steps = list(range(0, height, step))
+        x_steps = list(range(0, width, step))
+        total_windows = max(1, len(y_steps) * len(x_steps))
+        processed_windows = 0
+        last_reported_percent = -1
+
+        for y in y_steps:
+            for x in x_steps:
+                processed_windows += 1
+                if progress_callback:
+                    inferred_percent = int(processed_windows / total_windows * 100)
+                    if inferred_percent >= last_reported_percent + 5 or processed_windows == total_windows:
+                        last_reported_percent = inferred_percent
+                        progress_callback(
+                            "inference",
+                            55 + int(inferred_percent * 0.35),
+                            f"Running inference on raster chips ({processed_windows}/{total_windows}).",
+                            {"processed_chips": processed_windows, "total_chips": total_windows},
+                        )
                 win_width = min(chip_size, width - x)
                 win_height = min(chip_size, height - y)
                 window = Window(x, y, win_width, win_height)
@@ -390,100 +453,145 @@ def resolve_detections_for_pass(pass_id: int, distance_threshold_meters: float =
     return resolved
 
 
-@celery_app.task(queue="imagery")
-def process_satellite_imagery(image_url: str, sensor_type: str = "Optical", acquisition_time: str = None):
+@celery_app.task(queue="imagery", bind=True)
+def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical", acquisition_time: str = None, upload_id: str = None):
     """
     Full pipeline: download/validate -> COG conversion -> catalog -> inference -> store.
     """
-    logger.info("[WORKER] Processing satellite image: %s", image_url)
-    publish_event("imagery", {"type": "ingest_started", "image_url": image_url})
-    
-    # 1. Determine local path
-    input_path = resolve_input_path(image_url)
-    filename = os.path.basename(input_path)
-    
-    # 2. Convert to COG
-    cog_name = f"{os.path.splitext(filename)[0]}_cog.tif"
-    cog_path = os.path.join(IMAGERY_PATH, "processed", cog_name)
-    os.makedirs(os.path.dirname(cog_path), exist_ok=True)
-    
     try:
+        logger.info("[WORKER] Processing satellite image: %s", image_url)
+        publish_event("imagery", {"type": "ingest_started", "image_url": image_url, "upload_id": upload_id})
+        publish_event("ops", {"type": "imagery_ingest_started", "image_url": image_url, "upload_id": upload_id})
+
+        # 1. Determine local path
+        input_path = resolve_input_path(image_url)
+        filename = os.path.basename(input_path)
+        update_upload_job(
+            upload_id=upload_id,
+            file_path=input_path,
+            status="processing",
+            metadata={"task_id": self.request.id},
+        )
+        report_progress(self, upload_id, input_path, "processing", 10, "Resolved imagery input.")
+
+        # 2. Convert to COG
+        cog_name = f"{os.path.splitext(filename)[0]}_cog.tif"
+        cog_path = os.path.join(IMAGERY_PATH, "processed", cog_name)
+        os.makedirs(os.path.dirname(cog_path), exist_ok=True)
+
+        report_progress(self, upload_id, input_path, "conversion", 20, "Converting raster to Cloud Optimized GeoTIFF.")
         ensure_cog(input_path, cog_path)
         logger.info("[WORKER] COG created: %s", cog_path)
-    except Exception as e:
-        logger.exception("[WORKER] COG conversion failed: %s", e)
-        publish_event("imagery", {"type": "ingest_failed", "image_url": image_url, "error": str(e)})
-        raise
-    
-    # 3. Extract footprint and catalog in PostGIS
-    footprint, min_lon, min_lat, max_lon, max_lat = get_raster_footprint(cog_path)
-    footprint_wkt = footprint.wkt
-    
-    acq_time = acquisition_time or datetime.utcnow().isoformat()
-    
-    with postgis_db.get_cursor(commit=True) as cursor:
-        cursor.execute("""
-            INSERT INTO satellite_passes (name, file_path, sensor_type, acquisition_time, footprint, crs)
-            VALUES (%s, %s, %s, %s, ST_GeomFromText(%s, 4326), %s)
-            ON CONFLICT (file_path) DO UPDATE SET
-                name = EXCLUDED.name,
-                sensor_type = EXCLUDED.sensor_type,
-                acquisition_time = EXCLUDED.acquisition_time,
-                footprint = EXCLUDED.footprint
-            RETURNING id
-        """, (filename, cog_path, sensor_type, acq_time, footprint_wkt, "EPSG:4326"))
-        
-        pass_id = cursor.fetchone()["id"]
-    
-    logger.info("[WORKER] Cataloged in PostGIS with id=%s", pass_id)
-    
-    # 4. Create SatellitePass node in Neo4j
-    with db.get_session() as session:
-        session.run("""
-            MERGE (sp:SatellitePass {postgis_id: $pass_id})
-            SET sp.name = $name,
-                sp.sensor_type = $sensor_type,
-                sp.acquisition_time = $acq_time,
-                sp.file_path = $file_path,
-                sp.min_lon = $min_lon,
-                sp.min_lat = $min_lat,
-                sp.max_lon = $max_lon,
-                sp.max_lat = $max_lat,
-                sp.updated_at = datetime()
-            ON CREATE SET sp.created_at = datetime()
-        """, {
+        report_progress(self, upload_id, input_path, "conversion", 35, "COG conversion complete.", {"cog_path": cog_path})
+
+        # 3. Extract footprint and catalog in PostGIS
+        report_progress(self, upload_id, input_path, "cataloging", 45, "Extracting footprint and cataloging imagery.")
+        footprint, min_lon, min_lat, max_lon, max_lat = get_raster_footprint(cog_path)
+        footprint_wkt = footprint.wkt
+
+        acq_time = acquisition_time or datetime.utcnow().isoformat()
+
+        with postgis_db.get_cursor(commit=True) as cursor:
+            cursor.execute("""
+                INSERT INTO satellite_passes (name, file_path, sensor_type, acquisition_time, footprint, crs)
+                VALUES (%s, %s, %s, %s, ST_GeomFromText(%s, 4326), %s)
+                ON CONFLICT (file_path) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    sensor_type = EXCLUDED.sensor_type,
+                    acquisition_time = EXCLUDED.acquisition_time,
+                    footprint = EXCLUDED.footprint
+                RETURNING id
+            """, (filename, cog_path, sensor_type, acq_time, footprint_wkt, "EPSG:4326"))
+
+            pass_id = cursor.fetchone()["id"]
+
+        logger.info("[WORKER] Cataloged in PostGIS with id=%s", pass_id)
+        report_progress(self, upload_id, input_path, "classification", 50, "Imagery cataloged; preparing classification graph.", {"pass_id": pass_id})
+
+        # 4. Create SatellitePass node in Neo4j
+        with db.get_session() as session:
+            session.run("""
+                MERGE (sp:SatellitePass {postgis_id: $pass_id})
+                SET sp.name = $name,
+                    sp.sensor_type = $sensor_type,
+                    sp.acquisition_time = $acq_time,
+                    sp.file_path = $file_path,
+                    sp.min_lon = $min_lon,
+                    sp.min_lat = $min_lat,
+                    sp.max_lon = $max_lon,
+                    sp.max_lat = $max_lat,
+                    sp.updated_at = datetime()
+                ON CREATE SET sp.created_at = datetime()
+            """, {
+                "pass_id": pass_id,
+                "name": filename,
+                "sensor_type": sensor_type,
+                "acq_time": acq_time,
+                "file_path": cog_path,
+                "min_lon": min_lon,
+                "min_lat": min_lat,
+                "max_lon": max_lon,
+                "max_lat": max_lat
+            })
+
+        # 5. Tiling inference
+        report_progress(self, upload_id, input_path, "inference", 55, "Starting chip inference and classification.", {"pass_id": pass_id})
+        clear_existing_detections(pass_id)
+        logger.info("[WORKER] Starting tiling inference...")
+        detections = slice_and_infer(
+            cog_path,
+            pass_id,
+            progress_callback=lambda stage, progress, message, extra=None: report_progress(
+                self,
+                upload_id,
+                input_path,
+                stage,
+                progress,
+                message,
+                {"pass_id": pass_id, **(extra or {})},
+            ),
+        )
+        logger.info("[WORKER] Total detections after dedupe: %s", len(detections))
+        report_progress(self, upload_id, input_path, "classification", 90, "Inference complete; classifying detections.", {"pass_id": pass_id, "detections_count": len(detections)})
+
+        # 6. Store detections
+        report_progress(self, upload_id, input_path, "storage", 95, "Storing detections and resolving targets.", {"pass_id": pass_id})
+        stored_count = store_detections(detections, pass_id)
+        resolved_count = resolve_detections_for_pass(pass_id)
+        logger.info("[WORKER] Stored %s detections and resolved %s.", stored_count, resolved_count)
+
+        payload = {
             "pass_id": pass_id,
-            "name": filename,
-            "sensor_type": sensor_type,
-            "acq_time": acq_time,
-            "file_path": cog_path,
-            "min_lon": min_lon,
-            "min_lat": min_lat,
-            "max_lon": max_lon,
-            "max_lat": max_lat
+            "cog_path": cog_path,
+            "upload_id": upload_id,
+            "detections_count": stored_count,
+            "resolved_count": resolved_count,
+        }
+        update_upload_job(upload_id=upload_id, file_path=input_path, status="ready", metadata={
+            **payload,
+            "stage": "ready",
+            "progress": 100,
+            "message": "Imagery processing complete.",
         })
-    
-    # 5. Tiling inference
-    clear_existing_detections(pass_id)
-    logger.info("[WORKER] Starting tiling inference...")
-    detections = slice_and_infer(cog_path, pass_id)
-    logger.info("[WORKER] Total detections after dedupe: %s", len(detections))
-    
-    # 6. Store detections
-    stored_count = store_detections(detections, pass_id)
-    resolved_count = resolve_detections_for_pass(pass_id)
-    logger.info("[WORKER] Stored %s detections and resolved %s.", stored_count, resolved_count)
-    publish_event("detections", {
-        "type": "detections_updated",
-        "pass_id": pass_id,
-        "detections_count": stored_count,
-        "resolved_count": resolved_count,
-    })
-    publish_event("imagery", {"type": "ingest_succeeded", "pass_id": pass_id, "cog_path": cog_path})
-    
-    return {
-        "pass_id": pass_id,
-        "cog_path": cog_path,
-        "detections_count": stored_count,
-        "resolved_count": resolved_count
-    }
+        publish_event("detections", {"type": "detections_updated", **payload})
+        publish_event("imagery", {"type": "ingest_succeeded", "stage": "ready", "progress": 100, **payload})
+        publish_event("ops", {"type": "imagery_ready", "stage": "ready", "progress": 100, **payload})
+
+        return payload
+    except Exception as e:
+        logger.exception("[WORKER] Imagery ingest failed: %s", e)
+        failed_path = locals().get("input_path") or image_url
+        update_upload_job(
+            upload_id=upload_id,
+            file_path=failed_path,
+            status="failed",
+            metadata={
+                "error": str(e),
+                "task_id": self.request.id,
+                "stage": "failed",
+                "message": f"Imagery processing failed: {e}",
+            },
+        )
+        publish_event("imagery", {"type": "ingest_failed", "image_url": image_url, "upload_id": upload_id, "error": str(e)})
+        publish_event("ops", {"type": "imagery_failed", "image_url": image_url, "upload_id": upload_id, "error": str(e)})
+        raise

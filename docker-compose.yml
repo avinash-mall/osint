@@ -106,11 +106,12 @@ services:
       - "8002:8001"
     environment:
       - DEVICE=cpu
-      - MODEL_PATH=/app/yolov8n.pt
+      - TRAINED_MODEL_PATH=/app/models/geoint_yolov8.pt
       - CONFIDENCE_THRESHOLD=0.25
     volumes:
       - ./inference:/app
       - imagery_data:/data/imagery:ro
+      - ./training_dataset:/training_dataset
     working_dir: /app
 
   redis:

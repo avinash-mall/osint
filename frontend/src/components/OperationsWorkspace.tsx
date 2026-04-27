@@ -88,6 +88,19 @@ interface ImageryRow {
   sensor_type: string;
   acquisition_time?: string;
   cloud_cover?: number;
+  footprint_geojson?: string | Record<string, any>;
+}
+
+interface UploadJob {
+  id: number;
+  upload_id: string;
+  filename: string;
+  media_type: string;
+  status: string;
+  celery_task_id?: string;
+  metadata?: Record<string, any> | string;
+  updated_at?: string;
+  created_at?: string;
 }
 
 interface FmvClip {
@@ -174,6 +187,69 @@ function MapFocus({ selected }: { selected: OpsTarget | null }) {
   return null;
 }
 
+function imageryBounds(imagery?: ImageryRow | null): L.LatLngBounds | null {
+  if (!imagery?.footprint_geojson) return null;
+  try {
+    const geometry = typeof imagery.footprint_geojson === 'string'
+      ? JSON.parse(imagery.footprint_geojson)
+      : imagery.footprint_geojson;
+    const bounds = L.geoJSON(geometry as any).getBounds();
+    return bounds.isValid() ? bounds : null;
+  } catch {
+    return null;
+  }
+}
+
+function MapFitToImagery({ imagery }: { imagery: ImageryRow | null }) {
+  const map = useMap();
+  useEffect(() => {
+    const bounds = imageryBounds(imagery);
+    if (bounds) {
+      map.fitBounds(bounds.pad(0.15), { animate: true, maxZoom: 13 });
+    }
+  }, [map, imagery?.id]);
+  return null;
+}
+
+function uploadMetadata(job: UploadJob): Record<string, any> {
+  if (!job.metadata) return {};
+  if (typeof job.metadata === 'string') {
+    try {
+      return JSON.parse(job.metadata);
+    } catch {
+      return {};
+    }
+  }
+  return job.metadata;
+}
+
+function uploadProgress(job: UploadJob): number {
+  const metadata = uploadMetadata(job);
+  const progress = Number(metadata.progress);
+  if (Number.isFinite(progress)) return Math.max(0, Math.min(100, progress));
+  if (job.status === 'ready') return 100;
+  if (job.status === 'failed') return 100;
+  if (job.status === 'processing') return 15;
+  if (job.status === 'queued') return 5;
+  return 0;
+}
+
+function uploadStage(job: UploadJob): string {
+  const metadata = uploadMetadata(job);
+  return String(metadata.stage || job.status || 'stored').replace(/_/g, ' ');
+}
+
+function uploadMessage(job: UploadJob): string {
+  const metadata = uploadMetadata(job);
+  return String(metadata.message || metadata.error || '');
+}
+
+function uploadProgressClass(job: UploadJob): string {
+  if (job.status === 'failed') return 'bg-rose-500';
+  if (job.status === 'ready') return 'bg-emerald-400';
+  return 'bg-blue-400';
+}
+
 export default function OperationsWorkspace() {
   const [targets, setTargets] = useState<OpsTarget[]>([]);
   const [summary, setSummary] = useState({ total: 0, ready: 0, tasked: 0 });
@@ -183,6 +259,7 @@ export default function OperationsWorkspace() {
   const [viewMode, setViewMode] = useState<'map' | 'globe'>('map');
   const [feeds, setFeeds] = useState<FeedSource[]>([]);
   const [imagery, setImagery] = useState<ImageryRow[]>([]);
+  const [uploadJobs, setUploadJobs] = useState<UploadJob[]>([]);
   const [fmvClips, setFmvClips] = useState<FmvClip[]>([]);
   const [analyticsJobs, setAnalyticsJobs] = useState<any[]>([]);
   const [pedTasks, setPedTasks] = useState<any[]>([]);
@@ -220,12 +297,17 @@ export default function OperationsWorkspace() {
     () => imagery.find((row) => row.id === selectedImageryId) || null,
     [imagery, selectedImageryId],
   );
+  const imageryUploadJobs = useMemo(
+    () => uploadJobs.filter((job) => job.media_type === 'imagery'),
+    [uploadJobs],
+  );
 
   const refreshOps = useCallback(async () => {
     const [
       targetResponse,
       feedResponse,
       imageryResponse,
+      uploadResponse,
       fmvResponse,
       analyticsResponse,
       pedResponse,
@@ -236,6 +318,7 @@ export default function OperationsWorkspace() {
       axios.get(`${API_URL}/api/ops/targets`),
       axios.get(`${API_URL}/api/feeds`),
       axios.get(`${API_URL}/api/imagery`),
+      axios.get(`${API_URL}/api/ingest/uploads`),
       axios.get(`${API_URL}/api/fmv/clips`),
       axios.get(`${API_URL}/api/analytics/jobs`),
       axios.get(`${API_URL}/api/ped/tasks`),
@@ -249,13 +332,14 @@ export default function OperationsWorkspace() {
     setFeeds(feedResponse.data.feeds || []);
     const imageryRows = imageryResponse.data.imagery || [];
     setImagery(imageryRows);
+    setUploadJobs(uploadResponse.data.uploads || []);
     setFmvClips(fmvResponse.data.clips || []);
     setAnalyticsJobs(analyticsResponse.data.jobs || []);
     setPedTasks(pedResponse.data.tasks || []);
     setRequirements(requirementResponse.data.requirements || []);
     setReports(reportResponse.data.reports || []);
     setModels(modelResponse.data.models || []);
-    setSelectedImageryId((current) => (current && imageryRows.some((row: ImageryRow) => row.id === current) ? current : null));
+    setSelectedImageryId((current) => (current && imageryRows.some((row: ImageryRow) => row.id === current) ? current : imageryRows[0]?.id || null));
     setSelectedTargetId((current) => current || nextTargets[0]?.id || '');
   }, []);
 
@@ -269,6 +353,14 @@ export default function OperationsWorkspace() {
   useEventStream('ops', useCallback((message: any) => {
     setEvents((prev) => [
       { ...message, at: new Date().toISOString(), message: message.type || 'ops_event' },
+      ...prev,
+    ].slice(0, 8));
+    refreshOps().catch(() => undefined);
+  }, [refreshOps]));
+
+  useEventStream('imagery', useCallback((message: any) => {
+    setEvents((prev) => [
+      { ...message, at: new Date().toISOString(), message: message.type || 'imagery_event' },
       ...prev,
     ].slice(0, 8));
     refreshOps().catch(() => undefined);
@@ -603,6 +695,7 @@ export default function OperationsWorkspace() {
           <MapContainer center={mapCenter} zoom={selectedLatLon ? 5 : 4} style={{ height: '100%', width: '100%', background: '#020617' }} zoomControl={false}>
             <ZoomControl position="bottomright" />
             <MapFocus selected={selectedTarget} />
+            <MapFitToImagery imagery={selectedImagery} />
             <ImageOverlay url="/world_map.svg" bounds={[[-85, -180], [85, 180]]} opacity={0.34} />
             {selectedImagery && (
               <TileLayer
@@ -839,6 +932,38 @@ export default function OperationsWorkspace() {
                 />
               )}
               {imagery.length === 0 && <div className="text-xs text-slate-500 border border-slate-800 p-3">No imagery cataloged yet.</div>}
+            </div>
+          </section>}
+
+          {activePanel === 'layers' && <section>
+            <div className="text-xs uppercase tracking-wider text-slate-400 mb-2 flex items-center justify-between">
+              <span>Recent Uploads</span>
+              <span>{imageryUploadJobs.length}</span>
+            </div>
+            <div className="space-y-1">
+              {imageryUploadJobs.slice(0, 5).map((job) => {
+                const progress = uploadProgress(job);
+                const message = uploadMessage(job);
+                return (
+                <div key={job.upload_id} className="border border-slate-800 bg-slate-900/70 px-2 py-2 text-xs">
+                  <div className="font-semibold text-slate-300 truncate">{job.filename}</div>
+                  <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-slate-500">
+                    <span className="uppercase">{uploadStage(job)}</span>
+                    <span>{progress}%</span>
+                  </div>
+                  <div className="mt-1 h-1.5 w-full bg-slate-800 overflow-hidden">
+                    <div className={`h-full transition-all duration-500 ${uploadProgressClass(job)}`} style={{ width: `${progress}%` }} />
+                  </div>
+                  <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-slate-500">
+                    <span className="truncate">{message || job.status}</span>
+                    {job.celery_task_id && <span className="truncate">{job.celery_task_id.slice(0, 8)}</span>}
+                  </div>
+                </div>
+                );
+              })}
+              {imageryUploadJobs.length === 0 && (
+                <div className="text-xs text-slate-500 border border-slate-800 p-3">No imagery uploads yet.</div>
+              )}
             </div>
           </section>}
 

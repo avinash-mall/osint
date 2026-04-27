@@ -25,7 +25,22 @@ except ImportError:
 app = FastAPI(title="Magritte AIP Node - Satellite Imagery Inference")
 
 # Configuration
-MODEL_PATH = os.getenv("MODEL_PATH") or ("yolov8n.pt" if os.path.exists("yolov8n.pt") else "/app/yolov8n.pt")
+def resolve_model_path() -> str:
+    candidates = [
+        os.getenv("MODEL_PATH"),
+        os.getenv("TRAINED_MODEL_PATH"),
+        "/app/models/geoint_yolov8.pt",
+        "models/geoint_yolov8.pt",
+        "/app/yolov8n.pt",
+        "yolov8n.pt",
+    ]
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return os.getenv("MODEL_PATH") or os.getenv("TRAINED_MODEL_PATH") or "/app/models/geoint_yolov8.pt"
+
+
+MODEL_PATH = resolve_model_path()
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.25"))
 DEVICE = os.getenv("DEVICE", "cpu")
 
