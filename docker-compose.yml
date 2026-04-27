@@ -35,7 +35,7 @@ services:
 
   backend:
     build: ./backend
-    image: gotham-backend:latest
+    image: sentinelos-backend:latest
     ports:
       - "8080:8080"
     environment:
@@ -48,6 +48,7 @@ services:
       - INFERENCE_URL=http://inference:8001
       - IMAGERY_PATH=/data/imagery
       - FMV_PATH=/data/fmv
+      - DATASET_PATH=/data/datasets
     env_file:
       - .env
     depends_on:
@@ -63,10 +64,11 @@ services:
       - ./backend:/app
       - imagery_data:/data/imagery
       - fmv_data:/data/fmv
+      - dataset_data:/data/datasets
 
   frontend:
     build: ./frontend
-    image: gotham-frontend:latest
+    image: sentinelos-frontend:latest
     ports:
       - "3000:3000"
     depends_on:
@@ -99,7 +101,7 @@ services:
 
   inference:
     build: ./inference
-    image: gotham-inference:latest
+    image: sentinelos-inference:latest
     ports:
       - "8002:8001"
     environment:
@@ -118,7 +120,7 @@ services:
 
   worker:
     build: ./backend
-    image: gotham-backend:latest
+    image: sentinelos-backend:latest
     command: celery -A worker.celery_app worker --loglevel=info -Q imagery,default
     environment:
       - NEO4J_URI=bolt://neo4j:7687
@@ -129,6 +131,7 @@ services:
       - INFERENCE_URL=http://inference:8001
       - IMAGERY_PATH=/data/imagery
       - FMV_PATH=/data/fmv
+      - DATASET_PATH=/data/datasets
     depends_on:
       neo4j:
         condition: service_healthy
@@ -142,6 +145,7 @@ services:
       - ./backend:/app
       - imagery_data:/data/imagery
       - fmv_data:/data/fmv
+      - dataset_data:/data/datasets
 
   nginx:
     image: nginx:alpine
@@ -158,3 +162,4 @@ volumes:
   pg_data:
   imagery_data:
   fmv_data:
+  dataset_data:

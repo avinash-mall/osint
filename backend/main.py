@@ -19,7 +19,7 @@ from database import db, postgis_db
 from ai import AIUnavailable, ai_status, get_ai_response
 from worker import celery_app, process_satellite_imagery
 
-app = FastAPI(title="Gotham API")
+app = FastAPI(title="SentinelOS API")
 
 _platform_schema_lock = threading.Lock()
 _platform_schema_ready = False
@@ -101,6 +101,30 @@ class TrainingJobCreate(BaseModel):
     name: str
     dataset_path: Optional[str] = None
     epochs: int = 1
+
+
+class IngestUrlRequest(BaseModel):
+    url: str
+    domain: str = "OSINT"
+    source_type: str = "url"
+    title: Optional[str] = None
+    auto_process: bool = True
+
+
+class AIAnalysisRequest(BaseModel):
+    prompt: str
+    domain: Optional[str] = None
+    entity_id: Optional[str] = None
+    context: dict = Field(default_factory=dict)
+
+
+class AIActionProposalRequest(BaseModel):
+    prompt: str
+    domain: Optional[str] = None
+    action_type: str = "generate_report"
+    target_id: Optional[str] = None
+    payload: dict = Field(default_factory=dict)
+    risk_level: str = "low"
 
 
 class IngestRequest(BaseModel):
@@ -387,9 +411,106 @@ def ensure_platform_tables() -> None:
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                 )
             """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS observations (
+                    id SERIAL PRIMARY KEY,
+                    domain VARCHAR(50) NOT NULL,
+                    source_id INTEGER REFERENCES feed_sources(id) ON DELETE SET NULL,
+                    entity_id VARCHAR(255),
+                    event_type VARCHAR(120) DEFAULT 'observation',
+                    title VARCHAR(255),
+                    confidence REAL DEFAULT 0,
+                    geom GEOMETRY(POINT, 4326),
+                    payload JSONB DEFAULT '{}',
+                    provenance JSONB DEFAULT '{}',
+                    observed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    ingested_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS timeline_events (
+                    id SERIAL PRIMARY KEY,
+                    domain VARCHAR(50) NOT NULL,
+                    event_type VARCHAR(120) NOT NULL,
+                    title VARCHAR(255) NOT NULL,
+                    source_id INTEGER REFERENCES feed_sources(id) ON DELETE SET NULL,
+                    entity_id VARCHAR(255),
+                    payload JSONB DEFAULT '{}',
+                    occurred_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS documents (
+                    id SERIAL PRIMARY KEY,
+                    upload_id VARCHAR(64),
+                    domain VARCHAR(50) DEFAULT 'OSINT',
+                    title VARCHAR(255) NOT NULL,
+                    file_path VARCHAR(1024),
+                    source_url VARCHAR(2048),
+                    media_type VARCHAR(80) DEFAULT 'document',
+                    status VARCHAR(50) DEFAULT 'stored',
+                    summary TEXT,
+                    extracted_entities JSONB DEFAULT '[]',
+                    metadata JSONB DEFAULT '{}',
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS transcripts (
+                    id SERIAL PRIMARY KEY,
+                    document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
+                    language VARCHAR(32) DEFAULT 'unknown',
+                    text TEXT,
+                    confidence REAL DEFAULT 0,
+                    segments JSONB DEFAULT '[]',
+                    status VARCHAR(50) DEFAULT 'placeholder',
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS ai_action_proposals (
+                    id SERIAL PRIMARY KEY,
+                    action_type VARCHAR(120) NOT NULL,
+                    title VARCHAR(255) NOT NULL,
+                    domain VARCHAR(50),
+                    target_id VARCHAR(255),
+                    rationale TEXT,
+                    sources JSONB DEFAULT '[]',
+                    payload JSONB DEFAULT '{}',
+                    confidence REAL DEFAULT 0.55,
+                    risk_level VARCHAR(50) DEFAULT 'low',
+                    status VARCHAR(50) DEFAULT 'pending_approval',
+                    proposed_by VARCHAR(100) DEFAULT 'llm',
+                    approved_by VARCHAR(100),
+                    executed_at TIMESTAMP WITH TIME ZONE,
+                    result JSONB DEFAULT '{}',
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS datasets (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    dataset_type VARCHAR(80) DEFAULT 'object_detection',
+                    domain VARCHAR(50) DEFAULT 'GEOINT',
+                    file_path VARCHAR(1024),
+                    status VARCHAR(50) DEFAULT 'stored',
+                    metadata JSONB DEFAULT '{}',
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_fmv_frames_clip ON fmv_frames(clip_id, frame_index)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_track_points_geom ON track_points USING GIST(geom)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_aois_geom ON aois USING GIST(geom)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_observations_domain_time ON observations(domain, observed_at DESC)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_observations_geom ON observations USING GIST(geom)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_timeline_domain_time ON timeline_events(domain, occurred_at DESC)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_documents_domain ON documents(domain)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_ai_action_status ON ai_action_proposals(status)")
 
         _platform_schema_ready = True
 
@@ -405,6 +526,105 @@ def publish_event(topic: str, payload: dict) -> None:
         pass
 
 
+def normalize_domain(value: Optional[str], fallback: str = "OSINT") -> str:
+    allowed = {"GEOINT", "SIGINT", "HUMINT", "OSINT", "MASINT", "FMV", "ADMIN", "WORKFLOW"}
+    domain = (value or fallback).strip().upper().replace("/", "_")
+    if domain in {"RF_SIGINT", "RF-SIGINT"}:
+        return "SIGINT"
+    if domain in {"VIDEO"}:
+        return "FMV"
+    return domain if domain in allowed else fallback
+
+
+def domain_for_media(media_type: str, sensor_type: Optional[str] = None) -> str:
+    sensor = (sensor_type or "").upper()
+    if media_type in {"imagery", "vector", "3d"} or sensor in {"OPTICAL", "RADAR", "THERMAL", "MASINT"}:
+        return "GEOINT"
+    if media_type == "fmv" or sensor == "FMV":
+        return "GEOINT"
+    if media_type == "audio":
+        return "HUMINT"
+    return "OSINT"
+
+
+def record_timeline_event(
+    domain: str,
+    event_type: str,
+    title: str,
+    payload: Optional[dict] = None,
+    source_id: Optional[int] = None,
+    entity_id: Optional[str] = None,
+    occurred_at: Optional[str] = None,
+) -> None:
+    try:
+        with postgis_db.get_cursor(commit=True) as cursor:
+            cursor.execute("""
+                INSERT INTO timeline_events (domain, event_type, title, source_id, entity_id, payload, occurred_at)
+                VALUES (%s, %s, %s, %s, %s, %s, COALESCE(%s::timestamptz, NOW()))
+            """, (
+                normalize_domain(domain),
+                event_type,
+                title,
+                source_id,
+                entity_id,
+                json.dumps(payload or {}, default=str),
+                occurred_at,
+            ))
+    except Exception:
+        pass
+
+
+def record_observation(
+    domain: str,
+    event_type: str,
+    title: str,
+    payload: Optional[dict] = None,
+    source_id: Optional[int] = None,
+    entity_id: Optional[str] = None,
+    latitude: Optional[float] = None,
+    longitude: Optional[float] = None,
+    confidence: Optional[float] = None,
+    observed_at: Optional[str] = None,
+    provenance: Optional[dict] = None,
+) -> None:
+    try:
+        with postgis_db.get_cursor(commit=True) as cursor:
+            if latitude is not None and longitude is not None:
+                cursor.execute("""
+                    INSERT INTO observations (domain, source_id, entity_id, event_type, title, confidence, geom, payload, provenance, observed_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326), %s, %s, COALESCE(%s::timestamptz, NOW()))
+                """, (
+                    normalize_domain(domain),
+                    source_id,
+                    entity_id,
+                    event_type,
+                    title,
+                    confidence or 0,
+                    longitude,
+                    latitude,
+                    json.dumps(payload or {}, default=str),
+                    json.dumps(provenance or {}, default=str),
+                    observed_at,
+                ))
+            else:
+                cursor.execute("""
+                    INSERT INTO observations (domain, source_id, entity_id, event_type, title, confidence, payload, provenance, observed_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, COALESCE(%s::timestamptz, NOW()))
+                """, (
+                    normalize_domain(domain),
+                    source_id,
+                    entity_id,
+                    event_type,
+                    title,
+                    confidence or 0,
+                    json.dumps(payload or {}, default=str),
+                    json.dumps(provenance or {}, default=str),
+                    observed_at,
+                ))
+    except Exception:
+        pass
+
+
 def classify_upload(filename: str) -> tuple[str, str]:
     suffix = Path(filename).suffix.lower()
     if suffix in {".tif", ".tiff", ".jp2", ".j2k", ".nc", ".netcdf", ".png", ".jpg", ".jpeg", ".nitf", ".ntf"}:
@@ -415,6 +635,8 @@ def classify_upload(filename: str) -> tuple[str, str]:
         return "vector", "workers.vector.process"
     if suffix in {".pdf", ".txt", ".csv", ".xlsx", ".docx"}:
         return "document", "workers.document.process"
+    if suffix in {".wav", ".mp3", ".m4a", ".aac", ".ogg", ".flac", ".amr"}:
+        return "audio", "workers.audio.transcribe"
     if suffix in {".b3dm", ".i3dm", ".pnts", ".glb", ".gltf"}:
         return "3d", "workers.tiles3d.process"
     raise HTTPException(status_code=400, detail=f"Unsupported upload format: {suffix or 'unknown'}")
@@ -654,6 +876,140 @@ def health():
     return status
 
 
+@app.get("/api/dashboard/summary")
+def dashboard_summary():
+    ensure_platform_tables()
+    targets = fetch_targets_for_ops()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT
+                (SELECT count(*) FROM feed_sources WHERE enabled = TRUE) AS active_sources,
+                (SELECT count(*) FROM upload_jobs) AS uploads,
+                (SELECT count(*) FROM observations) AS observations,
+                (SELECT count(*) FROM timeline_events WHERE occurred_at > NOW() - INTERVAL '24 hours') AS recent_events,
+                (SELECT count(*) FROM ai_action_proposals WHERE status = 'pending_approval') AS pending_actions,
+                (SELECT count(*) FROM training_jobs WHERE status IN ('queued', 'running')) AS training_jobs,
+                (SELECT count(*) FROM reports) AS reports,
+                (SELECT count(*) FROM fmv_clips) AS fmv_clips
+        """)
+        counts = dict(cursor.fetchone())
+        cursor.execute("""
+            SELECT domain, count(*) AS count
+            FROM observations
+            GROUP BY domain
+            ORDER BY count DESC
+        """)
+        observations_by_domain = [dict(row) for row in cursor.fetchall()]
+        cursor.execute("""
+            SELECT id, domain, event_type, title, payload, occurred_at, created_at
+            FROM timeline_events
+            ORDER BY occurred_at DESC, created_at DESC
+            LIMIT 12
+        """)
+        timeline = [dict(row) for row in cursor.fetchall()]
+        cursor.execute("""
+            SELECT id, action_type, title, domain, risk_level, status, confidence, created_at
+            FROM ai_action_proposals
+            ORDER BY created_at DESC
+            LIMIT 8
+        """)
+        actions = [dict(row) for row in cursor.fetchall()]
+        cursor.execute("""
+            SELECT id, name, version, status, promoted, metrics, created_at
+            FROM models
+            ORDER BY promoted DESC, created_at DESC
+            LIMIT 5
+        """)
+        models = [dict(row) for row in cursor.fetchall()]
+
+    summary = {
+        "app": "SentinelOS",
+        "counts": {**counts, "targets": len(targets), "high_priority_targets": len([t for t in targets if (t.get("properties", {}).get("priority") == "High")])},
+        "priority_targets": targets[:6],
+        "observations_by_domain": observations_by_domain,
+        "timeline": timeline,
+        "pending_actions": actions,
+        "models": models,
+        "ai": ai_status(),
+    }
+    return summary
+
+
+@app.get("/api/observations")
+def list_observations(
+    domain: Optional[str] = Query(None),
+    bbox: Optional[str] = Query(None),
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    entity_id: Optional[str] = Query(None),
+    limit: int = Query(200, ge=1, le=1000),
+):
+    ensure_platform_tables()
+    clauses = []
+    params = []
+    if domain:
+        clauses.append("domain = %s")
+        params.append(normalize_domain(domain))
+    if entity_id:
+        clauses.append("entity_id = %s")
+        params.append(entity_id)
+    if start:
+        clauses.append("observed_at >= %s::timestamptz")
+        params.append(start)
+    if end:
+        clauses.append("observed_at <= %s::timestamptz")
+        params.append(end)
+    if bbox:
+        min_lon, min_lat, max_lon, max_lat = parse_bbox(bbox)
+        clauses.append("geom IS NOT NULL AND ST_Intersects(geom, ST_MakeEnvelope(%s, %s, %s, %s, 4326))")
+        params.extend([min_lon, min_lat, max_lon, max_lat])
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
+    params.append(limit)
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute(f"""
+            SELECT id, domain, source_id, entity_id, event_type, title, confidence,
+                   ST_Y(geom) AS latitude, ST_X(geom) AS longitude,
+                   payload, provenance, observed_at, ingested_at
+            FROM observations
+            {where}
+            ORDER BY observed_at DESC, ingested_at DESC
+            LIMIT %s
+        """, params)
+        return {"observations": [dict(row) for row in cursor.fetchall()]}
+
+
+@app.get("/api/timeline/events")
+def list_timeline_events(
+    domain: Optional[str] = Query(None),
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    limit: int = Query(200, ge=1, le=1000),
+):
+    ensure_platform_tables()
+    clauses = []
+    params = []
+    if domain:
+        clauses.append("domain = %s")
+        params.append(normalize_domain(domain))
+    if start:
+        clauses.append("occurred_at >= %s::timestamptz")
+        params.append(start)
+    if end:
+        clauses.append("occurred_at <= %s::timestamptz")
+        params.append(end)
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
+    params.append(limit)
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute(f"""
+            SELECT id, domain, event_type, title, source_id, entity_id, payload, occurred_at, created_at
+            FROM timeline_events
+            {where}
+            ORDER BY occurred_at DESC, created_at DESC
+            LIMIT %s
+        """, params)
+        return {"events": [dict(row) for row in cursor.fetchall()]}
+
+
 @app.get("/api/feeds")
 def list_feeds():
     ensure_feed_tables()
@@ -667,9 +1023,29 @@ def list_feeds():
         return {"feeds": [dict(row) for row in cursor.fetchall()]}
 
 
+@app.get("/api/sources")
+def list_sources(domain: Optional[str] = Query(None)):
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        params = []
+        where = ""
+        if domain:
+            where = "WHERE upper(feed_type) LIKE %s OR metadata->>'domain' = %s"
+            normalized = normalize_domain(domain)
+            params.extend([f"%{normalized}%", normalized])
+        cursor.execute(f"""
+            SELECT id, name, feed_type AS source_type, protocol, endpoint, topic, parser, enabled,
+                   status, last_error, last_seen, metadata, created_at, updated_at
+            FROM feed_sources
+            {where}
+            ORDER BY updated_at DESC, created_at DESC
+        """, params)
+        return {"sources": [dict(row) for row in cursor.fetchall()]}
+
+
 @app.post("/api/feeds/connect")
 def connect_feed(req: FeedConnectRequest):
-    ensure_feed_tables()
+    ensure_platform_tables()
     if req.protocol.lower() not in {"tcp", "udp", "http", "https", "websocket", "file", "serial"}:
         raise HTTPException(status_code=400, detail="Unsupported feed protocol")
     if not req.endpoint.strip():
@@ -701,6 +1077,8 @@ def connect_feed(req: FeedConnectRequest):
 
     publish_event(req.topic or "feeds", {"type": "feed_connected", "feed": feed})
     publish_event("ops", {"type": "feed_connected", "feed": feed})
+    domain = normalize_domain(req.feed_type, "SIGINT" if req.feed_type.upper() in {"AIS", "ADS-B", "RF/SIGINT"} else "OSINT")
+    record_timeline_event(domain, "source_connected", f"Connected {req.name}", {"feed": feed}, source_id=feed["id"])
 
     return {"success": True, "feed": feed}
 
@@ -970,6 +1348,7 @@ def ingest_feed_event(feed_id: int, req: FeedEventCreate):
         event = dict(cursor.fetchone())
 
         track_uid = str(payload.get("track_id") or payload.get("mmsi") or payload.get("icao") or f"feed-{feed_id}")
+        feed_domain = normalize_domain(feed["feed_type"], "SIGINT" if str(feed["feed_type"]).upper() in {"AIS", "ADS-B", "RF/SIGINT"} else "OSINT")
         if lat is not None and lon is not None:
             cursor.execute("""
                 INSERT INTO tracks (track_uid, source_id, label, callsign, latest_payload, last_seen)
@@ -1000,6 +1379,20 @@ def ingest_feed_event(feed_id: int, req: FeedEventCreate):
                 observed_at,
             ))
 
+    record_observation(
+        feed_domain,
+        req.event_type,
+        payload.get("callsign") or payload.get("name") or f"{feed['feed_type']} observation",
+        payload,
+        source_id=feed_id,
+        entity_id=track_uid,
+        latitude=lat,
+        longitude=lon,
+        confidence=float(payload.get("confidence", 0.7) or 0.7),
+        observed_at=observed_at,
+        provenance={"source": "feed_event", "feed_id": feed_id},
+    )
+    record_timeline_event(feed_domain, req.event_type, f"{feed['feed_type']} event", {"event": event}, source_id=feed_id, entity_id=track_uid, occurred_at=observed_at)
     publish_event("feeds", {"type": "feed_event", "event": event})
     publish_event("ops", {"type": "feed_event", "event": event})
     return {"success": True, "event": event}
@@ -1018,6 +1411,11 @@ def list_feed_events(feed_id: int, limit: int = 100):
             LIMIT %s
         """, (feed_id, limit))
         return {"events": [dict(row) for row in cursor.fetchall()]}
+
+
+@app.get("/api/sources/{source_id}/events")
+def list_source_events(source_id: int, limit: int = 100):
+    return list_feed_events(source_id, limit)
 
 
 @app.get("/api/tracks")
@@ -1465,6 +1863,82 @@ def list_models():
     return {"models": models, "inference": {"url": os.getenv("INFERENCE_URL", "http://inference:8001")}}
 
 
+@app.get("/api/models/datasets")
+def list_model_datasets():
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT id, name, dataset_type, domain, file_path, status, metadata, created_at, updated_at
+            FROM datasets
+            ORDER BY created_at DESC
+        """)
+        return {"datasets": [dict(row) for row in cursor.fetchall()]}
+
+
+@app.post("/api/models/datasets")
+async def upload_model_dataset(
+    file: UploadFile = File(...),
+    name: Optional[str] = Form(None),
+    dataset_type: str = Form("object_detection"),
+    domain: str = Form("GEOINT"),
+):
+    ensure_platform_tables()
+    filename = safe_filename(file.filename or "dataset.zip")
+    dataset_id = uuid.uuid4().hex
+    root = Path(os.getenv("DATASET_PATH", "/data/datasets"))
+    root.mkdir(parents=True, exist_ok=True)
+    local_path = root / f"{dataset_id}_{filename}"
+    size = 0
+    try:
+        with local_path.open("wb") as handle:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                handle.write(chunk)
+    finally:
+        await file.close()
+    if size == 0:
+        local_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Uploaded dataset is empty")
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            INSERT INTO datasets (name, dataset_type, domain, file_path, status, metadata)
+            VALUES (%s, %s, %s, %s, 'stored', %s)
+            RETURNING id, name, dataset_type, domain, file_path, status, metadata, created_at, updated_at
+        """, (
+            name or filename,
+            dataset_type,
+            normalize_domain(domain, "GEOINT"),
+            str(local_path),
+            json.dumps({"bytes": size, "upload_id": dataset_id}),
+        ))
+        dataset = dict(cursor.fetchone())
+    record_timeline_event("ADMIN", "dataset_uploaded", dataset["name"], {"dataset": dataset})
+    return {"success": True, "dataset": dataset}
+
+
+@app.post("/api/models/{model_id}/promote")
+def promote_model(model_id: int):
+    ensure_platform_tables()
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("UPDATE models SET promoted = FALSE")
+        cursor.execute("""
+            UPDATE models
+            SET promoted = TRUE, status = 'available'
+            WHERE id = %s
+            RETURNING id, name, version, model_path, status, metrics, promoted, created_at
+        """, (model_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Model not found")
+        model = dict(row)
+    record_timeline_event("ADMIN", "model_promoted", model["name"], {"model_id": model_id})
+    publish_event("ops", {"type": "model_promoted", "model": model})
+    return {"success": True, "model": model}
+
+
 @app.post("/api/training/jobs")
 def create_training_job(req: TrainingJobCreate):
     ensure_platform_tables()
@@ -1909,6 +2383,7 @@ async def upload_imagery(
         "media_type": media_type,
         "handler": handler,
     }
+    domain = domain_for_media(media_type, sensor_type)
     celery_task_id = None
     status = "stored"
     if media_type == "imagery" and auto_process:
@@ -1964,6 +2439,40 @@ async def upload_imagery(
                 RETURNING id, name, file_path, layer_type, feature_count, metadata, created_at
             """, (filename, str(local_path), json.dumps({"upload_id": upload_id, "handler": handler})))
             response.update({"message": "Vector upload stored for cataloging.", "layer": dict(cursor.fetchone())})
+    elif media_type in {"document", "audio"}:
+        title = filename.rsplit(".", 1)[0]
+        summary = (
+            "Audio uploaded. Transcription is queued; configure a local or remote transcriber to replace this placeholder."
+            if media_type == "audio"
+            else "Document uploaded. LLM extraction is queued for automated processing."
+        )
+        with postgis_db.get_cursor(commit=True) as cursor:
+            cursor.execute("""
+                INSERT INTO documents (upload_id, domain, title, file_path, media_type, status, summary, metadata)
+                VALUES (%s, %s, %s, %s, %s, 'queued', %s, %s)
+                RETURNING id, upload_id, domain, title, file_path, source_url, media_type, status, summary, metadata, created_at, updated_at
+            """, (
+                upload_id,
+                domain,
+                title[:255],
+                str(local_path),
+                media_type,
+                summary,
+                json.dumps({"handler": handler, "bytes": size, "sensor_type": sensor_type}),
+            ))
+            document = dict(cursor.fetchone())
+            if media_type == "audio":
+                cursor.execute("""
+                    INSERT INTO transcripts (document_id, text, confidence, status, segments)
+                    VALUES (%s, %s, 0, 'placeholder', %s)
+                    RETURNING id, document_id, language, text, confidence, segments, status, created_at
+                """, (
+                    document["id"],
+                    "Transcription placeholder. Configure a local Whisper-compatible service or remote transcription provider.",
+                    json.dumps([]),
+                ))
+                response["transcript"] = dict(cursor.fetchone())
+        response.update({"message": f"{media_type.title()} upload received and queued for AI extraction.", "document": document})
     else:
         response["message"] = "Upload received."
 
@@ -1984,6 +2493,8 @@ async def upload_imagery(
 
     publish_event("ingest", {"type": "upload_received", "upload": response})
     publish_event("ops", {"type": "upload_received", "upload": response})
+    record_observation(domain, f"{media_type}_upload", filename, {"upload": response}, confidence=0.5, provenance={"source": "upload", "handler": handler})
+    record_timeline_event(domain, "upload_received", filename, {"upload_id": upload_id, "media_type": media_type})
     return response
 
 
@@ -2004,6 +2515,211 @@ def get_ingest_job(task_id: str):
         else:
             payload["error"] = str(result.result)
     return payload
+
+
+@app.post("/api/ingest/url")
+def ingest_url(req: IngestUrlRequest):
+    ensure_platform_tables()
+    upload_id = uuid.uuid4().hex
+    domain = normalize_domain(req.domain, "OSINT")
+    title = req.title or req.url
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            INSERT INTO upload_jobs (upload_id, filename, file_path, media_type, handler, status, metadata)
+            VALUES (%s, %s, %s, %s, %s, 'queued', %s)
+        """, (
+            upload_id,
+            safe_filename(title)[:255],
+            req.url,
+            req.source_type,
+            "workers.url.process",
+            json.dumps({"domain": domain, "auto_process": req.auto_process, "source_url": req.url}),
+        ))
+        cursor.execute("""
+            INSERT INTO documents (upload_id, domain, title, source_url, media_type, status, summary, metadata)
+            VALUES (%s, %s, %s, %s, %s, 'queued', %s, %s)
+            RETURNING id, upload_id, domain, title, source_url, media_type, status, summary, metadata, created_at, updated_at
+        """, (
+            upload_id,
+            domain,
+            title[:255],
+            req.url,
+            req.source_type,
+            "Queued for automated retrieval and LLM extraction.",
+            json.dumps({"handler": "workers.url.process"}),
+        ))
+        document = dict(cursor.fetchone())
+    record_observation(domain, "url_ingest", title, {"url": req.url, "document_id": document["id"]}, confidence=0.5, provenance={"source": "url"})
+    record_timeline_event(domain, "url_ingest_queued", title, {"document": document})
+    publish_event("ingest", {"type": "url_ingest_queued", "document": document})
+    publish_event("ops", {"type": "url_ingest_queued", "document": document})
+    return {"success": True, "upload_id": upload_id, "document": document, "message": "URL ingestion queued."}
+
+
+@app.post("/api/ai/analyze")
+def ai_analyze(req: AIAnalysisRequest):
+    ensure_platform_tables()
+    try:
+        reply = get_ai_response(req.prompt)
+    except AIUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    domain = normalize_domain(req.domain, "WORKFLOW")
+    analysis = {
+        "summary": reply,
+        "citations": [
+            {"type": "ontology", "label": "Neo4j read-only summary"},
+            {"type": "context", "label": req.entity_id or domain},
+        ],
+        "next_actions": [
+            {"action_type": "generate_report", "label": "Draft intelligence summary", "requires_approval": True},
+            {"action_type": "create_requirement", "label": "Create collection requirement", "requires_approval": True},
+        ],
+        "policy": "human_approval_required",
+    }
+    record_timeline_event(domain, "ai_analysis", "AI analysis generated", {"prompt": req.prompt, "entity_id": req.entity_id})
+    return {"analysis": analysis, "status": "ok"}
+
+
+@app.post("/api/ai/extract")
+def ai_extract(req: AIAnalysisRequest):
+    ensure_platform_tables()
+    text = req.prompt or json.dumps(req.context)
+    tokens = sorted({word.strip(".,:;()[]{}").title() for word in text.split() if len(word.strip(".,:;()[]{}")) > 4})[:12]
+    entities = [{"label": token, "type": "Entity", "confidence": 0.52} for token in tokens]
+    return {"entities": entities, "citations": [{"type": "input", "label": "submitted text/context"}], "status": "ok"}
+
+
+@app.post("/api/ai/link")
+def ai_link(req: AIAnalysisRequest):
+    ensure_platform_tables()
+    return {
+        "links": [
+            {"source": req.entity_id or "submitted_context", "target": "ontology", "relationship": "CANDIDATE_MATCH", "confidence": 0.58}
+        ],
+        "status": "review_required",
+        "policy": "human_approval_required",
+    }
+
+
+@app.post("/api/ai/propose-actions")
+def ai_propose_actions(req: AIActionProposalRequest):
+    ensure_platform_tables()
+    domain = normalize_domain(req.domain, "WORKFLOW")
+    title = req.payload.get("title") or f"AI proposal: {req.action_type.replace('_', ' ')}"
+    rationale = f"Proposed from analyst prompt: {req.prompt[:500]}"
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            INSERT INTO ai_action_proposals (action_type, title, domain, target_id, rationale, sources, payload, confidence, risk_level, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 0.62, %s, 'pending_approval')
+            RETURNING id, action_type, title, domain, target_id, rationale, sources, payload, confidence, risk_level, status, created_at, updated_at
+        """, (
+            req.action_type,
+            title[:255],
+            domain,
+            req.target_id,
+            rationale,
+            json.dumps(req.payload.get("sources", [])),
+            json.dumps({**req.payload, "prompt": req.prompt}),
+            req.risk_level,
+        ))
+        proposal = dict(cursor.fetchone())
+    record_timeline_event(domain, "ai_action_proposed", proposal["title"], {"proposal_id": proposal["id"]}, entity_id=req.target_id)
+    publish_event("ops", {"type": "ai_action_proposed", "proposal": proposal})
+    return {"proposal": proposal, "policy": "human_approval_required"}
+
+
+@app.get("/api/actions/proposals")
+def list_action_proposals(status: Optional[str] = Query(None), limit: int = Query(100, ge=1, le=500)):
+    ensure_platform_tables()
+    params = []
+    where = ""
+    if status:
+        where = "WHERE status = %s"
+        params.append(status)
+    params.append(limit)
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute(f"""
+            SELECT id, action_type, title, domain, target_id, rationale, sources, payload,
+                   confidence, risk_level, status, proposed_by, approved_by, executed_at, result, created_at, updated_at
+            FROM ai_action_proposals
+            {where}
+            ORDER BY created_at DESC
+            LIMIT %s
+        """, params)
+        return {"proposals": [dict(row) for row in cursor.fetchall()]}
+
+
+@app.post("/api/actions/proposals/{proposal_id}/approve")
+def approve_action_proposal(proposal_id: int):
+    ensure_platform_tables()
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            UPDATE ai_action_proposals
+            SET status = 'approved', approved_by = 'local_user', updated_at = NOW()
+            WHERE id = %s AND status = 'pending_approval'
+            RETURNING id, action_type, title, domain, target_id, rationale, sources, payload,
+                      confidence, risk_level, status, proposed_by, approved_by, executed_at, result, created_at, updated_at
+        """, (proposal_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Pending proposal not found")
+        proposal = dict(row)
+    record_timeline_event(proposal.get("domain") or "WORKFLOW", "ai_action_approved", proposal["title"], {"proposal_id": proposal_id}, entity_id=proposal.get("target_id"))
+    publish_event("ops", {"type": "ai_action_approved", "proposal": proposal})
+    return {"proposal": proposal}
+
+
+@app.post("/api/actions/proposals/{proposal_id}/execute")
+def execute_action_proposal(proposal_id: int):
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT id, action_type, title, domain, target_id, rationale, sources, payload,
+                   confidence, risk_level, status, proposed_by, approved_by, executed_at, result, created_at, updated_at
+            FROM ai_action_proposals
+            WHERE id = %s
+        """, (proposal_id,))
+        row = cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    proposal = dict(row)
+    if proposal["status"] != "approved":
+        raise HTTPException(status_code=409, detail="Proposal must be approved before execution")
+    if proposal["risk_level"] not in {"low", "medium"}:
+        raise HTTPException(status_code=403, detail="High-risk proposals require an external allowlisted connector")
+
+    payload = proposal.get("payload") or {}
+    result = {"executed": True, "mode": "internal_only"}
+    if proposal["action_type"] == "generate_report":
+        report = create_target_package(ReportCreate(target_id=proposal.get("target_id"), title=payload.get("title") or proposal["title"]))
+        result["report"] = report.get("report")
+    elif proposal["action_type"] == "create_requirement":
+        requirement = create_collection_requirement(CollectionRequirementCreate(
+            title=payload.get("title") or proposal["title"],
+            description=proposal.get("rationale"),
+            priority=payload.get("priority") or "Medium",
+            status="approved",
+            target_id=proposal.get("target_id"),
+            aoi=payload.get("aoi") or {},
+        ))
+        result["requirement"] = requirement.get("requirement")
+    elif proposal["action_type"] == "queue_analytic":
+        result["analytic"] = run_viewshed(AnalyticsRequest(target_id=proposal.get("target_id"), radius_m=payload.get("radius_m", 5000))).get("job")
+    else:
+        result["message"] = "Action logged; no external dispatch connector is allowlisted."
+
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            UPDATE ai_action_proposals
+            SET status = 'executed', executed_at = NOW(), result = %s, updated_at = NOW()
+            WHERE id = %s
+            RETURNING id, action_type, title, domain, target_id, rationale, sources, payload,
+                      confidence, risk_level, status, proposed_by, approved_by, executed_at, result, created_at, updated_at
+        """, (json.dumps(result, default=str), proposal_id))
+        executed = dict(cursor.fetchone())
+    record_timeline_event(executed.get("domain") or "WORKFLOW", "ai_action_executed", executed["title"], {"proposal_id": proposal_id, "result": result}, entity_id=executed.get("target_id"))
+    publish_event("ops", {"type": "ai_action_executed", "proposal": executed})
+    return {"proposal": executed, "result": result}
 
 
 @app.websocket("/ws")

@@ -77,7 +77,7 @@ def get_ai_response(question: str) -> str:
         with db.get_session() as session:
             rows = [dict(record) for record in session.run(query)]
     except Exception as e:
-        raise AIUnavailable("Ava could not read the ontology right now.") from e
+        raise AIUnavailable("SentinelOS AI could not read the ontology right now.") from e
 
     if not rows:
         return f"{heading}: no matching records found."

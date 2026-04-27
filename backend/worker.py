@@ -21,7 +21,7 @@ IMAGERY_PATH = os.getenv("IMAGERY_PATH", "/data/imagery")
 
 logger = logging.getLogger(__name__)
 
-celery_app = Celery("gotham_worker", broker=REDIS_URL, backend=REDIS_URL)
+celery_app = Celery("sentinelos_worker", broker=REDIS_URL, backend=REDIS_URL)
 
 
 def publish_event(topic: str, payload: dict) -> None:

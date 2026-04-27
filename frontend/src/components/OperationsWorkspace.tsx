@@ -168,7 +168,7 @@ function MapFocus({ selected }: { selected: OpsTarget | null }) {
   useEffect(() => {
     const latLon = targetLatLon(selected);
     if (latLon) {
-      map.flyTo(latLon, Math.max(map.getZoom(), 11), { duration: 0.7 });
+      map.flyTo(latLon, Math.max(map.getZoom(), 5), { duration: 0.7 });
     }
   }, [map, selected]);
   return null;
@@ -255,7 +255,7 @@ export default function OperationsWorkspace() {
     setRequirements(requirementResponse.data.requirements || []);
     setReports(reportResponse.data.reports || []);
     setModels(modelResponse.data.models || []);
-    setSelectedImageryId((current) => current || imageryRows[0]?.id || null);
+    setSelectedImageryId((current) => (current && imageryRows.some((row: ImageryRow) => row.id === current) ? current : null));
     setSelectedTargetId((current) => current || nextTargets[0]?.id || '');
   }, []);
 
@@ -600,7 +600,7 @@ export default function OperationsWorkspace() {
         {viewMode === 'globe' ? (
           <View3D />
         ) : (
-          <MapContainer center={mapCenter} zoom={selectedLatLon ? 11 : 5} style={{ height: '100%', width: '100%', background: '#020617' }} zoomControl={false}>
+          <MapContainer center={mapCenter} zoom={selectedLatLon ? 5 : 4} style={{ height: '100%', width: '100%', background: '#020617' }} zoomControl={false}>
             <ZoomControl position="bottomright" />
             <MapFocus selected={selectedTarget} />
             <ImageOverlay url="/world_map.svg" bounds={[[-85, -180], [85, 180]]} opacity={0.34} />
