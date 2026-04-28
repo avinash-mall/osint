@@ -11,12 +11,17 @@ CREATE TABLE IF NOT EXISTS satellite_passes (
     cloud_cover REAL DEFAULT 0.0,
     footprint GEOMETRY(MULTIPOLYGON, 4326),
     crs VARCHAR(50) DEFAULT 'EPSG:4326',
+    metadata JSONB DEFAULT '{}',
+    source_hash VARCHAR(64),
+    source_filename VARCHAR(255),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 -- Create spatial index on footprint
 CREATE INDEX IF NOT EXISTS idx_passes_footprint ON satellite_passes USING GIST(footprint);
 CREATE INDEX IF NOT EXISTS idx_passes_time ON satellite_passes(acquisition_time);
+CREATE INDEX IF NOT EXISTS idx_passes_source_time ON satellite_passes(source_hash, acquisition_time);
 
 -- Detections table
 CREATE TABLE IF NOT EXISTS detections (
@@ -35,6 +40,41 @@ CREATE TABLE IF NOT EXISTS detections (
 CREATE INDEX IF NOT EXISTS idx_detections_geom ON detections USING GIST(geom);
 CREATE INDEX IF NOT EXISTS idx_detections_centroid ON detections USING GIST(centroid);
 CREATE INDEX IF NOT EXISTS idx_detections_class ON detections(class);
+
+CREATE TABLE IF NOT EXISTS detection_target_candidates (
+    id SERIAL PRIMARY KEY,
+    detection_id INTEGER REFERENCES detections(id) ON DELETE CASCADE,
+    target_id VARCHAR(255) NOT NULL,
+    target_name VARCHAR(255),
+    score REAL DEFAULT 0,
+    reason TEXT,
+    status VARCHAR(50) DEFAULT 'pending',
+    evidence JSONB DEFAULT '{}',
+    reviewed_by VARCHAR(100),
+    reviewed_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE (detection_id, target_id)
+);
+CREATE INDEX IF NOT EXISTS idx_detection_target_candidates_detection ON detection_target_candidates(detection_id, status);
+CREATE INDEX IF NOT EXISTS idx_detection_target_candidates_target ON detection_target_candidates(target_id, status);
+
+CREATE TABLE IF NOT EXISTS ontology_updates (
+    id SERIAL PRIMARY KEY,
+    source_type VARCHAR(80) NOT NULL,
+    source_id VARCHAR(255),
+    domain VARCHAR(50) DEFAULT 'OSINT',
+    status VARCHAR(50) DEFAULT 'pending_review',
+    summary TEXT,
+    proposed_entities JSONB DEFAULT '[]',
+    proposed_relationships JSONB DEFAULT '[]',
+    context JSONB DEFAULT '{}',
+    error TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_ontology_updates_source ON ontology_updates(source_type, source_id);
+CREATE INDEX IF NOT EXISTS idx_ontology_updates_status ON ontology_updates(status);
 
 -- Vector basemap data (Natural Earth will be loaded here)
 CREATE TABLE IF NOT EXISTS ne_countries (

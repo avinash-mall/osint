@@ -1,10 +1,13 @@
 import os
+import json
+import requests
 from dotenv import load_dotenv
 from database import db
 
 load_dotenv()
 
 OPENAI_API_BASE = os.getenv("OPENAI_API_BASE")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "google/gemma-4-31B-it")
 
 
@@ -18,6 +21,59 @@ def ai_status() -> dict:
         "model": OPENAI_MODEL,
         "mode": "read_only_graph_summary",
     }
+
+
+def get_llm_text(
+    prompt: str,
+    system: str = "",
+    max_tokens: int = 400,
+    temperature: float = 0.1,
+    timeout_seconds: float = 8,
+) -> str:
+    if not OPENAI_API_BASE:
+        raise AIUnavailable("LLM classification is unavailable because OPENAI_API_BASE is not configured.")
+
+    base = OPENAI_API_BASE.rstrip("/")
+    url = base if base.endswith("/chat/completions") else f"{base}/chat/completions"
+    headers = {"Content-Type": "application/json"}
+    if OPENAI_API_KEY:
+        headers["Authorization"] = f"Bearer {OPENAI_API_KEY}"
+    payload = {
+        "model": OPENAI_MODEL,
+        "messages": [
+            {"role": "system", "content": system or "You are a concise intelligence UI classification assistant."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=timeout_seconds)
+        response.raise_for_status()
+        body = response.json()
+        content = body.get("choices", [{}])[0].get("message", {}).get("content")
+        if not content:
+            content = body.get("choices", [{}])[0].get("text")
+        if not content:
+            raise AIUnavailable("LLM returned an empty classification response.")
+        return str(content).strip()
+    except requests.RequestException as exc:
+        raise AIUnavailable("LLM classification request failed.") from exc
+
+
+def get_llm_json(prompt: str, system: str = "", max_tokens: int = 500, timeout_seconds: float = 8) -> dict:
+    content = get_llm_text(prompt, system=system, max_tokens=max_tokens, temperature=0, timeout_seconds=timeout_seconds)
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        start = content.find("{")
+        end = content.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                return json.loads(content[start:end + 1])
+            except json.JSONDecodeError:
+                pass
+        raise AIUnavailable("LLM classification response was not valid JSON.")
 
 
 def get_ai_response(question: str) -> str:

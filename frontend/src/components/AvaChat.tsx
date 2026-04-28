@@ -2,8 +2,14 @@ import { useState, useRef, useEffect } from 'react';
 import { Send, Bot, User } from 'lucide-react';
 import axios from 'axios';
 
+type ChatMessage = {
+  role: 'user' | 'bot';
+  content: string;
+  ontologyUpdate?: any;
+};
+
 export default function AvaChat() {
-  const [messages, setMessages] = useState<{role: 'user'|'bot', content: string}[]>([
+  const [messages, setMessages] = useState<ChatMessage[]>([
     { role: 'bot', content: 'Ava initialized. Semantic ontology connected. Awaiting queries.' }
   ]);
   const [input, setInput] = useState('');
@@ -39,7 +45,11 @@ export default function AvaChat() {
     try {
       const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8080';
       const response = await axios.post(`${apiUrl}/api/chat`, { message: userMsg });
-      setMessages(prev => [...prev, { role: 'bot', content: response.data.reply }]);
+      setMessages(prev => [...prev, {
+        role: 'bot',
+        content: response.data.reply,
+        ontologyUpdate: response.data.ontology_update,
+      }]);
     } catch (error: any) {
       console.error("Chat error:", error);
       const detail = error.response?.data?.detail || 'Unable to reach cognitive engine.';
@@ -77,6 +87,21 @@ export default function AvaChat() {
                   : 'bg-slate-700/80 text-slate-200 border border-slate-600 rounded-tl-sm'
               }`}>
                 {msg.content}
+                {msg.ontologyUpdate && (
+                  <div className={`mt-3 border px-3 py-2 text-xs font-mono ${
+                    msg.ontologyUpdate.status === 'pending_review'
+                      ? 'border-amber-500/50 text-amber-200 bg-amber-500/10'
+                      : 'border-red-500/50 text-red-200 bg-red-500/10'
+                  }`}>
+                    ONTOLOGY {String(msg.ontologyUpdate.status || 'queued').toUpperCase()}
+                    {msg.ontologyUpdate.id ? ` · UPDATE #${msg.ontologyUpdate.id}` : ''}
+                    <div className="mt-1 text-slate-300 whitespace-normal">
+                      {msg.ontologyUpdate.status === 'pending_review'
+                        ? 'Reviewable graph candidates were added to the Link workspace.'
+                        : (msg.ontologyUpdate.error || msg.ontologyUpdate.summary || 'Ontology update was not applied.')}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           ))}

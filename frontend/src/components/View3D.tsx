@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 import { Shield, Swords } from 'lucide-react';
 import { useEventStream } from '../hooks/useEventStream';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 const TILE_PROXY_URL = import.meta.env.VITE_TILE_PROXY_URL || 'http://localhost:8090';
+const MAX_3D_DETECTIONS = 350;
+const MAX_3D_LABELS = 80;
 
 // Tell CesiumJS where to find its vendored workers/assets.
 (window as Window & { CESIUM_BASE_URL?: string }).CESIUM_BASE_URL = '/cesium/';
@@ -71,6 +73,31 @@ function parseGeoJson(input?: string | Record<string, any> | null): any | null {
   }
 }
 
+function validLonLat(point: any): point is [number, number] {
+  const lon = Number(point?.[0]);
+  const lat = Number(point?.[1]);
+  return Number.isFinite(lon) && Number.isFinite(lat) && lon >= -180 && lon <= 180 && lat >= -90 && lat <= 90;
+}
+
+function sanitizeRing(ring: any[]): Array<[number, number]> {
+  const clean = (ring || [])
+    .filter(validLonLat)
+    .map(([lon, lat]) => [Number(lon), Number(lat)] as [number, number]);
+  const deduped = clean.filter((point, index) => (
+    index === 0 || point[0] !== clean[index - 1][0] || point[1] !== clean[index - 1][1]
+  ));
+  if (deduped.length > 3) {
+    const first = deduped[0];
+    const last = deduped[deduped.length - 1];
+    if (first[0] === last[0] && first[1] === last[1]) deduped.pop();
+  }
+  const unique = new Set(deduped.map(([lon, lat]) => `${lon.toFixed(7)},${lat.toFixed(7)}`));
+  if (unique.size < 3) return [];
+  const bounds = ringBounds([deduped]);
+  if (!bounds || bounds.west === bounds.east || bounds.south === bounds.north) return [];
+  return deduped;
+}
+
 function polygonRingsFromGeometry(geometry: any): Array<Array<[number, number]>> {
   if (!geometry) return [];
   if (geometry.type === 'FeatureCollection') {
@@ -81,12 +108,14 @@ function polygonRingsFromGeometry(geometry: any): Array<Array<[number, number]>>
   }
   if (geometry.type === 'Polygon') {
     const ring = geometry.coordinates?.[0] || [];
-    return ring.length >= 3 ? [ring.map(([lon, lat]: [number, number]) => [lon, lat])] : [];
+    const clean = sanitizeRing(ring);
+    return clean.length >= 3 ? [clean] : [];
   }
   if (geometry.type === 'MultiPolygon') {
     return (geometry.coordinates || []).flatMap((polygon: any) => {
       const ring = polygon?.[0] || [];
-      return ring.length >= 3 ? [ring.map(([lon, lat]: [number, number]) => [lon, lat])] : [];
+      const clean = sanitizeRing(ring);
+      return clean.length >= 3 ? [clean] : [];
     });
   }
   return [];
@@ -149,6 +178,24 @@ function detectionRings(feature: any): Array<Array<[number, number]>> {
   return polygonRingsFromGeometry(feature);
 }
 
+function bboxString(bounds: ReturnType<typeof ringBounds> | null) {
+  if (!bounds) return '';
+  const values = [bounds.west, bounds.south, bounds.east, bounds.north];
+  return values.every(Number.isFinite) ? values.join(',') : '';
+}
+
+function targetBbox(target?: OpsTarget | null, pad = 2) {
+  const latLon = targetLatLon(target);
+  if (!latLon) return null;
+  const [lat, lon] = latLon;
+  return {
+    west: Math.max(-180, lon - pad),
+    south: Math.max(-90, lat - pad),
+    east: Math.min(180, lon + pad),
+    north: Math.min(90, lat + pad),
+  };
+}
+
 export default function View3D({
   fmvClipId: _fmvClipId,
   targets = [],
@@ -179,26 +226,35 @@ export default function View3D({
     const rows = selectedImagery ? [selectedImagery, ...imagery.filter((row) => row.id !== selectedImagery.id)] : imagery;
     return rows.filter((row) => footprintRings(row).length > 0).slice(0, 20);
   }, [imagery, selectedImagery]);
+  const detectionBbox = useMemo(() => (
+    bboxString(ringBounds(footprintRings(selectedImagery))) || bboxString(targetBbox(selectedTarget))
+  ), [selectedImagery, selectedTarget]);
   const visibleDetections = useMemo(() => (
     (detectionsGeoJSON.features || []).filter((feature: any) => !hiddenDetectionClasses.includes(String(feature?.properties?.class || 'Unknown')))
-  ), [detectionsGeoJSON, hiddenDetectionClasses]);
+  ).slice(0, MAX_3D_DETECTIONS), [detectionsGeoJSON, hiddenDetectionClasses]);
 
-  const fetchDetections = async () => {
+  const fetchDetections = useCallback(async () => {
+    if (!detectionBbox) {
+      setDetectionsGeoJSON({ type: 'FeatureCollection', features: [] });
+      setDetectionClasses([]);
+      return;
+    }
     try {
+      const params = new URLSearchParams({ bbox: detectionBbox });
       const [geojsonResponse, classResponse] = await Promise.all([
-        axios.get(`${API_URL}/api/detections/geojson`),
-        axios.get(`${API_URL}/api/detections/classes`),
+        axios.get(`${API_URL}/api/detections/geojson?${params.toString()}`),
+        axios.get(`${API_URL}/api/detections/classes?${new URLSearchParams({ bbox: detectionBbox, llm: 'true' }).toString()}`),
       ]);
       setDetectionsGeoJSON(geojsonResponse.data || { type: 'FeatureCollection', features: [] });
       setDetectionClasses(classResponse.data?.classes || []);
     } catch (err) {
       console.error('Error fetching 3D detections:', err);
     }
-  };
+  }, [detectionBbox]);
 
   useEffect(() => {
     fetchDetections();
-  }, []);
+  }, [fetchDetections]);
 
   useEventStream('detections', () => {
     fetchDetections();
@@ -250,6 +306,10 @@ export default function View3D({
         viewer.scene.globe.enableLighting = false;
         viewer.scene.globe.baseColor = Color.fromCssColorString('#1f2937');
         viewer.scene.backgroundColor = Color.fromCssColorString('#020617');
+        viewer.scene.screenSpaceCameraController.minimumZoomDistance = 500;
+        viewer.scene.screenSpaceCameraController.maximumZoomDistance = 25000000;
+        viewer.scene.screenSpaceCameraController.enableCollisionDetection = true;
+        viewer.scene.globe.depthTestAgainstTerrain = false;
         viewerRef.current = viewer;
         cesiumRef.current = Cesium;
         setReady(true);
@@ -349,12 +409,13 @@ export default function View3D({
       });
     });
 
-    visibleDetections.forEach((feature: any) => {
+    visibleDetections.forEach((feature: any, featureIndex: number) => {
       const rings = detectionRings(feature);
       const props = feature.properties || {};
       const color = Color.fromCssColorString(detectionColor(feature));
       rings.forEach((ring, index) => {
         const degrees = ring.flatMap(([lon, lat]) => [lon, lat]);
+        const showLabel = featureIndex < MAX_3D_LABELS;
         const entity = viewer.entities.add({
           id: `detection-${props.id}-${index}`,
           name: detectionLabel(feature),
@@ -364,7 +425,7 @@ export default function View3D({
             outline: true,
             outlineColor: color.withAlpha(0.95),
           },
-          label: {
+          label: showLabel ? {
             text: detectionLabel(feature),
             font: '11px sans-serif',
             fillColor: Color.WHITE,
@@ -374,7 +435,7 @@ export default function View3D({
             pixelOffset: new Cartesian2(0, -16),
             verticalOrigin: VerticalOrigin.BOTTOM,
             scaleByDistance: new NearFarScalar(100000, 1, 7000000, 0.25),
-          },
+          } : undefined,
           properties: { detectionFeature: feature },
         });
         if (ring.length) {

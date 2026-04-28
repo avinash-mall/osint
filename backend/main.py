@@ -16,13 +16,16 @@ from pydantic import BaseModel, Field
 from typing import Optional, List
 import uvicorn
 from database import db, postgis_db
-from ai import AIUnavailable, ai_status, get_ai_response
+from ai import AIUnavailable, ai_status, get_ai_response, get_llm_json
+from imagery_metadata import extract_raster_metadata
+from threat_assessment import assess_detection_threat, clean_detection_class, conservative_detection_ontology
 from worker import celery_app, process_satellite_imagery
 
 app = FastAPI(title="SentinelOS API")
 
 _platform_schema_lock = threading.Lock()
 _platform_schema_ready = False
+_llm_detection_ontology_cache: dict[str, dict] = {}
 
 def get_cors_origins() -> list[str]:
     raw = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
@@ -158,6 +161,17 @@ class GraphActionRequest(BaseModel):
     node_id: str
 
 
+class CandidateLinkDecision(BaseModel):
+    analyst: Optional[str] = "analyst"
+
+
+class OntologyUpdateRequest(BaseModel):
+    source_type: str = "ava_chat"
+    source_id: Optional[str] = None
+    text: str
+    domain: str = "OSINT"
+
+
 def parse_bbox(bbox: str) -> tuple[float, float, float, float]:
     try:
         values = tuple(map(float, bbox.split(",")))
@@ -260,6 +274,11 @@ def ensure_platform_tables() -> None:
                     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                 )
             """)
+            cursor.execute("ALTER TABLE satellite_passes ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'")
+            cursor.execute("ALTER TABLE satellite_passes ADD COLUMN IF NOT EXISTS source_hash VARCHAR(64)")
+            cursor.execute("ALTER TABLE satellite_passes ADD COLUMN IF NOT EXISTS source_filename VARCHAR(255)")
+            cursor.execute("ALTER TABLE satellite_passes ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_passes_source_time ON satellite_passes(source_hash, acquisition_time)")
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS vector_layers (
                     id SERIAL PRIMARY KEY,
@@ -495,6 +514,39 @@ def ensure_platform_tables() -> None:
                 )
             """)
             cursor.execute("""
+                CREATE TABLE IF NOT EXISTS detection_target_candidates (
+                    id SERIAL PRIMARY KEY,
+                    detection_id INTEGER REFERENCES detections(id) ON DELETE CASCADE,
+                    target_id VARCHAR(255) NOT NULL,
+                    target_name VARCHAR(255),
+                    score REAL DEFAULT 0,
+                    reason TEXT,
+                    status VARCHAR(50) DEFAULT 'pending',
+                    evidence JSONB DEFAULT '{}',
+                    reviewed_by VARCHAR(100),
+                    reviewed_at TIMESTAMP WITH TIME ZONE,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    UNIQUE (detection_id, target_id)
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS ontology_updates (
+                    id SERIAL PRIMARY KEY,
+                    source_type VARCHAR(80) NOT NULL,
+                    source_id VARCHAR(255),
+                    domain VARCHAR(50) DEFAULT 'OSINT',
+                    status VARCHAR(50) DEFAULT 'pending_review',
+                    summary TEXT,
+                    proposed_entities JSONB DEFAULT '[]',
+                    proposed_relationships JSONB DEFAULT '[]',
+                    context JSONB DEFAULT '{}',
+                    error TEXT,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS datasets (
                     id SERIAL PRIMARY KEY,
                     name VARCHAR(255) NOT NULL,
@@ -515,6 +567,10 @@ def ensure_platform_tables() -> None:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_timeline_domain_time ON timeline_events(domain, occurred_at DESC)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_documents_domain ON documents(domain)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_ai_action_status ON ai_action_proposals(status)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_detection_target_candidates_detection ON detection_target_candidates(detection_id, status)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_detection_target_candidates_target ON detection_target_candidates(target_id, status)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_ontology_updates_source ON ontology_updates(source_type, source_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_ontology_updates_status ON ontology_updates(status)")
 
         _platform_schema_ready = True
 
@@ -641,39 +697,374 @@ def clean_detection_class(det_class: str) -> str:
 
 
 def detection_ontology(det_class: str) -> dict:
-    label = clean_detection_class(det_class)
-    text = label.lower()
-    if any(term in text for term in ("tank", "artillery", "missile", "launcher", "destroyer", "battleship", "warship")):
-        category, threat = "combat", "critical"
-    elif any(term in text for term in ("aircraft", "plane", "helicopter", "fighter", "airport", "runway")):
-        category, threat = "air", "high"
-    elif any(term in text for term in ("ship", "vessel", "harbor", "port", "dry dock", "maritime")):
-        category, threat = "maritime", "high"
-    elif any(term in text for term in ("vehicle", "truck", "car", "van", "bus")):
-        category, threat = "ground", "medium"
-    elif any(term in text for term in ("facility", "building", "storage", "tank", "depot", "plant", "hangar", "bridge")):
-        category, threat = "infrastructure", "medium"
-    else:
-        category, threat = "unknown", "low"
-    return {
-        "label": label,
+    return conservative_detection_ontology(det_class)
+
+
+def llm_detection_ontology(det_class: str, count: int = 0, avg_confidence: float = 0.0) -> dict:
+    base = conservative_detection_ontology(det_class, confidence=avg_confidence)
+    cached = _llm_detection_ontology_cache.get(det_class)
+    if cached:
+        return {**base, **cached}
+    prompt = json.dumps({
+        "task": "Classify a GEOINT computer-vision detection class for UI filtering.",
+        "input": {
+            "raw_class": det_class,
+            "fallback_label": base["label"],
+            "fallback_category": base["category"],
+            "fallback_threat_level": base["threat_level"],
+            "count_in_current_view": count,
+            "avg_confidence": avg_confidence,
+        },
+        "required_json_schema": {
+            "label": "short human label",
+            "domain": "GEOINT",
+            "category": "one of air, maritime, ground, combat, infrastructure, logistics, energy, facility, unknown",
+            "threat_level": "one of low, medium, high, critical",
+            "description": "one short analyst-facing sentence",
+            "recommended_filter": "short filter chip text",
+        },
+    }, default=str)
+    system = (
+        "Return only compact JSON. Do not invent sightings or facts. "
+        "Use the provided class name and counts only."
+    )
+    data = get_llm_json(prompt, system=system, max_tokens=260)
+    generated = {
+        **base,
+        "label": str(data.get("label") or base["label"])[:80],
         "domain": "GEOINT",
-        "category": category,
-        "threat_level": threat,
-        "description": f"LLM-generated ontology classification for detected {label}.",
-        "recommended_filter": label,
-        "generated_by": "local-llm-ontology",
+        "category": base["category"],
+        "threat_level": base["threat_level"],
+        "threat_confidence": base["threat_confidence"],
+        "assessment_status": base["assessment_status"],
+        "evidence": base["evidence"],
+        "description": str(data.get("description") or base["description"])[:280],
+        "recommended_filter": str(data.get("recommended_filter") or data.get("label") or base["recommended_filter"])[:80],
+        "generated_by": f"{ai_status().get('model') or 'llm'}; threat=deterministic-rules",
+        "status": "ok",
     }
+    _llm_detection_ontology_cache[det_class] = generated
+    return generated
 
 
 def enriched_detection_metadata(det_class: str, metadata: Optional[dict]) -> dict:
     enriched = dict(metadata or {})
     ontology = dict(enriched.get("ontology") or {})
-    generated = detection_ontology(det_class)
+    generated = conservative_detection_ontology(
+        det_class,
+        confidence=enriched.get("confidence", 0),
+        allegiance=enriched.get("allegiance"),
+        description=ontology.get("description"),
+    )
     enriched["ontology"] = {**generated, **ontology}
-    enriched.setdefault("threat_level", enriched["ontology"].get("threat_level", "low"))
+    assessment = assess_detection_threat(
+        det_class,
+        confidence=enriched.get("confidence", 0),
+        allegiance=enriched.get("allegiance"),
+    )
+    enriched["threat_level"] = assessment["threat_level"]
+    enriched["threat_confidence"] = assessment["threat_confidence"]
+    enriched["assessment_status"] = assessment["assessment_status"]
+    enriched["evidence"] = assessment["evidence"]
+    enriched["ontology"]["threat_level"] = assessment["threat_level"]
+    enriched["ontology"]["threat_confidence"] = assessment["threat_confidence"]
+    enriched["ontology"]["assessment_status"] = assessment["assessment_status"]
+    enriched["ontology"]["evidence"] = assessment["evidence"]
     enriched.setdefault("allegiance", "unknown")
     return enriched
+
+
+def safe_excerpt(value: Optional[str], limit: int = 12000) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text[:limit]
+
+
+def read_document_text(path: str, limit: int = 12000) -> str:
+    suffix = Path(path).suffix.lower()
+    if suffix not in {".txt", ".csv", ".json", ".md", ".log"}:
+        return ""
+    try:
+        return safe_excerpt(Path(path).read_text(encoding="utf-8", errors="ignore"), limit)
+    except Exception:
+        return ""
+
+
+def ontology_chat_relevant(text: str) -> bool:
+    lower = (text or "").lower()
+    action_terms = {
+        "ontology", "link", "associate", "association", "connect", "relationship",
+        "target", "detection", "entity", "facility", "aircraft", "ship", "vessel",
+        "vehicle", "base", "airfield", "site", "suspect", "update graph", "add to graph",
+    }
+    return any(term in lower for term in action_terms)
+
+
+def sanitize_ontology_label(value: Optional[str], fallback: str = "Entity") -> str:
+    label = re.sub(r"\s+", " ", str(value or "")).strip()
+    label = re.sub(r"[^A-Za-z0-9 ._:/()#-]+", "", label)
+    return (label or fallback)[:120]
+
+
+def sanitize_entity_type(value: Optional[str]) -> str:
+    label = re.sub(r"[^A-Za-z0-9_ -]+", "", str(value or "Entity")).strip().replace("-", " ")
+    label = "".join(part.capitalize() for part in label.split()) or "Entity"
+    return label[:60]
+
+
+def sanitize_relationship_type(value: Optional[str]) -> str:
+    rel = re.sub(r"[^A-Za-z0-9_ ]+", "", str(value or "related_to")).strip().upper().replace(" ", "_")
+    if not rel:
+        rel = "RELATED_TO"
+    if not rel.startswith("CANDIDATE_"):
+        rel = f"CANDIDATE_{rel}"
+    return rel[:80]
+
+
+def ontology_context_snapshot(limit: int = 24) -> dict:
+    context: dict = {"detections": [], "graph": {"nodes": [], "relationships": []}}
+    try:
+        with postgis_db.get_cursor() as cursor:
+            cursor.execute("""
+                SELECT d.id, d.class, d.confidence,
+                       ST_Y(d.centroid) AS latitude,
+                       ST_X(d.centroid) AS longitude,
+                       d.metadata,
+                       sp.name AS imagery_name,
+                       sp.acquisition_time
+                FROM detections d
+                LEFT JOIN satellite_passes sp ON d.pass_id = sp.id
+                ORDER BY d.created_at DESC
+                LIMIT %s
+            """, (limit,))
+            context["detections"] = [dict(row) for row in cursor.fetchall()]
+    except Exception:
+        context["detections"] = []
+
+    try:
+        with db.get_session() as session:
+            node_rows = session.run("""
+                MATCH (n)
+                RETURN elementId(n) AS id, labels(n) AS labels,
+                       coalesce(n.name, n.label, n.id, n.class, elementId(n)) AS label,
+                       properties(n) AS properties
+                LIMIT $limit
+            """, {"limit": limit})
+            context["graph"]["nodes"] = [dict(record) for record in node_rows]
+            rel_rows = session.run("""
+                MATCH (a)-[r]->(b)
+                RETURN coalesce(a.name, a.label, a.id, a.class, elementId(a)) AS source,
+                       type(r) AS type,
+                       coalesce(b.name, b.label, b.id, b.class, elementId(b)) AS target
+                LIMIT $limit
+            """, {"limit": limit})
+            context["graph"]["relationships"] = [dict(record) for record in rel_rows]
+    except Exception:
+        context["graph"] = {"nodes": [], "relationships": []}
+    return context
+
+
+def insert_ontology_update(
+    source_type: str,
+    source_id: Optional[str],
+    domain: str,
+    status: str,
+    summary: str,
+    entities: list[dict],
+    relationships: list[dict],
+    context: dict,
+    error: Optional[str] = None,
+) -> dict:
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            INSERT INTO ontology_updates
+                (source_type, source_id, domain, status, summary, proposed_entities,
+                 proposed_relationships, context, error)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id, source_type, source_id, domain, status, summary,
+                      proposed_entities, proposed_relationships, context, error,
+                      created_at, updated_at
+        """, (
+            source_type,
+            source_id,
+            normalize_domain(domain),
+            status,
+            summary,
+            json.dumps(entities, default=str),
+            json.dumps(relationships, default=str),
+            json.dumps(context, default=str),
+            error,
+        ))
+        return dict(cursor.fetchone())
+
+
+def persist_ontology_update_to_graph(update: dict) -> None:
+    entities = update.get("proposed_entities") or []
+    relationships = update.get("proposed_relationships") or []
+    entity_keys: dict[str, str] = {}
+    with db.get_session() as session:
+        session.run("""
+            MERGE (u:OntologyUpdate {id: $id})
+            SET u.source_type = $source_type,
+                u.source_id = $source_id,
+                u.domain = $domain,
+                u.status = $status,
+                u.summary = $summary,
+                u.created_at = $created_at
+        """, {
+            "id": str(update["id"]),
+            "source_type": update.get("source_type"),
+            "source_id": update.get("source_id"),
+            "domain": update.get("domain"),
+            "status": update.get("status"),
+            "summary": update.get("summary") or "",
+            "created_at": str(update.get("created_at") or datetime.now(timezone.utc).isoformat()),
+        })
+        for entity in entities[:40]:
+            label = sanitize_ontology_label(entity.get("label"))
+            entity_type = sanitize_entity_type(entity.get("type"))
+            key = f"{entity_type}:{label}".lower()
+            entity_keys[label.lower()] = key
+            confidence = float(entity.get("confidence") or 0)
+            session.run("""
+                MATCH (u:OntologyUpdate {id: $update_id})
+                MERGE (c:OntologyCandidate {key: $key})
+                SET c.label = $label,
+                    c.entity_type = $entity_type,
+                    c.description = $description,
+                    c.confidence = $confidence,
+                    c.status = 'pending_review',
+                    c.updated_at = datetime()
+                MERGE (u)-[:PROPOSES]->(c)
+            """, {
+                "update_id": str(update["id"]),
+                "key": key,
+                "label": label,
+                "entity_type": entity_type,
+                "description": safe_excerpt(entity.get("description"), 500),
+                "confidence": confidence,
+            })
+            for detection_id in (entity.get("related_detection_ids") or [])[:8]:
+                try:
+                    det_id = int(detection_id)
+                except (TypeError, ValueError):
+                    continue
+                session.run("""
+                    MATCH (c:OntologyCandidate {key: $key})
+                    MATCH (d:Detection {postgis_id: $det_id})
+                    MERGE (c)-[:SUPPORTED_BY]->(d)
+                """, {"key": key, "det_id": det_id})
+
+        for relationship in relationships[:60]:
+            source = sanitize_ontology_label(relationship.get("source_label"))
+            target = sanitize_ontology_label(relationship.get("target_label"))
+            if not source or not target or source == target:
+                continue
+            rel_type = sanitize_relationship_type(relationship.get("type"))
+            source_key = entity_keys.get(source.lower()) or f"entity:{source}".lower()
+            target_key = entity_keys.get(target.lower()) or f"entity:{target}".lower()
+            session.run("""
+                MATCH (u:OntologyUpdate {id: $update_id})
+                MERGE (a:OntologyCandidate {key: $source_key})
+                SET a.label = coalesce(a.label, $source), a.status = 'pending_review'
+                MERGE (b:OntologyCandidate {key: $target_key})
+                SET b.label = coalesce(b.label, $target), b.status = 'pending_review'
+                MERGE (a)-[r:CANDIDATE_RELATED_TO {source_update_id: $update_id, relation_type: $rel_type}]->(b)
+                SET r.confidence = $confidence,
+                    r.evidence = $evidence,
+                    r.status = 'pending_review',
+                    r.updated_at = datetime()
+                MERGE (u)-[:PROPOSES]->(a)
+                MERGE (u)-[:PROPOSES]->(b)
+            """, {
+                "update_id": str(update["id"]),
+                "source_key": source_key,
+                "target_key": target_key,
+                "source": source,
+                "target": target,
+                "rel_type": rel_type,
+                "confidence": float(relationship.get("confidence") or 0),
+                "evidence": safe_excerpt(relationship.get("evidence"), 500),
+            })
+
+
+def run_ontology_update(source_type: str, source_id: Optional[str], text: str, domain: str = "OSINT") -> dict:
+    ensure_platform_tables()
+    context = ontology_context_snapshot()
+    prompt = json.dumps({
+        "task": (
+            "Analyze the submitted analyst text or document excerpt and propose reviewable ontology updates. "
+            "Use existing detections and ontology context to ground proposals. Do not create approved target assertions."
+        ),
+        "source": {"type": source_type, "id": source_id, "domain": normalize_domain(domain)},
+        "input_text": safe_excerpt(text, 10000),
+        "existing_context": context,
+        "required_json_schema": {
+            "summary": "one concise analyst-facing summary",
+            "entities": [
+                {
+                    "label": "entity name or canonical label",
+                    "type": "facility/person/vehicle/vessel/aircraft/organization/location/other",
+                    "description": "short description grounded in source or context",
+                    "confidence": 0.0,
+                    "related_detection_ids": [0],
+                }
+            ],
+            "relationships": [
+                {
+                    "source_label": "entity label",
+                    "target_label": "entity label",
+                    "type": "relationship label",
+                    "confidence": 0.0,
+                    "evidence": "short evidence phrase",
+                }
+            ],
+        },
+    }, default=str)
+    system = (
+        "Return only valid compact JSON. Treat this as intelligence analysis support. "
+        "Propose candidates for analyst review only; never mark a relationship as confirmed. "
+        "Do not invent coordinates, identities, or hostile intent beyond the provided source and context."
+    )
+    try:
+        llm_data = get_llm_json(prompt, system=system, max_tokens=1300, timeout_seconds=12)
+        entities = llm_data.get("entities") if isinstance(llm_data.get("entities"), list) else []
+        relationships = llm_data.get("relationships") if isinstance(llm_data.get("relationships"), list) else []
+        update = insert_ontology_update(
+            source_type,
+            source_id,
+            domain,
+            "pending_review",
+            safe_excerpt(llm_data.get("summary") or "Ontology candidates generated for analyst review.", 2000),
+            entities[:40],
+            relationships[:60],
+            context,
+        )
+        try:
+            persist_ontology_update_to_graph(update)
+        except Exception as graph_exc:
+            update["status"] = "stored_graph_error"
+            update["error"] = str(graph_exc)
+            with postgis_db.get_cursor(commit=True) as cursor:
+                cursor.execute("""
+                    UPDATE ontology_updates
+                    SET status = 'stored_graph_error', error = %s, updated_at = NOW()
+                    WHERE id = %s
+                """, (str(graph_exc), update["id"]))
+        publish_event("ontology", {"type": "ontology_update_proposed", "update": update})
+        record_timeline_event(normalize_domain(domain), "ontology_update_proposed", update.get("summary") or "Ontology update proposed", {"update_id": update["id"], "source_type": source_type})
+        return update
+    except AIUnavailable as exc:
+        return insert_ontology_update(
+            source_type,
+            source_id,
+            domain,
+            "unavailable",
+            "Ontology update unavailable because the LLM is not configured or did not return usable JSON.",
+            [],
+            [],
+            context,
+            str(exc),
+        )
 
 
 def classify_upload(filename: str) -> tuple[str, str]:
@@ -927,6 +1318,98 @@ def health():
     return status
 
 
+@app.get("/api/ui/classification")
+def ui_classification(workspace: str = Query("map", max_length=80)):
+    """Generate workstation banner text from the configured LLM.
+
+    This endpoint intentionally returns an explicit unavailable state instead of
+    fabricating classification text when no LLM is configured.
+    """
+    current_health = health()
+    context: dict = {
+        "workspace": workspace,
+        "health": current_health,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        summary = dashboard_summary()
+        context["counts"] = summary.get("counts", {})
+        context["priority_targets"] = [
+            {
+                "id": item.get("id"),
+                "name": item.get("properties", {}).get("name"),
+                "priority": item.get("properties", {}).get("priority"),
+                "status": item.get("properties", {}).get("status"),
+            }
+            for item in summary.get("priority_targets", [])[:4]
+        ]
+        context["recent_timeline"] = [
+            {
+                "domain": item.get("domain"),
+                "event_type": item.get("event_type"),
+                "title": item.get("title"),
+            }
+            for item in summary.get("timeline", [])[:5]
+        ]
+        context["models"] = [
+            {
+                "name": item.get("name"),
+                "version": item.get("version"),
+                "status": item.get("status"),
+                "promoted": item.get("promoted"),
+            }
+            for item in summary.get("models", [])[:3]
+        ]
+    except Exception:
+        context["summary_error"] = "dashboard context unavailable"
+
+    try:
+        with postgis_db.get_cursor() as cursor:
+            cursor.execute("""
+                SELECT d.class, count(*) AS count, avg(d.confidence) AS avg_confidence
+                FROM detections d
+                GROUP BY d.class
+                ORDER BY count DESC, d.class ASC
+                LIMIT 8
+            """)
+            context["detection_classes"] = [dict(row) for row in cursor.fetchall()]
+    except Exception:
+        context["detection_classes"] = []
+
+    prompt = json.dumps({
+        "task": "Generate Sentinel workstation classification banner text from current system context.",
+        "context": context,
+        "required_json_schema": {
+            "top_banner": "short all-caps banner text, 8 to 16 words",
+            "bottom_banner": "short all-caps handling/caveat text, 8 to 18 words",
+            "caveat": "one short sentence about source limits or review posture",
+        },
+    }, default=str)
+    system = (
+        "Return only JSON. Do not claim any formal government classification unless provided. "
+        "Do not invent facts. Keep banner text concise and operational."
+    )
+    try:
+        generated = get_llm_json(prompt, system=system, max_tokens=260, timeout_seconds=6)
+        return {
+            "top_banner": str(generated.get("top_banner") or "").strip()[:160],
+            "bottom_banner": str(generated.get("bottom_banner") or "").strip()[:180],
+            "caveat": str(generated.get("caveat") or "").strip()[:240],
+            "generated_at": context["generated_at"],
+            "model": ai_status().get("model"),
+            "status": "ok",
+        }
+    except AIUnavailable as exc:
+        return {
+            "top_banner": None,
+            "bottom_banner": None,
+            "caveat": str(exc),
+            "generated_at": context["generated_at"],
+            "model": ai_status().get("model"),
+            "status": "unavailable",
+        }
+
+
 @app.get("/api/dashboard/summary")
 def dashboard_summary():
     ensure_platform_tables()
@@ -1155,14 +1638,15 @@ def update_feed_status(feed_id: int, enabled: bool = True):
 
 # --- Graph Endpoints (Existing) ---
 @app.get("/api/graph")
-def get_graph():
+def get_graph(include_candidates: bool = Query(False, description="Include pending candidate links as review-only graph edges")):
     with db.get_session() as session:
         result = session.run("""
             MATCH (n)
             OPTIONAL MATCH (n)-[r]->(m)
+            WHERE r IS NULL OR $include_candidates OR NOT type(r) STARTS WITH 'CANDIDATE_'
             RETURN n, r, m
             LIMIT 1500
-        """)
+        """, {"include_candidates": include_candidates})
         nodes = {}
         links = []
         for record in result:
@@ -1174,8 +1658,48 @@ def get_graph():
             if m is not None:
                 nodes[m.element_id] = {"id": m.element_id, "label": list(m.labels)[0], "properties": dict(m)}
             if r is not None and m is not None:
-                links.append({"source": n.element_id, "target": m.element_id, "type": r.type})
-            
+                links.append({
+                    "source": n.element_id,
+                    "target": m.element_id,
+                    "type": r.type,
+                    "candidate": str(r.type).startswith("CANDIDATE_"),
+                    "properties": dict(r),
+                })
+
+        if include_candidates:
+            with postgis_db.get_cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, detection_id, target_id, target_name, score, reason, status
+                    FROM detection_target_candidates
+                    WHERE status = 'pending'
+                    ORDER BY score DESC
+                    LIMIT 300
+                """)
+                candidates = [dict(row) for row in cursor.fetchall()]
+            if candidates:
+                candidate_result = session.run("""
+                    UNWIND $candidates AS c
+                    MATCH (t:Target)
+                    WHERE elementId(t) = c.target_id OR t.id = c.target_id
+                    MATCH (d:Detection {postgis_id: c.detection_id})
+                    RETURN t, d, c
+                """, {"candidates": candidates})
+                for record in candidate_result:
+                    t = record["t"]
+                    d = record["d"]
+                    c = record["c"]
+                    nodes[t.element_id] = {"id": t.element_id, "label": list(t.labels)[0], "properties": dict(t)}
+                    nodes[d.element_id] = {"id": d.element_id, "label": list(d.labels)[0], "properties": dict(d)}
+                    links.append({
+                        "source": t.element_id,
+                        "target": d.element_id,
+                        "type": "CANDIDATE_DETECTED_AS",
+                        "candidate": True,
+                        "candidate_id": c["id"],
+                        "score": c["score"],
+                        "status": c["status"],
+                    })
+
         return {"nodes": list(nodes.values()), "links": links}
 
 
@@ -2103,7 +2627,8 @@ def get_imagery(
     """Query satellite passes from PostGIS catalog."""
     query = """
         SELECT id, name, file_path, sensor_type, acquisition_time, cloud_cover,
-               ST_AsGeoJSON(footprint) as footprint_geojson, crs, created_at
+               ST_AsGeoJSON(footprint) as footprint_geojson, crs, metadata,
+               source_hash, source_filename, created_at, updated_at
         FROM satellite_passes
         WHERE 1=1
     """
@@ -2255,7 +2780,9 @@ def get_detections(
         detections = []
         for row in rows:
             item = dict(row)
-            item["metadata"] = enriched_detection_metadata(item["class"], item.get("metadata"))
+            item_metadata = dict(item.get("metadata") or {})
+            item_metadata["confidence"] = item.get("confidence")
+            item["metadata"] = enriched_detection_metadata(item["class"], item_metadata)
             detections.append(item)
         return {"detections": detections}
 
@@ -2265,6 +2792,7 @@ def get_detection_classes(
     bbox: Optional[str] = Query(None, description="min_lon,min_lat,max_lon,max_lat"),
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
+    llm: bool = Query(False, description="Generate class labels/descriptions with the configured LLM")
 ):
     """Return detected classes as map/globe filter metadata with ontology and threat rollups."""
     query = """
@@ -2319,8 +2847,19 @@ def get_detection_classes(
     with postgis_db.get_cursor() as cursor:
         cursor.execute(query, params)
         classes = []
-        for row in cursor.fetchall():
-            ontology = detection_ontology(row["class"])
+        for index, row in enumerate(cursor.fetchall()):
+            ontology = conservative_detection_ontology(row["class"], confidence=float(row["avg_confidence"] or 0))
+            classification_status = "unavailable"
+            if llm and index < 8:
+                try:
+                    ontology = llm_detection_ontology(
+                        row["class"],
+                        count=int(row["count"] or 0),
+                        avg_confidence=float(row["avg_confidence"] or 0),
+                    )
+                    classification_status = "ok"
+                except AIUnavailable:
+                    classification_status = "unavailable"
             classes.append({
                 "class": row["class"],
                 "label": ontology["label"],
@@ -2330,8 +2869,9 @@ def get_detection_classes(
                 "ontology": ontology,
                 "threat_level": ontology["threat_level"],
                 "allegiance_counts": row["allegiance_counts"] or {},
+                "classification_status": classification_status,
             })
-        return {"classes": classes}
+        return {"classes": classes, "classification_status": "ok" if llm and any(item["classification_status"] == "ok" for item in classes) else "unavailable" if llm else "heuristic"}
 
 @app.get("/api/detections/geojson")
 def get_detections_geojson(
@@ -2344,6 +2884,7 @@ def get_detections_geojson(
     with postgis_db.get_cursor() as cursor:
         query = """
             SELECT d.id, d.class, d.confidence, d.pass_id, d.created_at, d.metadata,
+                   sp.name AS pass_name, sp.acquisition_time, sp.metadata AS imagery_metadata,
                    ST_AsGeoJSON(d.geom)::jsonb AS geometry
             FROM detections d
             JOIN satellite_passes sp ON d.pass_id = sp.id
@@ -2367,7 +2908,9 @@ def get_detections_geojson(
         cursor.execute(query, params)
         features = []
         for row in cursor.fetchall():
-            metadata = enriched_detection_metadata(row["class"], row["metadata"])
+            raw_metadata = dict(row["metadata"] or {})
+            raw_metadata["confidence"] = row["confidence"]
+            metadata = enriched_detection_metadata(row["class"], raw_metadata)
             features.append({
                 "type": "Feature",
                 "geometry": row["geometry"],
@@ -2377,10 +2920,16 @@ def get_detections_geojson(
                     "label": metadata["ontology"]["label"],
                     "confidence": row["confidence"],
                     "pass_id": row["pass_id"],
+                    "pass_name": row["pass_name"],
+                    "acquisition_time": row["acquisition_time"],
+                    "imagery_metadata": row["imagery_metadata"] or {},
                     "created_at": row["created_at"],
                     "metadata": metadata,
                     "ontology": metadata["ontology"],
                     "threat_level": metadata.get("threat_level"),
+                    "threat_confidence": metadata.get("threat_confidence"),
+                    "assessment_status": metadata.get("assessment_status"),
+                    "evidence": metadata.get("evidence", []),
                     "allegiance": metadata.get("allegiance", "unknown"),
                 },
             })
@@ -2393,129 +2942,264 @@ def tag_detection(detection_id: int, update: DetectionTagUpdate):
     if allegiance not in {"friendly", "hostile", "neutral", "unknown"}:
         raise HTTPException(status_code=400, detail="allegiance must be friendly, hostile, neutral, or unknown")
     with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("SELECT class, confidence, metadata FROM detections WHERE id = %s", (detection_id,))
+        existing = cursor.fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="Detection not found")
+        assessment = assess_detection_threat(existing["class"], confidence=existing["confidence"], allegiance=allegiance)
+        ontology = conservative_detection_ontology(existing["class"], confidence=existing["confidence"], allegiance=allegiance)
         cursor.execute("""
             UPDATE detections
-            SET metadata = coalesce(metadata, '{}'::jsonb) || jsonb_build_object('allegiance', %s)
+            SET metadata = coalesce(metadata, '{}'::jsonb) || %s::jsonb
             WHERE id = %s
             RETURNING id, class, metadata
-        """, (allegiance, detection_id))
+        """, (json.dumps({
+            "allegiance": allegiance,
+            "threat_level": assessment["threat_level"],
+            "threat_confidence": assessment["threat_confidence"],
+            "assessment_status": "analyst_override" if allegiance == "hostile" else assessment["assessment_status"],
+            "evidence": assessment["evidence"],
+            "ontology": ontology,
+        }), detection_id))
         row = cursor.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Detection not found")
     try:
         with db.get_session() as session:
             session.run("""
                 MATCH (d:Detection {postgis_id: $det_id})
-                SET d.allegiance = $allegiance
-            """, {"det_id": detection_id, "allegiance": allegiance})
+                SET d.allegiance = $allegiance,
+                    d.threat_level = $threat_level,
+                    d.threat_confidence = $threat_confidence,
+                    d.assessment_status = $assessment_status
+            """, {
+                "det_id": detection_id,
+                "allegiance": allegiance,
+                "threat_level": assessment["threat_level"],
+                "threat_confidence": assessment["threat_confidence"],
+                "assessment_status": "analyst_override" if allegiance == "hostile" else assessment["assessment_status"],
+            })
     except Exception:
         pass
     publish_event("detections", {"type": "detection_tagged", "id": detection_id, "allegiance": allegiance})
     return {"id": row["id"], "class": row["class"], "metadata": enriched_detection_metadata(row["class"], row["metadata"])}
 
-@app.post("/api/detections/resolve")
-def resolve_detection(detection_id: int, distance_threshold_meters: float = 500.0):
-    """
-    Entity resolution: Check if a detection matches an existing Neo4j Target within threshold.
-    If found, link them. If not, create a new Target.
-    """
+
+def target_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    radius = 6_371_000
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lon2 - lon1)
+    a = math.sin(d_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
+    return radius * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def target_class_compatibility(det_class: str, target_props: dict) -> tuple[float, str]:
+    det_text = clean_detection_class(det_class).lower()
+    target_text = " ".join(str(target_props.get(key, "")) for key in ("name", "type", "category", "description")).lower()
+    if not target_text:
+        return 0.25, "target context sparse"
+    if any(token in target_text for token in det_text.split() if len(token) >= 4):
+        return 0.35, "class/name text overlap"
+    det_category = conservative_detection_ontology(det_class).get("category")
+    if det_category and det_category in target_text:
+        return 0.3, "category overlap"
+    return 0.15, "generic proximity match"
+
+
+def detection_row_for_candidate(detection_id: int) -> dict:
     with postgis_db.get_cursor() as cursor:
         cursor.execute("""
-            SELECT d.class, d.confidence, ST_X(d.centroid) as lon, ST_Y(d.centroid) as lat, d.metadata
-            FROM detections d WHERE d.id = %s
+            SELECT d.id, d.class, d.confidence, d.metadata,
+                   ST_X(d.centroid) AS lon, ST_Y(d.centroid) AS lat,
+                   sp.acquisition_time, sp.name AS pass_name
+            FROM detections d
+            JOIN satellite_passes sp ON sp.id = d.pass_id
+            WHERE d.id = %s
         """, (detection_id,))
-        det = cursor.fetchone()
-        if not det:
+        row = cursor.fetchone()
+        if not row:
             raise HTTPException(status_code=404, detail="Detection not found")
-    
+        return dict(row)
+
+
+def generate_candidate_links_for_detection(detection_id: int, max_distance_m: float = 1500.0) -> list[dict]:
+    ensure_platform_tables()
+    detection = detection_row_for_candidate(detection_id)
+    candidates = []
+    try:
+        with db.get_session() as session:
+            result = session.run("""
+                MATCH (t:Target)
+                WHERE t.latitude IS NOT NULL AND t.longitude IS NOT NULL
+                RETURN elementId(t) AS element_id, t.id AS stable_id, t.name AS name,
+                       t.latitude AS lat, t.longitude AS lon, properties(t) AS props
+            """)
+            targets = [dict(record) for record in result]
+    except Exception:
+        targets = []
+
+    for target in targets:
+        distance_m = target_distance_m(float(detection["lat"]), float(detection["lon"]), float(target["lat"]), float(target["lon"]))
+        if distance_m > max_distance_m:
+            continue
+        compatibility, compatibility_reason = target_class_compatibility(detection["class"], target.get("props") or {})
+        distance_score = max(0.0, 1.0 - (distance_m / max_distance_m)) * 0.45
+        confidence_score = max(0.0, min(1.0, float(detection["confidence"] or 0))) * 0.2
+        score = round(distance_score + compatibility + confidence_score, 3)
+        reason = f"{round(distance_m)}m from target; {compatibility_reason}; confidence {float(detection['confidence'] or 0):.2f}"
+        target_id = target.get("stable_id") or target["element_id"]
+        evidence = {
+            "distance_m": round(distance_m, 2),
+            "compatibility_reason": compatibility_reason,
+            "detection_class": detection["class"],
+            "detection_confidence": float(detection["confidence"] or 0),
+            "acquisition_time": detection.get("acquisition_time"),
+        }
+        with postgis_db.get_cursor(commit=True) as cursor:
+            cursor.execute("""
+                INSERT INTO detection_target_candidates (detection_id, target_id, target_name, score, reason, status, evidence)
+                VALUES (%s, %s, %s, %s, %s, 'pending', %s)
+                ON CONFLICT (detection_id, target_id) DO UPDATE SET
+                    target_name = EXCLUDED.target_name,
+                    score = EXCLUDED.score,
+                    reason = EXCLUDED.reason,
+                    evidence = EXCLUDED.evidence,
+                    updated_at = NOW()
+                RETURNING id, detection_id, target_id, target_name, score, reason, status, evidence, reviewed_by, reviewed_at, created_at, updated_at
+            """, (detection_id, target_id, target.get("name") or target_id, score, reason, json.dumps(evidence, default=str)))
+            candidates.append(dict(cursor.fetchone()))
+    publish_event("detections", {"type": "candidate_links_updated", "detection_id": detection_id, "count": len(candidates)})
+    return candidates
+
+
+@app.get("/api/detections/{detection_id}/candidate-links")
+def list_detection_candidate_links(detection_id: int):
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT id, detection_id, target_id, target_name, score, reason, status, evidence, reviewed_by, reviewed_at, created_at, updated_at
+            FROM detection_target_candidates
+            WHERE detection_id = %s
+            ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, score DESC, updated_at DESC
+        """, (detection_id,))
+        return {"candidates": [dict(row) for row in cursor.fetchall()]}
+
+
+@app.post("/api/detections/{detection_id}/candidate-links")
+def create_detection_candidate_links(detection_id: int):
+    candidates = generate_candidate_links_for_detection(detection_id)
+    return {"success": True, "candidates": candidates}
+
+
+@app.post("/api/detection-target-candidates/{candidate_id}/approve")
+def approve_detection_target_candidate(candidate_id: int, req: CandidateLinkDecision = CandidateLinkDecision()):
+    ensure_platform_tables()
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            SELECT c.id, c.detection_id, c.target_id, c.target_name,
+                   d.class, d.confidence, ST_X(d.centroid) AS lon, ST_Y(d.centroid) AS lat
+            FROM detection_target_candidates c
+            JOIN detections d ON d.id = c.detection_id
+            WHERE c.id = %s
+        """, (candidate_id,))
+        candidate = cursor.fetchone()
+        if not candidate:
+            raise HTTPException(status_code=404, detail="Candidate link not found")
+        candidate = dict(candidate)
+        cursor.execute("""
+            UPDATE detection_target_candidates
+            SET status = 'approved', reviewed_by = %s, reviewed_at = NOW(), updated_at = NOW()
+            WHERE id = %s
+            RETURNING id, detection_id, target_id, target_name, score, reason, status, evidence, reviewed_by, reviewed_at, created_at, updated_at
+        """, (req.analyst or "analyst", candidate_id))
+        updated = dict(cursor.fetchone())
+
     with db.get_session() as session:
-        # Search for existing targets near this location
         result = session.run("""
             MATCH (t:Target)
-            WHERE t.latitude IS NOT NULL AND t.longitude IS NOT NULL
-              AND point.distance(
-                  point({latitude: t.latitude, longitude: t.longitude}),
-                  point({latitude: $lat, longitude: $lon})
-              ) < $threshold
-            RETURN t
-            ORDER BY point.distance(
-                point({latitude: t.latitude, longitude: t.longitude}),
-                point({latitude: $lat, longitude: $lon})
-            ) ASC
-            LIMIT 1
-        """, {"lat": det["lat"], "lon": det["lon"], "threshold": distance_threshold_meters})
-        
-        existing = result.single()
-        
-        if existing:
-            target = existing["t"]
-            # Link detection to existing target
-            link_result = session.run("""
-                MATCH (t:Target) WHERE elementId(t) = $target_id
-                MERGE (d:Detection {postgis_id: $det_id})
-                ON CREATE SET d.class = $det_class,
-                              d.confidence = $confidence,
-                              d.latitude = $lat,
-                              d.longitude = $lon,
-                              d.created_at = datetime()
-                MERGE (t)-[:DETECTED_AS]->(d)
-                RETURN t, d
-            """, {
-                "target_id": target.element_id,
-                "det_id": detection_id,
-                "det_class": det["class"],
-                "confidence": det["confidence"],
-                "lat": det["lat"],
-                "lon": det["lon"],
-            })
-            if not link_result.single():
-                raise HTTPException(status_code=409, detail="Detection node could not be linked")
-            return {
-                "resolved": True,
-                "action": "linked_to_existing",
-                "target_id": target.element_id,
-                "target_name": target.get("name", "Unknown")
-            }
-        else:
-            # Create new target
-            import uuid
-            target_id = str(uuid.uuid4())
-            target_name = f"Unknown {det['class']} #{target_id[:6]}"
-            
-            session.run("""
-                MERGE (d:Detection {postgis_id: $det_id})
-                ON CREATE SET d.class = $det_class,
-                              d.confidence = $confidence,
-                              d.latitude = $lat,
-                              d.longitude = $lon,
-                              d.created_at = datetime()
-                CREATE (t:Target {
-                    id: $id,
-                    name: $name,
-                    priority: 'High',
-                    status: 'Active',
-                    description: 'Automated detection via CV pipeline. Class: ' + $det_class,
-                    latitude: $lat,
-                    longitude: $lon,
-                    confidence: $confidence,
-                    detection_id: $det_id
-                })
-                MERGE (t)-[:DETECTED_AS]->(d)
-            """, {
-                "id": target_id,
-                "name": target_name,
-                "det_class": det["class"],
-                "lat": det["lat"],
-                "lon": det["lon"],
-                "confidence": det["confidence"],
-                "det_id": detection_id
-            })
-            return {
-                "resolved": True,
-                "action": "created_new",
-                "target_id": target_id,
-                "target_name": target_name
-            }
+            WHERE elementId(t) = $target_id OR t.id = $target_id
+            MERGE (d:Detection {postgis_id: $det_id})
+            ON CREATE SET d.class = $det_class,
+                          d.confidence = $confidence,
+                          d.latitude = $lat,
+                          d.longitude = $lon,
+                          d.created_at = datetime()
+            SET d.class = $det_class,
+                d.confidence = $confidence,
+                d.latitude = $lat,
+                d.longitude = $lon
+            MERGE (t)-[rel:DETECTED_AS]->(d)
+            ON CREATE SET rel.created_at = datetime()
+            SET rel.status = 'approved',
+                rel.reviewed_by = $reviewed_by,
+                rel.reviewed_at = datetime()
+            RETURN t, d
+        """, {
+            "target_id": candidate["target_id"],
+            "det_id": candidate["detection_id"],
+            "det_class": candidate["class"],
+            "confidence": candidate["confidence"],
+            "lat": candidate["lat"],
+            "lon": candidate["lon"],
+            "reviewed_by": req.analyst or "analyst",
+        })
+        if not result.single():
+            raise HTTPException(status_code=409, detail="Approved candidate target could not be found in graph")
+
+    publish_event("detections", {"type": "candidate_link_approved", "candidate": updated})
+    return {"success": True, "candidate": updated}
+
+
+@app.post("/api/detection-target-candidates/{candidate_id}/reject")
+def reject_detection_target_candidate(candidate_id: int, req: CandidateLinkDecision = CandidateLinkDecision()):
+    ensure_platform_tables()
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            UPDATE detection_target_candidates
+            SET status = 'rejected', reviewed_by = %s, reviewed_at = NOW(), updated_at = NOW()
+            WHERE id = %s
+            RETURNING id, detection_id, target_id, target_name, score, reason, status, evidence, reviewed_by, reviewed_at, created_at, updated_at
+        """, (req.analyst or "analyst", candidate_id))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Candidate link not found")
+        candidate = dict(row)
+    publish_event("detections", {"type": "candidate_link_rejected", "candidate": candidate})
+    return {"success": True, "candidate": candidate}
+
+
+@app.get("/api/ontology/updates")
+def list_ontology_updates(limit: int = Query(25, ge=1, le=100)):
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT id, source_type, source_id, domain, status, summary,
+                   proposed_entities, proposed_relationships, context, error,
+                   created_at, updated_at
+            FROM ontology_updates
+            ORDER BY created_at DESC
+            LIMIT %s
+        """, (limit,))
+        return {"updates": [dict(row) for row in cursor.fetchall()]}
+
+
+@app.post("/api/ontology/update")
+def propose_ontology_update(req: OntologyUpdateRequest):
+    if not safe_excerpt(req.text, 10):
+        raise HTTPException(status_code=400, detail="Text is required")
+    update = run_ontology_update(req.source_type, req.source_id, req.text, req.domain)
+    return {"success": update.get("status") != "unavailable", "ontology_update": update}
+
+
+@app.post("/api/detections/resolve")
+def resolve_detection(detection_id: int, distance_threshold_meters: float = 500.0):
+    """Compatibility endpoint: generate reviewable candidates, never graph links."""
+    candidates = generate_candidate_links_for_detection(detection_id, max_distance_m=distance_threshold_meters)
+    return {
+        "resolved": False,
+        "action": "candidate_links_created",
+        "requires_review": True,
+        "candidates": candidates,
+    }
 
 @app.post("/api/ingest")
 def trigger_ingest(req: IngestRequest):
@@ -2563,16 +3247,21 @@ async def upload_imagery(
         local_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
 
+    raster_metadata = extract_raster_metadata(local_path) if media_type == "imagery" else {}
+    effective_acquisition_time = acquisition_time or raster_metadata.get("acquisition_time")
+
     response = {
         "success": True,
         "file_path": str(local_path),
         "filename": filename,
         "bytes": size,
         "sensor_type": sensor_type,
+        "acquisition_time": effective_acquisition_time,
         "auto_process": auto_process,
         "upload_id": upload_id,
         "media_type": media_type,
         "handler": handler,
+        "metadata": raster_metadata,
     }
     domain = domain_for_media(media_type, sensor_type)
     celery_task_id = None
@@ -2593,8 +3282,12 @@ async def upload_imagery(
                 None,
                 json.dumps({
                     "sensor_type": sensor_type,
+                    "acquisition_time": effective_acquisition_time,
                     "auto_process": auto_process,
                     "bytes": size,
+                    "raster_metadata": raster_metadata,
+                    "source_hash": raster_metadata.get("source_hash"),
+                    "source_filename": raster_metadata.get("source_filename") or filename,
                     "stage": "stored",
                     "progress": 0,
                     "message": "Upload stored.",
@@ -2603,7 +3296,7 @@ async def upload_imagery(
         upload_job_recorded = True
 
     if media_type == "imagery" and auto_process:
-        task = process_satellite_imagery.delay(str(local_path), sensor_type, acquisition_time, upload_id)
+        task = process_satellite_imagery.delay(str(local_path), sensor_type, effective_acquisition_time, upload_id)
         celery_task_id = task.id
         status = "queued"
         with postgis_db.get_cursor(commit=True) as cursor:
@@ -2619,6 +3312,7 @@ async def upload_imagery(
                 celery_task_id,
                 json.dumps({
                     "task_id": celery_task_id,
+                    "acquisition_time": effective_acquisition_time,
                     "stage": "queued",
                     "progress": 5,
                     "message": "Imagery processing queued.",
@@ -2707,7 +3401,42 @@ async def upload_imagery(
                     json.dumps([]),
                 ))
                 response["transcript"] = dict(cursor.fetchone())
-        response.update({"message": f"{media_type.title()} upload received and queued for AI extraction.", "document": document})
+        ontology_text = ""
+        if media_type == "document":
+            ontology_text = read_document_text(str(local_path))
+        elif media_type == "audio":
+            ontology_text = response.get("transcript", {}).get("text", "")
+        ontology_update = run_ontology_update(
+            media_type,
+            str(document["id"]),
+            ontology_text or f"{title}. {summary}",
+            domain,
+        )
+        document["status"] = "ready" if ontology_update.get("status") == "pending_review" else ontology_update.get("status", "queued")
+        document["summary"] = ontology_update.get("summary") or summary
+        document["extracted_entities"] = ontology_update.get("proposed_entities") or []
+        status = document["status"]
+        with postgis_db.get_cursor(commit=True) as cursor:
+            cursor.execute("""
+                UPDATE documents
+                SET status = %s,
+                    summary = %s,
+                    extracted_entities = %s,
+                    metadata = coalesce(metadata, '{}'::jsonb) || %s::jsonb,
+                    updated_at = NOW()
+                WHERE id = %s
+            """, (
+                document["status"],
+                document["summary"],
+                json.dumps(document["extracted_entities"], default=str),
+                json.dumps({"ontology_update_id": ontology_update.get("id"), "ontology_update_status": ontology_update.get("status")}, default=str),
+                document["id"],
+            ))
+        response["ontology_update"] = ontology_update
+        response.update({
+            "message": f"{media_type.title()} upload received; ontology extraction status is {document['status']}.",
+            "document": document,
+        })
     else:
         response["message"] = "Upload received."
 
@@ -2726,6 +3455,7 @@ async def upload_imagery(
                 celery_task_id,
                 json.dumps({
                     "sensor_type": sensor_type,
+                    "acquisition_time": effective_acquisition_time,
                     "auto_process": auto_process,
                     "bytes": size,
                     "stage": status,
@@ -2737,7 +3467,14 @@ async def upload_imagery(
     publish_event("ingest", {"type": "upload_received", "upload": response})
     publish_event("ops", {"type": "upload_received", "upload": response})
     record_observation(domain, f"{media_type}_upload", filename, {"upload": response}, confidence=0.5, provenance={"source": "upload", "handler": handler})
-    record_timeline_event(domain, "upload_received", filename, {"upload_id": upload_id, "media_type": media_type})
+    if not (media_type == "imagery" and auto_process):
+        record_timeline_event(
+            domain,
+            "upload_received",
+            filename,
+            {"upload_id": upload_id, "media_type": media_type, "metadata": raster_metadata},
+            occurred_at=effective_acquisition_time if media_type == "imagery" else None,
+        )
     return response
 
 
@@ -3061,7 +3798,15 @@ async def websocket_events(websocket: WebSocket, topic: str = "detections"):
 def chat(req: ChatRequest):
     try:
         response = get_ai_response(req.message)
-        return {"reply": response, "status": "ok"}
+        ontology_update = None
+        if ontology_chat_relevant(req.message):
+            ontology_update = run_ontology_update(
+                "ava_chat",
+                uuid.uuid4().hex,
+                f"Analyst input: {req.message}\n\nAva response: {response}",
+                "OSINT",
+            )
+        return {"reply": response, "status": "ok", "ontology_update": ontology_update}
     except AIUnavailable as e:
         raise HTTPException(status_code=503, detail=str(e))
 

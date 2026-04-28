@@ -1,20 +1,37 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, ZoomControl, Polyline, Circle, GeoJSON, ImageOverlay, useMap } from 'react-leaflet';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Circle, GeoJSON, ImageOverlay, MapContainer, Marker, Polyline, Popup, TileLayer, useMap, useMapEvents, ZoomControl } from 'react-leaflet';
 import L from 'leaflet';
 import axios from 'axios';
-import { Crosshair, Navigation, ShieldAlert, Activity, Layers, Eye, EyeOff, Satellite, Filter, Search, Shield, Swords, CircleHelp, Clock } from 'lucide-react';
+import {
+  Activity,
+  CircleHelp,
+  Crosshair,
+  Eye,
+  EyeOff,
+  FileText,
+  GitBranch,
+  Layers,
+  Minus,
+  Navigation,
+  Pause,
+  Play,
+  Plus,
+  RefreshCw,
+  Satellite,
+  Search,
+  Send,
+  Shield,
+  Swords,
+} from 'lucide-react';
 import 'leaflet/dist/leaflet.css';
 import { useEventStream } from '../hooks/useEventStream';
 import { type UploadJob, isUploadActive, uploadMessage, uploadProgress, uploadProgressClass, uploadStage } from '../utils/uploadProgress';
 
-// API Configuration
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 const TILE_PROXY_URL = import.meta.env.VITE_TILE_PROXY_URL || 'http://localhost:8090';
 
-// Removed external CDN merge for offline support
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 
-// Custom Icons
 const createIcon = (color: string) => new L.Icon({
   iconUrl: `data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIlMjMzYjgyZjYiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cGF0aCBkPSJNMjEgMTBsLTkgMTVMMyAxMGw5LTl6Ii8+PC9zdmc+`.replace('%233b82f6', encodeURIComponent(color)),
   iconSize: [20, 20],
@@ -22,9 +39,9 @@ const createIcon = (color: string) => new L.Icon({
   popupAnchor: [0, -20],
 });
 
-const blueIcon = createIcon('#3b82f6');
-const redIcon = createIcon('#ef4444');
-const emeraldIcon = createIcon('#10b981');
+const blueIcon = createIcon('#4ea1ff');
+const redIcon = createIcon('#ff3b30');
+const emeraldIcon = createIcon('#3dd68c');
 
 function detectionLabel(feature: any) {
   return String(feature?.properties?.class || feature?.properties?.label || 'Unknown');
@@ -32,14 +49,14 @@ function detectionLabel(feature: any) {
 
 function detectionColor(label: string) {
   const colors: Record<string, string> = {
-    Vessel: '#3b82f6',
-    Aircraft: '#ef4444',
-    Facility: '#10b981',
-    Vehicle: '#60a5fa',
-    Ship: '#22d3ee',
-    Plane: '#fb7185',
-    Building: '#a78bfa',
-    Unknown: '#f59e0b',
+    Vessel: '#4ea1ff',
+    Aircraft: '#ff3b30',
+    Facility: '#3dd68c',
+    Vehicle: '#ff7a1a',
+    Ship: '#3dd68c',
+    Plane: '#ff3b30',
+    Building: '#aab2bb',
+    Unknown: '#f5b400',
   };
   if (colors[label]) return colors[label];
   let hash = 0;
@@ -55,42 +72,48 @@ function confidenceValue(feature: any) {
 function threatClass(level?: string) {
   switch (String(level || '').toLowerCase()) {
     case 'critical':
-      return 'text-rose-300 border-rose-500/50 bg-rose-500/10';
+      return 'crit';
     case 'high':
-      return 'text-orange-200 border-orange-400/50 bg-orange-500/10';
+      return 'warn';
     case 'medium':
-      return 'text-amber-100 border-amber-400/50 bg-amber-400/10';
+      return 'acc';
     default:
-      return 'text-slate-300 border-slate-600 bg-slate-800/60';
+      return '';
   }
 }
 
-// Detection style by class
 const getDetectionStyle = (feature: any) => {
   const color = detectionColor(detectionLabel(feature));
   return {
-    color: color,
-    weight: 2,
-    opacity: 0.9,
+    color,
+    weight: 1.3,
+    opacity: 0.92,
     fillColor: color,
-    fillOpacity: 0.15,
-    dashArray: '4, 4'
+    fillOpacity: confidenceValue(feature) > 0.85 ? 0.12 : 0.045,
+    dashArray: '3, 4',
   };
 };
 
-// Map bounds updater component
 function MapBoundsUpdater({ onBoundsChange }: { onBoundsChange: (bounds: string) => void }) {
   const map = useMap();
   useEffect(() => {
     const handleMoveEnd = () => {
       const b = map.getBounds();
-      const bbox = `${b.getWest()},${b.getSouth()},${b.getEast()},${b.getNorth()}`;
-      onBoundsChange(bbox);
+      onBoundsChange(`${b.getWest()},${b.getSouth()},${b.getEast()},${b.getNorth()}`);
     };
     map.on('moveend', handleMoveEnd);
-    handleMoveEnd(); // initial
+    handleMoveEnd();
     return () => { map.off('moveend', handleMoveEnd); };
   }, [map, onBoundsChange]);
+  return null;
+}
+
+function MapCursorTracker({ onCursorChange }: { onCursorChange: (cursor: { lat: number; lon: number }) => void }) {
+  useMapEvents({
+    mousemove(event) {
+      onCursorChange({ lat: event.latlng.lat, lon: event.latlng.lng });
+    },
+  });
   return null;
 }
 
@@ -118,8 +141,29 @@ function MapFitToImagery({ imagery }: { imagery: any }) {
   return null;
 }
 
-export default function GaiaMap() {
-  const [data, setData] = useState<{ static: any[], tracks: any[] }>({ static: [], tracks: [] });
+function MapFitToDetections({ geojson, enabled }: { geojson: any; enabled: boolean }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!enabled || !geojson?.features?.length) return;
+    try {
+      const bounds = L.geoJSON(geojson).getBounds();
+      if (bounds.isValid()) {
+        map.fitBounds(bounds.pad(0.25), { animate: true, maxZoom: 15 });
+      }
+    } catch {
+      // Ignore invalid geometries; the GeoJSON layer itself will skip what Leaflet cannot draw.
+    }
+  }, [enabled, geojson, map]);
+  return null;
+}
+
+type GaiaMapProps = {
+  onOpenWorkbench?: () => void;
+  onOpenGraph?: () => void;
+};
+
+export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) {
+  const [data, setData] = useState<{ static: any[]; tracks: any[] }>({ static: [], tracks: [] });
   const [imagery, setImagery] = useState<any[]>([]);
   const [detectionsGeoJSON, setDetectionsGeoJSON] = useState<any>({ type: 'FeatureCollection', features: [] });
   const [detectionClasses, setDetectionClasses] = useState<any[]>([]);
@@ -128,91 +172,128 @@ export default function GaiaMap() {
   const [selectedImagery, setSelectedImagery] = useState<number | null>(null);
   const [imageryOpacity, setImageryOpacity] = useState(0.8);
   const [hiddenDetectionLabels, setHiddenDetectionLabels] = useState<string[]>([]);
+  const [detectionClassFilter, setDetectionClassFilter] = useState<string | null>(null);
+  const [detectionsLayerVersion, setDetectionsLayerVersion] = useState(0);
   const [detectionLabelSearch, setDetectionLabelSearch] = useState('');
   const [selectedDetection, setSelectedDetection] = useState<any | null>(null);
+  const [showBbox, setShowBbox] = useState(true);
+  const [timelineWindowMinutes, setTimelineWindowMinutes] = useState(60);
+  const [timelinePlaying, setTimelinePlaying] = useState(false);
+  const [cursor, setCursor] = useState({ lat: 25, lon: 55 });
+  const [actionStatus, setActionStatus] = useState('');
+  const [isActionBusy, setIsActionBusy] = useState(false);
+  const [candidateLinks, setCandidateLinks] = useState<any[]>([]);
   const [timeRange, setTimeRange] = useState<{ start: string; end: string }>(() => {
     const now = new Date();
-    const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    return {
-      start: dayAgo.toISOString(),
-      end: now.toISOString()
-    };
+    const hourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+    return { start: hourAgo.toISOString(), end: now.toISOString() };
   });
-  const [mapBounds, setMapBounds] = useState<string>('');
+  const [mapBounds, setMapBounds] = useState('');
   const [activeLayers, setActiveLayers] = useState({
     satellite: true,
     detections: true,
     tracks: true,
     static: true,
-    grid: true
+    grid: true,
   });
   const [isLoading, setIsLoading] = useState(false);
+
+  const selectedImageryData = imagery.find((img) => img.id === selectedImagery);
   const processingUploads = useMemo(
     () => uploadJobs.filter((job) => job.media_type === 'imagery' && isUploadActive(job)).slice(0, 3),
     [uploadJobs],
   );
+
   const detectionLabelStats = useMemo(() => {
     const classMeta = new Map(detectionClasses.map((item) => [item.class, item]));
     const stats = new Map<string, { label: string; count: number; maxConfidence: number; color: string; ontology?: any; threatLevel?: string; rawClass: string }>();
+    for (const meta of detectionClasses) {
+      const rawClass = String(meta.class || meta.label || 'Unknown');
+      stats.set(rawClass, {
+        label: meta?.label || rawClass,
+        rawClass,
+        count: Number(meta?.count || 0),
+        maxConfidence: Number(meta?.max_confidence || 0),
+        color: detectionColor(rawClass),
+        ontology: meta?.ontology,
+        threatLevel: meta?.threat_level,
+      });
+    }
     for (const feature of detectionsGeoJSON.features || []) {
-      const label = detectionLabel(feature);
-      const meta = classMeta.get(label);
-      const existing = stats.get(label) || {
-        label: meta?.label || label,
-        rawClass: label,
-        count: 0,
+      const rawClass = detectionLabel(feature);
+      const meta = classMeta.get(rawClass);
+      const existing = stats.get(rawClass) || {
+        label: meta?.label || rawClass,
+        rawClass,
+        count: Number(meta?.count || 0),
         maxConfidence: 0,
-        color: detectionColor(label),
+        color: detectionColor(rawClass),
         ontology: meta?.ontology || feature?.properties?.ontology,
         threatLevel: meta?.threat_level || feature?.properties?.threat_level,
       };
-      existing.count += 1;
+      if (!meta) existing.count += 1;
       existing.maxConfidence = Math.max(existing.maxConfidence, confidenceValue(feature));
-      stats.set(label, existing);
+      stats.set(rawClass, existing);
     }
     return Array.from(stats.values()).sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
   }, [detectionsGeoJSON, detectionClasses]);
+
   const filteredDetectionsGeoJSON = useMemo(() => ({
     ...detectionsGeoJSON,
-    features: (detectionsGeoJSON.features || []).filter((feature: any) => !hiddenDetectionLabels.includes(detectionLabel(feature))),
-  }), [detectionsGeoJSON, hiddenDetectionLabels]);
+    features: (detectionsGeoJSON.features || []).filter((feature: any) => {
+      const label = detectionLabel(feature);
+      if (detectionClassFilter && label !== detectionClassFilter) return false;
+      return !hiddenDetectionLabels.includes(label);
+    }),
+  }), [detectionsGeoJSON, detectionClassFilter, hiddenDetectionLabels]);
+
   const filteredDetectionLabelStats = useMemo(() => {
     const query = detectionLabelSearch.trim().toLowerCase();
     return query
       ? detectionLabelStats.filter((item) => `${item.label} ${item.ontology?.category || ''} ${item.threatLevel || ''}`.toLowerCase().includes(query))
       : detectionLabelStats;
   }, [detectionLabelSearch, detectionLabelStats]);
+
   const maxDetectionLabelCount = Math.max(1, ...detectionLabelStats.map((item) => item.count));
   const visibleDetectionCount = filteredDetectionsGeoJSON.features?.length || 0;
+  const timelineBuckets = useMemo(() => {
+    const buckets = new Array(60).fill(0);
+    const now = Date.now();
+    for (const feature of filteredDetectionsGeoJSON.features || []) {
+      const imageTime = feature?.properties?.acquisition_time || feature?.properties?.imagery_metadata?.acquisition_time;
+      const time = new Date(imageTime || feature?.properties?.created_at || now).getTime();
+      const minsAgo = Math.floor((now - time) / 60000);
+      if (minsAgo >= 0 && minsAgo < 60) buckets[59 - minsAgo] += 1;
+    }
+    return buckets;
+  }, [filteredDetectionsGeoJSON]);
+  const maxTimelineBucket = Math.max(1, ...timelineBuckets);
+
+  const setRecentWindow = (minutes: number) => {
+    const end = new Date();
+    const start = new Date(end.getTime() - minutes * 60 * 1000);
+    setTimelineWindowMinutes(minutes);
+    setTimeRange({ start: start.toISOString(), end: end.toISOString() });
+  };
+
+  const focusTimeRange = useCallback((timestamp?: string | null) => {
+    if (!timestamp) return;
+    const center = new Date(timestamp);
+    if (!Number.isFinite(center.getTime())) return;
+    const halfWindowMs = Math.max(15, timelineWindowMinutes) * 60 * 1000 / 2;
+    setTimeRange({
+      start: new Date(center.getTime() - halfWindowMs).toISOString(),
+      end: new Date(center.getTime() + halfWindowMs).toISOString(),
+    });
+  }, [timelineWindowMinutes]);
 
   const fetchData = useCallback(async () => {
-      try {
-        const response = await axios.get(`${API_URL}/api/geotime/features`);
-        setData(response.data || { static: [], tracks: [] });
-      } catch (error) {
-        console.error("Error fetching geotime data:", error);
-      }
-  }, []);
-
-  // Fetch static tracks and features
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
-
-  useEventStream('geotime', useCallback(() => {
-    fetchData();
-  }, [fetchData]));
-
-  useEffect(() => {
-    const fetchBasemap = async () => {
-      try {
-        const response = await axios.get(`${API_URL}/api/basemap/countries`);
-        setBasemapGeoJSON(response.data || { type: 'FeatureCollection', features: [] });
-      } catch (error) {
-        console.error("Error fetching offline basemap:", error);
-      }
-    };
-    fetchBasemap();
+    try {
+      const response = await axios.get(`${API_URL}/api/geotime/features`);
+      setData(response.data || { static: [], tracks: [] });
+    } catch (error) {
+      console.error('Error fetching geotime data:', error);
+    }
   }, []);
 
   const fetchUploadJobs = useCallback(async () => {
@@ -220,23 +301,10 @@ export default function GaiaMap() {
       const response = await axios.get(`${API_URL}/api/ingest/uploads`);
       setUploadJobs(response.data.uploads || []);
     } catch (error) {
-      console.error("Error fetching upload jobs:", error);
+      console.error('Error fetching upload jobs:', error);
     }
   }, []);
 
-  useEffect(() => {
-    fetchUploadJobs();
-  }, [fetchUploadJobs]);
-
-  useEffect(() => {
-    if (processingUploads.length === 0) return;
-    const timer = window.setInterval(() => {
-      fetchUploadJobs();
-    }, 2000);
-    return () => window.clearInterval(timer);
-  }, [processingUploads.length, fetchUploadJobs]);
-
-  // Fetch imagery catalog
   const fetchImagery = useCallback(async () => {
     try {
       const params = new URLSearchParams();
@@ -247,522 +315,743 @@ export default function GaiaMap() {
       setImagery(rows);
       setSelectedImagery((current) => (current && rows.some((row: any) => row.id === current) ? current : rows[0]?.id || null));
     } catch (error) {
-      console.error("Error fetching imagery:", error);
+      console.error('Error fetching imagery:', error);
     }
   }, [timeRange]);
 
-  useEffect(() => {
-    fetchImagery();
-  }, [fetchImagery]);
-
-  // Fetch detections GeoJSON
   const fetchDetections = useCallback(async () => {
     if (!mapBounds) return;
     setIsLoading(true);
     try {
-      const params = new URLSearchParams();
-      params.append('bbox', mapBounds);
-      params.append('start_time', timeRange.start);
-      params.append('end_time', timeRange.end);
-      const [geojsonResponse, classResponse] = await Promise.all([
-        axios.get(`${API_URL}/api/detections/geojson?${params.toString()}`),
-        axios.get(`${API_URL}/api/detections/classes?${params.toString()}`),
+      const classParams = new URLSearchParams({ start_time: timeRange.start, end_time: timeRange.end, llm: 'true' });
+      const geoParams = new URLSearchParams({ start_time: timeRange.start, end_time: timeRange.end });
+      if (detectionClassFilter) {
+        geoParams.set('det_class', detectionClassFilter);
+      } else {
+        geoParams.set('bbox', mapBounds);
+      }
+      const [geojsonResponse, classResponse] = await Promise.allSettled([
+        axios.get(`${API_URL}/api/detections/geojson?${geoParams.toString()}`, { timeout: 10000 }),
+        axios.get(`${API_URL}/api/detections/classes?${classParams.toString()}`, { timeout: 10000 }),
       ]);
-      setDetectionsGeoJSON(geojsonResponse.data || { type: 'FeatureCollection', features: [] });
-      setDetectionClasses(classResponse.data?.classes || []);
+      if (geojsonResponse.status === 'fulfilled') {
+        setDetectionsGeoJSON(geojsonResponse.value.data || { type: 'FeatureCollection', features: [] });
+        setDetectionsLayerVersion((version) => version + 1);
+      }
+      if (classResponse.status === 'fulfilled') {
+        setDetectionClasses(classResponse.value.data?.classes || []);
+      }
     } catch (error) {
-      console.error("Error fetching detections:", error);
+      console.error('Error fetching detections:', error);
     } finally {
       setIsLoading(false);
     }
-  }, [mapBounds, timeRange]);
+  }, [detectionClassFilter, mapBounds, timeRange]);
+
+  useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => { fetchUploadJobs(); }, [fetchUploadJobs]);
+  useEffect(() => { fetchImagery(); }, [fetchImagery]);
+  useEffect(() => { fetchDetections(); }, [fetchDetections]);
 
   useEffect(() => {
-    fetchDetections();
-  }, [fetchDetections]);
+    const fetchBasemap = async () => {
+      try {
+        const response = await axios.get(`${API_URL}/api/basemap/countries`);
+        setBasemapGeoJSON(response.data || { type: 'FeatureCollection', features: [] });
+      } catch (error) {
+        console.error('Error fetching offline basemap:', error);
+      }
+    };
+    fetchBasemap();
+  }, []);
 
-  useEventStream('detections', useCallback(() => {
+  useEffect(() => {
+    if (processingUploads.length === 0) return;
+    const timer = window.setInterval(fetchUploadJobs, 2000);
+    return () => window.clearInterval(timer);
+  }, [processingUploads.length, fetchUploadJobs]);
+
+  useEventStream('geotime', useCallback(() => { fetchData(); }, [fetchData]));
+  useEventStream('detections', useCallback((message: any) => {
+    focusTimeRange(message?.acquisition_time);
     fetchDetections();
     fetchImagery();
     fetchUploadJobs();
-  }, [fetchDetections, fetchImagery, fetchUploadJobs]));
-
-  useEventStream('imagery', useCallback(() => {
+  }, [focusTimeRange, fetchDetections, fetchImagery, fetchUploadJobs]));
+  useEventStream('imagery', useCallback((message: any) => {
+    focusTimeRange(message?.acquisition_time);
     fetchImagery();
     fetchUploadJobs();
-  }, [fetchImagery, fetchUploadJobs]));
-
+  }, [focusTimeRange, fetchImagery, fetchUploadJobs]));
   useEventStream('ops', useCallback((message: any) => {
     if (String(message?.type || '').startsWith('imagery_') || message?.type === 'upload_received') {
+      focusTimeRange(message?.acquisition_time);
       fetchUploadJobs();
     }
-  }, [fetchUploadJobs]));
+  }, [focusTimeRange, fetchUploadJobs]));
 
   const tagDetection = useCallback(async (detectionId: number, allegiance: string) => {
-    await axios.patch(`${API_URL}/api/detections/${detectionId}/tag`, { allegiance });
-    console.log(`Detection ${detectionId} tagged ${allegiance}.`);
-    await fetchDetections();
+    setIsActionBusy(true);
+    setActionStatus(`Tagging detection ${detectionId} as ${allegiance}...`);
+    try {
+      const response = await axios.patch(`${API_URL}/api/detections/${detectionId}/tag`, { allegiance }, { timeout: 10000 });
+      const metadata = response.data?.metadata || {};
+      setSelectedDetection((current: any) => {
+        if (!current || current.properties?.id !== detectionId) return current;
+        return {
+          ...current,
+          properties: {
+            ...current.properties,
+            allegiance,
+            metadata,
+            ontology: metadata.ontology || current.properties?.ontology,
+            threat_level: metadata.threat_level || current.properties?.threat_level,
+            threat_confidence: metadata.threat_confidence ?? current.properties?.threat_confidence,
+            assessment_status: metadata.assessment_status || current.properties?.assessment_status,
+            evidence: metadata.evidence || current.properties?.evidence,
+          },
+        };
+      });
+      await fetchDetections();
+      setActionStatus(`Detection tagged ${allegiance}.`);
+    } catch (error: any) {
+      console.error('Detection tagging failed:', error);
+      setActionStatus(error.response?.data?.detail || 'Detection tagging failed.');
+    } finally {
+      setIsActionBusy(false);
+    }
   }, [fetchDetections]);
+
+  const requireSelectedDetection = () => {
+    const detectionId = selectedDetection?.properties?.id;
+    if (!detectionId) {
+      setActionStatus('Select a detection first.');
+      return null;
+    }
+    return detectionId;
+  };
+
+  const fetchCandidateLinks = useCallback(async (detectionId: number) => {
+    const response = await axios.get(`${API_URL}/api/detections/${detectionId}/candidate-links`, { timeout: 10000 });
+    setCandidateLinks(response.data?.candidates || []);
+    return response.data?.candidates || [];
+  }, []);
+
+  useEffect(() => {
+    const detectionId = selectedDetection?.properties?.id;
+    setActionStatus('');
+    setCandidateLinks([]);
+    if (!detectionId) return;
+    fetchCandidateLinks(detectionId).catch((error) => console.error('Candidate link fetch failed:', error));
+  }, [fetchCandidateLinks, selectedDetection?.properties?.id]);
+
+  const createCandidateLinks = useCallback(async () => {
+    const detectionId = requireSelectedDetection();
+    if (!detectionId) return null;
+    const response = await axios.post(`${API_URL}/api/detections/${detectionId}/candidate-links`, null, { timeout: 12000 });
+    const candidates = response.data?.candidates || [];
+    setCandidateLinks(candidates);
+    return candidates;
+  }, [selectedDetection]);
+
+  const cueCollection = useCallback(async () => {
+    setIsActionBusy(true);
+    setActionStatus('Checking approved target association...');
+    try {
+      const approved = candidateLinks.find((candidate) => candidate.status === 'approved');
+      if (!approved) {
+        const candidates = candidateLinks.length ? candidateLinks : await createCandidateLinks();
+        setActionStatus(candidates?.length ? 'Review and approve a candidate link before cueing collection.' : 'No candidate target found for this detection.');
+        return;
+      }
+      setActionStatus('Creating collection task...');
+      const props = selectedDetection?.properties || {};
+      const threat = String(props.threat_level || '').toLowerCase();
+      await axios.post(`${API_URL}/api/collection/tasks`, {
+        target_id: approved.target_id,
+        target_name: approved.target_name,
+        asset_type: 'ISR',
+        priority: threat === 'critical' || threat === 'high' ? 'High' : 'Medium',
+        queue: threat === 'critical' || threat === 'high' ? 'ATD Queue' : 'GEOINT Queue',
+        notes: `Cue collection from GEO detection ${props.id || ''} (${props.label || props.class || 'unknown'}).`,
+        aipoints: [],
+      }, { timeout: 12000 });
+      setActionStatus(`Collection queued for ${approved.target_name || approved.target_id}.`);
+    } catch (error) {
+      console.error('Cue collection failed:', error);
+      setActionStatus('Cue collection failed.');
+    } finally {
+      setIsActionBusy(false);
+    }
+  }, [candidateLinks, createCandidateLinks, selectedDetection]);
+
+  const addToLinkGraph = useCallback(async () => {
+    setIsActionBusy(true);
+    setActionStatus('Generating candidate graph links...');
+    try {
+      const candidates = await createCandidateLinks();
+      setActionStatus(candidates?.length ? 'Candidate links ready for analyst approval.' : 'No candidate target found for this detection.');
+    } catch (error) {
+      console.error('Add to link graph failed:', error);
+      setActionStatus('Candidate link generation failed.');
+    } finally {
+      setIsActionBusy(false);
+    }
+  }, [createCandidateLinks]);
+
+  const approveCandidate = useCallback(async (candidateId: number) => {
+    setIsActionBusy(true);
+    setActionStatus('Approving candidate link...');
+    try {
+      await axios.post(`${API_URL}/api/detection-target-candidates/${candidateId}/approve`, { analyst: 'ui' }, { timeout: 12000 });
+      const detectionId = selectedDetection?.properties?.id;
+      if (detectionId) await fetchCandidateLinks(detectionId);
+      setActionStatus('Candidate approved and graph link created.');
+      onOpenGraph?.();
+    } catch (error) {
+      console.error('Candidate approval failed:', error);
+      setActionStatus('Candidate approval failed.');
+    } finally {
+      setIsActionBusy(false);
+    }
+  }, [fetchCandidateLinks, onOpenGraph, selectedDetection]);
+
+  const rejectCandidate = useCallback(async (candidateId: number) => {
+    setIsActionBusy(true);
+    setActionStatus('Rejecting candidate link...');
+    try {
+      await axios.post(`${API_URL}/api/detection-target-candidates/${candidateId}/reject`, { analyst: 'ui' }, { timeout: 12000 });
+      const detectionId = selectedDetection?.properties?.id;
+      if (detectionId) await fetchCandidateLinks(detectionId);
+      setActionStatus('Candidate rejected.');
+    } catch (error) {
+      console.error('Candidate rejection failed:', error);
+      setActionStatus('Candidate rejection failed.');
+    } finally {
+      setIsActionBusy(false);
+    }
+  }, [fetchCandidateLinks, selectedDetection]);
+
+  const openWorkbench = useCallback(async () => {
+    setIsActionBusy(true);
+    setActionStatus('Opening target workbench...');
+    try {
+      onOpenWorkbench?.();
+    } catch (error) {
+      console.error('Open workbench failed:', error);
+      setActionStatus('Open workbench failed.');
+    } finally {
+      setIsActionBusy(false);
+    }
+  }, [onOpenWorkbench]);
 
   const onEachDetection = (feature: any, layer: L.Layer) => {
     const props = feature.properties;
-    const popupContent = `
-      <div style="font-family: sans-serif; min-width: 200px;">
-        <div style="font-weight: bold; font-size: 14px; margin-bottom: 8px; color: #e2e8f0; border-bottom: 1px solid #334155; padding-bottom: 4px;">
-          ${props.class} Detection
+    layer.bindPopup(`
+      <div style="font-family: sans-serif; min-width: 210px;">
+        <div style="font-weight: 700; font-size: 13px; margin-bottom: 8px; color: #e8ebee; border-bottom: 1px solid #373e46; padding-bottom: 4px;">
+          ${props.label || props.class}
         </div>
-        <div style="font-size: 12px; color: #94a3b8; line-height: 1.6;">
-          <div>ID: <span style="color: #e2e8f0;">${props.id}</span></div>
-          <div>Confidence: <span style="color: #e2e8f0;">${(props.confidence * 100).toFixed(1)}%</span></div>
-          <div>Pass: <span style="color: #e2e8f0;">${props.pass_id}</span></div>
-          <div>Threat: <span style="color: #e2e8f0;">${props.threat_level || 'unknown'}</span></div>
-          <div>Tag: <span style="color: #e2e8f0;">${props.allegiance || 'unknown'}</span></div>
-          <div>Time: <span style="color: #e2e8f0;">${new Date(props.created_at).toLocaleString()}</span></div>
+        <div style="font-size: 12px; color: #aab2bb; line-height: 1.6;">
+          <div>ID: <span style="color:#e8ebee">${props.id}</span></div>
+          <div>Class: <span style="color:#e8ebee">${props.class}</span></div>
+          <div>Confidence: <span style="color:#e8ebee">${(Number(props.confidence || 0) * 100).toFixed(1)}%</span></div>
+          <div>Threat: <span style="color:#e8ebee">${props.threat_level || 'unknown'}</span></div>
+          <div>Tag: <span style="color:#e8ebee">${props.allegiance || 'unknown'}</span></div>
         </div>
       </div>
-    `;
-    layer.bindPopup(popupContent);
+    `);
+    layer.bindTooltip(String(props.label || props.class || 'Detection'), {
+      permanent: true,
+      direction: 'center',
+      className: 'sentinel-detection-label',
+      opacity: 0.95,
+    });
     layer.on('click', () => setSelectedDetection(feature));
   };
 
-  const selectedImageryData = imagery.find(img => img.id === selectedImagery);
-
   return (
-    <div className="w-full h-full relative bg-slate-900 flex flex-col">
-      <div className="absolute top-4 left-4 z-[400] w-80 max-h-[calc(100%-7rem)] flex flex-col gap-3 pointer-events-none">
-        {/* Top Overlay Panel */}
-        <div className="bg-slate-900/92 p-4 rounded border border-slate-700 backdrop-blur-md shadow-2xl pointer-events-auto">
-          <h2 className="text-slate-100 font-bold tracking-widest text-sm mb-3 flex items-center gap-2 uppercase">
-            <Activity className="w-4 h-4 text-emerald-500" /> Gaia Geo-Spatial
-          </h2>
-          <div className="grid grid-cols-2 gap-2">
-            <div className="flex justify-between items-center p-2 bg-slate-800/60 rounded border border-slate-800">
-              <span className="text-[10px] text-slate-400 font-semibold flex items-center gap-1.5"><Navigation className="w-3 h-3 text-blue-400"/> TRACKS</span>
-              <span className="text-sm font-mono text-slate-200">{data.tracks.length}</span>
-            </div>
-            <div className="flex justify-between items-center p-2 bg-slate-800/60 rounded border border-slate-800">
-              <span className="text-[10px] text-slate-400 font-semibold flex items-center gap-1.5"><ShieldAlert className="w-3 h-3 text-red-400"/> LAUNCH</span>
-              <span className="text-sm font-mono text-slate-200">{data.static.filter((s: any) => s.label === 'LaunchPoint').length}</span>
-            </div>
-            <div className="flex justify-between items-center p-2 bg-slate-800/60 rounded border border-slate-800">
-              <span className="text-[10px] text-slate-400 font-semibold flex items-center gap-1.5"><Eye className="w-3 h-3 text-emerald-400"/> DETECTIONS</span>
-              <span className="text-sm font-mono text-slate-200">{visibleDetectionCount}/{detectionsGeoJSON.features?.length || 0}</span>
-            </div>
-            <div className="flex justify-between items-center p-2 bg-slate-800/60 rounded border border-slate-800">
-              <span className="text-[10px] text-slate-400 font-semibold flex items-center gap-1.5"><Satellite className="w-3 h-3 text-indigo-400"/> PASSES</span>
-              <span className="text-sm font-mono text-slate-200">{imagery.length}</span>
-            </div>
-          </div>
+    <div className="grid h-full min-h-0 grid-cols-[320px_minmax(0,1fr)_320px] gap-px bg-sentinel-line">
+      <section className="sentinel-panel min-h-0 border-0">
+        <div className="sentinel-panel-header">
+          <Layers className="h-4 w-4" />
+          <span>Layers / Classes</span>
+          <button type="button" onClick={fetchDetections} className="sentinel-icon-btn ml-auto h-6 w-6">
+            <RefreshCw className="h-3.5 w-3.5" />
+          </button>
         </div>
 
-        <div className="bg-slate-900/92 p-3 rounded border border-slate-700 backdrop-blur-md shadow-2xl pointer-events-auto">
-          <div className="flex items-center justify-between gap-2 mb-2">
-            <h3 className="text-xs font-bold text-slate-300 tracking-widest uppercase flex items-center gap-2">
-              <Filter className="w-3 h-3 text-emerald-400" /> Detection Labels
-            </h3>
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => setHiddenDetectionLabels([])}
-                className="h-6 px-2 border border-slate-700 bg-slate-800 text-[10px] text-slate-300 hover:text-white"
-              >
-                All
-              </button>
-              <button
-                type="button"
-                onClick={() => setHiddenDetectionLabels(detectionLabelStats.map((item) => item.rawClass))}
-                className="h-6 px-2 border border-slate-700 bg-slate-800 text-[10px] text-slate-300 hover:text-white"
-              >
-                None
-              </button>
-            </div>
-          </div>
-          <div className="h-8 mb-2 border border-slate-700 bg-slate-950/80 flex items-center px-2 gap-2">
-            <Search className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-            <input
-              value={detectionLabelSearch}
-              onChange={(event) => setDetectionLabelSearch(event.target.value)}
-              placeholder="Search labels"
-              className="min-w-0 flex-1 bg-transparent text-xs text-slate-200 placeholder:text-slate-600 focus:outline-none"
-            />
-          </div>
-          <div className="max-h-56 overflow-y-auto pr-1 space-y-1">
-            {filteredDetectionLabelStats.length === 0 && (
-              <div className="h-16 border border-dashed border-slate-700 grid place-items-center text-xs text-slate-500">
-                No detections in view
-              </div>
-            )}
-            {filteredDetectionLabelStats.map((item) => {
-              const hidden = hiddenDetectionLabels.includes(item.rawClass);
-              return (
-                <button
-                  key={item.rawClass}
-                  type="button"
-                  onClick={() => setHiddenDetectionLabels((current) => (
-                    current.includes(item.rawClass)
-                      ? current.filter((label) => label !== item.rawClass)
-                      : [...current, item.rawClass]
-                  ))}
-                  className={`w-full text-left border px-2 py-2 transition ${hidden ? 'border-slate-800 bg-slate-950/70 text-slate-500' : 'border-slate-700 bg-slate-800/70 text-slate-200 hover:border-slate-500'}`}
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="h-2.5 w-2.5 shrink-0" style={{ backgroundColor: item.color }} />
-                    <span className="min-w-0 flex-1 truncate text-xs font-semibold">{item.label}</span>
-                    <span className="font-mono text-xs">{item.count}</span>
-                    {hidden ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                  </div>
-                  <div className="mt-1 flex items-center gap-1 text-[10px]">
-                    <span className={`px-1.5 py-0.5 border ${threatClass(item.threatLevel)}`}>{item.threatLevel || 'low'}</span>
-                    <span className="truncate text-slate-500">{item.ontology?.category || 'ontology'}</span>
-                  </div>
-                  <div className="mt-1 flex items-center gap-2">
-                    <div className="h-1.5 flex-1 bg-slate-950 overflow-hidden">
-                      <div
-                        className="h-full"
-                        style={{ width: `${Math.max(4, (item.count / maxDetectionLabelCount) * 100)}%`, backgroundColor: item.color }}
-                      />
-                    </div>
-                    <span className="w-12 text-right text-[10px] font-mono text-slate-500">
-                      {Math.round(item.maxConfidence * 100)}%
-                    </span>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {selectedDetection && (
-          <div className="bg-slate-900/94 p-3 rounded border border-slate-700 backdrop-blur-md shadow-2xl pointer-events-auto">
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <div className="text-xs font-bold uppercase tracking-wider text-slate-300 truncate">
-                  {selectedDetection.properties?.label || selectedDetection.properties?.class}
-                </div>
-                <div className="mt-1 text-[11px] text-slate-500">
-                  {selectedDetection.properties?.ontology?.description || 'Detection ontology unavailable.'}
-                </div>
-              </div>
-              <button type="button" onClick={() => setSelectedDetection(null)} className="text-slate-500 hover:text-slate-200">x</button>
-            </div>
-            <div className="mt-2 flex flex-wrap gap-1 text-[10px]">
-              <span className={`px-2 py-1 border ${threatClass(selectedDetection.properties?.threat_level)}`}>
-                {selectedDetection.properties?.threat_level || 'low'}
-              </span>
-              <span className="px-2 py-1 border border-slate-700 bg-slate-800 text-slate-300">
-                {selectedDetection.properties?.allegiance || 'unknown'}
-              </span>
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => tagDetection(selectedDetection.properties.id, 'friendly')}
-                className="h-8 border border-emerald-500/50 bg-emerald-500/10 text-emerald-100 text-xs flex items-center justify-center gap-1"
-              >
-                <Shield className="w-3.5 h-3.5" /> Friendly
-              </button>
-              <button
-                type="button"
-                onClick={() => tagDetection(selectedDetection.properties.id, 'hostile')}
-                className="h-8 border border-rose-500/50 bg-rose-500/10 text-rose-100 text-xs flex items-center justify-center gap-1"
-              >
-                <Swords className="w-3.5 h-3.5" /> Hostile
-              </button>
-              <button
-                type="button"
-                onClick={() => tagDetection(selectedDetection.properties.id, 'neutral')}
-                className="h-8 border border-sky-500/50 bg-sky-500/10 text-sky-100 text-xs flex items-center justify-center gap-1"
-              >
-                <CircleHelp className="w-3.5 h-3.5" /> Neutral
-              </button>
-              <button
-                type="button"
-                onClick={() => tagDetection(selectedDetection.properties.id, 'unknown')}
-                className="h-8 border border-slate-600 bg-slate-800 text-slate-300 text-xs"
-              >
-                Clear
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Imagery Selector Panel */}
-        {imagery.length > 0 && (
-          <div className="bg-slate-900/92 p-3 rounded border border-slate-700 backdrop-blur-md shadow-2xl pointer-events-auto min-h-0 overflow-y-auto">
-            <h3 className="text-xs font-bold text-slate-400 tracking-widest uppercase mb-2 flex items-center gap-2">
-              <Satellite className="w-3 h-3" /> Available Imagery
-            </h3>
-            <div className="flex flex-col gap-1">
-              {imagery.map((img) => (
-                <button
-                  key={img.id}
-                  onClick={() => setSelectedImagery(selectedImagery === img.id ? null : img.id)}
-                  className={`text-left p-2 rounded text-xs transition border ${
-                    selectedImagery === img.id
-                      ? 'bg-indigo-500/20 border-indigo-500 text-indigo-300'
-                      : 'bg-slate-800/50 border-slate-700 text-slate-400 hover:bg-slate-700 hover:text-slate-200'
-                  }`}
-                >
-                  <div className="font-semibold truncate">{img.name}</div>
-                  <div className="text-[10px] opacity-70 mt-0.5">
-                    {img.sensor_type} | {new Date(img.acquisition_time).toLocaleString()} | {img.cloud_cover}% cloud
-                  </div>
+        <div className="sentinel-scroll">
+          <div className="border-b border-sentinel-line p-2">
+            <div className="grid grid-cols-3 border border-sentinel-line-2">
+              {['BASE', 'SAT', 'TERRAIN'].map((item, index) => (
+                <button key={item} className={`h-7 text-[10px] ${index === 0 ? 'bg-sentinel-panel-2 text-sentinel-text' : 'text-sentinel-muted'}`} type="button">
+                  {item}
                 </button>
               ))}
             </div>
           </div>
-        )}
-      </div>
 
-      {/* Layer Control Panel */}
-      <div className="absolute top-4 right-4 z-[400] bg-slate-900/90 p-4 rounded border border-slate-700 backdrop-blur-md shadow-2xl w-56 pointer-events-auto">
-        <h3 className="text-xs font-bold text-slate-400 tracking-widest uppercase mb-3 flex items-center gap-2">
-          <Layers className="w-3 h-3" /> Layer Control
-        </h3>
-        <div className="flex flex-col gap-2">
-          {[
-            { key: 'satellite', label: 'Satellite Imagery', color: 'text-indigo-400' },
-            { key: 'detections', label: 'AI Detections', color: 'text-emerald-400' },
-            { key: 'tracks', label: 'Active Tracks', color: 'text-blue-400' },
-            { key: 'static', label: 'Static Features', color: 'text-red-400' },
-            { key: 'grid', label: 'Tactical Grid', color: 'text-slate-400' },
-          ].map((layer) => (
-            <label key={layer.key} className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer hover:text-white transition">
-              <input
-                type="checkbox"
-                checked={activeLayers[layer.key as keyof typeof activeLayers]}
-                onChange={(e) => setActiveLayers(prev => ({ ...prev, [layer.key]: e.target.checked }))}
-                className="rounded border-slate-600 bg-slate-800 text-blue-500 focus:ring-blue-500"
-              />
-              <span className={layer.color}>{layer.label}</span>
-            </label>
-          ))}
-        </div>
-
-        {activeLayers.satellite && selectedImageryData && (
-          <div className="mt-3 pt-3 border-t border-slate-700">
-            <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Opacity</div>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              value={imageryOpacity}
-              onChange={(e) => setImageryOpacity(parseFloat(e.target.value))}
-              className="w-full h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer"
-            />
+          <div className="flex items-center gap-2 border-b border-sentinel-line bg-sentinel-panel-2 px-3 py-2">
+            <span className="sentinel-label flex-1">Overlays</span>
+            <button type="button" onClick={() => setShowBbox((value) => !value)} className={`sentinel-btn h-6 ${showBbox ? 'primary' : ''}`}>
+              BBOX
+            </button>
           </div>
-        )}
-      </div>
 
-      <div className="flex-1 relative">
-        <MapContainer 
-          center={[25.0, 55.0]} 
-          zoom={6} 
-          style={{ height: '100%', width: '100%', background: '#0f172a' }}
-          zoomControl={false}
-        >
-          <ZoomControl position="bottomright" />
-          <MapBoundsUpdater onBoundsChange={setMapBounds} />
-          <MapFitToImagery imagery={selectedImageryData} />
-
-          {/* Base Layer */}
-          <ImageOverlay
-            url="/world_map.svg"
-            bounds={[[-85, -180], [85, 180]]}
-            opacity={0.58}
-          />
-
-          {/* Offline vector basemap fallback */}
-          {activeLayers.grid && (
-            <GeoJSON
-              data={basemapGeoJSON}
-              style={() => ({
-                color: '#93c5fd',
-                weight: 1.2,
-                opacity: 0.92,
-                fillColor: '#1d4ed8',
-                fillOpacity: 0.18
-              })}
-            />
-          )}
-
-          {/* Satellite Imagery Layer */}
-          {activeLayers.satellite && selectedImageryData && (
-            <TileLayer
-              url={`${TILE_PROXY_URL}/cog/tiles/{z}/{x}/{y}?url=${encodeURIComponent(selectedImageryData.file_path)}`}
-              opacity={imageryOpacity}
-              maxZoom={22}
-            />
-          )}
-
-          {/* Static Features & Range Rings */}
-          {activeLayers.static && data.static.map((loc: any) => {
-            const isLaunchPoint = loc.label === 'LaunchPoint';
-            const radius = loc.properties.threatRadius || 0;
+          {[
+            { key: 'satellite', label: 'Satellite Imagery', metric: imagery.length, color: 'text-sentinel-info' },
+            { key: 'detections', label: 'AI Detections', metric: visibleDetectionCount, color: 'text-sentinel-accent' },
+            { key: 'tracks', label: 'Active Tracks', metric: data.tracks.length, color: 'text-sentinel-info' },
+            { key: 'static', label: 'Static Features', metric: data.static.length, color: 'text-sentinel-crit' },
+            { key: 'grid', label: 'Tactical Grid', metric: 'WGS84', color: 'text-sentinel-muted' },
+          ].map((layer) => {
+            const active = activeLayers[layer.key as keyof typeof activeLayers];
             return (
-              <div key={loc.id}>
-                {isLaunchPoint && radius > 0 && (
-                   <Circle 
-                     center={[loc.properties.latitude, loc.properties.longitude]}
-                     radius={radius}
-                     pathOptions={{ color: '#ef4444', fillColor: '#ef4444', fillOpacity: 0.1, weight: 1, dashArray: '5, 5' }}
-                   />
-                )}
-                <Marker 
-                  position={[loc.properties.latitude, loc.properties.longitude]}
-                  icon={isLaunchPoint ? redIcon : emeraldIcon}
-                >
-                  <Popup className="gotham-popup">
-                    <div className="text-slate-200 bg-slate-900 p-2 rounded shadow-xl border border-slate-700 min-w-[200px]">
-                      <h3 className="font-bold text-sm tracking-wider uppercase flex items-center gap-2 border-b border-slate-700 pb-1 mb-2">
-                        {isLaunchPoint ? <ShieldAlert className="w-4 h-4 text-red-500" /> : <Crosshair className="w-4 h-4 text-emerald-500" />}
-                        {loc.properties.name}
-                      </h3>
-                      <div className="text-xs font-mono text-slate-400 flex flex-col gap-1">
-                        <span className="flex justify-between"><span>LAT:</span> <span className="text-slate-200">{loc.properties.latitude.toFixed(4)}</span></span>
-                        <span className="flex justify-between"><span>LON:</span> <span className="text-slate-200">{loc.properties.longitude.toFixed(4)}</span></span>
-                        {radius > 0 && <span className="flex justify-between"><span>RANGE:</span> <span className="text-red-400">{radius/1000}km</span></span>}
-                      </div>
-                    </div>
-                  </Popup>
-                </Marker>
-              </div>
+              <button
+                key={layer.key}
+                type="button"
+                onClick={() => setActiveLayers((prev) => ({ ...prev, [layer.key]: !active }))}
+                className="sentinel-row w-full grid-cols-[22px_1fr_auto] text-left"
+              >
+                <span className={active ? layer.color : 'text-sentinel-muted'}>{active ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}</span>
+                <span className="truncate text-xs text-slate-200">{layer.label}</span>
+                <span className="font-mono text-[10px] text-sentinel-muted">{layer.metric}</span>
+              </button>
             );
           })}
 
-          {/* Detection Overlay */}
-          {activeLayers.detections && filteredDetectionsGeoJSON.features && filteredDetectionsGeoJSON.features.length > 0 && (
-            <GeoJSON
-              key={`detections-${hiddenDetectionLabels.join('|')}-${filteredDetectionsGeoJSON.features.length}`}
-              data={filteredDetectionsGeoJSON}
-              style={getDetectionStyle}
-              onEachFeature={onEachDetection}
-            />
+          <div className="border-b border-sentinel-line bg-sentinel-panel-2 px-3 py-2">
+            <div className="flex items-center gap-2">
+              <span className="sentinel-label flex-1">Detection Classes / {detectionLabelStats.length}</span>
+              <button
+                type="button"
+                className="sentinel-btn h-6"
+                onClick={() => {
+                  setDetectionClassFilter(null);
+                  setHiddenDetectionLabels([]);
+                }}
+              >
+                ALL
+              </button>
+              <button
+                type="button"
+                className="sentinel-btn h-6"
+                onClick={() => {
+                  setDetectionClassFilter(null);
+                  setHiddenDetectionLabels(detectionLabelStats.map((item) => item.rawClass));
+                }}
+              >
+                NONE
+              </button>
+            </div>
+            <div className="mt-2 flex h-8 items-center gap-2 border border-sentinel-line-2 bg-sentinel-bg px-2">
+              <Search className="h-3.5 w-3.5 text-sentinel-muted" />
+              <input
+                value={detectionLabelSearch}
+                onChange={(event) => setDetectionLabelSearch(event.target.value)}
+                placeholder="search classes"
+                className="min-w-0 flex-1 bg-transparent text-xs text-slate-200 outline-none placeholder:text-sentinel-muted"
+              />
+            </div>
+          </div>
+
+          {filteredDetectionLabelStats.length === 0 && (
+            <div className="p-4 text-xs text-sentinel-muted">No detections in current view.</div>
           )}
 
-          {/* Tracks */}
-          {activeLayers.tracks && data.tracks.map((track: any) => {
-             const positions: [number, number][] = track.history.map((h: any) => [h.lat, h.lng]);
-             const latest = track.latest;
-             return (
-               <div key={track.id}>
-                 <Polyline 
-                   positions={positions} 
-                   pathOptions={{ color: '#3b82f6', weight: 2, opacity: 0.5, dashArray: '4, 6' }} 
-                 />
-                 {latest && (
-                   <Marker position={[latest.latitude, latest.longitude]} icon={blueIcon}>
-                     <Popup className="gotham-popup">
-                        <div className="text-slate-200 bg-slate-900 p-2 rounded shadow-xl border border-slate-700 min-w-[200px]">
-                          <h3 className="font-bold text-sm tracking-wider uppercase flex items-center gap-2 border-b border-slate-700 pb-1 mb-2">
-                            <Navigation className="w-4 h-4 text-blue-500" />
-                            {track.properties.callsign || track.asset_id}
-                          </h3>
-                          <div className="text-xs font-mono text-slate-400 flex flex-col gap-1">
-                            <span className="flex justify-between"><span>TYPE:</span> <span className="text-slate-200">{track.label}</span></span>
-                            <span className="flex justify-between"><span>SPEED:</span> <span className="text-slate-200">{track.properties.speed?.toFixed(1)} kts</span></span>
-                            <span className="flex justify-between"><span>HDG:</span> <span className="text-slate-200">{latest.heading?.toFixed(0)}°</span></span>
-                            <span className="flex justify-between"><span>LAT:</span> <span className="text-slate-200">{latest.latitude.toFixed(4)}</span></span>
-                            <span className="flex justify-between"><span>LON:</span> <span className="text-slate-200">{latest.longitude.toFixed(4)}</span></span>
+          {filteredDetectionLabelStats.map((item) => {
+            const hidden = Boolean(detectionClassFilter && detectionClassFilter !== item.rawClass) || hiddenDetectionLabels.includes(item.rawClass);
+            const solo = detectionClassFilter === item.rawClass;
+            return (
+              <button
+                key={item.rawClass}
+                type="button"
+                onClick={() => {
+                  setDetectionClassFilter(item.rawClass);
+                  setHiddenDetectionLabels(detectionLabelStats.filter((stat) => stat.rawClass !== item.rawClass).map((stat) => stat.rawClass));
+                }}
+                className={`w-full border-b border-sentinel-line px-3 py-2 text-left ${hidden ? 'text-sentinel-muted' : 'text-slate-200'}`}
+              >
+                <div className="grid grid-cols-[18px_1fr_auto_auto] items-center gap-2">
+                  <span style={{ color: hidden ? 'var(--ink-2)' : item.color }}>{hidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}</span>
+                  <span className="truncate text-xs">{item.label}{solo ? ' / SOLO' : ''}</span>
+                  <span className={`sentinel-tag ${threatClass(item.threatLevel)}`}>{item.threatLevel || 'low'}</span>
+                  <span className="font-mono text-[10px]" style={{ color: hidden ? 'var(--ink-2)' : item.color }}>{item.count}</span>
+                </div>
+                <div className="mt-2 flex items-center gap-2">
+                  <div className="h-1.5 flex-1 bg-sentinel-bg">
+                    <div className="h-full" style={{ width: `${Math.max(4, (item.count / maxDetectionLabelCount) * 100)}%`, backgroundColor: item.color }} />
+                  </div>
+                  <span className="w-10 text-right font-mono text-[10px] text-sentinel-muted">{Math.round(item.maxConfidence * 100)}%</span>
+                </div>
+              </button>
+            );
+          })}
+
+          {imagery.length > 0 && (
+            <>
+              <div className="sentinel-panel-header border-t border-sentinel-line">
+                <Satellite className="h-4 w-4" />
+                <span>Imagery</span>
+              </div>
+              {imagery.slice(0, 10).map((img) => (
+                <button
+                  key={img.id}
+                  type="button"
+                  onClick={() => setSelectedImagery(selectedImagery === img.id ? null : img.id)}
+                  className={`sentinel-row w-full grid-cols-[1fr_auto] text-left ${selectedImagery === img.id ? 'selected' : ''}`}
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-xs text-slate-200">{img.name}</span>
+                    <span className="block truncate font-mono text-[10px] text-sentinel-muted">{img.sensor_type} / {img.cloud_cover ?? 0}% cloud</span>
+                  </span>
+                  <span className="sentinel-tag info">SAT</span>
+                </button>
+              ))}
+            </>
+          )}
+        </div>
+      </section>
+
+      <section className="relative flex min-h-0 min-w-0 flex-col bg-sentinel-bg">
+        <div className="relative min-h-0 flex-1">
+          <MapContainer
+            center={[25.0, 55.0]}
+            zoom={6}
+            style={{ height: '100%', width: '100%', background: '#0b0d0f' }}
+            zoomControl={false}
+          >
+            <ZoomControl position="bottomright" />
+            <MapBoundsUpdater onBoundsChange={setMapBounds} />
+            <MapCursorTracker onCursorChange={setCursor} />
+            <MapFitToImagery imagery={selectedImageryData} />
+            <MapFitToDetections geojson={filteredDetectionsGeoJSON} enabled={Boolean(detectionClassFilter)} />
+
+            <ImageOverlay url="/world_map.svg" bounds={[[-85, -180], [85, 180]]} opacity={0.5} />
+
+            {activeLayers.grid && (
+              <GeoJSON
+                data={basemapGeoJSON}
+                style={() => ({
+                  color: '#4ea1ff',
+                  weight: 1,
+                  opacity: 0.82,
+                  fillColor: '#1d2227',
+                  fillOpacity: 0.18,
+                })}
+              />
+            )}
+
+            {activeLayers.satellite && selectedImageryData && (
+              <TileLayer
+                url={`${TILE_PROXY_URL}/cog/tiles/{z}/{x}/{y}?url=${encodeURIComponent(selectedImageryData.file_path)}`}
+                opacity={imageryOpacity}
+                maxZoom={22}
+              />
+            )}
+
+            {activeLayers.static && data.static.map((loc: any) => {
+              const isLaunchPoint = loc.label === 'LaunchPoint';
+              const radius = loc.properties.threatRadius || 0;
+              return (
+                <div key={loc.id}>
+                  {isLaunchPoint && radius > 0 && (
+                    <Circle
+                      center={[loc.properties.latitude, loc.properties.longitude]}
+                      radius={radius}
+                      pathOptions={{ color: '#ff3b30', fillColor: '#ff3b30', fillOpacity: 0.08, weight: 1, dashArray: '5, 5' }}
+                    />
+                  )}
+                  <Marker position={[loc.properties.latitude, loc.properties.longitude]} icon={isLaunchPoint ? redIcon : emeraldIcon}>
+                    <Popup className="gotham-popup">
+                      <div className="border border-sentinel-line bg-sentinel-panel p-2 text-slate-200">
+                        <div className="mb-2 border-b border-sentinel-line pb-1 text-xs font-bold uppercase tracking-wider">{loc.properties.name}</div>
+                        <div className="font-mono text-[11px] text-sentinel-muted">
+                          LAT {loc.properties.latitude.toFixed(4)}<br />
+                          LON {loc.properties.longitude.toFixed(4)}
+                        </div>
+                      </div>
+                    </Popup>
+                  </Marker>
+                </div>
+              );
+            })}
+
+            {activeLayers.detections && showBbox && filteredDetectionsGeoJSON.features?.length > 0 && (
+              <GeoJSON
+                key={`detections-${detectionsLayerVersion}-${detectionClassFilter || 'all'}-${hiddenDetectionLabels.join('|')}-${filteredDetectionsGeoJSON.features.length}`}
+                data={filteredDetectionsGeoJSON}
+                style={getDetectionStyle}
+                onEachFeature={onEachDetection}
+              />
+            )}
+
+            {activeLayers.tracks && data.tracks.map((track: any) => {
+              const positions: [number, number][] = track.history.map((h: any) => [h.lat, h.lng]);
+              const latest = track.latest;
+              return (
+                <div key={track.id}>
+                  <Polyline positions={positions} pathOptions={{ color: '#4ea1ff', weight: 2, opacity: 0.55, dashArray: '4, 6' }} />
+                  {latest && (
+                    <Marker position={[latest.latitude, latest.longitude]} icon={blueIcon}>
+                      <Popup className="gotham-popup">
+                        <div className="border border-sentinel-line bg-sentinel-panel p-2 text-slate-200">
+                          <div className="mb-2 border-b border-sentinel-line pb-1 text-xs font-bold uppercase tracking-wider">{track.properties.callsign || track.asset_id}</div>
+                          <div className="font-mono text-[11px] text-sentinel-muted">
+                            TYPE {track.label}<br />
+                            SPEED {track.properties.speed?.toFixed(1)} kts
                           </div>
                         </div>
-                     </Popup>
-                   </Marker>
-                 )}
-               </div>
-             )
-          })}
-        </MapContainer>
+                      </Popup>
+                    </Marker>
+                  )}
+                </div>
+              );
+            })}
+          </MapContainer>
 
-        {/* Loading Indicator */}
-        {isLoading && (
-          <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-[500] bg-slate-900/90 px-4 py-2 rounded border border-slate-700 text-xs text-slate-300">
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div>
-              Loading detections...
+          <div className="pointer-events-none absolute inset-0">
+            <div className="sentinel-grid" />
+            <div className="absolute left-2 top-2 font-mono text-[10px] tracking-wider text-sentinel-muted">WGS84 / MERCATOR / LIVE COP</div>
+            <div className="absolute right-2 top-2 font-mono text-[10px] tracking-wider text-sentinel-muted">AOR / CURRENT VIEW</div>
+            <div className="absolute left-1/2 top-8 -translate-x-1/2 border border-sentinel-line-2 bg-sentinel-panel px-3 py-1 font-mono text-[11px]">
+              <span className="text-sentinel-accent">{visibleDetectionCount}</span>
+              <span className="text-sentinel-muted"> / {detectionsGeoJSON.features?.length || 0} detections / last {timelineWindowMinutes}m</span>
+            </div>
+            <div className="absolute left-3 bottom-4 border border-sentinel-line-2 bg-sentinel-panel px-3 py-2 font-mono text-[11px]">
+              <div className="sentinel-label">cursor</div>
+              <div>LAT {cursor.lat.toFixed(3).padStart(8, ' ')} deg</div>
+              <div>LON {cursor.lon.toFixed(3).padStart(8, ' ')} deg</div>
+              <div className="mt-1 text-sentinel-muted">MGRS <span className="text-slate-200">AUTO</span></div>
+            </div>
+            <div className="absolute right-3 bottom-4 border border-sentinel-line-2 bg-sentinel-panel px-3 py-2 font-mono text-[11px]">
+              <div className="sentinel-label">scale</div>
+              <div className="flex items-center gap-2">
+                <span className="h-px w-20 bg-slate-200" />
+                <span>500 km</span>
+              </div>
+            </div>
+            <div className="absolute right-3 top-10 flex flex-col border border-sentinel-line-2 bg-sentinel-panel">
+              <button type="button" className="pointer-events-auto grid h-7 w-7 place-items-center border-b border-sentinel-line text-sentinel-muted"><Plus className="h-3.5 w-3.5" /></button>
+              <button type="button" className="pointer-events-auto grid h-7 w-7 place-items-center border-b border-sentinel-line text-sentinel-muted"><Minus className="h-3.5 w-3.5" /></button>
+              <button type="button" className="pointer-events-auto grid h-7 w-7 place-items-center text-sentinel-muted"><Crosshair className="h-3.5 w-3.5" /></button>
             </div>
           </div>
-        )}
 
-        {processingUploads.length > 0 && (
-          <div className="absolute bottom-4 left-4 z-[500] w-96 max-w-[calc(100%-2rem)] bg-slate-900/94 border border-slate-700 shadow-2xl p-3 pointer-events-auto">
-            <div className="text-xs font-bold uppercase tracking-widest text-slate-400 mb-2 flex items-center justify-between">
-              <span>Imagery Processing</span>
-              <span>{processingUploads.length}</span>
+          {isLoading && (
+            <div className="absolute left-1/2 top-1/2 z-[500] -translate-x-1/2 -translate-y-1/2 border border-sentinel-line bg-sentinel-panel px-4 py-2 text-xs text-slate-300">
+              <div className="flex items-center gap-2">
+                <span className="h-2 w-2 animate-pulse rounded-full bg-sentinel-accent" />
+                Loading detections
+              </div>
             </div>
-            <div className="space-y-2">
-              {processingUploads.map((job) => {
-                const progress = uploadProgress(job);
-                return (
-                  <div key={job.upload_id} className="border border-slate-800 bg-slate-950/80 px-2 py-2">
-                    <div className="flex items-center justify-between gap-2 text-xs">
-                      <span className="text-slate-200 font-semibold truncate">{job.filename}</span>
-                      <span className="font-mono text-slate-400">{progress}%</span>
+          )}
+
+          {processingUploads.length > 0 && (
+            <div className="absolute bottom-24 left-4 z-[500] w-96 max-w-[calc(100%-2rem)] border border-sentinel-line bg-sentinel-panel p-3">
+              <div className="mb-2 flex items-center justify-between text-xs font-bold uppercase tracking-widest text-sentinel-muted">
+                <span>Imagery Processing</span>
+                <span>{processingUploads.length}</span>
+              </div>
+              <div className="space-y-2">
+                {processingUploads.map((job) => {
+                  const progress = uploadProgress(job);
+                  return (
+                    <div key={job.upload_id} className="border border-sentinel-line bg-sentinel-bg px-2 py-2">
+                      <div className="flex items-center justify-between gap-2 text-xs">
+                        <span className="truncate font-semibold text-slate-200">{job.filename}</span>
+                        <span className="font-mono text-sentinel-muted">{progress}%</span>
+                      </div>
+                      <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-sentinel-muted">
+                        <span className="uppercase">{uploadStage(job)}</span>
+                        <span className="truncate">{uploadMessage(job)}</span>
+                      </div>
+                      <div className="mt-2 h-1.5 w-full bg-sentinel-panel-2">
+                        <div className={`h-full transition-all duration-500 ${uploadProgressClass(job)}`} style={{ width: `${progress}%` }} />
+                      </div>
                     </div>
-                    <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-slate-500">
-                      <span className="uppercase">{uploadStage(job)}</span>
-                      <span className="truncate">{uploadMessage(job)}</span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="h-20 border-t border-sentinel-line bg-sentinel-panel px-3 py-2">
+          <div className="mb-1 flex items-center gap-3">
+            <button type="button" className="sentinel-icon-btn h-6 w-6" onClick={() => setTimelinePlaying((value) => !value)}>
+              {timelinePlaying ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+            </button>
+            <button type="button" className="sentinel-icon-btn h-6 w-6" onClick={fetchDetections}>
+              <RefreshCw className="h-3.5 w-3.5" />
+            </button>
+            <span className="sentinel-label">Timeline</span>
+            <div className="grid grid-cols-3 border border-sentinel-line-2">
+              {[15, 30, 60].map((minutes) => (
+                <button key={minutes} type="button" onClick={() => setRecentWindow(minutes)} className={`h-6 px-3 text-[10px] ${timelineWindowMinutes === minutes ? 'bg-sentinel-panel-2 text-slate-100' : 'text-sentinel-muted'}`}>
+                  {minutes}M
+                </button>
+              ))}
+            </div>
+            <span className="ml-auto font-mono text-[10px] text-sentinel-muted">{new Date(timeRange.start).toLocaleTimeString()} / {new Date(timeRange.end).toLocaleTimeString()}</span>
+          </div>
+          <div className="relative flex h-9 items-end gap-px border border-sentinel-line bg-sentinel-bg p-0.5">
+            {timelineBuckets.map((value, index) => {
+              const inWindow = index >= 60 - timelineWindowMinutes;
+              return (
+                <div
+                  key={index}
+                  className={inWindow ? 'bg-sentinel-accent' : 'bg-sentinel-line-2'}
+                  style={{ flex: 1, height: `${Math.max(4, (value / maxTimelineBucket) * 100)}%`, opacity: inWindow ? 0.45 + (value / maxTimelineBucket) * 0.55 : 0.35 }}
+                />
+              );
+            })}
+            <div className="absolute bottom-0 top-0 w-px bg-sentinel-accent" style={{ left: `${((60 - timelineWindowMinutes) / 60) * 100}%` }} />
+          </div>
+        </div>
+      </section>
+
+      <section className="sentinel-panel min-h-0 border-0">
+        <div className="sentinel-panel-header">
+          <Crosshair className="h-4 w-4" />
+          <span>Selection</span>
+          <span className="sentinel-tag acc ml-auto">DETAIL</span>
+        </div>
+        <div className="sentinel-scroll">
+          {selectedDetection ? (
+            <>
+              <div className="border-b border-sentinel-line p-3">
+                <div className="font-mono text-[10px] text-sentinel-muted">DET-{selectedDetection.properties?.id} / {selectedDetection.properties?.class}</div>
+                <div className="mt-1 text-lg font-semibold text-slate-100">{selectedDetection.properties?.label || selectedDetection.properties?.class}</div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <span className={`sentinel-tag ${threatClass(selectedDetection.properties?.threat_level)}`}>{selectedDetection.properties?.threat_level || 'low'}</span>
+                  <span className="sentinel-tag">{selectedDetection.properties?.allegiance || 'unknown'}</span>
+                  <span className="sentinel-tag info">{Math.round(Number(selectedDetection.properties?.confidence || 0) * 100)}% CONF</span>
+                </div>
+              </div>
+              <div className="border-b border-sentinel-line p-3 text-xs leading-relaxed text-sentinel-muted">
+                {selectedDetection.properties?.ontology?.description || 'Detection ontology unavailable.'}
+                <div className="mt-2 grid grid-cols-[92px_1fr] gap-y-1 font-mono text-[10px]">
+                  <span>ASSESS</span><span>{selectedDetection.properties?.assessment_status || selectedDetection.properties?.ontology?.assessment_status || 'unconfirmed'}</span>
+                  <span>THREAT SCORE</span><span>{Number(selectedDetection.properties?.threat_confidence || selectedDetection.properties?.ontology?.threat_confidence || 0).toFixed(2)}</span>
+                  <span>EVIDENCE</span><span>{(selectedDetection.properties?.evidence || selectedDetection.properties?.ontology?.evidence || []).join(' / ') || 'none'}</span>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2 border-b border-sentinel-line p-3">
+                <button type="button" disabled={isActionBusy} onClick={() => tagDetection(selectedDetection.properties.id, 'friendly')} className="sentinel-btn justify-center disabled:opacity-40"><Shield className="h-3.5 w-3.5" /> Friendly</button>
+                <button type="button" disabled={isActionBusy} onClick={() => tagDetection(selectedDetection.properties.id, 'hostile')} className="sentinel-btn justify-center disabled:opacity-40"><Swords className="h-3.5 w-3.5" /> Hostile</button>
+                <button type="button" disabled={isActionBusy} onClick={() => tagDetection(selectedDetection.properties.id, 'neutral')} className="sentinel-btn justify-center disabled:opacity-40"><CircleHelp className="h-3.5 w-3.5" /> Neutral</button>
+                <button type="button" disabled={isActionBusy} onClick={() => tagDetection(selectedDetection.properties.id, 'unknown')} className="sentinel-btn justify-center disabled:opacity-40">Clear</button>
+              </div>
+              <div className="border-b border-sentinel-line p-3">
+                <div className="mb-2 flex items-center gap-2">
+                  <span className="sentinel-label flex-1">Candidate Links</span>
+                  <span className="sentinel-tag">{candidateLinks.length}</span>
+                </div>
+                {candidateLinks.length === 0 && (
+                  <div className="text-[11px] text-sentinel-muted">No candidate target links. Use Add To Link Graph to generate review candidates.</div>
+                )}
+                <div className="space-y-2">
+                  {candidateLinks.slice(0, 4).map((candidate) => (
+                    <div key={candidate.id} className="border border-sentinel-line bg-sentinel-bg p-2">
+                      <div className="flex items-center gap-2">
+                        <span className="min-w-0 flex-1 truncate text-xs text-slate-200">{candidate.target_name || candidate.target_id}</span>
+                        <span className={`sentinel-tag ${candidate.status === 'approved' ? 'ok' : candidate.status === 'rejected' ? 'crit' : 'warn'}`}>{candidate.status}</span>
+                      </div>
+                      <div className="mt-1 font-mono text-[10px] text-sentinel-muted">{Math.round(Number(candidate.score || 0) * 100)} score / {candidate.reason}</div>
+                      {candidate.status === 'pending' && (
+                        <div className="mt-2 grid grid-cols-2 gap-2">
+                          <button type="button" disabled={isActionBusy} onClick={() => approveCandidate(candidate.id)} className="sentinel-btn justify-center disabled:opacity-40">Approve</button>
+                          <button type="button" disabled={isActionBusy} onClick={() => rejectCandidate(candidate.id)} className="sentinel-btn justify-center disabled:opacity-40">Reject</button>
+                        </div>
+                      )}
                     </div>
-                    <div className="mt-2 h-1.5 w-full bg-slate-800 overflow-hidden">
-                      <div className={`h-full transition-all duration-500 ${uploadProgressClass(job)}`} style={{ width: `${progress}%` }} />
-                    </div>
-                  </div>
-                );
-              })}
+                  ))}
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="border-b border-sentinel-line p-3 text-xs text-sentinel-muted">Select a detection polygon to inspect classification details.</div>
+          )}
+
+          <div className="sentinel-panel-header">
+            <Satellite className="h-4 w-4" />
+            <span>Selected Imagery</span>
+          </div>
+          <div className="border-b border-sentinel-line p-3">
+            <div className="text-sm font-semibold text-slate-100">{selectedImageryData?.name || 'No imagery selected'}</div>
+            <div className="mt-2 grid grid-cols-[80px_1fr] gap-y-1 font-mono text-[11px]">
+              <span className="text-sentinel-muted">SENSOR</span><span>{selectedImageryData?.sensor_type || 'n/a'}</span>
+              <span className="text-sentinel-muted">CLOUD</span><span>{selectedImageryData?.cloud_cover ?? 'n/a'}%</span>
+              <span className="text-sentinel-muted">ACQ</span><span className="truncate">{selectedImageryData?.acquisition_time ? new Date(selectedImageryData.acquisition_time).toLocaleString() : 'n/a'}</span>
+            </div>
+            {selectedImageryData && (
+              <div className="mt-3">
+                <div className="mb-1 sentinel-label">Opacity</div>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={imageryOpacity}
+                  onChange={(event) => setImageryOpacity(parseFloat(event.target.value))}
+                  className="w-full"
+                />
+              </div>
+            )}
+          </div>
+
+          <div className="sentinel-panel-header">
+            <Navigation className="h-4 w-4" />
+            <span>Active Tracks</span>
+            <span className="sentinel-tag info ml-auto">{data.tracks.length}</span>
+          </div>
+          {data.tracks.slice(0, 8).map((track: any) => (
+            <div key={track.id} className="sentinel-row grid-cols-[1fr_auto]">
+              <span className="min-w-0">
+                <span className="block truncate text-xs text-slate-200">{track.properties?.callsign || track.asset_id || track.id}</span>
+                <span className="block truncate font-mono text-[10px] text-sentinel-muted">{track.label}</span>
+              </span>
+              <span className="sentinel-tag info">LIVE</span>
+            </div>
+          ))}
+
+          <div className="sentinel-panel-header">
+            <Activity className="h-4 w-4" />
+            <span>Actions</span>
+          </div>
+          <div className="space-y-2 p-3">
+            <button
+              type="button"
+              disabled={isActionBusy || !selectedDetection}
+              onClick={cueCollection}
+              className="sentinel-btn primary w-full justify-center disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <Send className="h-3.5 w-3.5" /> Cue Collection
+            </button>
+            <button
+              type="button"
+              disabled={isActionBusy || !selectedDetection}
+              onClick={addToLinkGraph}
+              className="sentinel-btn w-full justify-center disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <GitBranch className="h-3.5 w-3.5" /> Add To Link Graph
+            </button>
+            <button
+              type="button"
+              disabled={isActionBusy}
+              onClick={openWorkbench}
+              className="sentinel-btn w-full justify-center disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <FileText className="h-3.5 w-3.5" /> Open Workbench
+            </button>
+            <div className="min-h-8 border border-sentinel-line bg-sentinel-bg px-2 py-1 font-mono text-[10px] text-sentinel-muted">
+              {actionStatus || (selectedDetection ? 'Detection action ready.' : 'Select a detection to enable actions.')}
             </div>
           </div>
-        )}
-      </div>
-
-      {/* Time Slider Panel */}
-      <div className="h-20 bg-slate-900 border-t border-slate-800 p-4 flex items-center gap-4">
-         <div className="text-xs font-bold text-slate-400 tracking-wider w-24 flex items-center gap-2">
-           <Clock className="w-3 h-3" /> TIMELINE
-         </div>
-         <div className="flex-1 flex flex-col gap-1">
-           <div className="flex justify-between text-[10px] text-slate-500 font-mono">
-             <span>{new Date(timeRange.start).toLocaleString()}</span>
-             <span>{new Date(timeRange.end).toLocaleString()}</span>
-           </div>
-           <div className="flex items-center gap-3">
-             <input
-               type="datetime-local"
-               value={timeRange.start.slice(0, 16)}
-               onChange={(e) => setTimeRange(prev => ({ ...prev, start: new Date(e.target.value).toISOString() }))}
-               className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-300 focus:outline-none focus:border-blue-500"
-             />
-             <div className="flex-1 h-2 bg-slate-800 rounded relative">
-               <div className="absolute top-0 left-0 right-0 bottom-0 bg-blue-500/30 rounded border border-blue-500"></div>
-               <input
-                 type="range"
-                 min="0"
-                 max="168"
-                 value={Math.round((Date.now() - new Date(timeRange.end).getTime()) / (60 * 60 * 1000))}
-                 onChange={(e) => {
-                   const hoursAgo = Number(e.target.value);
-                   const end = new Date(Date.now() - hoursAgo * 60 * 60 * 1000);
-                   const start = new Date(end.getTime() - 24 * 60 * 60 * 1000);
-                   setTimeRange({ start: start.toISOString(), end: end.toISOString() });
-                 }}
-                 className="absolute inset-x-0 -top-1 w-full h-4 opacity-80 cursor-pointer"
-               />
-             </div>
-             <input
-               type="datetime-local"
-               value={timeRange.end.slice(0, 16)}
-               onChange={(e) => setTimeRange(prev => ({ ...prev, end: new Date(e.target.value).toISOString() }))}
-               className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-300 focus:outline-none focus:border-blue-500"
-             />
-           </div>
-         </div>
-         <button
-           onClick={fetchDetections}
-           className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold uppercase tracking-wider rounded transition"
-         >
-           <Filter className="w-3 h-3 inline mr-1" /> Apply
-         </button>
-      </div>
+        </div>
+      </section>
     </div>
   );
 }

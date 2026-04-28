@@ -4,7 +4,7 @@ import requests
 import subprocess
 import uuid
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 from celery import Celery
 from database import db, postgis_db
@@ -14,6 +14,9 @@ from rasterio.transform import xy
 from shapely.geometry import Polygon, MultiPolygon
 import numpy as np
 from PIL import Image
+from ai import AIUnavailable, ai_status, get_llm_json
+from imagery_metadata import extract_raster_metadata
+from threat_assessment import assess_detection_threat, clean_detection_class, conservative_detection_ontology
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 INFERENCE_URL = os.getenv("INFERENCE_URL", "http://localhost:8001")
@@ -22,6 +25,45 @@ IMAGERY_PATH = os.getenv("IMAGERY_PATH", "/data/imagery")
 logger = logging.getLogger(__name__)
 
 celery_app = Celery("sentinelos_worker", broker=REDIS_URL, backend=REDIS_URL)
+
+
+def ensure_worker_imagery_schema() -> None:
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("ALTER TABLE satellite_passes ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'")
+        cursor.execute("ALTER TABLE satellite_passes ADD COLUMN IF NOT EXISTS source_hash VARCHAR(64)")
+        cursor.execute("ALTER TABLE satellite_passes ADD COLUMN IF NOT EXISTS source_filename VARCHAR(255)")
+        cursor.execute("ALTER TABLE satellite_passes ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_passes_source_time ON satellite_passes(source_hash, acquisition_time)")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS detection_target_candidates (
+                id SERIAL PRIMARY KEY,
+                detection_id INTEGER REFERENCES detections(id) ON DELETE CASCADE,
+                target_id VARCHAR(255) NOT NULL,
+                target_name VARCHAR(255),
+                score REAL DEFAULT 0,
+                reason TEXT,
+                status VARCHAR(50) DEFAULT 'pending',
+                evidence JSONB DEFAULT '{}',
+                reviewed_by VARCHAR(100),
+                reviewed_at TIMESTAMP WITH TIME ZONE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                UNIQUE (detection_id, target_id)
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_detection_target_candidates_detection ON detection_target_candidates(detection_id, status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_detection_target_candidates_target ON detection_target_candidates(target_id, status)")
+
+
+def record_timeline_event(domain: str, event_type: str, title: str, payload: dict, occurred_at: str = None) -> None:
+    try:
+        with postgis_db.get_cursor(commit=True) as cursor:
+            cursor.execute("""
+                INSERT INTO timeline_events (domain, event_type, title, payload, occurred_at)
+                VALUES (%s, %s, %s, %s, COALESCE(%s::timestamptz, NOW()))
+            """, (domain, event_type, title, json.dumps(payload or {}, default=str), occurred_at))
+    except Exception as exc:
+        logger.warning("Failed to record timeline event: %s", exc)
 
 
 def publish_event(topic: str, payload: dict) -> None:
@@ -62,6 +104,18 @@ def update_upload_job(upload_id: str = None, file_path: str = None, status: str 
             cursor.execute(f"UPDATE upload_jobs SET {', '.join(clauses)} WHERE {' OR '.join(where)}", params)
     except Exception as exc:
         logger.warning("Failed to update upload job status: %s", exc)
+
+
+def get_upload_job(upload_id: str = None) -> dict:
+    if not upload_id:
+        return {}
+    try:
+        with postgis_db.get_cursor() as cursor:
+            cursor.execute("SELECT filename, metadata FROM upload_jobs WHERE upload_id = %s", (upload_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else {}
+    except Exception:
+        return {}
 
 
 def report_progress(task, upload_id: str, file_path: str, stage: str, progress: int, message: str, extra: dict = None) -> None:
@@ -227,29 +281,84 @@ def clean_detection_class(det_class: str) -> str:
 
 
 def detection_ontology(det_class: str) -> dict:
-    label = clean_detection_class(det_class)
-    text = label.lower()
-    if any(term in text for term in ("tank", "artillery", "missile", "launcher", "destroyer", "battleship", "warship")):
-        category, threat = "combat", "critical"
-    elif any(term in text for term in ("aircraft", "plane", "helicopter", "fighter", "airport", "runway")):
-        category, threat = "air", "high"
-    elif any(term in text for term in ("ship", "vessel", "harbor", "port", "dry dock", "maritime")):
-        category, threat = "maritime", "high"
-    elif any(term in text for term in ("vehicle", "truck", "car", "van", "bus")):
-        category, threat = "ground", "medium"
-    elif any(term in text for term in ("facility", "building", "storage", "tank", "depot", "plant", "hangar", "bridge")):
-        category, threat = "infrastructure", "medium"
-    else:
-        category, threat = "unknown", "low"
+    return conservative_detection_ontology(det_class)
+
+
+def llm_detection_ontology(det_class: str, count: int, avg_confidence: float) -> dict:
+    base = conservative_detection_ontology(det_class, confidence=avg_confidence)
+    prompt = json.dumps({
+        "task": "Classify a GEOINT computer-vision detection class for upload processing metadata.",
+        "input": {
+            "raw_class": det_class,
+            "fallback_label": base["label"],
+            "fallback_category": base["category"],
+            "fallback_threat_level": base["threat_level"],
+            "count_in_image": count,
+            "avg_confidence": avg_confidence,
+        },
+        "required_json_schema": {
+            "label": "short human label",
+            "domain": "GEOINT",
+            "category": "one of air, maritime, ground, combat, infrastructure, logistics, energy, facility, unknown",
+            "threat_level": "one of low, medium, high, critical",
+            "description": "one short analyst-facing sentence",
+            "recommended_filter": "short filter chip text",
+        },
+    }, default=str)
+    system = "Return only compact JSON. Do not invent sightings or facts. Use only the class name and counts provided."
+    data = get_llm_json(prompt, system=system, max_tokens=240, timeout_seconds=6)
     return {
-        "label": label,
+        **base,
+        "label": str(data.get("label") or base["label"])[:80],
         "domain": "GEOINT",
-        "category": category,
-        "threat_level": threat,
-        "description": f"LLM-generated ontology classification for detected {label}.",
-        "recommended_filter": label,
-        "generated_by": "local-llm-ontology",
+        "category": base["category"],
+        "threat_level": base["threat_level"],
+        "threat_confidence": base["threat_confidence"],
+        "assessment_status": base["assessment_status"],
+        "evidence": base["evidence"],
+        "description": str(data.get("description") or base["description"])[:280],
+        "recommended_filter": str(data.get("recommended_filter") or data.get("label") or base["recommended_filter"])[:80],
+        "generated_by": f"{ai_status().get('model') or 'llm'}; threat=deterministic-rules",
+        "status": "ok",
     }
+
+
+def classify_detection_ontologies(detections: list, progress_callback=None) -> dict[str, dict]:
+    grouped: dict[str, list[float]] = {}
+    for det in detections:
+        det_class = det.get("class", "Unknown")
+        grouped.setdefault(det_class, []).append(float(det.get("confidence") or 0))
+
+    ontology_by_class: dict[str, dict] = {}
+    total = max(1, len(grouped))
+    for index, (det_class, confidences) in enumerate(grouped.items(), start=1):
+        if progress_callback:
+            progress_callback(
+                "llm_classification",
+                90 + int((index - 1) / total * 4),
+                f"Queueing LLM classification for detection classes ({index}/{total}).",
+                {"llm_classes_processed": index - 1, "llm_classes_total": total},
+            )
+        try:
+            ontology_by_class[det_class] = llm_detection_ontology(
+                det_class,
+                count=len(confidences),
+                avg_confidence=sum(confidences) / max(1, len(confidences)),
+            )
+        except AIUnavailable as exc:
+            ontology_by_class[det_class] = {
+                **detection_ontology(det_class),
+                "description": str(exc),
+                "status": "unavailable",
+            }
+    if progress_callback:
+        progress_callback(
+            "llm_classification",
+            94,
+            "Detection class LLM classification complete.",
+            {"llm_classes_processed": len(grouped), "llm_classes_total": len(grouped)},
+        )
+    return ontology_by_class
 
 
 def slice_and_infer(cog_path: str, pass_id: int, chip_size: int = 640, overlap: int = 100, progress_callback=None):
@@ -376,7 +485,7 @@ def slice_and_infer(cog_path: str, pass_id: int, chip_size: int = 640, overlap: 
     return deduplicate_detections(detections)
 
 
-def store_detections(detections: list, pass_id: int):
+def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str, dict] = None):
     """Store detections in PostGIS and create Neo4j nodes."""
     if not detections:
         return 0
@@ -386,7 +495,16 @@ def store_detections(detections: list, pass_id: int):
             lon1, lat1, lon2, lat2 = det["geo_bbox"]
             confidence = det.get("confidence", 0.0)
             det_class = det.get("class", "Unknown")
-            ontology = detection_ontology(det_class)
+            ontology = (ontology_by_class or {}).get(det_class) or detection_ontology(det_class)
+            assessment = assess_detection_threat(det_class, confidence=confidence, allegiance=det.get("allegiance", "unknown"))
+            ontology = {
+                **ontology,
+                "threat_level": assessment["threat_level"],
+                "threat_confidence": assessment["threat_confidence"],
+                "assessment_status": assessment["assessment_status"],
+                "evidence": assessment["evidence"],
+                "category": assessment["category"],
+            }
             pixel_bbox = det.get("pixel_bbox", [])
             geo_polygon = det.get("geo_polygon") or [lon1, lat1, lon1, lat2, lon2, lat2, lon2, lat1]
             
@@ -412,8 +530,12 @@ def store_detections(detections: list, pass_id: int):
                     "source": "inference",
                     "chip_size": 640,
                     "geo_polygon": geo_polygon,
+                    "confidence": confidence,
                     "ontology": ontology,
-                    "threat_level": ontology["threat_level"],
+                    "threat_level": assessment["threat_level"],
+                    "threat_confidence": assessment["threat_confidence"],
+                    "assessment_status": assessment["assessment_status"],
+                    "evidence": assessment["evidence"],
                     "allegiance": det.get("allegiance", "unknown"),
                 })
             ))
@@ -430,6 +552,8 @@ def store_detections(detections: list, pass_id: int):
                         label: $label,
                         confidence: $confidence,
                         threat_level: $threat_level,
+                        threat_confidence: $threat_confidence,
+                        assessment_status: $assessment_status,
                         ontology_category: $ontology_category,
                         allegiance: $allegiance,
                         latitude: $lat,
@@ -443,7 +567,9 @@ def store_detections(detections: list, pass_id: int):
                     "det_class": det_class,
                     "label": ontology["label"],
                     "confidence": confidence,
-                    "threat_level": ontology["threat_level"],
+                    "threat_level": assessment["threat_level"],
+                    "threat_confidence": assessment["threat_confidence"],
+                    "assessment_status": assessment["assessment_status"],
                     "ontology_category": ontology["category"],
                     "allegiance": det.get("allegiance", "unknown"),
                     "lat": (lat1 + lat2) / 2,
@@ -468,7 +594,27 @@ def clear_existing_detections(pass_id: int) -> None:
             """, {"det_ids": det_ids})
 
 
-def resolve_detections_for_pass(pass_id: int, distance_threshold_meters: float = 500.0) -> int:
+def target_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    radius = 6_371_000
+    phi1, phi2 = np.radians(lat1), np.radians(lat2)
+    d_phi = np.radians(lat2 - lat1)
+    d_lambda = np.radians(lon2 - lon1)
+    a = np.sin(d_phi / 2) ** 2 + np.cos(phi1) * np.cos(phi2) * np.sin(d_lambda / 2) ** 2
+    return float(radius * 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a)))
+
+
+def target_class_compatibility(det_class: str, target_props: dict) -> tuple[float, str]:
+    det_text = clean_detection_class(det_class).lower()
+    target_text = " ".join(str(target_props.get(key, "")) for key in ("name", "type", "category", "description")).lower()
+    if any(token in target_text for token in det_text.split() if len(token) >= 4):
+        return 0.35, "class/name text overlap"
+    category = conservative_detection_ontology(det_class).get("category")
+    if category and category in target_text:
+        return 0.3, "category overlap"
+    return 0.15, "generic proximity match"
+
+
+def generate_candidate_links_for_pass(pass_id: int, distance_threshold_meters: float = 1500.0) -> int:
     with postgis_db.get_cursor() as cursor:
         cursor.execute("""
             SELECT d.id, d.class, d.confidence, ST_X(d.centroid) AS lon, ST_Y(d.centroid) AS lat
@@ -477,57 +623,58 @@ def resolve_detections_for_pass(pass_id: int, distance_threshold_meters: float =
         """, (pass_id,))
         rows = cursor.fetchall()
 
-    resolved = 0
-    with db.get_session() as session:
-        for det in rows:
+    try:
+        with db.get_session() as session:
             result = session.run("""
                 MATCH (t:Target)
                 WHERE t.latitude IS NOT NULL AND t.longitude IS NOT NULL
-                  AND point.distance(
-                      point({latitude: t.latitude, longitude: t.longitude}),
-                      point({latitude: $lat, longitude: $lon})
-                  ) < $threshold
-                RETURN t
-                ORDER BY point.distance(
-                    point({latitude: t.latitude, longitude: t.longitude}),
-                    point({latitude: $lat, longitude: $lon})
-                ) ASC
-                LIMIT 1
-            """, {"lat": det["lat"], "lon": det["lon"], "threshold": distance_threshold_meters})
-            existing = result.single()
-            if existing:
-                session.run("""
-                    MATCH (t:Target) WHERE elementId(t) = $target_id
-                    MATCH (d:Detection {postgis_id: $det_id})
-                    MERGE (t)-[:DETECTED_AS]->(d)
-                """, {"target_id": existing["t"].element_id, "det_id": det["id"]})
-            else:
-                target_id = str(uuid.uuid4())
-                session.run("""
-                    MATCH (d:Detection {postgis_id: $det_id})
-                    CREATE (t:Target {
-                        id: $target_id,
-                        name: $name,
-                        priority: 'Medium',
-                        status: 'Active',
-                        description: $description,
-                        latitude: $lat,
-                        longitude: $lon,
-                        confidence: $confidence,
-                        detection_id: $det_id
-                    })
-                    MERGE (t)-[:DETECTED_AS]->(d)
-                """, {
-                    "det_id": det["id"],
-                    "target_id": target_id,
-                    "name": f"Unresolved {det['class']} {target_id[:6]}",
-                    "description": f"Automated entity resolution for {det['class']} detection.",
-                    "lat": det["lat"],
-                    "lon": det["lon"],
-                    "confidence": det["confidence"],
-                })
-            resolved += 1
-    return resolved
+                RETURN elementId(t) AS element_id, t.id AS stable_id, t.name AS name,
+                       t.latitude AS lat, t.longitude AS lon, properties(t) AS props
+            """)
+            targets = [dict(record) for record in result]
+    except Exception as exc:
+        logger.warning("Unable to read targets for candidate links: %s", exc)
+        targets = []
+
+    created = 0
+    with postgis_db.get_cursor(commit=True) as cursor:
+        for det in rows:
+            for target in targets:
+                distance_m = target_distance_m(float(det["lat"]), float(det["lon"]), float(target["lat"]), float(target["lon"]))
+                if distance_m > distance_threshold_meters:
+                    continue
+                compatibility, compatibility_reason = target_class_compatibility(det["class"], target.get("props") or {})
+                distance_score = max(0.0, 1.0 - (distance_m / distance_threshold_meters)) * 0.45
+                confidence_score = max(0.0, min(1.0, float(det["confidence"] or 0))) * 0.2
+                score = round(distance_score + compatibility + confidence_score, 3)
+                target_id = target.get("stable_id") or target["element_id"]
+                evidence = {
+                    "distance_m": round(distance_m, 2),
+                    "compatibility_reason": compatibility_reason,
+                    "detection_class": det["class"],
+                    "detection_confidence": float(det["confidence"] or 0),
+                }
+                cursor.execute("""
+                    INSERT INTO detection_target_candidates (detection_id, target_id, target_name, score, reason, status, evidence)
+                    VALUES (%s, %s, %s, %s, %s, 'pending', %s)
+                    ON CONFLICT (detection_id, target_id) DO UPDATE SET
+                        target_name = EXCLUDED.target_name,
+                        score = EXCLUDED.score,
+                        reason = EXCLUDED.reason,
+                        evidence = EXCLUDED.evidence,
+                        updated_at = NOW()
+                    RETURNING id
+                """, (
+                    det["id"],
+                    target_id,
+                    target.get("name") or target_id,
+                    score,
+                    f"{round(distance_m)}m from target; {compatibility_reason}; confidence {float(det['confidence'] or 0):.2f}",
+                    json.dumps(evidence, default=str),
+                ))
+                if cursor.fetchone():
+                    created += 1
+    return created
 
 
 @celery_app.task(queue="imagery", bind=True)
@@ -541,15 +688,21 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
         publish_event("ops", {"type": "imagery_ingest_started", "image_url": image_url, "upload_id": upload_id})
 
         # 1. Determine local path
+        ensure_worker_imagery_schema()
         input_path = resolve_input_path(image_url)
         filename = os.path.basename(input_path)
+        upload_job = get_upload_job(upload_id)
+        original_filename = upload_job.get("filename") or filename
+        raster_metadata = extract_raster_metadata(input_path)
+        source_hash = raster_metadata.get("source_hash")
+        source_filename = original_filename
         update_upload_job(
             upload_id=upload_id,
             file_path=input_path,
             status="processing",
-            metadata={"task_id": self.request.id},
+            metadata={"task_id": self.request.id, "raster_metadata": raster_metadata, "source_hash": source_hash},
         )
-        report_progress(self, upload_id, input_path, "processing", 10, "Resolved imagery input.")
+        report_progress(self, upload_id, input_path, "processing", 10, "Resolved imagery input and metadata.")
 
         # 2. Convert to COG
         cog_name = f"{os.path.splitext(filename)[0]}_cog.tif"
@@ -566,24 +719,91 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
         footprint, min_lon, min_lat, max_lon, max_lat = get_raster_footprint(cog_path)
         footprint_wkt = footprint.wkt
 
-        acq_time = acquisition_time or datetime.utcnow().isoformat()
+        acq_time = acquisition_time or raster_metadata.get("acquisition_time") or datetime.now(timezone.utc).isoformat()
 
         with postgis_db.get_cursor(commit=True) as cursor:
             cursor.execute("""
-                INSERT INTO satellite_passes (name, file_path, sensor_type, acquisition_time, footprint, crs)
-                VALUES (%s, %s, %s, %s, ST_GeomFromText(%s, 4326), %s)
-                ON CONFLICT (file_path) DO UPDATE SET
-                    name = EXCLUDED.name,
-                    sensor_type = EXCLUDED.sensor_type,
-                    acquisition_time = EXCLUDED.acquisition_time,
-                    footprint = EXCLUDED.footprint
-                RETURNING id
-            """, (filename, cog_path, sensor_type, acq_time, footprint_wkt, "EPSG:4326"))
+                SELECT id
+                FROM satellite_passes
+                WHERE acquisition_time = %s::timestamptz
+                  AND (
+                    (%s IS NOT NULL AND source_hash = %s)
+                    OR (source_filename = %s AND ST_Equals(footprint, ST_GeomFromText(%s, 4326)))
+                    OR (source_filename IS NULL AND (name = %s OR name LIKE %s) AND ST_Equals(footprint, ST_GeomFromText(%s, 4326)))
+                  )
+                ORDER BY updated_at DESC NULLS LAST, created_at DESC
+                LIMIT 1
+            """, (acq_time, source_hash, source_hash, source_filename, footprint_wkt, source_filename, f"%{source_filename}", footprint_wkt))
+            existing = cursor.fetchone()
+            if existing:
+                pass_id = existing["id"]
+                cursor.execute("""
+                    UPDATE satellite_passes
+                    SET name = %s,
+                        file_path = %s,
+                        sensor_type = %s,
+                        acquisition_time = %s,
+                        footprint = ST_GeomFromText(%s, 4326),
+                        crs = %s,
+                        metadata = coalesce(metadata, '{}'::jsonb) || %s::jsonb,
+                        source_hash = %s,
+                        source_filename = %s,
+                        updated_at = NOW()
+                    WHERE id = %s
+                    RETURNING id
+                """, (
+                    original_filename,
+                    cog_path,
+                    sensor_type,
+                    acq_time,
+                    footprint_wkt,
+                    "EPSG:4326",
+                    json.dumps({**raster_metadata, "upload_id": upload_id, "replacement": True}, default=str),
+                    source_hash,
+                    source_filename,
+                    pass_id,
+                ))
+                cursor.fetchone()
+                replacement = True
+            else:
+                cursor.execute("""
+                    INSERT INTO satellite_passes (
+                        name, file_path, sensor_type, acquisition_time, footprint, crs,
+                        metadata, source_hash, source_filename, updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, ST_GeomFromText(%s, 4326), %s, %s, %s, %s, NOW())
+                    RETURNING id
+                """, (
+                    original_filename,
+                    cog_path,
+                    sensor_type,
+                    acq_time,
+                    footprint_wkt,
+                    "EPSG:4326",
+                    json.dumps({**raster_metadata, "upload_id": upload_id, "replacement": False}, default=str),
+                    source_hash,
+                    source_filename,
+                ))
+                pass_id = cursor.fetchone()["id"]
+                replacement = False
 
-            pass_id = cursor.fetchone()["id"]
-
-        logger.info("[WORKER] Cataloged in PostGIS with id=%s", pass_id)
-        report_progress(self, upload_id, input_path, "classification", 50, "Imagery cataloged; preparing classification graph.", {"pass_id": pass_id})
+        logger.info("[WORKER] Cataloged in PostGIS with id=%s replacement=%s", pass_id, replacement)
+        report_progress(
+            self,
+            upload_id,
+            input_path,
+            "classification",
+            50,
+            "Imagery cataloged; replacing matching timestamp detections." if replacement else "Imagery cataloged; preparing classification graph.",
+            {"pass_id": pass_id, "acquisition_time": acq_time, "replacement": replacement},
+        )
+        record_timeline_event(
+            "GEOINT",
+            "imagery_replaced" if replacement else "imagery_cataloged",
+            original_filename,
+            {"pass_id": pass_id, "upload_id": upload_id, "source_hash": source_hash, "replacement": replacement},
+            occurred_at=acq_time,
+        )
 
         # 4. Create SatellitePass node in Neo4j
         with db.get_session() as session:
@@ -601,7 +821,7 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
                     sp.updated_at = datetime()
             """, {
                 "pass_id": pass_id,
-                "name": filename,
+                "name": original_filename,
                 "sensor_type": sensor_type,
                 "acq_time": acq_time,
                 "file_path": cog_path,
@@ -629,20 +849,34 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
             ),
         )
         logger.info("[WORKER] Total detections after dedupe: %s", len(detections))
-        report_progress(self, upload_id, input_path, "classification", 90, "Inference complete; classifying detections.", {"pass_id": pass_id, "detections_count": len(detections)})
+        report_progress(self, upload_id, input_path, "llm_classification", 90, "Inference complete; queueing LLM detection classification.", {"pass_id": pass_id, "detections_count": len(detections)})
+        ontology_by_class = classify_detection_ontologies(
+            detections,
+            progress_callback=lambda stage, progress, message, extra=None: report_progress(
+                self,
+                upload_id,
+                input_path,
+                stage,
+                progress,
+                message,
+                {"pass_id": pass_id, "detections_count": len(detections), **(extra or {})},
+            ),
+        )
 
         # 6. Store detections
-        report_progress(self, upload_id, input_path, "storage", 95, "Storing detections and resolving targets.", {"pass_id": pass_id})
-        stored_count = store_detections(detections, pass_id)
-        resolved_count = resolve_detections_for_pass(pass_id)
-        logger.info("[WORKER] Stored %s detections and resolved %s.", stored_count, resolved_count)
+        report_progress(self, upload_id, input_path, "storage", 95, "Storing detections and generating candidate links.", {"pass_id": pass_id})
+        stored_count = store_detections(detections, pass_id, ontology_by_class)
+        candidate_count = generate_candidate_links_for_pass(pass_id)
+        logger.info("[WORKER] Stored %s detections and generated %s candidate links.", stored_count, candidate_count)
 
         payload = {
             "pass_id": pass_id,
             "cog_path": cog_path,
             "upload_id": upload_id,
             "detections_count": stored_count,
-            "resolved_count": resolved_count,
+            "candidate_links_count": candidate_count,
+            "acquisition_time": acq_time,
+            "replacement": replacement,
         }
         update_upload_job(upload_id=upload_id, file_path=input_path, status="ready", metadata={
             **payload,
