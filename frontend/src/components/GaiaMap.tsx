@@ -141,19 +141,28 @@ function MapFitToImagery({ imagery }: { imagery: any }) {
   return null;
 }
 
-function MapFitToDetections({ geojson, enabled }: { geojson: any; enabled: boolean }) {
+function MapFitToDetections({ geojson, filterKey }: { geojson: any; filterKey: string | null }) {
   const map = useMap();
+  const [lastFittedKey, setLastFittedKey] = useState<string | null>(null);
+
   useEffect(() => {
-    if (!enabled || !geojson?.features?.length) return;
+    if (!filterKey) {
+      setLastFittedKey(null);
+      return;
+    }
+    if (filterKey === lastFittedKey) return;
+    if (!geojson?.features?.length) return;
+
     try {
       const bounds = L.geoJSON(geojson).getBounds();
       if (bounds.isValid()) {
         map.fitBounds(bounds.pad(0.25), { animate: true, maxZoom: 15 });
+        setLastFittedKey(filterKey);
       }
     } catch {
       // Ignore invalid geometries; the GeoJSON layer itself will skip what Leaflet cannot draw.
     }
-  }, [enabled, geojson, map]);
+  }, [filterKey, geojson, map, lastFittedKey]);
   return null;
 }
 
@@ -726,7 +735,7 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
             <MapBoundsUpdater onBoundsChange={setMapBounds} />
             <MapCursorTracker onCursorChange={setCursor} />
             <MapFitToImagery imagery={selectedImageryData} />
-            <MapFitToDetections geojson={filteredDetectionsGeoJSON} enabled={Boolean(detectionClassFilter)} />
+            <MapFitToDetections geojson={filteredDetectionsGeoJSON} filterKey={detectionClassFilter} />
 
             <ImageOverlay url="/world_map.svg" bounds={[[-85, -180], [85, 180]]} opacity={0.5} />
 
