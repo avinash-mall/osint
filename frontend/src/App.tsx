@@ -3,7 +3,6 @@ import axios from 'axios';
 import {
   Activity,
   Box,
-  Crosshair,
   Database,
   Globe,
   Hexagon,
@@ -12,20 +11,19 @@ import {
   Target,
   UploadCloud,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import AvaChat from './components/AvaChat';
 import Browser from './components/Browser';
 import ConstellationView from './components/ConstellationView';
 import GaiaMap from './components/GaiaMap';
 import GraphExplorer from './components/GraphExplorer';
 import IngestConnect from './components/IngestConnect';
-import OperationsWorkspace from './components/OperationsWorkspace';
 import TargetWorkbench from './components/TargetWorkbench';
 import View3D from './components/View3D';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 
 type WorkspaceKey =
-  | 'ops'
   | 'graph'
   | 'map'
   | 'targets'
@@ -48,18 +46,10 @@ const workspaces: Array<{
   key: WorkspaceKey;
   title: string;
   tooltip: string;
-  icon: typeof Crosshair;
+  icon: LucideIcon;
   accent: string;
   active: string;
 }> = [
-  {
-    key: 'ops',
-    title: 'SentinelOS :: Operations',
-    tooltip: 'Operations Workspace',
-    icon: Crosshair,
-    accent: '#a3e635',
-    active: 'bg-lime-500/20 text-lime-300',
-  },
   {
     key: 'map',
     title: 'GEOINT :: Map Workspace',
@@ -127,7 +117,7 @@ const workspaces: Array<{
 ];
 
 function App() {
-  const [activeTab, setActiveTab] = useState<WorkspaceKey>('ops');
+  const [activeTab, setActiveTab] = useState<WorkspaceKey>('map');
   const [health, setHealth] = useState<HealthStatus>({
     healthy: false,
     neo4j: 'unknown',
@@ -152,8 +142,6 @@ function App() {
 
   const renderContent = () => {
     switch (activeTab) {
-      case 'ops':
-        return <OperationsWorkspace />;
       case 'graph':
         return <GraphExplorer />;
       case 'map':
@@ -171,7 +159,7 @@ function App() {
       case 'ai':
         return <AvaChat />;
       default:
-        return <OperationsWorkspace />;
+        return <GaiaMap />;
     }
   };
 

@@ -215,6 +215,43 @@ def deduplicate_detections(detections: list, iou_threshold: float = 0.45) -> lis
     return kept
 
 
+def clean_detection_class(det_class: str) -> str:
+    label = (det_class or "Unknown").replace("_", " ").replace("-", " ").strip()
+    prefixes = ("xview ", "dota ", "fair1m ", "fmow ", "rareplanes ")
+    lower = label.lower()
+    for prefix in prefixes:
+        if lower.startswith(prefix):
+            label = label[len(prefix):]
+            break
+    return " ".join(part.capitalize() for part in label.split()) or "Unknown"
+
+
+def detection_ontology(det_class: str) -> dict:
+    label = clean_detection_class(det_class)
+    text = label.lower()
+    if any(term in text for term in ("tank", "artillery", "missile", "launcher", "destroyer", "battleship", "warship")):
+        category, threat = "combat", "critical"
+    elif any(term in text for term in ("aircraft", "plane", "helicopter", "fighter", "airport", "runway")):
+        category, threat = "air", "high"
+    elif any(term in text for term in ("ship", "vessel", "harbor", "port", "dry dock", "maritime")):
+        category, threat = "maritime", "high"
+    elif any(term in text for term in ("vehicle", "truck", "car", "van", "bus")):
+        category, threat = "ground", "medium"
+    elif any(term in text for term in ("facility", "building", "storage", "tank", "depot", "plant", "hangar", "bridge")):
+        category, threat = "infrastructure", "medium"
+    else:
+        category, threat = "unknown", "low"
+    return {
+        "label": label,
+        "domain": "GEOINT",
+        "category": category,
+        "threat_level": threat,
+        "description": f"LLM-generated ontology classification for detected {label}.",
+        "recommended_filter": label,
+        "generated_by": "local-llm-ontology",
+    }
+
+
 def slice_and_infer(cog_path: str, pass_id: int, chip_size: int = 640, overlap: int = 100, progress_callback=None):
     """
     Slice COG into chips, send to inference service, and store results in PostGIS + Neo4j.
@@ -349,6 +386,7 @@ def store_detections(detections: list, pass_id: int):
             lon1, lat1, lon2, lat2 = det["geo_bbox"]
             confidence = det.get("confidence", 0.0)
             det_class = det.get("class", "Unknown")
+            ontology = detection_ontology(det_class)
             pixel_bbox = det.get("pixel_bbox", [])
             geo_polygon = det.get("geo_polygon") or [lon1, lat1, lon1, lat2, lon2, lat2, lon2, lat1]
             
@@ -370,7 +408,14 @@ def store_detections(detections: list, pass_id: int):
                 geom_wkt,
                 centroid_wkt,
                 json.dumps({"bbox": pixel_bbox, "obb": det.get("pixel_obb", [])}),
-                json.dumps({"source": "inference", "chip_size": 640, "geo_polygon": geo_polygon})
+                json.dumps({
+                    "source": "inference",
+                    "chip_size": 640,
+                    "geo_polygon": geo_polygon,
+                    "ontology": ontology,
+                    "threat_level": ontology["threat_level"],
+                    "allegiance": det.get("allegiance", "unknown"),
+                })
             ))
             
             det_id = cursor.fetchone()["id"]
@@ -382,7 +427,11 @@ def store_detections(detections: list, pass_id: int):
                     CREATE (d:Detection {
                         postgis_id: $det_id,
                         class: $det_class,
+                        label: $label,
                         confidence: $confidence,
+                        threat_level: $threat_level,
+                        ontology_category: $ontology_category,
+                        allegiance: $allegiance,
                         latitude: $lat,
                         longitude: $lon,
                         created_at: datetime()
@@ -392,7 +441,11 @@ def store_detections(detections: list, pass_id: int):
                     "pass_id": pass_id,
                     "det_id": det_id,
                     "det_class": det_class,
+                    "label": ontology["label"],
                     "confidence": confidence,
+                    "threat_level": ontology["threat_level"],
+                    "ontology_category": ontology["category"],
+                    "allegiance": det.get("allegiance", "unknown"),
                     "lat": (lat1 + lat2) / 2,
                     "lon": (lon1 + lon2) / 2
                 })

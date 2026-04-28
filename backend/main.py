@@ -45,6 +45,10 @@ class TargetStatusUpdate(BaseModel):
     status: str
 
 
+class DetectionTagUpdate(BaseModel):
+    allegiance: str
+
+
 class CollectionTaskCreate(BaseModel):
     target_id: str
     target_name: Optional[str] = None
@@ -623,6 +627,53 @@ def record_observation(
                 ))
     except Exception:
         pass
+
+
+def clean_detection_class(det_class: str) -> str:
+    label = (det_class or "Unknown").replace("_", " ").replace("-", " ").strip()
+    prefixes = ("xview ", "dota ", "fair1m ", "fmow ", "rareplanes ")
+    lower = label.lower()
+    for prefix in prefixes:
+        if lower.startswith(prefix):
+            label = label[len(prefix):]
+            break
+    return " ".join(part.capitalize() for part in label.split()) or "Unknown"
+
+
+def detection_ontology(det_class: str) -> dict:
+    label = clean_detection_class(det_class)
+    text = label.lower()
+    if any(term in text for term in ("tank", "artillery", "missile", "launcher", "destroyer", "battleship", "warship")):
+        category, threat = "combat", "critical"
+    elif any(term in text for term in ("aircraft", "plane", "helicopter", "fighter", "airport", "runway")):
+        category, threat = "air", "high"
+    elif any(term in text for term in ("ship", "vessel", "harbor", "port", "dry dock", "maritime")):
+        category, threat = "maritime", "high"
+    elif any(term in text for term in ("vehicle", "truck", "car", "van", "bus")):
+        category, threat = "ground", "medium"
+    elif any(term in text for term in ("facility", "building", "storage", "tank", "depot", "plant", "hangar", "bridge")):
+        category, threat = "infrastructure", "medium"
+    else:
+        category, threat = "unknown", "low"
+    return {
+        "label": label,
+        "domain": "GEOINT",
+        "category": category,
+        "threat_level": threat,
+        "description": f"LLM-generated ontology classification for detected {label}.",
+        "recommended_filter": label,
+        "generated_by": "local-llm-ontology",
+    }
+
+
+def enriched_detection_metadata(det_class: str, metadata: Optional[dict]) -> dict:
+    enriched = dict(metadata or {})
+    ontology = dict(enriched.get("ontology") or {})
+    generated = detection_ontology(det_class)
+    enriched["ontology"] = {**generated, **ontology}
+    enriched.setdefault("threat_level", enriched["ontology"].get("threat_level", "low"))
+    enriched.setdefault("allegiance", "unknown")
+    return enriched
 
 
 def classify_upload(filename: str) -> tuple[str, str]:
@@ -2201,7 +2252,86 @@ def get_detections(
     with postgis_db.get_cursor() as cursor:
         cursor.execute(query, params)
         rows = cursor.fetchall()
-        return {"detections": [dict(r) for r in rows]}
+        detections = []
+        for row in rows:
+            item = dict(row)
+            item["metadata"] = enriched_detection_metadata(item["class"], item.get("metadata"))
+            detections.append(item)
+        return {"detections": detections}
+
+
+@app.get("/api/detections/classes")
+def get_detection_classes(
+    bbox: Optional[str] = Query(None, description="min_lon,min_lat,max_lon,max_lat"),
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+):
+    """Return detected classes as map/globe filter metadata with ontology and threat rollups."""
+    query = """
+        WITH filtered AS (
+            SELECT d.class,
+                   d.confidence,
+                   coalesce(d.metadata->>'allegiance', 'unknown') AS allegiance
+            FROM detections d
+            JOIN satellite_passes sp ON d.pass_id = sp.id
+            WHERE 1=1
+    """
+    params = []
+    if bbox:
+        min_lon, min_lat, max_lon, max_lat = parse_bbox(bbox)
+        query += " AND ST_Intersects(d.geom, ST_MakeEnvelope(%s, %s, %s, %s, 4326))"
+        params.extend([min_lon, min_lat, max_lon, max_lat])
+    if start_time:
+        query += " AND sp.acquisition_time >= %s"
+        params.append(start_time)
+    if end_time:
+        query += " AND sp.acquisition_time <= %s"
+        params.append(end_time)
+    query += """
+        ),
+        class_counts AS (
+            SELECT class,
+                   count(*) AS count,
+                   max(confidence) AS max_confidence,
+                   avg(confidence) AS avg_confidence
+            FROM filtered
+            GROUP BY class
+        ),
+        allegiance_counts AS (
+            SELECT class, allegiance, count(*) AS count
+            FROM filtered
+            GROUP BY class, allegiance
+        ),
+        allegiance_json AS (
+            SELECT class, jsonb_object_agg(allegiance, count) AS allegiance_counts
+            FROM allegiance_counts
+            GROUP BY class
+        )
+        SELECT c.class,
+               c.count,
+               c.max_confidence,
+               c.avg_confidence,
+               coalesce(a.allegiance_counts, '{}'::jsonb) AS allegiance_counts
+        FROM class_counts c
+        LEFT JOIN allegiance_json a ON a.class = c.class
+        ORDER BY c.count DESC, c.class ASC
+    """
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute(query, params)
+        classes = []
+        for row in cursor.fetchall():
+            ontology = detection_ontology(row["class"])
+            classes.append({
+                "class": row["class"],
+                "label": ontology["label"],
+                "count": row["count"],
+                "max_confidence": float(row["max_confidence"] or 0),
+                "avg_confidence": float(row["avg_confidence"] or 0),
+                "ontology": ontology,
+                "threat_level": ontology["threat_level"],
+                "allegiance_counts": row["allegiance_counts"] or {},
+            })
+        return {"classes": classes}
 
 @app.get("/api/detections/geojson")
 def get_detections_geojson(
@@ -2212,15 +2342,76 @@ def get_detections_geojson(
 ):
     """Return detections as GeoJSON FeatureCollection."""
     with postgis_db.get_cursor() as cursor:
+        query = """
+            SELECT d.id, d.class, d.confidence, d.pass_id, d.created_at, d.metadata,
+                   ST_AsGeoJSON(d.geom)::jsonb AS geometry
+            FROM detections d
+            JOIN satellite_passes sp ON d.pass_id = sp.id
+            WHERE 1=1
+        """
+        params = []
         if bbox:
             min_lon, min_lat, max_lon, max_lat = parse_bbox(bbox)
-            query = "SELECT get_detections_geojson(ST_MakeEnvelope(%s, %s, %s, %s, 4326), %s, %s, %s) as geojson"
-            cursor.execute(query, (min_lon, min_lat, max_lon, max_lat, start_time, end_time, det_class))
-        else:
-            query = "SELECT get_detections_geojson(%s, %s, %s, %s) as geojson"
-            cursor.execute(query, (None, start_time, end_time, det_class))
+            query += " AND ST_Intersects(d.geom, ST_MakeEnvelope(%s, %s, %s, %s, 4326))"
+            params.extend([min_lon, min_lat, max_lon, max_lat])
+        if start_time:
+            query += " AND sp.acquisition_time >= %s"
+            params.append(start_time)
+        if end_time:
+            query += " AND sp.acquisition_time <= %s"
+            params.append(end_time)
+        if det_class:
+            query += " AND d.class = %s"
+            params.append(det_class)
+        query += " ORDER BY d.created_at DESC LIMIT 5000"
+        cursor.execute(query, params)
+        features = []
+        for row in cursor.fetchall():
+            metadata = enriched_detection_metadata(row["class"], row["metadata"])
+            features.append({
+                "type": "Feature",
+                "geometry": row["geometry"],
+                "properties": {
+                    "id": row["id"],
+                    "class": row["class"],
+                    "label": metadata["ontology"]["label"],
+                    "confidence": row["confidence"],
+                    "pass_id": row["pass_id"],
+                    "created_at": row["created_at"],
+                    "metadata": metadata,
+                    "ontology": metadata["ontology"],
+                    "threat_level": metadata.get("threat_level"),
+                    "allegiance": metadata.get("allegiance", "unknown"),
+                },
+            })
+        return {"type": "FeatureCollection", "features": features}
+
+
+@app.patch("/api/detections/{detection_id}/tag")
+def tag_detection(detection_id: int, update: DetectionTagUpdate):
+    allegiance = update.allegiance.strip().lower()
+    if allegiance not in {"friendly", "hostile", "neutral", "unknown"}:
+        raise HTTPException(status_code=400, detail="allegiance must be friendly, hostile, neutral, or unknown")
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            UPDATE detections
+            SET metadata = coalesce(metadata, '{}'::jsonb) || jsonb_build_object('allegiance', %s)
+            WHERE id = %s
+            RETURNING id, class, metadata
+        """, (allegiance, detection_id))
         row = cursor.fetchone()
-        return row["geojson"] if row else {"type": "FeatureCollection", "features": []}
+        if not row:
+            raise HTTPException(status_code=404, detail="Detection not found")
+    try:
+        with db.get_session() as session:
+            session.run("""
+                MATCH (d:Detection {postgis_id: $det_id})
+                SET d.allegiance = $allegiance
+            """, {"det_id": detection_id, "allegiance": allegiance})
+    except Exception:
+        pass
+    publish_event("detections", {"type": "detection_tagged", "id": detection_id, "allegiance": allegiance})
+    return {"id": row["id"], "class": row["class"], "metadata": enriched_detection_metadata(row["class"], row["metadata"])}
 
 @app.post("/api/detections/resolve")
 def resolve_detection(detection_id: int, distance_threshold_meters: float = 500.0):

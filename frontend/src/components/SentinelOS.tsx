@@ -22,7 +22,6 @@ import {
   Users,
   Workflow,
 } from 'lucide-react';
-import OperationsWorkspace from './OperationsWorkspace';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 
@@ -718,7 +717,6 @@ export default function SentinelOS() {
 
   const content = () => {
     if (activeTab === 'dashboard') return <Dashboard data={data} onRefresh={refresh} />;
-    if (activeTab === 'geoint') return <OperationsWorkspace />;
     if (activeTab === 'timeline') return <div className="h-full p-3"><TimeseriesPanel events={data.timeline} observations={data.observations} /></div>;
     if (activeTab === 'workflows') return <Workflows data={data} onRefresh={refresh} />;
     if (activeTab === 'ai') return <div className="h-full p-3 grid grid-cols-1 xl:grid-cols-[1fr_420px] gap-3"><AIWorkflowPanel data={data} onRefresh={refresh} /><EntityInsightPanel targets={data.targets} observations={data.observations} /></div>;

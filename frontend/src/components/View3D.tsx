@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import axios from 'axios';
+import { Shield, Swords } from 'lucide-react';
+import { useEventStream } from '../hooks/useEventStream';
 
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 const TILE_PROXY_URL = import.meta.env.VITE_TILE_PROXY_URL || 'http://localhost:8090';
 
 // Tell CesiumJS where to find its vendored workers/assets.
@@ -113,6 +117,38 @@ function recentEventText(event: any) {
   return event?.message || event?.type || 'Event';
 }
 
+function detectionLabel(feature: any) {
+  return String(feature?.properties?.label || feature?.properties?.class || 'Unknown');
+}
+
+function detectionColor(feature: any) {
+  const allegiance = String(feature?.properties?.allegiance || '').toLowerCase();
+  if (allegiance === 'friendly') return '#34d399';
+  if (allegiance === 'hostile') return '#fb7185';
+  const threat = String(feature?.properties?.threat_level || '').toLowerCase();
+  if (threat === 'critical') return '#f43f5e';
+  if (threat === 'high') return '#f97316';
+  if (threat === 'medium') return '#facc15';
+  return '#38bdf8';
+}
+
+function threatClass(level?: string) {
+  switch (String(level || '').toLowerCase()) {
+    case 'critical':
+      return 'border-rose-500/50 bg-rose-500/10 text-rose-200';
+    case 'high':
+      return 'border-orange-400/50 bg-orange-500/10 text-orange-100';
+    case 'medium':
+      return 'border-amber-400/50 bg-amber-500/10 text-amber-100';
+    default:
+      return 'border-slate-700 bg-slate-800 text-slate-300';
+  }
+}
+
+function detectionRings(feature: any): Array<Array<[number, number]>> {
+  return polygonRingsFromGeometry(feature);
+}
+
 export default function View3D({
   fmvClipId: _fmvClipId,
   targets = [],
@@ -133,12 +169,48 @@ export default function View3D({
   const [ready, setReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [detectionsGeoJSON, setDetectionsGeoJSON] = useState<any>({ type: 'FeatureCollection', features: [] });
+  const [detectionClasses, setDetectionClasses] = useState<any[]>([]);
+  const [hiddenDetectionClasses, setHiddenDetectionClasses] = useState<string[]>([]);
+  const [selectedDetection, setSelectedDetection] = useState<any | null>(null);
 
   const selectedLatLon = useMemo(() => targetLatLon(selectedTarget), [selectedTarget]);
   const visibleFootprints = useMemo(() => {
     const rows = selectedImagery ? [selectedImagery, ...imagery.filter((row) => row.id !== selectedImagery.id)] : imagery;
     return rows.filter((row) => footprintRings(row).length > 0).slice(0, 20);
   }, [imagery, selectedImagery]);
+  const visibleDetections = useMemo(() => (
+    (detectionsGeoJSON.features || []).filter((feature: any) => !hiddenDetectionClasses.includes(String(feature?.properties?.class || 'Unknown')))
+  ), [detectionsGeoJSON, hiddenDetectionClasses]);
+
+  const fetchDetections = async () => {
+    try {
+      const [geojsonResponse, classResponse] = await Promise.all([
+        axios.get(`${API_URL}/api/detections/geojson`),
+        axios.get(`${API_URL}/api/detections/classes`),
+      ]);
+      setDetectionsGeoJSON(geojsonResponse.data || { type: 'FeatureCollection', features: [] });
+      setDetectionClasses(classResponse.data?.classes || []);
+    } catch (err) {
+      console.error('Error fetching 3D detections:', err);
+    }
+  };
+
+  useEffect(() => {
+    fetchDetections();
+  }, []);
+
+  useEventStream('detections', () => {
+    fetchDetections();
+  });
+
+  const tagDetection = async (detectionId: number, allegiance: string) => {
+    await axios.patch(`${API_URL}/api/detections/${detectionId}/tag`, { allegiance });
+    await fetchDetections();
+    setSelectedDetection((current: any) => current?.properties?.id === detectionId
+      ? { ...current, properties: { ...current.properties, allegiance } }
+      : current);
+  };
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -277,6 +349,42 @@ export default function View3D({
       });
     });
 
+    visibleDetections.forEach((feature: any) => {
+      const rings = detectionRings(feature);
+      const props = feature.properties || {};
+      const color = Color.fromCssColorString(detectionColor(feature));
+      rings.forEach((ring, index) => {
+        const degrees = ring.flatMap(([lon, lat]) => [lon, lat]);
+        const entity = viewer.entities.add({
+          id: `detection-${props.id}-${index}`,
+          name: detectionLabel(feature),
+          polygon: {
+            hierarchy: new PolygonHierarchy(Cartesian3.fromDegreesArray(degrees)),
+            material: color.withAlpha(0.22),
+            outline: true,
+            outlineColor: color.withAlpha(0.95),
+          },
+          label: {
+            text: detectionLabel(feature),
+            font: '11px sans-serif',
+            fillColor: Color.WHITE,
+            outlineColor: Color.BLACK,
+            outlineWidth: 3,
+            style: LabelStyle.FILL_AND_OUTLINE,
+            pixelOffset: new Cartesian2(0, -16),
+            verticalOrigin: VerticalOrigin.BOTTOM,
+            scaleByDistance: new NearFarScalar(100000, 1, 7000000, 0.25),
+          },
+          properties: { detectionFeature: feature },
+        });
+        if (ring.length) {
+          const lon = ring.reduce((sum, point) => sum + point[0], 0) / ring.length;
+          const lat = ring.reduce((sum, point) => sum + point[1], 0) / ring.length;
+          entity.position = Cartesian3.fromDegrees(lon, lat, 700);
+        }
+      });
+    });
+
     if (selectedTarget && selectedLatLon) {
       const [lat, lon] = selectedLatLon;
       if (showRanges) {
@@ -347,7 +455,7 @@ export default function View3D({
         }
       }
     }
-  }, [ready, targets, selectedTarget, selectedLatLon, visibleFootprints, selectedImagery, showAimpoints, showRanges]);
+  }, [ready, targets, selectedTarget, selectedLatLon, visibleFootprints, selectedImagery, showAimpoints, showRanges, visibleDetections]);
 
   useEffect(() => {
     const viewer = viewerRef.current;
@@ -366,6 +474,9 @@ export default function View3D({
       const entityId = picked?.id?.id;
       if (typeof entityId === 'string' && entityId.startsWith('target-')) {
         onSelectTarget?.(entityId.slice('target-'.length));
+      } else if (typeof entityId === 'string' && entityId.startsWith('detection-')) {
+        const feature = picked?.id?.properties?.detectionFeature?.getValue?.() || picked?.id?.properties?.detectionFeature;
+        if (feature) setSelectedDetection(feature);
       }
     }, ScreenSpaceEventType.LEFT_CLICK);
     clickHandlerRef.current = handler;
@@ -437,7 +548,7 @@ export default function View3D({
       <div className="absolute top-4 left-4 z-[450] w-72 border border-lime-500/30 bg-slate-950/88 backdrop-blur px-3 py-3 text-xs shadow-2xl">
         <div className="flex items-center justify-between border-b border-slate-800 pb-2">
           <span className="uppercase tracking-wider text-lime-200">3D Ops Overlay</span>
-          <span className="font-mono text-slate-400">{targets.length} targets</span>
+          <span className="font-mono text-slate-400">{targets.length} targets / {visibleDetections.length} detections</span>
         </div>
         <div className="grid grid-cols-3 gap-2 py-3">
           <div className="border border-slate-800 bg-slate-900/70 px-2 py-2">
@@ -453,6 +564,51 @@ export default function View3D({
             <div className="text-emerald-200 font-mono">{selectedTarget?.task_count || 0}</div>
           </div>
         </div>
+        <div className="mt-3 border-t border-slate-800 pt-2">
+          <div className="text-[10px] uppercase text-slate-500 mb-2">Detection Filters</div>
+          <div className="max-h-40 overflow-y-auto space-y-1 pr-1">
+            {detectionClasses.map((item) => {
+              const hidden = hiddenDetectionClasses.includes(item.class);
+              return (
+                <button
+                  key={item.class}
+                  type="button"
+                  onClick={() => setHiddenDetectionClasses((current) => (
+                    current.includes(item.class) ? current.filter((label) => label !== item.class) : [...current, item.class]
+                  ))}
+                  className={`w-full border px-2 py-1.5 text-left ${hidden ? 'border-slate-800 bg-slate-950 text-slate-500' : 'border-slate-700 bg-slate-900/80 text-slate-200'}`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate">{item.label || item.class}</span>
+                    <span className="font-mono">{item.count}</span>
+                  </div>
+                  <div className="mt-1 flex items-center gap-1 text-[10px]">
+                    <span className={`px-1.5 py-0.5 border ${threatClass(item.threat_level)}`}>{item.threat_level || 'low'}</span>
+                    <span className="truncate text-slate-500">{item.ontology?.category || 'ontology'}</span>
+                  </div>
+                </button>
+              );
+            })}
+            {detectionClasses.length === 0 && <div className="text-slate-500">No detected classes.</div>}
+          </div>
+        </div>
+        {selectedDetection && (
+          <div className="mt-3 border-t border-slate-800 pt-2">
+            <div className="text-[10px] uppercase text-slate-500">Selected Detection</div>
+            <div className="text-slate-100 truncate">{detectionLabel(selectedDetection)}</div>
+            <div className="text-[11px] text-slate-500 line-clamp-2">
+              {selectedDetection.properties?.ontology?.description || 'Ontology unavailable.'}
+            </div>
+            <div className="mt-2 flex gap-2">
+              <button onClick={() => tagDetection(selectedDetection.properties.id, 'friendly')} className="h-7 flex-1 border border-emerald-500/50 bg-emerald-500/10 text-emerald-100 flex items-center justify-center gap-1">
+                <Shield className="w-3 h-3" /> Friendly
+              </button>
+              <button onClick={() => tagDetection(selectedDetection.properties.id, 'hostile')} className="h-7 flex-1 border border-rose-500/50 bg-rose-500/10 text-rose-100 flex items-center justify-center gap-1">
+                <Swords className="w-3 h-3" /> Hostile
+              </button>
+            </div>
+          </div>
+        )}
         <div className="space-y-2">
           <div>
             <div className="text-[10px] uppercase text-slate-500">Selected Target</div>

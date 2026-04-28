@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, ZoomControl, Polyline, Circle, GeoJSON, ImageOverlay, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import axios from 'axios';
-import { Crosshair, Navigation, ShieldAlert, Activity, Layers, Clock, Eye, EyeOff, Satellite, Filter, Search } from 'lucide-react';
+import { Crosshair, Navigation, ShieldAlert, Activity, Layers, Eye, EyeOff, Satellite, Filter, Search, Shield, Swords, CircleHelp, Clock } from 'lucide-react';
 import 'leaflet/dist/leaflet.css';
 import { useEventStream } from '../hooks/useEventStream';
 import { type UploadJob, isUploadActive, uploadMessage, uploadProgress, uploadProgressClass, uploadStage } from '../utils/uploadProgress';
@@ -50,6 +50,19 @@ function detectionColor(label: string) {
 function confidenceValue(feature: any) {
   const confidence = Number(feature?.properties?.confidence);
   return Number.isFinite(confidence) ? confidence : 0;
+}
+
+function threatClass(level?: string) {
+  switch (String(level || '').toLowerCase()) {
+    case 'critical':
+      return 'text-rose-300 border-rose-500/50 bg-rose-500/10';
+    case 'high':
+      return 'text-orange-200 border-orange-400/50 bg-orange-500/10';
+    case 'medium':
+      return 'text-amber-100 border-amber-400/50 bg-amber-400/10';
+    default:
+      return 'text-slate-300 border-slate-600 bg-slate-800/60';
+  }
 }
 
 // Detection style by class
@@ -109,12 +122,14 @@ export default function GaiaMap() {
   const [data, setData] = useState<{ static: any[], tracks: any[] }>({ static: [], tracks: [] });
   const [imagery, setImagery] = useState<any[]>([]);
   const [detectionsGeoJSON, setDetectionsGeoJSON] = useState<any>({ type: 'FeatureCollection', features: [] });
+  const [detectionClasses, setDetectionClasses] = useState<any[]>([]);
   const [basemapGeoJSON, setBasemapGeoJSON] = useState<any>({ type: 'FeatureCollection', features: [] });
   const [uploadJobs, setUploadJobs] = useState<UploadJob[]>([]);
   const [selectedImagery, setSelectedImagery] = useState<number | null>(null);
   const [imageryOpacity, setImageryOpacity] = useState(0.8);
   const [hiddenDetectionLabels, setHiddenDetectionLabels] = useState<string[]>([]);
   const [detectionLabelSearch, setDetectionLabelSearch] = useState('');
+  const [selectedDetection, setSelectedDetection] = useState<any | null>(null);
   const [timeRange, setTimeRange] = useState<{ start: string; end: string }>(() => {
     const now = new Date();
     const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
@@ -137,16 +152,26 @@ export default function GaiaMap() {
     [uploadJobs],
   );
   const detectionLabelStats = useMemo(() => {
-    const stats = new Map<string, { label: string; count: number; maxConfidence: number; color: string }>();
+    const classMeta = new Map(detectionClasses.map((item) => [item.class, item]));
+    const stats = new Map<string, { label: string; count: number; maxConfidence: number; color: string; ontology?: any; threatLevel?: string; rawClass: string }>();
     for (const feature of detectionsGeoJSON.features || []) {
       const label = detectionLabel(feature);
-      const existing = stats.get(label) || { label, count: 0, maxConfidence: 0, color: detectionColor(label) };
+      const meta = classMeta.get(label);
+      const existing = stats.get(label) || {
+        label: meta?.label || label,
+        rawClass: label,
+        count: 0,
+        maxConfidence: 0,
+        color: detectionColor(label),
+        ontology: meta?.ontology || feature?.properties?.ontology,
+        threatLevel: meta?.threat_level || feature?.properties?.threat_level,
+      };
       existing.count += 1;
       existing.maxConfidence = Math.max(existing.maxConfidence, confidenceValue(feature));
       stats.set(label, existing);
     }
     return Array.from(stats.values()).sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
-  }, [detectionsGeoJSON]);
+  }, [detectionsGeoJSON, detectionClasses]);
   const filteredDetectionsGeoJSON = useMemo(() => ({
     ...detectionsGeoJSON,
     features: (detectionsGeoJSON.features || []).filter((feature: any) => !hiddenDetectionLabels.includes(detectionLabel(feature))),
@@ -154,7 +179,7 @@ export default function GaiaMap() {
   const filteredDetectionLabelStats = useMemo(() => {
     const query = detectionLabelSearch.trim().toLowerCase();
     return query
-      ? detectionLabelStats.filter((item) => item.label.toLowerCase().includes(query))
+      ? detectionLabelStats.filter((item) => `${item.label} ${item.ontology?.category || ''} ${item.threatLevel || ''}`.toLowerCase().includes(query))
       : detectionLabelStats;
   }, [detectionLabelSearch, detectionLabelStats]);
   const maxDetectionLabelCount = Math.max(1, ...detectionLabelStats.map((item) => item.count));
@@ -239,8 +264,12 @@ export default function GaiaMap() {
       params.append('bbox', mapBounds);
       params.append('start_time', timeRange.start);
       params.append('end_time', timeRange.end);
-      const response = await axios.get(`${API_URL}/api/detections/geojson?${params.toString()}`);
-      setDetectionsGeoJSON(response.data || { type: 'FeatureCollection', features: [] });
+      const [geojsonResponse, classResponse] = await Promise.all([
+        axios.get(`${API_URL}/api/detections/geojson?${params.toString()}`),
+        axios.get(`${API_URL}/api/detections/classes?${params.toString()}`),
+      ]);
+      setDetectionsGeoJSON(geojsonResponse.data || { type: 'FeatureCollection', features: [] });
+      setDetectionClasses(classResponse.data?.classes || []);
     } catch (error) {
       console.error("Error fetching detections:", error);
     } finally {
@@ -269,6 +298,12 @@ export default function GaiaMap() {
     }
   }, [fetchUploadJobs]));
 
+  const tagDetection = useCallback(async (detectionId: number, allegiance: string) => {
+    await axios.patch(`${API_URL}/api/detections/${detectionId}/tag`, { allegiance });
+    console.log(`Detection ${detectionId} tagged ${allegiance}.`);
+    await fetchDetections();
+  }, [fetchDetections]);
+
   const onEachDetection = (feature: any, layer: L.Layer) => {
     const props = feature.properties;
     const popupContent = `
@@ -280,11 +315,14 @@ export default function GaiaMap() {
           <div>ID: <span style="color: #e2e8f0;">${props.id}</span></div>
           <div>Confidence: <span style="color: #e2e8f0;">${(props.confidence * 100).toFixed(1)}%</span></div>
           <div>Pass: <span style="color: #e2e8f0;">${props.pass_id}</span></div>
+          <div>Threat: <span style="color: #e2e8f0;">${props.threat_level || 'unknown'}</span></div>
+          <div>Tag: <span style="color: #e2e8f0;">${props.allegiance || 'unknown'}</span></div>
           <div>Time: <span style="color: #e2e8f0;">${new Date(props.created_at).toLocaleString()}</span></div>
         </div>
       </div>
     `;
     layer.bindPopup(popupContent);
+    layer.on('click', () => setSelectedDetection(feature));
   };
 
   const selectedImageryData = imagery.find(img => img.id === selectedImagery);
@@ -332,7 +370,7 @@ export default function GaiaMap() {
               </button>
               <button
                 type="button"
-                onClick={() => setHiddenDetectionLabels(detectionLabelStats.map((item) => item.label))}
+                onClick={() => setHiddenDetectionLabels(detectionLabelStats.map((item) => item.rawClass))}
                 className="h-6 px-2 border border-slate-700 bg-slate-800 text-[10px] text-slate-300 hover:text-white"
               >
                 None
@@ -355,15 +393,15 @@ export default function GaiaMap() {
               </div>
             )}
             {filteredDetectionLabelStats.map((item) => {
-              const hidden = hiddenDetectionLabels.includes(item.label);
+              const hidden = hiddenDetectionLabels.includes(item.rawClass);
               return (
                 <button
-                  key={item.label}
+                  key={item.rawClass}
                   type="button"
                   onClick={() => setHiddenDetectionLabels((current) => (
-                    current.includes(item.label)
-                      ? current.filter((label) => label !== item.label)
-                      : [...current, item.label]
+                    current.includes(item.rawClass)
+                      ? current.filter((label) => label !== item.rawClass)
+                      : [...current, item.rawClass]
                   ))}
                   className={`w-full text-left border px-2 py-2 transition ${hidden ? 'border-slate-800 bg-slate-950/70 text-slate-500' : 'border-slate-700 bg-slate-800/70 text-slate-200 hover:border-slate-500'}`}
                 >
@@ -372,6 +410,10 @@ export default function GaiaMap() {
                     <span className="min-w-0 flex-1 truncate text-xs font-semibold">{item.label}</span>
                     <span className="font-mono text-xs">{item.count}</span>
                     {hidden ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </div>
+                  <div className="mt-1 flex items-center gap-1 text-[10px]">
+                    <span className={`px-1.5 py-0.5 border ${threatClass(item.threatLevel)}`}>{item.threatLevel || 'low'}</span>
+                    <span className="truncate text-slate-500">{item.ontology?.category || 'ontology'}</span>
                   </div>
                   <div className="mt-1 flex items-center gap-2">
                     <div className="h-1.5 flex-1 bg-slate-950 overflow-hidden">
@@ -389,6 +431,60 @@ export default function GaiaMap() {
             })}
           </div>
         </div>
+
+        {selectedDetection && (
+          <div className="bg-slate-900/94 p-3 rounded border border-slate-700 backdrop-blur-md shadow-2xl pointer-events-auto">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-xs font-bold uppercase tracking-wider text-slate-300 truncate">
+                  {selectedDetection.properties?.label || selectedDetection.properties?.class}
+                </div>
+                <div className="mt-1 text-[11px] text-slate-500">
+                  {selectedDetection.properties?.ontology?.description || 'Detection ontology unavailable.'}
+                </div>
+              </div>
+              <button type="button" onClick={() => setSelectedDetection(null)} className="text-slate-500 hover:text-slate-200">x</button>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1 text-[10px]">
+              <span className={`px-2 py-1 border ${threatClass(selectedDetection.properties?.threat_level)}`}>
+                {selectedDetection.properties?.threat_level || 'low'}
+              </span>
+              <span className="px-2 py-1 border border-slate-700 bg-slate-800 text-slate-300">
+                {selectedDetection.properties?.allegiance || 'unknown'}
+              </span>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => tagDetection(selectedDetection.properties.id, 'friendly')}
+                className="h-8 border border-emerald-500/50 bg-emerald-500/10 text-emerald-100 text-xs flex items-center justify-center gap-1"
+              >
+                <Shield className="w-3.5 h-3.5" /> Friendly
+              </button>
+              <button
+                type="button"
+                onClick={() => tagDetection(selectedDetection.properties.id, 'hostile')}
+                className="h-8 border border-rose-500/50 bg-rose-500/10 text-rose-100 text-xs flex items-center justify-center gap-1"
+              >
+                <Swords className="w-3.5 h-3.5" /> Hostile
+              </button>
+              <button
+                type="button"
+                onClick={() => tagDetection(selectedDetection.properties.id, 'neutral')}
+                className="h-8 border border-sky-500/50 bg-sky-500/10 text-sky-100 text-xs flex items-center justify-center gap-1"
+              >
+                <CircleHelp className="w-3.5 h-3.5" /> Neutral
+              </button>
+              <button
+                type="button"
+                onClick={() => tagDetection(selectedDetection.properties.id, 'unknown')}
+                className="h-8 border border-slate-600 bg-slate-800 text-slate-300 text-xs"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Imagery Selector Panel */}
         {imagery.length > 0 && (

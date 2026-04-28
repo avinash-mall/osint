@@ -193,15 +193,23 @@ http://localhost:3001/ne_countries/{z}/{x}/{y}
 Inference and training use `DEVICE=auto` by default: CUDA is preferred when the installed PyTorch build can use the host driver, otherwise inference falls back to CPU and training stops unless `--device cpu` is explicit. PyTorch CUDA wheels are not universal across all NVIDIA drivers, so choose the wheel index that matches the target machine when building or preparing an environment.
 
 ```bash
-# Driver reports CUDA 12.4, for example NVIDIA driver 550.x
+# Full stack with GPU inference. Use both files; docker-compose.gpu.yml is the GPU overlay.
+TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+
+# Inference service only, with GPU access.
+TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124 docker compose -f docker-compose.gpu.yml up -d --build
+
+# Build only, driver reports CUDA 12.4, for example NVIDIA driver 550.x
 TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124 docker compose -f docker-compose.yml -f docker-compose.gpu.yml build inference
 
-# Newer CUDA wheel families can be selected the same way
+# Newer CUDA wheel families can be selected the same way.
 TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128 docker compose -f docker-compose.yml -f docker-compose.gpu.yml build inference
 
-# CPU-only fallback for machines without NVIDIA GPUs
-TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu docker compose build inference
+# CPU-only full stack for machines without NVIDIA GPUs.
+TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu docker compose up -d --build
 ```
+
+Do not run `docker compose -f docker-compose.gpu.yml up -d` when you want the full application stack; that file starts only the inference service. Use `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d` for all services plus GPU inference.
 
 For direct `.venv` usage, install the matching PyTorch wheel before training or running `uvicorn`:
 
