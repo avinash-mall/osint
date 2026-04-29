@@ -41,6 +41,21 @@ export const CLASS_LIST = [
   'fair1m_truck_tractor', 'fair1m_tennis_court', 'fair1m_arj21', 'fair1m_basketball_court',
   'fair1m_boeing787', 'fair1m_boeing777', 'fair1m_a350', 'fair1m_tractor',
   'fair1m_football_field', 'fair1m_warship', 'fair1m_roundabout', 'fair1m_bridge', 'fair1m_c919',
+  'dior_airplane', 'dior_airport', 'dior_baseballfield', 'dior_basketballcourt', 'dior_bridge',
+  'dior_chimney', 'dior_dam', 'dior_expressway_service_area', 'dior_expressway_toll_station',
+  'dior_golffield', 'dior_groundtrackfield', 'dior_harbor', 'dior_overpass', 'dior_ship',
+  'dior_stadium', 'dior_storagetank', 'dior_tenniscourt', 'dior_trainstation', 'dior_vehicle',
+  'dior_windmill',
+  'sodaa_airplane', 'sodaa_helicopter', 'sodaa_small_vehicle', 'sodaa_large_vehicle',
+  'sodaa_ship', 'sodaa_container', 'sodaa_storage_tank', 'sodaa_swimming_pool', 'sodaa_windmill',
+  'hrsc_ship', 'hrsc_aircraft_carrier', 'hrsc_warcraft', 'hrsc_merchant_ship',
+  'hrsc_nimitz_class_aircraft_carrier', 'hrsc_enterprise_class_aircraft_carrier',
+  'hrsc_arleigh_burke_class_destroyer', 'hrsc_perry_class_frigate',
+  'hrsc_ticonderoga_class_cruiser', 'hrsc_kitty_hawk_class_aircraft_carrier',
+  'hrsc_kuznetsov_class_aircraft_carrier', 'hrsc_blue_ridge_class_command_ship',
+  'hrsc_container_ship', 'hrsc_tugboat', 'hrsc_medical_ship', 'hrsc_car_carrier',
+  'hrsc_hovercraft', 'hrsc_yacht', 'hrsc_cruise_ship', 'hrsc_submarine',
+  'hrsc_liquid_cargo_ship',
 ] as const;
 
 export type DetectionCategoryId =
@@ -96,7 +111,7 @@ export const DETECTION_CATEGORIES: Record<DetectionCategoryId, { label: string; 
   other: { label: 'Other', color: '#727a83', short: 'OTH' },
 };
 
-export const SOURCE_ORDER = ['xView', 'DOTA', 'fMoW', 'FAIR1M', 'Local'] as const;
+export const SOURCE_ORDER = ['xView', 'DOTA', 'FAIR1M', 'DIOR-R', 'SODA-A', 'HRSC', 'fMoW', 'Local'] as const;
 
 const CATEGORY_BY_ONTOLOGY: Record<string, DetectionCategoryId> = {
   air: 'air',
@@ -113,26 +128,29 @@ const CATEGORY_BY_ONTOLOGY: Record<string, DetectionCategoryId> = {
 export function classifyDetectionClass(value?: string | null, ontologyCategory?: string | null): DetectionCategoryId {
   const raw = String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '_');
   const ontology = CATEGORY_BY_ONTOLOGY[String(ontologyCategory || '').toLowerCase()];
+  // Maritime checked before air so 'aircraft_carrier', 'container_ship', 'naval_vessel' resolve to sea.
+  if (/aircraft_carrier|ship|vessel|boat|tanker|barge|tugboat|ferry|yacht|harbor|harbour|port|shipyard|warship|warcraft|destroyer|frigate|cruiser|corvette|submarine|hovercraft|naval/.test(raw)) return 'sea';
   if (/aircraft|plane|airplane|hangar|airport|runway|helipad|helicopter|boeing|a3\d\d|a2\d\d|arj21|c919|a350/.test(raw)) return 'air';
-  if (/ship|vessel|boat|tanker|barge|tugboat|ferry|yacht|harbor|port|shipyard|warship/.test(raw)) return 'sea';
-  if (/locomotive|railway|rail|tank_car|flat_car|cargo_car|passenger_car/.test(raw)) return 'rail';
+  if (/locomotive|railway|rail|tank_car|flat_car|cargo_car|passenger_car|train_station|trainstation/.test(raw)) return 'rail';
   if (/truck|car|vehicle|bus|trailer|van|tractor/.test(raw)) return 'vehicle';
   if (/excavator|crane|loader|grader|dump|scraper|stacker|straddle|cement|construction|mining|surface_mine|engineering/.test(raw)) return 'construction';
-  if (/storage_tank|oil|gas|smokestack|powerplant|substation|factory|nuclear|solar|wind_farm/.test(raw)) return 'energy';
-  if (/military|warship|prison|police|fire|border|checkpoint/.test(raw)) return 'mil';
-  if (/bridge|interchange|roundabout|toll|tunnel|road|track|transportation_station/.test(raw)) return 'infra';
-  if (/stadium|baseball|tennis|basketball|soccer|football|golf|race_track|swim|park|recreation|amusement|zoo|fountain/.test(raw)) return 'sport';
+  if (/storage_?tank|oil|gas|smokestack|powerplant|substation|factory|nuclear|solar|wind_?farm|windmill|chimney/.test(raw)) return 'energy';
+  if (/military|prison|police|fire|border|checkpoint/.test(raw)) return 'mil';
+  if (/bridge|overpass|interchange|roundabout|toll|tunnel|road|track|expressway|transportation_station/.test(raw)) return 'infra';
+  if (/stadium|baseball|tennis|basketball|soccer|football|golf|race_track|ground_?track|swim|park|recreation|amusement|zoo|fountain/.test(raw)) return 'sport';
   if (/residential|office|shopping|mall|hospital|school|education|worship|burial|archaeological|lighthouse|tower|pylon|shed|hut|barn|building|facility/.test(raw)) return 'structure';
   if (/crop|aquaculture|farm/.test(raw)) return 'agri';
   if (/lake|pond|water_treatment|dam|flooded|debris|rubble|waste|impoverished/.test(raw)) return 'water';
   if (/container|shipping/.test(raw)) return 'logistics';
   if (/parking|lot|dealership|gas_station/.test(raw)) return 'transit';
+  // HRSC2016 is exclusively maritime, so any unmapped hrsc_* class falls back to sea.
+  if (raw.startsWith('hrsc')) return 'sea';
   return ontology || 'other';
 }
 
 export function detectionClassLabel(value?: string | null): string {
   const raw = String(value || 'unknown').trim();
-  const withoutSource = raw.replace(/^(xview|dota|fmow|fair1m)[_\s-]+/i, '');
+  const withoutSource = raw.replace(/^(xview|dota|fmow|fair1m|rareplanes|dior|sodaa|hrsc)[_\s-]+/i, '');
   return withoutSource
     .replace(/[_-]+/g, ' ')
     .replace(/\b\w/g, (char) => char.toUpperCase()) || 'Unknown';
@@ -142,7 +160,10 @@ export function detectionClassSource(value?: string | null): typeof SOURCE_ORDER
   const raw = String(value || '').toLowerCase();
   if (raw.startsWith('xview_') || raw.startsWith('xview ')) return 'xView';
   if (raw.startsWith('dota_') || raw.startsWith('dota ')) return 'DOTA';
-  if (raw.startsWith('fmow_') || raw.startsWith('fmow ')) return 'fMoW';
   if (raw.startsWith('fair1m_') || raw.startsWith('fair1m ')) return 'FAIR1M';
+  if (raw.startsWith('dior_') || raw.startsWith('dior ')) return 'DIOR-R';
+  if (raw.startsWith('sodaa_') || raw.startsWith('sodaa ')) return 'SODA-A';
+  if (raw.startsWith('hrsc_') || raw.startsWith('hrsc ')) return 'HRSC';
+  if (raw.startsWith('fmow_') || raw.startsWith('fmow ')) return 'fMoW';
   return 'Local';
 }

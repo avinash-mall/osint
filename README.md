@@ -225,28 +225,92 @@ Inference also auto-selects all visible GPUs. The service loads one model replic
 
 ### GEOINT Model Training
 
-Large public GEOINT datasets have different access models. xView and DOTA commonly require manual download/terms acceptance; RarePlanes can be synced from public S3; FAIR1M can be pulled from available mirrors such as Hugging Face when permitted; DIOR-R, SODA-A, and HRSC2016 are pulled from IEEE DataPort, Kaggle, or the official project pages and placed manually under `training_dataset/raw/<name>/`. fMoW is intentionally excluded — its labels are scene/site categories (airport, hospital, …) rather than object boxes and therefore do not produce useful OBB targets.
+The training pipeline ingests six public OBB-annotated aerial datasets and produces a single class-balanced YOLOv8-OBB training set. fMoW is intentionally excluded — its labels are scene/site categories (airport, hospital, …) rather than object boxes and do not produce useful OBB targets.
+
+| Dataset      | Categories                                            | Annotation format            | Source                                                                                                |
+|--------------|-------------------------------------------------------|------------------------------|-------------------------------------------------------------------------------------------------------|
+| **xView**    | 60 GEOINT (vehicles, aircraft, ships, infrastructure) | GeoJSON + GeoTIFFs           | [xviewdataset.org](https://xviewdataset.org/) (registration required)                                 |
+| **DOTA-v2**  | 18 (vehicles, aircraft, ships, sport facilities, …)   | DatasetNinja JSON or labelTxt | [captain-whu DOTA](https://captain-whu.github.io/DOTA/dataset.html)                                   |
+| **FAIR1M**   | 37 fine-grained (planes, ships, vehicles, courts, …)  | PASCAL VOC XML               | [Hugging Face mirror](https://huggingface.co/datasets/blanchon/FAIR1M) or the official challenge page |
+| **DIOR-R**   | 20 (aircraft, airports, vehicles, ships, structures)  | YOLO-OBB TXT or VOC XML      | [Kaggle YOLOv11-OBB mirror](https://www.kaggle.com/datasets/redzapdos123/dior-r-dataset-yolov11-obb-format) or [IEEE DataPort](https://ieee-dataport.org/documents/dior) |
+| **SODA-A**   | 9 (airplane, helicopter, ships, vehicles, …)          | COCO JSON with `poly` field  | [shaunyuan22.github.io/SODA](https://shaunyuan22.github.io/SODA/)                                     |
+| **HRSC2016** | 28 fine-grained ship classes                          | HRSC XML                     | [IEEE DataPort](https://ieee-dataport.org/documents/hrsc2016-0) or community mirrors                  |
+
+RarePlanes (synthetic + real planes, COCO JSON) is also supported via `process_coco`; pull from the public `s3://rareplanes-public` bucket if you want to add it.
+
+#### Raw data layout
+
+Place each dataset under `training_dataset/raw/<name>/`. Drop in either the raw archive (`*.zip`, `*.tar`, `*.tgz` — the prep script auto-extracts) or the already-extracted directory tree:
+
+```
+training_dataset/raw/
+├── xview/      # train_images.tgz, train_labels.tgz, val_images.tgz
+├── dota/       # Dota.tar  (or extracted train/, val/, test-dev/ with img/ and ann/)
+├── fair1m/     # data/images/*.tif + data/labelXmls/*.xml
+├── dior/       # dior.zip  (or extracted train/, val/, test/ each with images/ and labels/)
+├── sodaa/      # sodaa.zip (or extracted Annotations/{train,val,test}/*.json + Images/*.jpg)
+└── hrsc2016/   # HRSC2016_dataset.zip (or AllImages/*.bmp + Annotations/*.xml)
+```
+
+#### Prepare
 
 ```bash
-# Prepare raw data into YOLOv8 OBB format under ./training_dataset/yolo.
-# --max-instances-per-class caps any single class so xView's small_car
-# does not dominate training; pick a value close to your second-largest class.
+# Verify each parser independently first — catches malformed/missing archives early.
+# Each run prints a balance report and per-dataset tile/label counts.
+for ds in xview dota fair1m dior sodaa hrsc2016; do
+    python inference/prepare_datasets.py --datasets "$ds" --max-instances-per-class 50000
+done
+
+# Combined class-balanced run. --max-instances-per-class caps any single class
+# (set this to roughly the size of your largest meaningful class). Without it
+# xView's small_car alone produces 200k+ instances and dominates training,
+# collapsing minority classes to zero.
 python inference/prepare_datasets.py \
     --datasets xview dota fair1m dior sodaa hrsc2016 \
     --max-instances-per-class 50000 --clean
-
-# Import manually downloaded archives/directories.
-# xView expects train_images.zip, train_labels.zip, and val_images.zip.
-python inference/prepare_datasets.py --dataset-archive xview=D:\data\xview\train_images.zip --dataset-archive xview=D:\data\xview\train_labels.zip --dataset-archive xview=D:\data\xview\val_images.zip
-python inference/prepare_datasets.py --dataset-archive dota=D:\data\DOTA-v1.0
-python inference/prepare_datasets.py --dataset-archive dior=D:\data\dior.zip --dataset-archive sodaa=D:\data\sodaa.zip --dataset-archive hrsc2016=D:\data\HRSC2016_dataset.zip
-
-# Best-effort public downloads for datasets that support open CLI access
-python inference/prepare_datasets.py --datasets rareplanes fair1m --download
-
-# Train and promote best.pt to inference/models/geoint_yolov8_obb.pt
-python inference/train_model.py --data training_dataset/yolo/data.yaml --epochs 100 --imgsz 640 --device 0
 ```
+
+A successful combined run produces approximately **~135k tiles, ~1.6M labels, ~120 classes** under `training_dataset/yolo/`. Inspect `summary.json` for the per-dataset breakdown. If any single-dataset run prints `0 tiles, 0 labels`, the diagnostics block (images found, files matched, parsed annotations) tells you what the parser missed.
+
+Importing pre-staged archives without rearranging the raw tree:
+
+```bash
+python inference/prepare_datasets.py \
+    --dataset-archive xview=/path/to/train_images.tgz \
+    --dataset-archive xview=/path/to/train_labels.tgz \
+    --dataset-archive xview=/path/to/val_images.tgz \
+    --dataset-archive dota=/path/to/Dota.tar \
+    --dataset-archive dior=/path/to/dior.zip \
+    --dataset-archive sodaa=/path/to/sodaa.zip \
+    --dataset-archive hrsc2016=/path/to/HRSC2016_dataset.zip \
+    --max-instances-per-class 50000 --clean
+```
+
+For datasets with open CLI access (RarePlanes via S3, FAIR1M via Hugging Face):
+
+```bash
+python inference/prepare_datasets.py --datasets rareplanes fair1m --download
+```
+
+#### Train
+
+The trainer promotes `best.pt` from the run to `inference/models/geoint_yolov8_obb.pt` and writes a metadata sidecar so the inference container picks it up on the next restart.
+
+```bash
+# Single GPU
+python inference/train_model.py \
+    --data training_dataset/yolo/data.yaml \
+    --base-model yolov8s-obb.pt \
+    --epochs 100 --imgsz 640 --batch -1 --device 0
+
+# Multi GPU (e.g. 4× H100 / A100)
+python inference/train_model.py \
+    --data training_dataset/yolo/data.yaml \
+    --base-model yolov8s-obb.pt \
+    --epochs 100 --imgsz 640 --batch 64 --device 0,1,2,3
+```
+
+With ~120 classes and ~1.6M labels, `yolov8n-obb.pt` (the default base) is undersized — use `yolov8s-obb.pt` (small, ~11M params) or `yolov8m-obb.pt` (medium, ~26M params) for meaningful per-class accuracy. Larger backbones cost proportionally more wall-clock per epoch but are necessary at this class count.
 
 ---
 

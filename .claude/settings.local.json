@@ -17,7 +17,11 @@
       "WebFetch(domain:arxiv.org)",
       "Bash(python -c \"import ast, sys; ast.parse\\(open\\('d:/osint/inference/prepare_datasets.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "Bash(python -c ' *)",
-      "Bash(python -c \"import ast; ast.parse\\(open\\('d:/osint/inference/prepare_datasets.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\('d:/osint/inference/prepare_datasets.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('d:/osint/inference/prepare_datasets.py'\\).read\\(\\)\\); ast.parse\\(open\\('d:/osint/backend/threat_assessment.py'\\).read\\(\\)\\); ast.parse\\(open\\('d:/osint/backend/worker.py'\\).read\\(\\)\\); ast.parse\\(open\\('d:/osint/backend/main.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(npx --no-install tsc --noEmit -p tsconfig.json)",
+      "Bash(./node_modules/.bin/tsc --noEmit src/utils/detectionTaxonomy.ts)",
+      "Bash(./node_modules/.bin/tsc --noEmit)"
     ]
   }
 }

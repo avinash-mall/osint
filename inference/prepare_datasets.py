@@ -153,6 +153,41 @@ DOTA_CLASSES = [
     "dota_helipad",
 ]
 
+DIOR_CLASSES = [
+    "dior_airplane",
+    "dior_airport",
+    "dior_baseballfield",
+    "dior_basketballcourt",
+    "dior_bridge",
+    "dior_chimney",
+    "dior_dam",
+    "dior_expressway_service_area",
+    "dior_expressway_toll_station",
+    "dior_golffield",
+    "dior_groundtrackfield",
+    "dior_harbor",
+    "dior_overpass",
+    "dior_ship",
+    "dior_stadium",
+    "dior_storagetank",
+    "dior_tenniscourt",
+    "dior_trainstation",
+    "dior_vehicle",
+    "dior_windmill",
+]
+
+SODAA_CLASSES = [
+    "sodaa_airplane",
+    "sodaa_helicopter",
+    "sodaa_small_vehicle",
+    "sodaa_large_vehicle",
+    "sodaa_ship",
+    "sodaa_container",
+    "sodaa_storage_tank",
+    "sodaa_swimming_pool",
+    "sodaa_windmill",
+]
+
 @dataclass(frozen=True)
 class Annotation:
     label: str
@@ -1143,9 +1178,32 @@ def process_sodaa(raw_root: Path) -> dict[Path, list[Annotation]]:
     return grouped
 
 
+def _load_hrsc_class_names(raw_root: Path) -> dict[str, str]:
+    """Parse HRSC2016 sysdata.xml to map 9-digit Class_IDs to readable names."""
+    mapping: dict[str, str] = {}
+    sysdata_files = list(raw_root.rglob("sysdata.xml"))
+    for path in sysdata_files:
+        try:
+            root = ET.parse(path).getroot()
+        except ET.ParseError:
+            continue
+        for klass in root.iter():
+            tag = klass.tag.lower()
+            if "class" not in tag or tag.endswith("classes"):
+                continue
+            class_id = _xml_text(klass, "Class_ID", "ID", "id")
+            class_name = _xml_text(klass, "Class_Name", "Name", "name", "Class_EngName")
+            if class_id and class_name:
+                mapping.setdefault(str(class_id).strip(), class_name)
+        if mapping:
+            break
+    return mapping
+
+
 def process_hrsc(raw_root: Path) -> dict[Path, list[Annotation]]:
     extract_nested_archives(raw_root)
     images = find_images(raw_root)
+    class_names = _load_hrsc_class_names(raw_root)
     grouped: dict[Path, list[Annotation]] = {}
     matched_xml = 0
     parsed_annotations = 0
@@ -1177,7 +1235,9 @@ def process_hrsc(raw_root: Path) -> dict[Path, list[Annotation]]:
             angle = _xml_float(obj, "mbox_ang")
             if not class_id or None in (cx, cy, w, h, angle):
                 continue
-            label = f"hrsc_{sanitize_label(class_id)}"
+            class_id = class_id.strip()
+            readable = class_names.get(class_id)
+            label = f"hrsc_{sanitize_label(readable)}" if readable else f"hrsc_{sanitize_label(class_id)}"
             polygon = rotated_box_to_polygon(cx, cy, w, h, angle)
             annotations.append(Annotation(label, polygon, "hrsc2016"))
             parsed_annotations += 1
@@ -1514,6 +1574,8 @@ def main() -> int:
     registry = ClassRegistry()
     registry.preload(XVIEW_TYPE_ID_TO_NAME.values())
     registry.preload(DOTA_CLASSES)
+    registry.preload(DIOR_CLASSES)
+    registry.preload(SODAA_CLASSES)
 
     for dataset in selected_datasets:
         dataset_raw = raw_root / dataset

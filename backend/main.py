@@ -693,7 +693,7 @@ def record_observation(
 
 def clean_detection_class(det_class: str) -> str:
     label = (det_class or "Unknown").replace("_", " ").replace("-", " ").strip()
-    prefixes = ("xview ", "dota ", "fair1m ", "fmow ", "rareplanes ")
+    prefixes = ("xview ", "dota ", "fair1m ", "fmow ", "rareplanes ", "dior ", "sodaa ", "hrsc ")
     lower = label.lower()
     for prefix in prefixes:
         if lower.startswith(prefix):
