@@ -11,7 +11,6 @@ from celery import Celery
 from database import db, postgis_db
 import rasterio
 from rasterio.windows import Window
-from rasterio.transform import xy
 from shapely.geometry import Polygon, MultiPolygon
 import numpy as np
 from PIL import Image
@@ -298,6 +297,10 @@ def bbox_iou(a: list[float], b: list[float]) -> float:
     return inter_area / union if union else 0.0
 
 
+def clamp_float(value: float, low: float, high: float) -> float:
+    return max(low, min(high, float(value)))
+
+
 def deduplicate_detections(
     detections: list,
     iou_threshold: float = 0.45,
@@ -565,25 +568,31 @@ def slice_and_infer(
 
                     for det in chip_detections:
                         # Convert normalized bbox to pixel coords in chip
-                        cx, cy, w, h = det["bbox"]  # normalized [x_center, y_center, width, height]
+                        try:
+                            cx, cy, w, h = [float(value) for value in det["bbox"][:4]]  # normalized [x_center, y_center, width, height]
+                        except (KeyError, TypeError, ValueError):
+                            continue
+
                         chip_px_cx = cx * win_width
                         chip_px_cy = cy * win_height
-                        chip_px_w = w * win_width
-                        chip_px_h = h * win_height
+                        chip_px_w = max(0.0, w * win_width)
+                        chip_px_h = max(0.0, h * win_height)
 
                         # Convert to absolute pixel coords in full image
-                        abs_px_x1 = x + chip_px_cx - chip_px_w / 2
-                        abs_px_y1 = y + chip_px_cy - chip_px_h / 2
-                        abs_px_x2 = abs_px_x1 + chip_px_w
-                        abs_px_y2 = abs_px_y1 + chip_px_h
+                        abs_px_x1 = clamp_float(x + chip_px_cx - chip_px_w / 2, 0, width)
+                        abs_px_y1 = clamp_float(y + chip_px_cy - chip_px_h / 2, 0, height)
+                        abs_px_x2 = clamp_float(x + chip_px_cx + chip_px_w / 2, 0, width)
+                        abs_px_y2 = clamp_float(y + chip_px_cy + chip_px_h / 2, 0, height)
+                        if abs_px_x2 <= abs_px_x1 or abs_px_y2 <= abs_px_y1:
+                            continue
 
                         pixel_obb = []
                         if det.get("obb") and len(det["obb"]) == 8:
                             for index, value in enumerate(det["obb"]):
                                 if index % 2 == 0:
-                                    pixel_obb.append(x + float(value) * win_width)
+                                    pixel_obb.append(clamp_float(x + float(value) * win_width, 0, width))
                                 else:
-                                    pixel_obb.append(y + float(value) * win_height)
+                                    pixel_obb.append(clamp_float(y + float(value) * win_height, 0, height))
                         else:
                             pixel_obb = [
                                 abs_px_x1, abs_px_y1,
@@ -595,7 +604,7 @@ def slice_and_infer(
                         pixel_points = list(zip(pixel_obb[0::2], pixel_obb[1::2]))
                         lons, lats = [], []
                         for px, py in pixel_points:
-                            lon, lat = xy(transform, py, px, offset="center")
+                            lon, lat = transform * (px, py)
                             lons.append(lon)
                             lats.append(lat)
 

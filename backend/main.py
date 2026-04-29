@@ -2896,7 +2896,7 @@ def get_detections_geojson(
                    ST_AsGeoJSON(d.geom)::jsonb AS geometry
             FROM detections d
             JOIN satellite_passes sp ON d.pass_id = sp.id
-            WHERE 1=1
+            WHERE ST_Intersects(d.geom, sp.footprint)
         """
         params = []
         if bbox:
