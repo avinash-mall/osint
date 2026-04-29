@@ -53,6 +53,9 @@ import {
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8080';
 const TILE_PROXY_URL = import.meta.env.VITE_TILE_PROXY_URL || 'http://127.0.0.1:8090';
+const DETECTION_LABEL_LIMIT = 150;
+const DETECTION_CENTER_MARKER_LIMIT = 800;
+const CanvasGeoJSON = GeoJSON as any;
 
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 
@@ -99,6 +102,25 @@ function detectionCenter(feature: any): [number, number] | null {
   const lon = points.reduce((sum: number, point: any) => sum + Number(point[0]), 0) / points.length;
   const lat = points.reduce((sum: number, point: any) => sum + Number(point[1]), 0) / points.length;
   return Number.isFinite(lat) && Number.isFinite(lon) ? [lat, lon] : null;
+}
+
+function extendBoundsWithCoordinates(bounds: L.LatLngBounds, coordinates: any): void {
+  if (!Array.isArray(coordinates)) return;
+  if (coordinates.length >= 2 && typeof coordinates[0] === 'number' && typeof coordinates[1] === 'number') {
+    const lon = Number(coordinates[0]);
+    const lat = Number(coordinates[1]);
+    if (Number.isFinite(lat) && Number.isFinite(lon)) bounds.extend([lat, lon]);
+    return;
+  }
+  for (const item of coordinates) extendBoundsWithCoordinates(bounds, item);
+}
+
+function geojsonFeatureBounds(geojson: any): L.LatLngBounds | null {
+  const bounds = L.latLngBounds([]);
+  for (const feature of geojson?.features || []) {
+    extendBoundsWithCoordinates(bounds, feature?.geometry?.coordinates);
+  }
+  return bounds.isValid() ? bounds : null;
 }
 
 function threatClass(level?: string) {
@@ -222,8 +244,8 @@ function MapFitToDetections({ geojson, filterKey }: { geojson: any; filterKey: s
     if (!geojson?.features?.length) return;
 
     try {
-      const bounds = L.geoJSON(geojson).getBounds();
-      if (bounds.isValid()) {
+      const bounds = geojsonFeatureBounds(geojson);
+      if (bounds?.isValid()) {
         map.fitBounds(bounds.pad(0.25), { animate: true, maxZoom: 15 });
         setLastFittedKey(filterKey);
       }
@@ -390,6 +412,11 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
 
   const maxDetectionLabelCount = Math.max(1, ...detectionLabelStats.map((item) => item.count));
   const visibleDetectionCount = filteredDetectionsGeoJSON.features?.length || 0;
+  const showDetectionLabels = visibleDetectionCount > 0 && visibleDetectionCount <= DETECTION_LABEL_LIMIT;
+  const showDetectionCenterMarkers = visibleDetectionCount > 0 && (
+    visibleDetectionCount <= DETECTION_CENTER_MARKER_LIMIT || !showBbox
+  );
+  const detectionCanvasRenderer = useMemo(() => L.canvas({ padding: 0.5 }), []);
   const timelineBuckets = useMemo(() => {
     const buckets = new Array(60).fill(0);
     const now = Date.now();
@@ -754,12 +781,14 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
         </div>
       </div>
     `);
-    layer.bindTooltip(`${categoryMeta.short} / ${props.label || props.class || 'Detection'}`, {
-      permanent: true,
-      direction: 'center',
-      className: 'sentinel-detection-label',
-      opacity: 0.95,
-    });
+    if (showDetectionLabels) {
+      layer.bindTooltip(`${categoryMeta.short} / ${props.label || props.class || 'Detection'}`, {
+        permanent: true,
+        direction: 'center',
+        className: 'sentinel-detection-label',
+        opacity: 0.95,
+      });
+    }
     layer.on('click', () => setSelectedDetection(feature));
   };
 
@@ -1014,7 +1043,7 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
               );
             })}
 
-            {activeLayers.detections && filteredDetectionsGeoJSON.features?.map((feature: any) => {
+            {activeLayers.detections && showDetectionCenterMarkers && filteredDetectionsGeoJSON.features?.map((feature: any) => {
               const center = detectionCenter(feature);
               if (!center) return null;
               const category = detectionCategoryForFeature(feature);
@@ -1024,6 +1053,7 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
                 <CircleMarker
                   key={`det-marker-${props.id || props.class}-${center[0]}-${center[1]}`}
                   center={center}
+                  renderer={detectionCanvasRenderer}
                   radius={4}
                   pathOptions={{
                     color: categoryMeta.color,
@@ -1051,9 +1081,15 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
             })}
 
             {activeLayers.detections && showBbox && filteredDetectionsGeoJSON.features?.length > 0 && (
-              <GeoJSON
+              <CanvasGeoJSON
                 key={`detections-${detectionsLayerVersion}-${detectionClassFilter || 'all'}-${hiddenDetectionCategories.join('|')}-${hiddenDetectionLabels.join('|')}-${filteredDetectionsGeoJSON.features.length}`}
                 data={filteredDetectionsGeoJSON}
+                renderer={detectionCanvasRenderer}
+                pointToLayer={(feature: any, latlng: L.LatLng) => L.circleMarker(latlng, {
+                  ...getDetectionStyle(feature),
+                  radius: 4,
+                  fillOpacity: 0.8,
+                })}
                 style={getDetectionStyle}
                 onEachFeature={onEachDetection}
               />
@@ -1090,6 +1126,9 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
             <div className="absolute left-1/2 top-8 -translate-x-1/2 border border-sentinel-line-2 bg-sentinel-panel px-3 py-1 font-mono text-[11px]">
               <span className="text-sentinel-accent">{visibleDetectionCount}</span>
               <span className="text-sentinel-muted"> / {detectionsGeoJSON.features?.length || 0} detections / last {timelineWindowMinutes}m</span>
+              {!showDetectionLabels && visibleDetectionCount > DETECTION_LABEL_LIMIT && (
+                <span className="text-sentinel-muted"> / labels suppressed</span>
+              )}
             </div>
             <div className="absolute left-3 bottom-4 border border-sentinel-line-2 bg-sentinel-panel px-3 py-2 font-mono text-[11px]">
               <div className="sentinel-label">cursor</div>
