@@ -23,7 +23,7 @@ import {
   Workflow,
 } from 'lucide-react';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8080';
 
 type TabKey = 'dashboard' | 'geoint' | 'sigint' | 'humint' | 'osint' | 'timeline' | 'workflows' | 'ai' | 'admin';
 type Domain = 'GEOINT' | 'SIGINT' | 'HUMINT' | 'OSINT' | 'WORKFLOW' | 'ADMIN';

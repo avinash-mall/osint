@@ -25,11 +25,14 @@ export function uploadMetadata(job?: UploadJob | null): Record<string, any> {
 
 export function uploadProgress(job?: UploadJob | null): number {
   if (!job) return 0;
+  // Always return 100% for completed jobs first - this fixes the stuck at 90% bug
+  if (job.status === 'ready') return 100;
+  if (job.status === 'failed') return 100;
+  
   const metadata = uploadMetadata(job);
   const progress = Number(metadata.progress);
   if (Number.isFinite(progress)) return Math.max(0, Math.min(100, progress));
-  if (job.status === 'ready') return 100;
-  if (job.status === 'failed') return 100;
+  
   if (job.status === 'processing') return 15;
   if (job.status === 'queued') return 5;
   return 0;

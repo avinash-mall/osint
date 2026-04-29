@@ -12,7 +12,7 @@ NEO4J_AUTH = (
 )
 
 # PostGIS Configuration
-POSTGIS_URI = os.getenv("POSTGIS_URI", "postgresql://gotham:gotham@postgis:5432/gotham")
+POSTGIS_URI = os.getenv("POSTGIS_URI", "postgresql://gotham:gotham@172.18.0.11:5432/gotham")
 ASYNC_POSTGIS_URI = POSTGIS_URI.replace("postgresql://", "postgresql+asyncpg://", 1)
 
 class Neo4jConnection:
@@ -30,21 +30,31 @@ class PostGISConnection:
         self.dsn = dsn
 
     def get_connection(self):
-        return psycopg2.connect(self.dsn)
+        import time
+        last_error = None
+        for i in range(5):
+            try:
+                return psycopg2.connect(self.dsn)
+            except psycopg2.OperationalError as e:
+                last_error = e
+                time.sleep(0.5)
+        raise last_error
 
     @contextmanager
     def get_cursor(self, commit=False):
         conn = self.get_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
         try:
-            yield cursor
-            if commit:
-                conn.commit()
-        except Exception as e:
-            conn.rollback()
-            raise e
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            try:
+                yield cursor
+                if commit:
+                    conn.commit()
+            except Exception as e:
+                conn.rollback()
+                raise e
+            finally:
+                cursor.close()
         finally:
-            cursor.close()
             conn.close()
 
 # Global instances

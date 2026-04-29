@@ -4,7 +4,7 @@ import { Cable, CheckCircle2, DatabaseZap, FileImage, RadioTower, UploadCloud } 
 import { useEventStream } from '../hooks/useEventStream';
 import { type UploadJob, isUploadActive, uploadMessage, uploadProgress, uploadProgressClass, uploadStage } from '../utils/uploadProgress';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8080';
 
 interface FeedSource {
   id: number;

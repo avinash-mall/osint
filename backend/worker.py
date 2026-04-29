@@ -4,6 +4,7 @@ import requests
 import subprocess
 import uuid
 import logging
+import math
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 from celery import Celery
@@ -21,6 +22,16 @@ from threat_assessment import assess_detection_threat, clean_detection_class, co
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 INFERENCE_URL = os.getenv("INFERENCE_URL", "http://localhost:8001")
 IMAGERY_PATH = os.getenv("IMAGERY_PATH", "/data/imagery")
+
+
+def env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+MAX_INFERENCE_CHIPS = env_int("MAX_INFERENCE_CHIPS", 1200)
 
 logger = logging.getLogger(__name__)
 
@@ -66,13 +77,19 @@ def record_timeline_event(domain: str, event_type: str, title: str, payload: dic
         logger.warning("Failed to record timeline event: %s", exc)
 
 
+import redis
+_REDIS_POOL = None
+
+def get_redis_client():
+    global _REDIS_POOL
+    if _REDIS_POOL is None:
+        _REDIS_POOL = redis.ConnectionPool.from_url(REDIS_URL, decode_responses=True)
+    return redis.Redis(connection_pool=_REDIS_POOL)
+
 def publish_event(topic: str, payload: dict) -> None:
     try:
-        import redis
-
-        client = redis.from_url(REDIS_URL, decode_responses=True)
+        client = get_redis_client()
         client.publish(f"events:{topic}", json.dumps(payload, default=str))
-        client.close()
     except Exception as e:
         logger.warning("Failed to publish %s event: %s", topic, e)
 
@@ -159,7 +176,9 @@ def ensure_cog(input_path: str, output_path: str) -> str:
             output_path,
             "-of", "COG",
             "-co", "COMPRESS=DEFLATE",
-            "-co", "OVERVIEWS=AUTO"
+            "-co", "OVERVIEWS=AUTO",
+            "-co", "BIGTIFF=IF_SAFER",
+            "-co", "NUM_THREADS=ALL_CPUS",
         ]
         subprocess.run(cmd, check=True)
         return output_path
@@ -269,6 +288,48 @@ def deduplicate_detections(detections: list, iou_threshold: float = 0.45) -> lis
     return kept
 
 
+def sample_axis_indices(count: int, sample_count: int) -> list[int]:
+    if count <= 0:
+        return [0]
+    if sample_count >= count:
+        return list(range(count))
+    if sample_count <= 1:
+        return [count // 2]
+    return sorted({round(index * (count - 1) / (sample_count - 1)) for index in range(sample_count)})
+
+
+def plan_inference_grid(width: int, height: int, chip_size: int, overlap: int, max_chips: int) -> dict:
+    step = max(1, chip_size - overlap)
+    x_count = max(1, math.ceil(width / step))
+    y_count = max(1, math.ceil(height / step))
+    source_total = x_count * y_count
+
+    if max_chips <= 0 or source_total <= max_chips:
+        x_indices = list(range(x_count))
+        y_indices = list(range(y_count))
+        sampled = False
+    else:
+        target_y = max(1, min(y_count, int(math.sqrt(max_chips * y_count / max(1, x_count)))))
+        target_x = max(1, min(x_count, max_chips // target_y))
+        while target_x * target_y > max_chips and target_y > 1:
+            target_y -= 1
+            target_x = max(1, min(x_count, max_chips // target_y))
+
+        x_indices = sample_axis_indices(x_count, target_x)
+        y_indices = sample_axis_indices(y_count, target_y)
+        sampled = True
+
+    return {
+        "step": step,
+        "x_indices": x_indices,
+        "y_indices": y_indices,
+        "source_total": source_total,
+        "planned_total": max(1, len(x_indices) * len(y_indices)),
+        "sampled": sampled,
+        "max_chips": max_chips,
+    }
+
+
 def clean_detection_class(det_class: str) -> str:
     label = (det_class or "Unknown").replace("_", " ").replace("-", " ").strip()
     prefixes = ("xview ", "dota ", "fair1m ", "fmow ", "rareplanes ")
@@ -361,7 +422,14 @@ def classify_detection_ontologies(detections: list, progress_callback=None) -> d
     return ontology_by_class
 
 
-def slice_and_infer(cog_path: str, pass_id: int, chip_size: int = 640, overlap: int = 100, progress_callback=None):
+def slice_and_infer(
+    cog_path: str,
+    pass_id: int,
+    chip_size: int = 640,
+    overlap: int = 100,
+    max_chips: int = MAX_INFERENCE_CHIPS,
+    progress_callback=None,
+):
     """
     Slice COG into chips, send to inference service, and store results in PostGIS + Neo4j.
     """
@@ -373,26 +441,50 @@ def slice_and_infer(cog_path: str, pass_id: int, chip_size: int = 640, overlap: 
         
         detections = []
         
-        # Calculate steps with overlap
-        step = chip_size - overlap
-        y_steps = list(range(0, height, step))
-        x_steps = list(range(0, width, step))
-        total_windows = max(1, len(y_steps) * len(x_steps))
+        grid = plan_inference_grid(width, height, chip_size, overlap, max_chips)
+        step = grid["step"]
+        total_windows = grid["planned_total"]
         processed_windows = 0
-        last_reported_percent = -1
+        last_reported_percent = None
 
-        for y in y_steps:
-            for x in x_steps:
+        if progress_callback and grid["sampled"]:
+            progress_callback(
+                "inference",
+                55,
+                f"Large raster detected; sampling {total_windows} of {grid['source_total']} chips for inference.",
+                {
+                    "planned_chips": total_windows,
+                    "source_total_chips": grid["source_total"],
+                    "max_inference_chips": grid["max_chips"],
+                    "sampling_enabled": True,
+                },
+            )
+
+        for y_index in grid["y_indices"]:
+            y = y_index * step
+            for x_index in grid["x_indices"]:
+                x = x_index * step
                 processed_windows += 1
                 if progress_callback:
                     inferred_percent = int(processed_windows / total_windows * 100)
-                    if inferred_percent >= last_reported_percent + 5 or processed_windows == total_windows:
+                    if (
+                        processed_windows == 1
+                        or processed_windows == total_windows
+                        or last_reported_percent is None
+                        or inferred_percent > last_reported_percent
+                    ):
                         last_reported_percent = inferred_percent
                         progress_callback(
                             "inference",
                             55 + int(inferred_percent * 0.35),
                             f"Running inference on raster chips ({processed_windows}/{total_windows}).",
-                            {"processed_chips": processed_windows, "total_chips": total_windows},
+                            {
+                                "processed_chips": processed_windows,
+                                "total_chips": total_windows,
+                                "planned_chips": total_windows,
+                                "source_total_chips": grid["source_total"],
+                                "sampling_enabled": grid["sampled"],
+                            },
                         )
                 win_width = min(chip_size, width - x)
                 win_height = min(chip_size, height - y)
@@ -693,6 +785,7 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
         filename = os.path.basename(input_path)
         upload_job = get_upload_job(upload_id)
         original_filename = upload_job.get("filename") or filename
+        report_progress(self, upload_id, input_path, "metadata", 8, "Reading raster metadata and computing file hash.")
         raster_metadata = extract_raster_metadata(input_path)
         source_hash = raster_metadata.get("source_hash")
         source_filename = original_filename

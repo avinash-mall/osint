@@ -86,11 +86,12 @@ def parse_metadata_time(tags: dict) -> Optional[str]:
     return None
 
 
-def extract_raster_metadata(path: str | Path) -> dict:
+def extract_raster_metadata(path: str | Path, include_hash: bool = True) -> dict:
     metadata: dict = {
         "source_filename": Path(path).name,
-        "source_hash": file_sha256(path),
     }
+    if include_hash:
+        metadata["source_hash"] = file_sha256(path)
     try:
         import rasterio
 

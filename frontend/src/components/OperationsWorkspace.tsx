@@ -36,8 +36,8 @@ import { useEventStream } from '../hooks/useEventStream';
 import View3D from './View3D';
 import { type UploadJob, uploadMessage, uploadProgress, uploadProgressClass, uploadStage } from '../utils/uploadProgress';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
-const TILE_PROXY_URL = import.meta.env.VITE_TILE_PROXY_URL || 'http://localhost:8090';
+const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8080';
+const TILE_PROXY_URL = import.meta.env.VITE_TILE_PROXY_URL || 'http://127.0.0.1:8090';
 
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 

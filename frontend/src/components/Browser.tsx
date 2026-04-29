@@ -12,7 +12,7 @@ export default function Browser() {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+        const apiUrl = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8080';
         const response = await axios.get(`${apiUrl}/api/graph`);
         if (response.data && response.data.nodes) {
           setData(response.data);

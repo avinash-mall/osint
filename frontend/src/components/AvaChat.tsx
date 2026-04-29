@@ -24,7 +24,7 @@ export default function AvaChat() {
   useEffect(() => {
     const checkStatus = async () => {
       try {
-        const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+        const apiUrl = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8080';
         const response = await axios.get(`${apiUrl}/api/health`);
         setOnline(Boolean(response.data.ai?.configured));
       } catch {
@@ -43,7 +43,7 @@ export default function AvaChat() {
     setLoading(true);
 
     try {
-      const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+      const apiUrl = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8080';
       const response = await axios.post(`${apiUrl}/api/chat`, { message: userMsg });
       setMessages(prev => [...prev, {
         role: 'bot',

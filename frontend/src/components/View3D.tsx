@@ -3,8 +3,8 @@ import axios from 'axios';
 import { Shield, Swords } from 'lucide-react';
 import { useEventStream } from '../hooks/useEventStream';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
-const TILE_PROXY_URL = import.meta.env.VITE_TILE_PROXY_URL || 'http://localhost:8090';
+const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8080';
+const TILE_PROXY_URL = import.meta.env.VITE_TILE_PROXY_URL || 'http://127.0.0.1:8090';
 const MAX_3D_DETECTIONS = 350;
 const MAX_3D_LABELS = 80;
 

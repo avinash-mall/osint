@@ -34,7 +34,7 @@ def get_cors_origins() -> list[str]:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=get_cors_origins(),
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -575,13 +575,19 @@ def ensure_platform_tables() -> None:
         _platform_schema_ready = True
 
 
+import redis
+_REDIS_POOL = None
+
+def get_redis_client():
+    global _REDIS_POOL
+    if _REDIS_POOL is None:
+        _REDIS_POOL = redis.ConnectionPool.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"), decode_responses=True)
+    return redis.Redis(connection_pool=_REDIS_POOL)
+
 def publish_event(topic: str, payload: dict) -> None:
     try:
-        import redis
-
-        redis_client = redis.from_url(os.getenv("REDIS_URL", "redis://redis:6379/0"), decode_responses=True)
-        redis_client.publish(f"events:{topic}", json.dumps(payload, default=str))
-        redis_client.close()
+        client = get_redis_client()
+        client.publish(f"events:{topic}", json.dumps(payload, default=str))
     except Exception:
         pass
 
@@ -3247,7 +3253,7 @@ async def upload_imagery(
         local_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
 
-    raster_metadata = extract_raster_metadata(local_path) if media_type == "imagery" else {}
+    raster_metadata = extract_raster_metadata(local_path, include_hash=False) if media_type == "imagery" else {}
     effective_acquisition_time = acquisition_time or raster_metadata.get("acquisition_time")
 
     response = {
@@ -3286,7 +3292,7 @@ async def upload_imagery(
                     "auto_process": auto_process,
                     "bytes": size,
                     "raster_metadata": raster_metadata,
-                    "source_hash": raster_metadata.get("source_hash"),
+                    "source_hash": None,
                     "source_filename": raster_metadata.get("source_filename") or filename,
                     "stage": "stored",
                     "progress": 0,
@@ -3771,21 +3777,20 @@ async def websocket_events(websocket: WebSocket, topic: str = "detections"):
     pubsub = None
     try:
         import redis.asyncio as redis
-
+        # Use a single client from the global pool would be better, but for now just ensure it's closed
         redis_client = redis.from_url(redis_url, decode_responses=True)
         pubsub = redis_client.pubsub()
         await pubsub.subscribe(f"events:{topic}")
         await websocket.send_json({"type": "connected", "topic": topic})
 
         while True:
-            message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-            if message:
-                try:
-                    data = json.loads(message["data"])
-                except (TypeError, json.JSONDecodeError):
-                    data = {"type": "message", "payload": message["data"]}
-                await websocket.send_json(data)
-            await asyncio.sleep(0.05)
+            try:
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if message:
+                    await websocket.send_text(message["data"])
+                await asyncio.sleep(0.1)
+            except Exception:
+                break
     except WebSocketDisconnect:
         pass
     finally:
@@ -3793,7 +3798,6 @@ async def websocket_events(websocket: WebSocket, topic: str = "detections"):
             await pubsub.close()
         if redis_client is not None:
             await redis_client.close()
-
 @app.post("/api/chat")
 def chat(req: ChatRequest):
     try:

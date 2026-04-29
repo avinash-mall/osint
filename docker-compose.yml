@@ -36,6 +36,10 @@ services:
   backend:
     build: ./backend
     image: sentinelos-backend:latest
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     ports:
       - "8080:8080"
     environment:
@@ -125,6 +129,10 @@ services:
   worker:
     build: ./backend
     image: sentinelos-backend:latest
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     command: celery -A worker.celery_app worker --loglevel=info -Q imagery,default
     env_file:
       - .env

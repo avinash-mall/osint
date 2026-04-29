@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import { Activity, AlertTriangle, Bot, Database, FileText } from 'lucide-react';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
+const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8080';
 
 function Metric({ label, value, detail, tone = 'text-sentinel-accent', className = '' }: { label: string; value: any; detail?: string; tone?: string; className?: string }) {
   return (
