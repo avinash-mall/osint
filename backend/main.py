@@ -1281,10 +1281,12 @@ def fetch_targets_for_ops() -> list[dict]:
     try:
         with db.get_session() as session:
             result = session.run("""
-                MATCH (t:Target)
+                MATCH (t)
+                WHERE 'Target' IN labels(t)
+                WITH t, properties(t) AS props
                 RETURN t
-                ORDER BY CASE t.priority WHEN 'High' THEN 3 WHEN 'Medium' THEN 2 WHEN 'Low' THEN 1 ELSE 0 END DESC,
-                         t.name ASC
+                ORDER BY CASE coalesce(props.priority, '') WHEN 'High' THEN 3 WHEN 'Medium' THEN 2 WHEN 'Low' THEN 1 ELSE 0 END DESC,
+                         coalesce(props.name, '') ASC
             """)
             targets = [{"id": record["t"].element_id, "properties": dict(record["t"])} for record in result]
             return targets or demo_targets()

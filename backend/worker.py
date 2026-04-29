@@ -31,7 +31,17 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
+def env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 MAX_INFERENCE_CHIPS = env_int("MAX_INFERENCE_CHIPS", 1200)
+ENABLE_LLM_DETECTION_CLASSIFICATION = env_bool("ENABLE_LLM_DETECTION_CLASSIFICATION", True)
+LLM_DETECTION_BATCH_SIZE = max(1, env_int("LLM_DETECTION_BATCH_SIZE", 8))
+LLM_DETECTION_CLASS_TIMEOUT_SECONDS = env_int("LLM_DETECTION_CLASS_TIMEOUT_SECONDS", 3)
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +159,23 @@ def report_progress(task, upload_id: str, file_path: str, stage: str, progress: 
         task.update_state(state="PROGRESS", meta=payload)
     publish_event("imagery", {"type": "imagery_progress", **payload})
     publish_event("ops", {"type": "imagery_progress", **payload})
+
+
+def report_llm_progress(upload_id: str, pass_id: int, stage: str, progress: int, message: str, extra: dict = None) -> None:
+    progress = max(0, min(100, int(progress)))
+    status = "complete" if progress >= 100 else "running"
+    payload = {
+        "upload_id": upload_id,
+        "pass_id": pass_id,
+        "llm_status": status,
+        "llm_stage": stage,
+        "llm_progress": progress,
+        "llm_message": message,
+        **(extra or {}),
+    }
+    update_upload_job(upload_id=upload_id, metadata=payload)
+    publish_event("imagery", {"type": "imagery_llm_progress", **payload})
+    publish_event("ops", {"type": "imagery_llm_progress", **payload})
 
 
 def ensure_cog(input_path: str, output_path: str) -> str:
@@ -271,20 +298,39 @@ def bbox_iou(a: list[float], b: list[float]) -> float:
     return inter_area / union if union else 0.0
 
 
-def deduplicate_detections(detections: list, iou_threshold: float = 0.45) -> list:
+def deduplicate_detections(
+    detections: list,
+    iou_threshold: float = 0.45,
+) -> list:
+    if not detections:
+        return []
+
+    raw = sorted(detections, key=lambda item: item.get("confidence", 0), reverse=True)
     kept = []
-    for det in sorted(detections, key=lambda item: item.get("confidence", 0), reverse=True):
+    buckets: dict[tuple[str, int, int], list[dict]] = {}
+    bucket_size = 512
+
+    for det in raw:
         if not det.get("pixel_bbox"):
             kept.append(det)
             continue
+
+        x1, y1, x2, y2 = det["pixel_bbox"]
+        cx = int(((x1 + x2) / 2) // bucket_size)
+        cy = int(((y1 + y2) / 2) // bucket_size)
+        det_class = det.get("class")
+        nearby = []
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                nearby.extend(buckets.get((det_class, cx + dx, cy + dy), []))
+
         duplicate = any(
-            det.get("class") == existing.get("class")
-            and bbox_iou(det["pixel_bbox"], existing.get("pixel_bbox", [])) >= iou_threshold
-            for existing in kept
-            if existing.get("pixel_bbox")
+            bbox_iou(det["pixel_bbox"], existing.get("pixel_bbox", [])) >= iou_threshold
+            for existing in nearby
         )
         if not duplicate:
             kept.append(det)
+            buckets.setdefault((det_class, cx, cy), []).append(det)
     return kept
 
 
@@ -367,7 +413,12 @@ def llm_detection_ontology(det_class: str, count: int, avg_confidence: float) ->
         },
     }, default=str)
     system = "Return only compact JSON. Do not invent sightings or facts. Use only the class name and counts provided."
-    data = get_llm_json(prompt, system=system, max_tokens=240, timeout_seconds=6)
+    data = get_llm_json(
+        prompt,
+        system=system,
+        max_tokens=240,
+        timeout_seconds=LLM_DETECTION_CLASS_TIMEOUT_SECONDS,
+    )
     return {
         **base,
         "label": str(data.get("label") or base["label"])[:80],
@@ -391,33 +442,27 @@ def classify_detection_ontologies(detections: list, progress_callback=None) -> d
         grouped.setdefault(det_class, []).append(float(det.get("confidence") or 0))
 
     ontology_by_class: dict[str, dict] = {}
-    total = max(1, len(grouped))
-    for index, (det_class, confidences) in enumerate(grouped.items(), start=1):
+    if not grouped:
         if progress_callback:
             progress_callback(
-                "llm_classification",
-                90 + int((index - 1) / total * 4),
-                f"Queueing LLM classification for detection classes ({index}/{total}).",
-                {"llm_classes_processed": index - 1, "llm_classes_total": total},
+                "classification",
+                94,
+                "No detections found; skipping class labeling.",
+                {"llm_classes_processed": 0, "llm_classes_total": 0, "llm_enabled": False},
             )
-        try:
-            ontology_by_class[det_class] = llm_detection_ontology(
-                det_class,
-                count=len(confidences),
-                avg_confidence=sum(confidences) / max(1, len(confidences)),
-            )
-        except AIUnavailable as exc:
-            ontology_by_class[det_class] = {
-                **detection_ontology(det_class),
-                "description": str(exc),
-                "status": "unavailable",
-            }
+        return ontology_by_class
+
+    for det_class in grouped:
+        ontology_by_class[det_class] = {
+            **detection_ontology(det_class),
+            "status": "deterministic",
+        }
     if progress_callback:
         progress_callback(
-            "llm_classification",
+            "classification",
             94,
-            "Detection class LLM classification complete.",
-            {"llm_classes_processed": len(grouped), "llm_classes_total": len(grouped)},
+            "Detection classes labeled with deterministic ontology rules.",
+            {"llm_classes_processed": 0, "llm_classes_total": len(grouped), "llm_enabled": False},
         )
     return ontology_by_class
 
@@ -582,7 +627,7 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
     if not detections:
         return 0
     
-    with postgis_db.get_cursor(commit=True) as cursor:
+    with postgis_db.get_cursor(commit=True) as cursor, db.get_session() as neo_session:
         for det in detections:
             lon1, lat1, lon2, lat2 = det["geo_bbox"]
             confidence = det.get("confidence", 0.0)
@@ -634,39 +679,37 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
             
             det_id = cursor.fetchone()["id"]
             
-            # Insert into Neo4j
-            with db.get_session() as neo_session:
-                neo_session.run("""
-                    MATCH (sp:SatellitePass {postgis_id: $pass_id})
-                    CREATE (d:Detection {
-                        postgis_id: $det_id,
-                        class: $det_class,
-                        label: $label,
-                        confidence: $confidence,
-                        threat_level: $threat_level,
-                        threat_confidence: $threat_confidence,
-                        assessment_status: $assessment_status,
-                        ontology_category: $ontology_category,
-                        allegiance: $allegiance,
-                        latitude: $lat,
-                        longitude: $lon,
-                        created_at: datetime()
-                    })
-                    CREATE (sp)-[:CONTAINS_DETECTION]->(d)
-                """, {
-                    "pass_id": pass_id,
-                    "det_id": det_id,
-                    "det_class": det_class,
-                    "label": ontology["label"],
-                    "confidence": confidence,
-                    "threat_level": assessment["threat_level"],
-                    "threat_confidence": assessment["threat_confidence"],
-                    "assessment_status": assessment["assessment_status"],
-                    "ontology_category": ontology["category"],
-                    "allegiance": det.get("allegiance", "unknown"),
-                    "lat": (lat1 + lat2) / 2,
-                    "lon": (lon1 + lon2) / 2
+            neo_session.run("""
+                MATCH (sp:SatellitePass {postgis_id: $pass_id})
+                CREATE (d:Detection {
+                    postgis_id: $det_id,
+                    class: $det_class,
+                    label: $label,
+                    confidence: $confidence,
+                    threat_level: $threat_level,
+                    threat_confidence: $threat_confidence,
+                    assessment_status: $assessment_status,
+                    ontology_category: $ontology_category,
+                    allegiance: $allegiance,
+                    latitude: $lat,
+                    longitude: $lon,
+                    created_at: datetime()
                 })
+                CREATE (sp)-[:CONTAINS_DETECTION]->(d)
+            """, {
+                "pass_id": pass_id,
+                "det_id": det_id,
+                "det_class": det_class,
+                "label": ontology["label"],
+                "confidence": confidence,
+                "threat_level": assessment["threat_level"],
+                "threat_confidence": assessment["threat_confidence"],
+                "assessment_status": assessment["assessment_status"],
+                "ontology_category": ontology["category"],
+                "allegiance": det.get("allegiance", "unknown"),
+                "lat": (lat1 + lat2) / 2,
+                "lon": (lon1 + lon2) / 2
+            })
     
     return len(detections)
 
@@ -718,10 +761,13 @@ def generate_candidate_links_for_pass(pass_id: int, distance_threshold_meters: f
     try:
         with db.get_session() as session:
             result = session.run("""
-                MATCH (t:Target)
-                WHERE t.latitude IS NOT NULL AND t.longitude IS NOT NULL
-                RETURN elementId(t) AS element_id, t.id AS stable_id, t.name AS name,
-                       t.latitude AS lat, t.longitude AS lon, properties(t) AS props
+                MATCH (t)
+                WHERE 'Target' IN labels(t)
+                WITH t, properties(t) AS props
+                WHERE props.latitude IS NOT NULL
+                  AND props.longitude IS NOT NULL
+                RETURN elementId(t) AS element_id, props.id AS stable_id, props.name AS name,
+                       props.latitude AS lat, props.longitude AS lon, props
             """)
             targets = [dict(record) for record in result]
     except Exception as exc:
@@ -767,6 +813,159 @@ def generate_candidate_links_for_pass(pass_id: int, distance_threshold_meters: f
                 if cursor.fetchone():
                     created += 1
     return created
+
+
+def detection_class_summary(pass_id: int) -> list[dict]:
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT class,
+                   COUNT(*)::int AS count,
+                   COALESCE(AVG(confidence), 0)::float AS avg_confidence
+            FROM detections
+            WHERE pass_id = %s
+            GROUP BY class
+            ORDER BY COUNT(*) DESC, class ASC
+        """, (pass_id,))
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def update_detection_class_ontology(pass_id: int, det_class: str, ontology: dict) -> int:
+    enriched_at = datetime.now(timezone.utc).isoformat()
+    metadata_patch = {
+        "ontology": ontology,
+        "llm_ontology_status": ontology.get("status", "ok"),
+        "llm_enriched_at": enriched_at,
+    }
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            UPDATE detections
+            SET metadata = coalesce(metadata, '{}'::jsonb) || %s::jsonb
+            WHERE pass_id = %s AND class = %s
+            RETURNING id
+        """, (json.dumps(metadata_patch, default=str), pass_id, det_class))
+        det_ids = [row["id"] for row in cursor.fetchall()]
+
+    if det_ids:
+        with db.get_session() as neo_session:
+            for offset in range(0, len(det_ids), 1000):
+                neo_session.run("""
+                    MATCH (d:Detection)
+                    WHERE d.postgis_id IN $det_ids
+                    SET d.label = $label,
+                        d.ontology_category = $ontology_category,
+                        d.llm_ontology_status = $llm_ontology_status,
+                        d.llm_enriched_at = datetime($llm_enriched_at)
+                """, {
+                    "det_ids": det_ids[offset:offset + 1000],
+                    "label": ontology.get("label") or clean_detection_class(det_class),
+                    "ontology_category": ontology.get("category") or "unknown",
+                    "llm_ontology_status": ontology.get("status", "ok"),
+                    "llm_enriched_at": enriched_at,
+                })
+    return len(det_ids)
+
+
+@celery_app.task(queue="default", bind=True)
+def classify_detection_ontologies_for_pass(self, pass_id: int, upload_id: str = None):
+    ensure_worker_imagery_schema()
+    rows = detection_class_summary(pass_id)
+    total = len(rows)
+
+    if not ENABLE_LLM_DETECTION_CLASSIFICATION:
+        report_llm_progress(
+            upload_id,
+            pass_id,
+            "llm skipped",
+            100,
+            "LLM class enrichment disabled; deterministic labels are stored.",
+            {"llm_classes_processed": 0, "llm_classes_total": total, "llm_enabled": False},
+        )
+        return {"pass_id": pass_id, "classes": total, "status": "disabled"}
+
+    if not ai_status().get("configured"):
+        report_llm_progress(
+            upload_id,
+            pass_id,
+            "llm unavailable",
+            100,
+            "LLM unavailable; deterministic detection labels are stored.",
+            {"llm_classes_processed": 0, "llm_classes_total": total, "llm_enabled": False},
+        )
+        return {"pass_id": pass_id, "classes": total, "status": "unavailable"}
+
+    if total == 0:
+        report_llm_progress(
+            upload_id,
+            pass_id,
+            "llm complete",
+            100,
+            "No detection classes to enrich.",
+            {"llm_classes_processed": 0, "llm_classes_total": 0, "llm_enabled": True},
+        )
+        return {"pass_id": pass_id, "classes": 0, "status": "complete"}
+
+    processed = 0
+    updated = 0
+    failures = 0
+    report_llm_progress(
+        upload_id,
+        pass_id,
+        "llm queued",
+        0,
+        f"LLM class enrichment queued ({total} classes).",
+        {"llm_classes_processed": 0, "llm_classes_total": total, "llm_enabled": True},
+    )
+
+    for batch_start in range(0, total, LLM_DETECTION_BATCH_SIZE):
+        batch = rows[batch_start:batch_start + LLM_DETECTION_BATCH_SIZE]
+        report_llm_progress(
+            upload_id,
+            pass_id,
+            "llm classification",
+            int(processed / total * 100),
+            f"Enriching detection classes ({processed}/{total}).",
+            {"llm_classes_processed": processed, "llm_classes_total": total, "llm_enabled": True},
+        )
+        for row in batch:
+            det_class = row.get("class") or "Unknown"
+            try:
+                ontology = llm_detection_ontology(
+                    det_class,
+                    count=int(row.get("count") or 0),
+                    avg_confidence=float(row.get("avg_confidence") or 0),
+                )
+            except Exception as exc:
+                failures += 1
+                logger.warning("Background LLM enrichment fell back for %s: %s", det_class, exc)
+                ontology = {
+                    **detection_ontology(det_class),
+                    "description": f"LLM enrichment unavailable: {exc}",
+                    "status": "unavailable",
+                }
+            updated += update_detection_class_ontology(pass_id, det_class, ontology)
+            processed += 1
+            self.update_state(state="PROGRESS", meta={
+                "pass_id": pass_id,
+                "upload_id": upload_id,
+                "llm_classes_processed": processed,
+                "llm_classes_total": total,
+            })
+
+    report_llm_progress(
+        upload_id,
+        pass_id,
+        "llm complete",
+        100,
+        f"LLM class enrichment complete ({processed}/{total} classes).",
+        {
+            "llm_classes_processed": processed,
+            "llm_classes_total": total,
+            "llm_enabled": True,
+            "llm_failures": failures,
+            "llm_updated_detections": updated,
+        },
+    )
+    return {"pass_id": pass_id, "classes": processed, "updated_detections": updated, "failures": failures, "status": "complete"}
 
 
 @celery_app.task(queue="imagery", bind=True)
@@ -925,7 +1124,7 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
             })
 
         # 5. Tiling inference
-        report_progress(self, upload_id, input_path, "inference", 55, "Starting chip inference and classification.", {"pass_id": pass_id})
+        report_progress(self, upload_id, input_path, "inference", 55, "Starting chip inference.", {"pass_id": pass_id})
         clear_existing_detections(pass_id)
         logger.info("[WORKER] Starting tiling inference...")
         detections = slice_and_infer(
@@ -942,7 +1141,7 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
             ),
         )
         logger.info("[WORKER] Total detections after dedupe: %s", len(detections))
-        report_progress(self, upload_id, input_path, "llm_classification", 90, "Inference complete; queueing LLM detection classification.", {"pass_id": pass_id, "detections_count": len(detections)})
+        report_progress(self, upload_id, input_path, "classification", 90, "Inference complete; labeling detection classes.", {"pass_id": pass_id, "detections_count": len(detections)})
         ontology_by_class = classify_detection_ontologies(
             detections,
             progress_callback=lambda stage, progress, message, extra=None: report_progress(
@@ -957,10 +1156,22 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
         )
 
         # 6. Store detections
-        report_progress(self, upload_id, input_path, "storage", 95, "Storing detections and generating candidate links.", {"pass_id": pass_id})
+        report_progress(self, upload_id, input_path, "storage", 95, "Storing all detections and generating candidate links.", {"pass_id": pass_id, "detections_count": len(detections)})
         stored_count = store_detections(detections, pass_id, ontology_by_class)
         candidate_count = generate_candidate_links_for_pass(pass_id)
         logger.info("[WORKER] Stored %s detections and generated %s candidate links.", stored_count, candidate_count)
+
+        llm_task_id = None
+        llm_should_queue = False
+        llm_status = "unavailable"
+        llm_message = "LLM unavailable; deterministic detection labels are stored."
+        if ENABLE_LLM_DETECTION_CLASSIFICATION and ai_status().get("configured"):
+            llm_should_queue = True
+            llm_status = "queued"
+            llm_message = "Imagery ready; LLM class enrichment queued."
+        elif not ENABLE_LLM_DETECTION_CLASSIFICATION:
+            llm_status = "disabled"
+            llm_message = "LLM class enrichment disabled; deterministic detection labels are stored."
 
         payload = {
             "pass_id": pass_id,
@@ -970,13 +1181,31 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
             "candidate_links_count": candidate_count,
             "acquisition_time": acq_time,
             "replacement": replacement,
+            "llm_task_id": llm_task_id,
         }
         update_upload_job(upload_id=upload_id, file_path=input_path, status="ready", metadata={
             **payload,
             "stage": "ready",
             "progress": 100,
             "message": "Imagery processing complete.",
+            "llm_status": llm_status,
+            "llm_stage": "llm queued" if llm_status == "queued" else llm_status,
+            "llm_progress": 0 if llm_status == "queued" else 100,
+            "llm_message": llm_message,
+            "llm_enabled": llm_status == "queued",
         })
+        if llm_should_queue:
+            llm_task = classify_detection_ontologies_for_pass.delay(pass_id, upload_id)
+            llm_task_id = llm_task.id
+            payload["llm_task_id"] = llm_task_id
+            update_upload_job(upload_id=upload_id, file_path=input_path, metadata={
+                "llm_task_id": llm_task_id,
+                "llm_status": "queued",
+                "llm_stage": "llm queued",
+                "llm_progress": 0,
+                "llm_message": llm_message,
+                "llm_enabled": True,
+            })
         publish_event("detections", {"type": "detections_updated", **payload})
         publish_event("imagery", {"type": "ingest_succeeded", "stage": "ready", "progress": 100, **payload})
         publish_event("ops", {"type": "imagery_ready", "stage": "ready", "progress": 100, **payload})

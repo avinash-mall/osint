@@ -86,11 +86,13 @@ def get_ai_response(question: str) -> str:
     text = question.lower()
     if "target" in text:
         query = """
-            MATCH (t:Target)
-            RETURN t.name AS name, t.priority AS priority, t.status AS status,
-                   t.latitude AS latitude, t.longitude AS longitude
-            ORDER BY CASE t.priority WHEN 'High' THEN 3 WHEN 'Medium' THEN 2 WHEN 'Low' THEN 1 ELSE 0 END DESC,
-                     t.name ASC
+            MATCH (t)
+            WHERE 'Target' IN labels(t)
+            WITH properties(t) AS props
+            RETURN props.name AS name, props.priority AS priority, props.status AS status,
+                   props.latitude AS latitude, props.longitude AS longitude
+            ORDER BY CASE coalesce(props.priority, '') WHEN 'High' THEN 3 WHEN 'Medium' THEN 2 WHEN 'Low' THEN 1 ELSE 0 END DESC,
+                     coalesce(props.name, '') ASC
             LIMIT 10
         """
         heading = "Top targets"
