@@ -49,6 +49,8 @@ import xml.etree.ElementTree as ET
 from PIL import Image, ImageOps
 from tqdm import tqdm
 
+Image.MAX_IMAGE_PIXELS = None
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ROOT = REPO_ROOT / "training_dataset"
@@ -1017,9 +1019,17 @@ def _process_sodaa_coco_json(
         for item in data.get("categories", []) or []
     }
     image_id_to_path: dict[Any, Path] = {}
-    for image in data.get("images", []) or []:
-        name = Path(str(image.get("file_name", ""))).name if image.get("file_name") else ""
-        path = images_by_key.get(name) or images_by_key.get(Path(name).stem) if name else None
+    for index, image in enumerate(data.get("images", []) or []):
+        if isinstance(image, dict):
+            image_id = image.get("id", index)
+            file_name = image.get("file_name") or image.get("filename") or ""
+            name = Path(str(file_name)).name if file_name else ""
+        elif isinstance(image, str):
+            image_id = index
+            name = Path(image).name
+        else:
+            continue
+        path = (images_by_key.get(name) or images_by_key.get(Path(name).stem)) if name else None
         if not path and fallback_stem:
             path = (
                 images_by_key.get(f"{fallback_stem}.jpg")
@@ -1027,16 +1037,26 @@ def _process_sodaa_coco_json(
                 or images_by_key.get(f"{fallback_stem}.tif")
                 or images_by_key.get(fallback_stem)
             )
-        if not path and image.get("id") is not None:
-            stem = str(image["id"]).zfill(5)
+        if not path and image_id is not None:
+            stem = str(image_id).zfill(5)
             path = images_by_key.get(stem) or images_by_key.get(f"{stem}.jpg")
         if path:
-            image_id_to_path[image.get("id")] = path
+            image_id_to_path[image_id] = path
+
+    fallback_path: Path | None = None
+    if fallback_stem and not image_id_to_path:
+        fallback_path = (
+            images_by_key.get(f"{fallback_stem}.jpg")
+            or images_by_key.get(f"{fallback_stem}.png")
+            or images_by_key.get(f"{fallback_stem}.tif")
+            or images_by_key.get(fallback_stem)
+        )
+
     for ann in data.get("annotations", []) or []:
         category_name = categories.get(ann.get("category_id"))
         if not category_name or category_name in SODAA_IGNORE_LABELS:
             continue
-        image_path = image_id_to_path.get(ann.get("image_id"))
+        image_path = image_id_to_path.get(ann.get("image_id")) or fallback_path
         if not image_path:
             continue
         polygon = None
