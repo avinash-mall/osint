@@ -4,7 +4,20 @@
       "Bash(xargs cat *)",
       "Bash(xargs ls *)",
       "Bash(xargs grep *)",
-      "Bash(xargs wc *)"
+      "Bash(xargs wc *)",
+      "Bash(docker start *)",
+      "Bash(docker exec *)",
+      "Bash(docker network *)",
+      "Bash(docker restart *)",
+      "Bash(python3 -c \"from ultralytics import YOLO; m = YOLO\\('/d/osint/inference/geoint_yolov8_obb.pt'\\); print\\('Classes:', m.names\\)\")",
+      "WebSearch",
+      "WebFetch(domain:captain-whu.github.io)",
+      "WebFetch(domain:shaunyuan22.github.io)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:arxiv.org)",
+      "Bash(python -c \"import ast, sys; ast.parse\\(open\\('d:/osint/inference/prepare_datasets.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('d:/osint/inference/prepare_datasets.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   }
 }

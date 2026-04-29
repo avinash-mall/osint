@@ -237,6 +237,8 @@ button {
   background: var(--bg-1);
   border: 1px solid var(--line);
   min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .sentinel-panel-header {
@@ -340,6 +342,7 @@ button {
 }
 
 .sentinel-scroll {
+  flex: 1 1 0;
   min-height: 0;
   overflow: auto;
 }

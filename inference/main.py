@@ -46,7 +46,25 @@ def resolve_model_path() -> str:
 
 MODEL_PATH = resolve_model_path()
 MODEL_TASK = os.getenv("MODEL_TASK") or ("obb" if "obb" in os.path.basename(MODEL_PATH).lower() else "detect")
-CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.25"))
+CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.4"))
+NMS_IOU_THRESHOLD = float(os.getenv("NMS_IOU_THRESHOLD", "0.5"))
+MAX_DETECTIONS_PER_CHIP = int(os.getenv("MAX_DETECTIONS_PER_CHIP", "300"))
+
+
+def _load_per_class_thresholds() -> dict[str, float]:
+    raw = os.getenv("PER_CLASS_CONFIDENCE_OVERRIDES", "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return {str(k): float(v) for k, v in parsed.items()}
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        print(f"[INFERENCE] WARNING: invalid PER_CLASS_CONFIDENCE_OVERRIDES; ignoring: {exc}")
+    return {}
+
+
+PER_CLASS_CONFIDENCE = _load_per_class_thresholds()
 
 
 def available_cpu_count() -> int:
@@ -258,7 +276,14 @@ def run_inference(image: Image.Image, metadata: dict = None):
         # Plain YOLOv8 mode
         try:
             with entry["lock"]:
-                results = model(img_array, device=device, verbose=False)
+                results = model(
+                    img_array,
+                    device=device,
+                    conf=CONFIDENCE_THRESHOLD,
+                    iou=NMS_IOU_THRESHOLD,
+                    max_det=MAX_DETECTIONS_PER_CHIP,
+                    verbose=False,
+                )
             for r in results:
                 img_w, img_h = image.size
                 obb = getattr(r, "obb", None)
@@ -275,8 +300,13 @@ def run_inference(image: Image.Image, metadata: dict = None):
                         cy = (y1 + y2) / 2 / img_h
                         w = (x2 - x1) / img_w
                         h = (y2 - y1) / img_h
-                        cls_id = int(classes[index]) if len(classes) > index else 0
+                        if len(classes) <= index:
+                            continue
+                        cls_id = int(classes[index])
                         cls_name = model.names.get(cls_id, f"class_{cls_id}")
+                        cls_conf = float(confidences[index]) if len(confidences) > index else 0.0
+                        if cls_conf < PER_CLASS_CONFIDENCE.get(cls_name, 0.0):
+                            continue
                         detections.append({
                             "class": cls_name,
                             "bbox": [cx, cy, w, h],
@@ -284,7 +314,7 @@ def run_inference(image: Image.Image, metadata: dict = None):
                                 max(0.0, min(1.0, flat[i] / (img_w if i % 2 == 0 else img_h)))
                                 for i in range(8)
                             ],
-                            "confidence": float(confidences[index]) if len(confidences) > index else 0.0,
+                            "confidence": cls_conf,
                         })
                     continue
 
@@ -301,11 +331,14 @@ def run_inference(image: Image.Image, metadata: dict = None):
                     
                     cls_id = int(box.cls[0])
                     cls_name = model.names.get(cls_id, f"class_{cls_id}")
-                    
+                    cls_conf = float(box.conf[0])
+                    if cls_conf < PER_CLASS_CONFIDENCE.get(cls_name, 0.0):
+                        continue
+
                     detections.append({
                         "class": cls_name,
                         "bbox": [cx, cy, w, h],
-                        "confidence": float(box.conf[0])
+                        "confidence": cls_conf
                     })
         except Exception as e:
             print(f"[INFERENCE] YOLO inference error: {e}")

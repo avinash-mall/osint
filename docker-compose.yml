@@ -97,6 +97,7 @@ services:
     image: maplibre/martin:latest
     ports:
       - "3001:3000"
+    restart: on-failure
     environment:
       - DATABASE_URL=postgresql://gotham:gotham@postgis:5432/gotham
     depends_on:

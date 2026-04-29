@@ -5,7 +5,7 @@ Prepare overhead-imagery datasets for SAHI + YOLOv8 training.
 Default output is the repository-level training_dataset/ directory:
 
   training_dataset/
-    raw/{xview,dota,fmow,rareplanes,fair1m}/
+    raw/{xview,dota,rareplanes,fair1m}/
     yolo/{train,val,test}/{images,labels}/
     yolo/data.yaml
     yolo/classes.json
@@ -33,6 +33,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -149,72 +150,6 @@ DOTA_CLASSES = [
     "dota_airport",
     "dota_helipad",
 ]
-
-FMOW_CLASSES = [
-    "fmow_airport",
-    "fmow_airport_hangar",
-    "fmow_airport_terminal",
-    "fmow_amusement_park",
-    "fmow_aquaculture",
-    "fmow_archaeological_site",
-    "fmow_barn",
-    "fmow_border_checkpoint",
-    "fmow_burial_site",
-    "fmow_car_dealership",
-    "fmow_construction_site",
-    "fmow_crop_field",
-    "fmow_dam",
-    "fmow_debris_or_rubble",
-    "fmow_educational_institution",
-    "fmow_electric_substation",
-    "fmow_factory_or_powerplant",
-    "fmow_fire_station",
-    "fmow_flooded_road",
-    "fmow_fountain",
-    "fmow_gas_station",
-    "fmow_golf_course",
-    "fmow_ground_transportation_station",
-    "fmow_helipad",
-    "fmow_hospital",
-    "fmow_impoverished_settlement",
-    "fmow_interchange",
-    "fmow_lake_or_pond",
-    "fmow_lighthouse",
-    "fmow_military_facility",
-    "fmow_multi_unit_residential",
-    "fmow_nuclear_powerplant",
-    "fmow_office_building",
-    "fmow_oil_or_gas_facility",
-    "fmow_park",
-    "fmow_parking_lot_or_garage",
-    "fmow_place_of_worship",
-    "fmow_police_station",
-    "fmow_port",
-    "fmow_prison",
-    "fmow_race_track",
-    "fmow_railway_bridge",
-    "fmow_recreational_facility",
-    "fmow_road_bridge",
-    "fmow_runway",
-    "fmow_shipyard",
-    "fmow_shopping_mall",
-    "fmow_single_unit_residential",
-    "fmow_smokestack",
-    "fmow_solar_farm",
-    "fmow_space_facility",
-    "fmow_stadium",
-    "fmow_storage_tank",
-    "fmow_surface_mine",
-    "fmow_swimming_pool",
-    "fmow_toll_booth",
-    "fmow_tower",
-    "fmow_tunnel_opening",
-    "fmow_waste_disposal",
-    "fmow_water_treatment_facility",
-    "fmow_wind_farm",
-    "fmow_zoo",
-]
-
 
 @dataclass(frozen=True)
 class Annotation:
@@ -417,6 +352,21 @@ def parse_number_list(value: Any) -> list[float]:
                 flat.append(float(item))
         return flat
     return []
+
+
+def rotated_box_to_polygon(
+    cx: float, cy: float, w: float, h: float, angle: float
+) -> tuple[float, float, float, float, float, float, float, float]:
+    """Convert (center, size, angle in radians) to a 4-corner polygon."""
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+    dx, dy = w / 2.0, h / 2.0
+    corners = ((-dx, -dy), (dx, -dy), (dx, dy), (-dx, dy))
+    flat: list[float] = []
+    for x, y in corners:
+        flat.append(cx + x * cos_a - y * sin_a)
+        flat.append(cy + x * sin_a + y * cos_a)
+    return tuple(flat)  # type: ignore[return-value]
 
 
 def ensure_yolo_dirs(yolo_root: Path, clean: bool) -> None:
@@ -843,49 +793,443 @@ def process_coco(raw_root: Path, dataset_prefix: str) -> dict[Path, list[Annotat
     return grouped
 
 
-def process_fmow(raw_root: Path) -> dict[Path, list[Annotation]]:
-    images = find_images(raw_root)
-    grouped: dict[Path, list[Annotation]] = {}
-    for json_path in raw_root.rglob("*.json"):
+def _xml_text(node: ET.Element | None, *names: str) -> str | None:
+    if node is None:
+        return None
+    for name in names:
+        child = node.find(name)
+        if child is not None and child.text and child.text.strip():
+            return child.text.strip()
+    return None
+
+
+def _xml_float(node: ET.Element | None, *names: str) -> float | None:
+    text = _xml_text(node, *names)
+    if text is None:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _parse_dior_object(obj: ET.Element) -> Annotation | None:
+    name_text = _xml_text(obj, "name", "n", "category", "class")
+    if not name_text:
+        return None
+    label = f"dior_{sanitize_label(name_text)}"
+
+    robndbox = obj.find("robndbox")
+    if robndbox is not None:
+        cx = _xml_float(robndbox, "cx", "x_ctr")
+        cy = _xml_float(robndbox, "cy", "y_ctr")
+        w = _xml_float(robndbox, "w", "width")
+        h = _xml_float(robndbox, "h", "height")
+        angle = _xml_float(robndbox, "angle", "theta")
+        if None not in (cx, cy, w, h, angle):
+            return Annotation(label, rotated_box_to_polygon(cx, cy, w, h, angle), "dior")
+
+        corner_keys = (
+            ("x_left_top", "y_left_top"),
+            ("x_right_top", "y_right_top"),
+            ("x_right_bottom", "y_right_bottom"),
+            ("x_left_bottom", "y_left_bottom"),
+        )
+        flat: list[float] = []
+        for kx, ky in corner_keys:
+            x = _xml_float(robndbox, kx)
+            y = _xml_float(robndbox, ky)
+            if x is None or y is None:
+                flat = []
+                break
+            flat.extend([x, y])
+        if len(flat) == 8:
+            polygon = values_to_polygon(flat)
+            if polygon:
+                return Annotation(label, polygon, "dior")
+
+    bndbox = obj.find("bndbox")
+    if bndbox is not None:
+        xmin = _xml_float(bndbox, "xmin")
+        ymin = _xml_float(bndbox, "ymin")
+        xmax = _xml_float(bndbox, "xmax")
+        ymax = _xml_float(bndbox, "ymax")
+        if None not in (xmin, ymin, xmax, ymax) and xmax > xmin and ymax > ymin:
+            return Annotation(label, rect_to_polygon((xmin, ymin, xmax, ymax)), "dior")
+
+    return None
+
+
+def _parse_yaml_class_names(text: str) -> list[str]:
+    """Minimal parser for the names: field of an Ultralytics data.yaml."""
+    dict_matches = re.findall(r"^\s*(\d+)\s*:\s*([^\s][^\n]*)$", text, re.M)
+    if dict_matches:
+        items = sorted(((int(k), v.strip().strip("'\"")) for k, v in dict_matches), key=lambda x: x[0])
+        return [v for _, v in items]
+    list_match = re.search(r"^\s*names\s*:\s*\[([^\]]+)\]", text, re.M)
+    if list_match:
+        return [s.strip().strip("'\"") for s in list_match.group(1).split(",") if s.strip()]
+    return []
+
+
+def _load_dior_class_names(raw_root: Path) -> list[str]:
+    """Resolve DIOR class names from classes.txt (preferred) or data.yaml."""
+    for classes_txt in raw_root.rglob("classes.txt"):
         try:
-            metadata = json.loads(json_path.read_text(encoding="utf-8"))
-        except Exception:
+            lines = [line.strip() for line in classes_txt.read_text(encoding="utf-8").splitlines() if line.strip()]
+            if lines:
+                return lines
+        except OSError:
             continue
-        candidates = [
-            images.get(json_path.with_suffix(ext).name)
-            for ext in (".jpg", ".jpeg", ".png", ".tif", ".tiff")
-        ]
-        image_path = next((candidate for candidate in candidates if candidate), None)
+    for data_yaml in raw_root.rglob("data.yaml"):
+        try:
+            names = _parse_yaml_class_names(data_yaml.read_text(encoding="utf-8"))
+            if names:
+                return names
+        except OSError:
+            continue
+    return []
+
+
+def _process_dior_yolo_obb(
+    raw_root: Path,
+    label_files: list[Path],
+    images: dict[str, Path],
+) -> dict[Path, list[Annotation]]:
+    class_names = _load_dior_class_names(raw_root)
+    grouped: dict[Path, list[Annotation]] = {}
+    matched = 0
+    parsed = 0
+    for label_path in label_files:
+        image_path = image_lookup(label_path, images)
         if not image_path:
             continue
-        category = metadata.get("category") or json_path.parent.name
-        label = f"fmow_{sanitize_label(category)}"
+        matched += 1
+        try:
+            with Image.open(image_path) as img:
+                img_w, img_h = img.size
+        except Exception:
+            continue
         annotations: list[Annotation] = []
-        boxes = metadata.get("bounding_boxes") or metadata.get("boxes") or []
-        for item in boxes:
-            raw_box = item.get("box") if isinstance(item, dict) else item
-            values = parse_number_list(raw_box)
-            polygon = values_to_polygon(values)
-            if polygon:
-                annotations.append(Annotation(label, polygon, "fmow"))
-        if not annotations:
-            try:
-                with Image.open(image_path) as image:
-                    width, height = image.size
-                annotations.append(Annotation(label, rect_to_polygon((0.0, 0.0, float(width), float(height))), "fmow"))
-            except Exception:
+        for line in label_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            parts = line.strip().split()
+            if len(parts) != 9:
                 continue
-        grouped[image_path] = annotations
+            try:
+                class_id = int(parts[0])
+                coords = [float(p) for p in parts[1:9]]
+            except ValueError:
+                continue
+            if any(c < 0 or c > 1 for c in coords):
+                continue
+            if 0 <= class_id < len(class_names):
+                label = f"dior_{sanitize_label(class_names[class_id])}"
+            else:
+                label = f"dior_class_{class_id}"
+            pixel = [
+                value * (img_w if index % 2 == 0 else img_h)
+                for index, value in enumerate(coords)
+            ]
+            polygon = values_to_polygon(pixel)
+            if polygon:
+                annotations.append(Annotation(label, polygon, "dior"))
+                parsed += 1
+        if annotations:
+            grouped[image_path] = annotations
+
+    if not grouped:
+        print("DIOR: no usable image/label.txt pairs found")
+        print(f"  raw root: {raw_root}")
+        print(f"  images found: {len(set(images.values()))}")
+        print(f"  classes.txt names loaded: {len(class_names)}")
+        print(f"  txt files: {len(label_files)}")
+        print(f"  txt files matched to images: {matched}")
+        print(f"  parsed annotations: {parsed}")
+    return grouped
+
+
+def _process_dior_xml(
+    raw_root: Path,
+    images: dict[str, Path],
+) -> dict[Path, list[Annotation]]:
+    grouped: dict[Path, list[Annotation]] = {}
+    matched_xml = 0
+    parsed_annotations = 0
+    xml_files = list(raw_root.rglob("*.xml"))
+    for xml_path in xml_files:
+        try:
+            root = ET.parse(xml_path).getroot()
+        except ET.ParseError:
+            continue
+        filename = _xml_text(root, "filename") or xml_path.stem
+        image_path = image_lookup(Path(filename), images) or image_lookup(xml_path, images)
+        if not image_path:
+            continue
+        matched_xml += 1
+        annotations: list[Annotation] = []
+        for obj in root.findall(".//object"):
+            ann = _parse_dior_object(obj)
+            if ann:
+                annotations.append(ann)
+                parsed_annotations += 1
+        if annotations:
+            grouped[image_path] = annotations
+
+    if not grouped:
+        unique_images = sorted({path for path in images.values()})
+        print("DIOR: no usable image/XML pairs found")
+        print(f"  raw root: {raw_root}")
+        print(f"  images found: {len(unique_images)}")
+        print(f"  XML files found: {len(xml_files)}")
+        print(f"  XML files matched to images: {matched_xml}")
+        print(f"  parsed annotations: {parsed_annotations}")
+    return grouped
+
+
+def process_dior(raw_root: Path) -> dict[Path, list[Annotation]]:
+    extract_nested_archives(raw_root)
+    images = find_images(raw_root)
+
+    # Prefer YOLO-OBB TXT format (the Kaggle DIOR-R distribution).
+    # Only walk directories that are actually labels (avoids picking up classes.txt etc.).
+    yolo_label_files: list[Path] = []
+    for label_dir in raw_root.rglob("*"):
+        if label_dir.is_dir() and label_dir.name.lower() in ("labels", "labeltxt"):
+            yolo_label_files.extend(label_dir.rglob("*.txt"))
+    if yolo_label_files:
+        return _process_dior_yolo_obb(raw_root, yolo_label_files, images)
+
+    # Fall back to PASCAL VOC XML (the original DIOR-R distribution from IEEE DataPort).
+    return _process_dior_xml(raw_root, images)
+
+
+SODAA_IGNORE_LABELS = {"ignore", "ignored_region", "ignored", "ignore_region"}
+
+
+def _process_sodaa_coco_json(
+    data: dict,
+    images_by_key: dict[str, Path],
+    fallback_stem: str | None = None,
+) -> dict[Path, list[Annotation]]:
+    grouped: dict[Path, list[Annotation]] = {}
+    categories = {
+        item.get("id"): sanitize_label(item.get("name") or item.get("id"))
+        for item in data.get("categories", []) or []
+    }
+    image_id_to_path: dict[Any, Path] = {}
+    for image in data.get("images", []) or []:
+        name = Path(str(image.get("file_name", ""))).name if image.get("file_name") else ""
+        path = images_by_key.get(name) or images_by_key.get(Path(name).stem) if name else None
+        if not path and fallback_stem:
+            path = (
+                images_by_key.get(f"{fallback_stem}.jpg")
+                or images_by_key.get(f"{fallback_stem}.png")
+                or images_by_key.get(f"{fallback_stem}.tif")
+                or images_by_key.get(fallback_stem)
+            )
+        if not path and image.get("id") is not None:
+            stem = str(image["id"]).zfill(5)
+            path = images_by_key.get(stem) or images_by_key.get(f"{stem}.jpg")
+        if path:
+            image_id_to_path[image.get("id")] = path
+    for ann in data.get("annotations", []) or []:
+        category_name = categories.get(ann.get("category_id"))
+        if not category_name or category_name in SODAA_IGNORE_LABELS:
+            continue
+        image_path = image_id_to_path.get(ann.get("image_id"))
+        if not image_path:
+            continue
+        polygon = None
+        poly = ann.get("poly")
+        if poly:
+            polygon = values_to_polygon(parse_number_list(poly))
+        if polygon is None:
+            bbox = ann.get("bbox")
+            if bbox and len(bbox) >= 4:
+                x, y, w, h = [float(v) for v in bbox[:4]]
+                polygon = rect_to_polygon((x, y, x + w, y + h))
+        if polygon:
+            grouped.setdefault(image_path, []).append(
+                Annotation(f"sodaa_{category_name}", polygon, "sodaa")
+            )
+    return grouped
+
+
+def _process_sodaa_per_image_json(
+    json_path: Path,
+    images_by_key: dict[str, Path],
+) -> tuple[Path | None, list[Annotation]]:
+    try:
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None, []
+    if not isinstance(data, dict):
+        return None, []
+    image_path = (
+        image_lookup(Path(str(data.get("file_name") or json_path.stem)), images_by_key)
+        or image_lookup(json_path, images_by_key)
+    )
+    if not image_path:
+        return None, []
+    annotations: list[Annotation] = []
+    for ann in data.get("annotations", []) or []:
+        category_name = sanitize_label(ann.get("category") or ann.get("category_name") or "")
+        if not category_name or category_name in SODAA_IGNORE_LABELS:
+            continue
+        polygon = None
+        poly = ann.get("poly")
+        if poly:
+            polygon = values_to_polygon(parse_number_list(poly))
+        if polygon is None:
+            bbox = ann.get("bbox")
+            if bbox and len(bbox) >= 4:
+                x, y, w, h = [float(v) for v in bbox[:4]]
+                polygon = rect_to_polygon((x, y, x + w, y + h))
+        if polygon:
+            annotations.append(Annotation(f"sodaa_{category_name}", polygon, "sodaa"))
+    return image_path, annotations
+
+
+def process_sodaa(raw_root: Path) -> dict[Path, list[Annotation]]:
+    extract_nested_archives(raw_root)
+    images = find_images(raw_root)
+    grouped: dict[Path, list[Annotation]] = {}
+    parsed_files = 0
+    for json_path in raw_root.rglob("*.json"):
+        try:
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        if all(key in data for key in ("images", "annotations", "categories")):
+            split = _process_sodaa_coco_json(data, images, fallback_stem=json_path.stem)
+            for path, anns in split.items():
+                grouped.setdefault(path, []).extend(anns)
+            if split:
+                parsed_files += 1
+            continue
+        if "annotations" in data and isinstance(data["annotations"], list):
+            image_path, anns = _process_sodaa_per_image_json(json_path, images)
+            if image_path and anns:
+                grouped.setdefault(image_path, []).extend(anns)
+                parsed_files += 1
+
+    if not grouped:
+        print("SODA-A: no usable image/JSON pairs found")
+        print(f"  raw root: {raw_root}")
+        print(f"  images found: {len(set(images.values()))}")
+        print(f"  JSON files parsed: {parsed_files}")
+    return grouped
+
+
+def process_hrsc(raw_root: Path) -> dict[Path, list[Annotation]]:
+    extract_nested_archives(raw_root)
+    images = find_images(raw_root)
+    grouped: dict[Path, list[Annotation]] = {}
+    matched_xml = 0
+    parsed_annotations = 0
+    xml_files = [p for p in raw_root.rglob("*.xml") if p.name.lower() != "sysdata.xml"]
+    for xml_path in xml_files:
+        try:
+            root = ET.parse(xml_path).getroot()
+        except ET.ParseError:
+            continue
+        filename = _xml_text(root, "Img_FileName", "filename")
+        ext = _xml_text(root, "Img_FileFmt") or ""
+        candidate = filename
+        if filename and ext and not Path(filename).suffix:
+            candidate = f"{filename}.{ext.lstrip('.')}"
+        image_path = (
+            (image_lookup(Path(candidate), images) if candidate else None)
+            or image_lookup(xml_path, images)
+        )
+        if not image_path:
+            continue
+        matched_xml += 1
+        annotations: list[Annotation] = []
+        for obj in root.findall(".//HRSC_Object"):
+            class_id = _xml_text(obj, "Class_ID")
+            cx = _xml_float(obj, "mbox_cx")
+            cy = _xml_float(obj, "mbox_cy")
+            w = _xml_float(obj, "mbox_w")
+            h = _xml_float(obj, "mbox_h")
+            angle = _xml_float(obj, "mbox_ang")
+            if not class_id or None in (cx, cy, w, h, angle):
+                continue
+            label = f"hrsc_{sanitize_label(class_id)}"
+            polygon = rotated_box_to_polygon(cx, cy, w, h, angle)
+            annotations.append(Annotation(label, polygon, "hrsc2016"))
+            parsed_annotations += 1
+        if annotations:
+            grouped[image_path] = annotations
+
+    if not grouped:
+        print("HRSC2016: no usable image/XML pairs found")
+        print(f"  raw root: {raw_root}")
+        print(f"  images found: {len(set(images.values()))}")
+        print(f"  XML files found: {len(xml_files)}")
+        print(f"  XML files matched to images: {matched_xml}")
+        print(f"  parsed annotations: {parsed_annotations}")
     return grouped
 
 
 PROCESSORS = {
     "xview": process_xview,
     "dota": process_dota,
-    "fmow": process_fmow,
     "rareplanes": lambda root: process_coco(root, "rareplanes"),
     "fair1m": process_fair1m,
+    "dior": process_dior,
+    "sodaa": process_sodaa,
+    "hrsc2016": process_hrsc,
 }
+
+
+def balance_annotations_by_class(
+    dataset: str,
+    grouped: dict[Path, list[Annotation]],
+    max_per_class: int,
+) -> tuple[dict[Path, list[Annotation]], dict[str, tuple[int, int]]]:
+    """Deterministically cap per-class instances within a dataset's annotations.
+
+    Returns the filtered grouping and a per-class report of (kept, original) counts.
+    Subsampling is stable across runs (SHA1 of dataset + image + index + label).
+    """
+    counts: dict[str, int] = {}
+    for anns in grouped.values():
+        for ann in anns:
+            counts[ann.label] = counts.get(ann.label, 0) + 1
+
+    if max_per_class <= 0 or not counts:
+        return grouped, {label: (count, count) for label, count in counts.items()}
+
+    keep_rate = {
+        label: 1.0 if count <= max_per_class else max_per_class / count
+        for label, count in counts.items()
+    }
+    if all(rate >= 1.0 for rate in keep_rate.values()):
+        return grouped, {label: (count, count) for label, count in counts.items()}
+
+    filtered: dict[Path, list[Annotation]] = {}
+    kept_counts: dict[str, int] = {label: 0 for label in counts}
+    for path, anns in grouped.items():
+        kept: list[Annotation] = []
+        for index, ann in enumerate(anns):
+            rate = keep_rate.get(ann.label, 1.0)
+            if rate >= 1.0:
+                kept.append(ann)
+                kept_counts[ann.label] += 1
+                continue
+            key = f"{dataset}:{path.as_posix()}:{index}:{ann.label}"
+            score = int(hashlib.sha1(key.encode("utf-8")).hexdigest()[:8], 16) / 0xFFFFFFFF
+            if score < rate:
+                kept.append(ann)
+                kept_counts[ann.label] += 1
+        if kept:
+            filtered[path] = kept
+
+    report = {label: (kept_counts[label], counts[label]) for label in counts}
+    return filtered, report
 
 
 def convert_dataset(
@@ -898,10 +1242,20 @@ def convert_dataset(
     overlap: float,
     min_visibility: float,
     include_empty_ratio: float,
+    max_instances_per_class: int,
     manifest,
 ) -> ConversionStats:
     processor = PROCESSORS[dataset]
     grouped = processor(raw_root)
+    grouped, balance_report = balance_annotations_by_class(dataset, grouped, max_instances_per_class)
+    if max_instances_per_class > 0:
+        capped = [
+            f"{label}: {kept}/{original}"
+            for label, (kept, original) in sorted(balance_report.items())
+            if kept != original
+        ]
+        if capped:
+            print(f"{dataset}: capped per-class instances at {max_instances_per_class}: " + ", ".join(capped))
     stats = ConversionStats(dataset=dataset, images_seen=len(grouped))
     for image_path, annotations in tqdm(grouped.items(), desc=f"convert:{dataset}"):
         tiles, labels = convert_image_to_tiles(
@@ -998,11 +1352,6 @@ def download_dataset(dataset: str, raw_root: Path, args: argparse.Namespace) -> 
         print("DOTA downloads are distributed from the official DOTA site and mirrors. Place extracted images and labelTxt under:")
         print(f"  {raw_root}")
         return
-    if dataset == "fmow":
-        bucket = "s3://spacenet-dataset/Hosted-Datasets/fmow/fmow-rgb"
-        print(f"Syncing fMoW RGB from {bucket}. This is about 200 GB.")
-        run_aws_sync(bucket, raw_root, args.aws_extra)
-        return
     if dataset == "rareplanes":
         bucket = "s3://rareplanes-public"
         print(f"Syncing RarePlanes from {bucket}.")
@@ -1012,6 +1361,21 @@ def download_dataset(dataset: str, raw_root: Path, args: argparse.Namespace) -> 
         print("FAIR1M is commonly mirrored on Hugging Face and official challenge mirrors. Best-effort Hugging Face download:")
         command = ["huggingface-cli", "download", "blanchon/FAIR1M", "--repo-type", "dataset", "--local-dir", str(raw_root)]
         subprocess.run(command, check=True)
+        return
+    if dataset == "dior":
+        print("DIOR-R is distributed from IEEE DataPort and Kaggle (YOLOv11-OBB-format community mirror).")
+        print("Place the extracted dataset (Annotations/Oriented Bounding Boxes/*.xml + JPEGImages/*.jpg) or the raw dior.zip under:")
+        print(f"  {raw_root}")
+        return
+    if dataset == "sodaa":
+        print("SODA-A is distributed from https://shaunyuan22.github.io/SODA/. Place the extracted dataset")
+        print("(Images/{train,val,test}/*.jpg + Annotations/*.json) or sodaa.zip under:")
+        print(f"  {raw_root}")
+        return
+    if dataset == "hrsc2016":
+        print("HRSC2016 is distributed from IEEE DataPort and community mirrors. Place the extracted dataset")
+        print("(Train/AllImages/*.bmp + Train/Annotations/*.xml, plus Test/ and Val/) or HRSC2016_dataset.zip under:")
+        print(f"  {raw_root}")
         return
     raise ValueError(f"Unsupported dataset: {dataset}")
 
@@ -1106,6 +1470,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--overlap", type=float, default=OVERLAP)
     parser.add_argument("--min-visibility", type=float, default=0.35, help="Minimum original-object area visible in tile.")
     parser.add_argument("--include-empty-ratio", type=float, default=0.0, help="Fraction of empty tiles to keep.")
+    parser.add_argument(
+        "--max-instances-per-class",
+        type=int,
+        default=0,
+        help="Cap per-class annotation instances within each dataset (0 = no cap). Subsampling is deterministic; "
+             "use to balance highly skewed sources such as xView's small_car class.",
+    )
     parser.add_argument("--aws-extra", nargs=argparse.REMAINDER, default=[], help="Extra args passed to aws s3 sync after --.")
     return parser
 
@@ -1123,7 +1494,6 @@ def main() -> int:
     registry = ClassRegistry()
     registry.preload(XVIEW_TYPE_ID_TO_NAME.values())
     registry.preload(DOTA_CLASSES)
-    registry.preload(FMOW_CLASSES)
 
     for dataset in selected_datasets:
         dataset_raw = raw_root / dataset
@@ -1156,6 +1526,7 @@ def main() -> int:
                 args.overlap,
                 args.min_visibility,
                 args.include_empty_ratio,
+                args.max_instances_per_class,
                 manifest,
             ))
 

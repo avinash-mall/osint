@@ -225,19 +225,24 @@ Inference also auto-selects all visible GPUs. The service loads one model replic
 
 ### GEOINT Model Training
 
-Large public GEOINT datasets have different access models. xView and DOTA commonly require manual download/terms acceptance; fMoW and RarePlanes can be synced from public S3; FAIR1M can be pulled from available mirrors such as Hugging Face when permitted.
+Large public GEOINT datasets have different access models. xView and DOTA commonly require manual download/terms acceptance; RarePlanes can be synced from public S3; FAIR1M can be pulled from available mirrors such as Hugging Face when permitted; DIOR-R, SODA-A, and HRSC2016 are pulled from IEEE DataPort, Kaggle, or the official project pages and placed manually under `training_dataset/raw/<name>/`. fMoW is intentionally excluded — its labels are scene/site categories (airport, hospital, …) rather than object boxes and therefore do not produce useful OBB targets.
 
 ```bash
-# Prepare raw data into YOLOv8 OBB format under ./training_dataset/yolo
-python inference/prepare_datasets.py --datasets xview dota fmow rareplanes fair1m --clean
+# Prepare raw data into YOLOv8 OBB format under ./training_dataset/yolo.
+# --max-instances-per-class caps any single class so xView's small_car
+# does not dominate training; pick a value close to your second-largest class.
+python inference/prepare_datasets.py \
+    --datasets xview dota fair1m dior sodaa hrsc2016 \
+    --max-instances-per-class 50000 --clean
 
 # Import manually downloaded archives/directories.
 # xView expects train_images.zip, train_labels.zip, and val_images.zip.
 python inference/prepare_datasets.py --dataset-archive xview=D:\data\xview\train_images.zip --dataset-archive xview=D:\data\xview\train_labels.zip --dataset-archive xview=D:\data\xview\val_images.zip
 python inference/prepare_datasets.py --dataset-archive dota=D:\data\DOTA-v1.0
+python inference/prepare_datasets.py --dataset-archive dior=D:\data\dior.zip --dataset-archive sodaa=D:\data\sodaa.zip --dataset-archive hrsc2016=D:\data\HRSC2016_dataset.zip
 
 # Best-effort public downloads for datasets that support open CLI access
-python inference/prepare_datasets.py --datasets fmow rareplanes fair1m --download
+python inference/prepare_datasets.py --datasets rareplanes fair1m --download
 
 # Train and promote best.pt to inference/models/geoint_yolov8_obb.pt
 python inference/train_model.py --data training_dataset/yolo/data.yaml --epochs 100 --imgsz 640 --device 0
