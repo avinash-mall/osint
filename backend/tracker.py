@@ -192,7 +192,14 @@ def update_tracks_for_pass(pass_id: int, *, postgis_db) -> dict:
         logger.warning("tracker: pass %s not found", pass_id)
         return stats
 
-    acq_time: datetime = pass_row["acquisition_time"]
+    acq_time = pass_row["acquisition_time"]
+    if acq_time is None:
+        return stats  # can't track without a timestamp
+    # ensure timezone-aware
+    if acq_time.tzinfo is None:
+        import datetime
+        acq_time = acq_time.replace(tzinfo=datetime.timezone.utc)
+    footprint_wkb = pass_row.get("footprint")  # may be None
     cloud_cover: float = float(pass_row["cloud_cover"] or 0.0)
     occluded_by_cloud = cloud_cover > CLOUD_COVER_OCCLUSION
 
@@ -235,7 +242,7 @@ def update_tracks_for_pass(pass_id: int, *, postgis_db) -> dict:
     # ------------------------------------------------------------------
     if not detections:
         _age_unmatched_tracks(
-            tracks, [], acq_time, occluded_by_cloud, pass_row, stats, postgis_db
+            tracks, acq_time, occluded_by_cloud, pass_row, stats, postgis_db
         )
         return stats
 
@@ -257,18 +264,12 @@ def update_tracks_for_pass(pass_id: int, *, postgis_db) -> dict:
 
     for ti, track in enumerate(tracks):
         last_seen: datetime = track["last_seen"]
-        # Ensure both are offset-aware before subtracting
-        if acq_time.tzinfo is None:
-            acq_time_aware = acq_time.replace(tzinfo=timezone.utc)
-        else:
-            acq_time_aware = acq_time
-
         if last_seen.tzinfo is None:
             last_seen_aware = last_seen.replace(tzinfo=timezone.utc)
         else:
             last_seen_aware = last_seen
 
-        delta_t = (acq_time_aware - last_seen_aware).total_seconds()
+        delta_t = (acq_time - last_seen_aware).total_seconds()
         if delta_t < 0:
             delta_t = 0.0  # guard: pass is older than last_seen
 
@@ -326,12 +327,8 @@ def update_tracks_for_pass(pass_id: int, *, postgis_db) -> dict:
             last_seen_aware = track["last_seen"]
             if last_seen_aware.tzinfo is None:
                 last_seen_aware = last_seen_aware.replace(tzinfo=timezone.utc)
-            if acq_time.tzinfo is None:
-                acq_time_aware = acq_time.replace(tzinfo=timezone.utc)
-            else:
-                acq_time_aware = acq_time
 
-            dt_seconds = (acq_time_aware - last_seen_aware).total_seconds()
+            dt_seconds = (acq_time - last_seen_aware).total_seconds()
             vel = _velocity_from_observations(
                 prev_lon, prev_lat, new_lon, new_lat, dt_seconds
             )
@@ -409,34 +406,31 @@ def update_tracks_for_pass(pass_id: int, *, postgis_db) -> dict:
         for track in unmatched_tracks:
             track_id = track["id"]
 
-            # Check if predicted centroid is inside pass footprint
-            if acq_time.tzinfo is None:
-                acq_time_aware = acq_time.replace(tzinfo=timezone.utc)
-            else:
-                acq_time_aware = acq_time
-
             last_seen_t = track["last_seen"]
             if last_seen_t.tzinfo is None:
                 last_seen_t = last_seen_t.replace(tzinfo=timezone.utc)
 
-            delta_t = (acq_time_aware - last_seen_t).total_seconds()
+            delta_t = (acq_time - last_seen_t).total_seconds()
             if delta_t < 0:
                 delta_t = 0.0
 
             pred_lat, pred_lon = _predict_position(track, delta_t)
 
-            cur.execute(
-                """
-                SELECT ST_Within(
-                    ST_SetSRID(ST_MakePoint(%s, %s), 4326),
-                    footprint
-                ) AS inside
-                FROM satellite_passes WHERE id = %s
-                """,
-                (pred_lon, pred_lat, pass_id),
-            )
-            inside_row = cur.fetchone()
-            is_inside = bool(inside_row and inside_row["inside"])
+            if footprint_wkb is None:
+                is_inside = False  # treat as "outside" → occlusion, don't age miss_count
+            else:
+                cur.execute(
+                    """
+                    SELECT ST_Within(
+                        ST_SetSRID(ST_MakePoint(%s, %s), 4326),
+                        footprint
+                    ) AS inside
+                    FROM satellite_passes WHERE id = %s
+                    """,
+                    (pred_lon, pred_lat, pass_id),
+                )
+                inside_row = cur.fetchone()
+                is_inside = bool(inside_row and inside_row["inside"])
 
             if is_inside and not occluded_by_cloud:
                 # Track should have been seen — genuine miss
@@ -583,7 +577,6 @@ def _create_new_tracks(
 
 def _age_unmatched_tracks(
     tracks: list[dict],
-    matched_track_indices: list[int],
     acq_time: datetime,
     occluded_by_cloud: bool,
     pass_row: dict,
@@ -595,11 +588,7 @@ def _age_unmatched_tracks(
         return
 
     pass_id = pass_row["id"]
-
-    if acq_time.tzinfo is None:
-        acq_time_aware = acq_time.replace(tzinfo=timezone.utc)
-    else:
-        acq_time_aware = acq_time
+    footprint_wkb = pass_row.get("footprint")  # may be None
 
     with postgis_db.get_cursor(commit=True) as cur:
         for track in tracks:
@@ -607,24 +596,27 @@ def _age_unmatched_tracks(
             if last_seen_t.tzinfo is None:
                 last_seen_t = last_seen_t.replace(tzinfo=timezone.utc)
 
-            delta_t = (acq_time_aware - last_seen_t).total_seconds()
+            delta_t = (acq_time - last_seen_t).total_seconds()
             if delta_t < 0:
                 delta_t = 0.0
 
             pred_lat, pred_lon = _predict_position(track, delta_t)
 
-            cur.execute(
-                """
-                SELECT ST_Within(
-                    ST_SetSRID(ST_MakePoint(%s, %s), 4326),
-                    footprint
-                ) AS inside
-                FROM satellite_passes WHERE id = %s
-                """,
-                (pred_lon, pred_lat, pass_id),
-            )
-            inside_row = cur.fetchone()
-            is_inside = bool(inside_row and inside_row["inside"])
+            if footprint_wkb is None:
+                is_inside = False  # treat as "outside" → occlusion, don't age miss_count
+            else:
+                cur.execute(
+                    """
+                    SELECT ST_Within(
+                        ST_SetSRID(ST_MakePoint(%s, %s), 4326),
+                        footprint
+                    ) AS inside
+                    FROM satellite_passes WHERE id = %s
+                    """,
+                    (pred_lon, pred_lat, pass_id),
+                )
+                inside_row = cur.fetchone()
+                is_inside = bool(inside_row and inside_row["inside"])
 
             if is_inside and not occluded_by_cloud:
                 pinned = bool(track.get("pinned", False))
