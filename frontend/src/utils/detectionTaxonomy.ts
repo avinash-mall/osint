@@ -1,4 +1,5 @@
 export const CLASS_LIST = [
+  'aircraft', 'ship', 'vehicle', 'military_vehicle', 'storage_tank', 'bridge', 'harbor', 'airfield', 'building', 'infrastructure',
   'xview_fixed_wing_aircraft', 'xview_small_aircraft', 'xview_cargo_plane', 'xview_helicopter',
   'xview_passenger_vehicle', 'xview_small_car', 'xview_bus', 'xview_pickup_truck', 'xview_utility_truck',
   'xview_truck', 'xview_cargo_truck', 'xview_truck_with_box', 'xview_truck_tractor', 'xview_trailer',
@@ -131,11 +132,13 @@ export function classifyDetectionClass(value?: string | null, ontologyCategory?:
   // Maritime checked before air so 'aircraft_carrier', 'container_ship', 'naval_vessel' resolve to sea.
   if (/aircraft_carrier|ship|vessel|boat|tanker|barge|tugboat|ferry|yacht|harbor|harbour|port|shipyard|warship|warcraft|destroyer|frigate|cruiser|corvette|submarine|hovercraft|naval/.test(raw)) return 'sea';
   if (/aircraft|plane|airplane|hangar|airport|runway|helipad|helicopter|boeing|a3\d\d|a2\d\d|arj21|c919|a350/.test(raw)) return 'air';
+  if (/military_vehicle|missile|launcher|artillery|sam|armored|armoured/.test(raw)) return 'mil';
   if (/locomotive|railway|rail|tank_car|flat_car|cargo_car|passenger_car|train_station|trainstation/.test(raw)) return 'rail';
   if (/truck|car|vehicle|bus|trailer|van|tractor/.test(raw)) return 'vehicle';
   if (/excavator|crane|loader|grader|dump|scraper|stacker|straddle|cement|construction|mining|surface_mine|engineering/.test(raw)) return 'construction';
   if (/storage_?tank|oil|gas|smokestack|powerplant|substation|factory|nuclear|solar|wind_?farm|windmill|chimney/.test(raw)) return 'energy';
   if (/military|prison|police|fire|border|checkpoint/.test(raw)) return 'mil';
+  if (/airfield/.test(raw)) return 'air';
   if (/bridge|overpass|interchange|roundabout|toll|tunnel|road|track|expressway|transportation_station/.test(raw)) return 'infra';
   if (/stadium|baseball|tennis|basketball|soccer|football|golf|race_track|ground_?track|swim|park|recreation|amusement|zoo|fountain/.test(raw)) return 'sport';
   if (/residential|office|shopping|mall|hospital|school|education|worship|burial|archaeological|lighthouse|tower|pylon|shed|hut|barn|building|facility/.test(raw)) return 'structure';

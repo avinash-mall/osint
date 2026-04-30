@@ -39,6 +39,7 @@ import subprocess
 import sys
 import tarfile
 import zipfile
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -188,6 +189,38 @@ SODAA_CLASSES = [
     "sodaa_windmill",
 ]
 
+TAXONOMY_VERSION = "optical-defense-v1"
+DEFENSE_PARENT_CLASSES = [
+    "aircraft",
+    "ship",
+    "vehicle",
+    "military_vehicle",
+    "storage_tank",
+    "bridge",
+    "harbor",
+    "airfield",
+    "building",
+    "infrastructure",
+]
+DISTRACTOR_PARENT_CLASSES = ["dam", "recreation", "water", "unknown"]
+RECREATION_TERMS = (
+    "baseball",
+    "basketball",
+    "tennis",
+    "soccer",
+    "football",
+    "golf",
+    "stadium",
+    "swimming_pool",
+    "swimming",
+    "ground_track",
+    "groundtrack",
+    "amusement",
+    "park",
+    "zoo",
+    "race_track",
+)
+
 @dataclass(frozen=True)
 class Annotation:
     label: str
@@ -250,6 +283,73 @@ def sanitize_label(value: Any) -> str:
         text = text.replace(src, dst)
     text = "_".join(part for part in text.split("_") if part)
     return text or "unknown"
+
+
+def strip_source_prefix(label: str) -> str:
+    normalized = sanitize_label(label)
+    for prefix in ("xview", "dota", "fair1m", "fmow", "rareplanes", "dior", "sodaa", "hrsc", "hrsc2016", "local"):
+        marker = f"{prefix}_"
+        if normalized.startswith(marker):
+            return normalized[len(marker):]
+    return normalized
+
+
+def has_any(text: str, terms: tuple[str, ...]) -> bool:
+    return any(term in text for term in terms)
+
+
+def parent_class_for_label(label: str) -> str:
+    raw = sanitize_label(label)
+    text = strip_source_prefix(raw)
+    if raw in DEFENSE_PARENT_CLASSES or raw in DISTRACTOR_PARENT_CLASSES:
+        return raw
+    if raw.startswith("hrsc") or has_any(text, ("warship", "warcraft", "destroyer", "frigate", "cruiser", "submarine")):
+        return "ship"
+    if text == "dam" or text.startswith("dam_") or text.endswith("_dam"):
+        return "dam"
+    if has_any(text, RECREATION_TERMS):
+        return "recreation"
+    if has_any(text, ("lake", "pond", "water_treatment", "flooded")):
+        return "water"
+    if has_any(text, ("missile", "launcher", "artillery", "sam", "armored", "armoured")):
+        return "military_vehicle"
+    if text == "tank" or text.endswith("_tank") and "storage" not in text and "oil" not in text and "tank_car" not in text:
+        return "military_vehicle"
+    if has_any(text, ("storage_tank", "storagetank")):
+        return "storage_tank"
+    if has_any(text, ("shipping_container", "container_lot", "container_crane")):
+        return "infrastructure"
+    if (
+        has_any(text, ("aircraft_carrier", "vessel", "boat", "tanker", "barge", "tug", "ferry", "yacht", "hovercraft"))
+        or text == "ship"
+        or text.startswith("ship_")
+        or text.endswith("_ship")
+    ):
+        return "ship"
+    if has_any(text, ("aircraft", "airplane", "plane", "helicopter", "boeing", "airbus", "a220", "a321", "a330", "a350", "arj21", "c919")):
+        return "aircraft"
+    if has_any(text, ("airport", "runway", "airstrip", "airfield", "helipad", "hangar")):
+        return "airfield"
+    if has_any(text, ("harbor", "harbour", "port", "shipyard", "dry_dock")):
+        return "harbor"
+    if has_any(text, ("bridge", "overpass")):
+        return "bridge"
+    if has_any(text, ("vehicle", "truck", "car", "bus", "van", "trailer", "tractor", "locomotive", "railway")):
+        return "vehicle"
+    if has_any(text, ("building", "facility", "depot", "bunker", "shed", "hut", "terminal", "station")):
+        return "building"
+    if has_any(text, ("container", "crane", "chimney", "windmill", "tower", "pylon", "substation", "powerplant", "factory", "plant", "construction")):
+        return "infrastructure"
+    return "unknown"
+
+
+def training_label_for_source(label: str, taxonomy: str, include_distractors: bool) -> str | None:
+    if taxonomy == "source":
+        return sanitize_label(label)
+    parent = parent_class_for_label(label)
+    if parent in DISTRACTOR_PARENT_CLASSES and not include_distractors:
+        return None
+    return parent
 
 
 def repo_relative(path: Path) -> Path:
@@ -441,6 +541,9 @@ def convert_image_to_tiles(
     overlap: float,
     min_visibility: float,
     include_empty_ratio: float,
+    hard_negative_ratio: float,
+    taxonomy: str,
+    include_distractors: bool,
     manifest,
 ) -> tuple[int, int]:
     try:
@@ -471,6 +574,9 @@ def convert_image_to_tiles(
         for x0 in x_starts:
             tile_bbox = (x0, y0, min(x0 + tile_size, width), min(y0 + tile_size, height))
             label_lines: list[str] = []
+            original_labels: list[str] = []
+            parent_labels: list[str] = []
+            hard_negative_candidate = False
             for ann in valid_annotations:
                 intersection = intersect_bbox(ann.bbox, tile_bbox)
                 if not intersection:
@@ -481,15 +587,24 @@ def convert_image_to_tiles(
                 if not polygon_inside_tile(ann.polygon, tile_bbox):
                     continue
                 local = shift_polygon(ann.polygon, x0, y0)
-                line = yolo_obb_line(registry.add(ann.label), local, tile_size)
+                train_label = training_label_for_source(ann.label, taxonomy, include_distractors)
+                if train_label is None:
+                    hard_negative_candidate = True
+                    original_labels.append(sanitize_label(ann.label))
+                    parent_labels.append(parent_class_for_label(ann.label))
+                    continue
+                line = yolo_obb_line(registry.add(train_label), local, tile_size)
                 if line:
                     label_lines.append(line)
+                    original_labels.append(sanitize_label(ann.label))
+                    parent_labels.append(train_label)
 
-            if not label_lines and include_empty_ratio <= 0:
+            empty_keep_ratio = hard_negative_ratio if hard_negative_candidate else include_empty_ratio
+            if not label_lines and empty_keep_ratio <= 0:
                 continue
-            if not label_lines and include_empty_ratio < 1:
+            if not label_lines and empty_keep_ratio < 1:
                 keep_value = int(hashlib.sha1(f"{image_path}:{x0}:{y0}".encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
-                if keep_value > include_empty_ratio:
+                if keep_value > empty_keep_ratio:
                     continue
 
             tile = Image.new("RGB", (tile_size, tile_size), (0, 0, 0))
@@ -509,6 +624,11 @@ def convert_image_to_tiles(
                 "label": str(repo_relative(label_out)),
                 "tile": [x0, y0, tile_bbox[2] - x0, tile_bbox[3] - y0],
                 "labels": len(label_lines),
+                "original_labels": original_labels,
+                "parent_labels": sorted(set(parent_labels)),
+                "hard_negative": hard_negative_candidate and not label_lines,
+                "taxonomy": taxonomy,
+                "taxonomy_version": TAXONOMY_VERSION if taxonomy == "optical-defense" else "source",
             }) + "\n")
             tiles_written += 1
             labels_written += len(label_lines)
@@ -1237,7 +1357,7 @@ def process_hrsc(raw_root: Path) -> dict[Path, list[Annotation]]:
                 continue
             class_id = class_id.strip()
             readable = class_names.get(class_id)
-            label = f"hrsc_{sanitize_label(readable)}" if readable else f"hrsc_{sanitize_label(class_id)}"
+            label = f"hrsc_{sanitize_label(readable)}" if readable else "hrsc_ship"
             polygon = rotated_box_to_polygon(cx, cy, w, h, angle)
             annotations.append(Annotation(label, polygon, "hrsc2016"))
             parsed_annotations += 1
@@ -1322,6 +1442,9 @@ def convert_dataset(
     overlap: float,
     min_visibility: float,
     include_empty_ratio: float,
+    hard_negative_ratio: float,
+    taxonomy: str,
+    include_distractors: bool,
     max_instances_per_class: int,
     manifest,
 ) -> ConversionStats:
@@ -1349,6 +1472,9 @@ def convert_dataset(
             overlap,
             min_visibility,
             include_empty_ratio,
+            hard_negative_ratio,
+            taxonomy,
+            include_distractors,
             manifest,
         )
         if tiles:
@@ -1515,7 +1641,134 @@ def datasets_from_archive_args(items: list[str]) -> list[str]:
     return names
 
 
-def write_summary(root: Path, stats: list[ConversionStats], registry: ClassRegistry) -> None:
+def label_size_bucket(parts: list[str], tile_size: int) -> str:
+    try:
+        coords = [float(value) for value in parts[1:9]]
+    except (ValueError, IndexError):
+        return "unknown"
+    xs = coords[0::2]
+    ys = coords[1::2]
+    max_side = max((max(xs) - min(xs)) * tile_size, (max(ys) - min(ys)) * tile_size)
+    if max_side < 16:
+        return "tiny"
+    if max_side < 32:
+        return "small"
+    if max_side < 96:
+        return "medium"
+    return "large"
+
+
+def write_csv(path: Path, rows: list[dict], fallback_fields: list[str]) -> None:
+    fieldnames = list(rows[0].keys()) if rows else fallback_fields
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def write_training_reports(root: Path, registry: ClassRegistry, tile_size: int) -> dict[str, Any]:
+    manifest_path = root / "manifest.jsonl"
+    split_counts: dict[str, Counter] = defaultdict(Counter)
+    source_counts: dict[tuple[str, str], Counter] = defaultdict(Counter)
+    class_counts: dict[tuple[str, str], int] = defaultdict(int)
+    size_counts: dict[tuple[str, str, str], int] = defaultdict(int)
+    hard_negative_tiles = 0
+
+    if manifest_path.exists():
+        for line in manifest_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            item = json.loads(line)
+            split = item.get("split", "unknown")
+            dataset = item.get("dataset", "unknown")
+            labels = int(item.get("labels") or 0)
+            split_counts[split]["tiles"] += 1
+            split_counts[split]["labels"] += labels
+            source_counts[(split, dataset)]["tiles"] += 1
+            source_counts[(split, dataset)]["labels"] += labels
+            if item.get("hard_negative"):
+                split_counts[split]["hard_negative_tiles"] += 1
+                source_counts[(split, dataset)]["hard_negative_tiles"] += 1
+                hard_negative_tiles += 1
+
+    for split in ("train", "val", "test"):
+        label_dir = root / split / "labels"
+        if not label_dir.exists():
+            continue
+        for label_file in label_dir.glob("*.txt"):
+            for line in label_file.read_text(encoding="utf-8").splitlines():
+                parts = line.split()
+                if len(parts) < 9:
+                    continue
+                try:
+                    class_id = int(parts[0])
+                except ValueError:
+                    continue
+                class_name = registry.names[class_id] if 0 <= class_id < len(registry.names) else f"class_{class_id}"
+                class_counts[(split, class_name)] += 1
+                size_counts[(split, class_name, label_size_bucket(parts, tile_size))] += 1
+
+    split_rows = [
+        {
+            "split": split,
+            "tiles": int(counts["tiles"]),
+            "labels": int(counts["labels"]),
+            "hard_negative_tiles": int(counts["hard_negative_tiles"]),
+        }
+        for split, counts in sorted(split_counts.items())
+    ]
+    source_rows = [
+        {
+            "split": split,
+            "dataset": dataset,
+            "tiles": int(counts["tiles"]),
+            "labels": int(counts["labels"]),
+            "hard_negative_tiles": int(counts["hard_negative_tiles"]),
+        }
+        for (split, dataset), counts in sorted(source_counts.items())
+    ]
+    class_rows = [
+        {"split": split, "class": class_name, "labels": count}
+        for (split, class_name), count in sorted(class_counts.items())
+    ]
+    size_rows = [
+        {"split": split, "class": class_name, "size_bucket": size_bucket, "labels": count}
+        for (split, class_name, size_bucket), count in sorted(size_counts.items())
+    ]
+
+    write_csv(root / "source_distribution.csv", source_rows, ["split", "dataset", "tiles", "labels", "hard_negative_tiles"])
+    write_csv(root / "class_distribution.csv", class_rows, ["split", "class", "labels"])
+    write_csv(root / "object_size_distribution.csv", size_rows, ["split", "class", "size_bucket", "labels"])
+    (root / "split_summary.json").write_text(json.dumps({
+        "splits": split_rows,
+        "hard_negative_tiles": hard_negative_tiles,
+    }, indent=2) + "\n", encoding="utf-8")
+    return {
+        "splits": split_rows,
+        "classes": class_rows,
+        "sources": source_rows,
+        "sizes": size_rows,
+        "hard_negative_tiles": hard_negative_tiles,
+    }
+
+
+def write_taxonomy(root: Path, args: argparse.Namespace) -> None:
+    taxonomy = {
+        "taxonomy": args.taxonomy,
+        "taxonomy_version": TAXONOMY_VERSION if args.taxonomy == "optical-defense" else "source",
+        "defense_parent_classes": DEFENSE_PARENT_CLASSES,
+        "distractor_parent_classes": DISTRACTOR_PARENT_CLASSES,
+        "include_distractors": bool(args.include_distractors),
+        "notes": [
+            "Optical-only taxonomy; SAR, thermal, RF, and hyperspectral classes are intentionally excluded.",
+            "Distractor classes are retained as hard-negative tiles unless include_distractors is enabled.",
+            "Original source labels are preserved in manifest.jsonl for audit.",
+        ],
+    }
+    (root / "taxonomy.json").write_text(json.dumps(taxonomy, indent=2) + "\n", encoding="utf-8")
+
+
+def write_summary(root: Path, stats: list[ConversionStats], registry: ClassRegistry, args: argparse.Namespace) -> None:
     rows = [
         {
             "dataset": item.dataset,
@@ -1527,14 +1780,24 @@ def write_summary(root: Path, stats: list[ConversionStats], registry: ClassRegis
         }
         for item in stats
     ]
+    reports = write_training_reports(root, registry, args.tile_size)
+    write_taxonomy(root, args)
     (root / "summary.json").write_text(json.dumps({
         "classes": len(registry.names),
         "datasets": rows,
+        "taxonomy": args.taxonomy,
+        "taxonomy_version": TAXONOMY_VERSION if args.taxonomy == "optical-defense" else "source",
+        "include_empty_ratio": args.include_empty_ratio,
+        "hard_negative_ratio": args.hard_negative_ratio,
+        "report_counts": {
+            "split_rows": len(reports["splits"]),
+            "class_rows": len(reports["classes"]),
+            "source_rows": len(reports["sources"]),
+            "size_rows": len(reports["sizes"]),
+            "hard_negative_tiles": reports["hard_negative_tiles"],
+        },
     }, indent=2) + "\n", encoding="utf-8")
-    with (root / "summary.csv").open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()) if rows else ["dataset"])
-        writer.writeheader()
-        writer.writerows(rows)
+    write_csv(root / "summary.csv", rows, ["dataset"])
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1549,7 +1812,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tile-size", type=int, default=TILE_SIZE)
     parser.add_argument("--overlap", type=float, default=OVERLAP)
     parser.add_argument("--min-visibility", type=float, default=0.35, help="Minimum original-object area visible in tile.")
-    parser.add_argument("--include-empty-ratio", type=float, default=0.0, help="Fraction of empty tiles to keep.")
+    parser.add_argument("--include-empty-ratio", type=float, default=0.05, help="Fraction of pure empty tiles to keep.")
+    parser.add_argument("--hard-negative-ratio", type=float, default=0.5, help="Fraction of distractor-only tiles to keep as hard negatives.")
+    parser.add_argument("--taxonomy", choices=["optical-defense", "source"], default="optical-defense", help="Collapse source labels into defense parent classes or keep source labels.")
+    parser.add_argument("--include-distractors", action="store_true", help="Keep distractor parent classes as labels instead of using them as hard negatives.")
     parser.add_argument(
         "--max-instances-per-class",
         type=int,
@@ -1572,10 +1838,15 @@ def main() -> int:
     ensure_yolo_dirs(yolo_root, clean=args.clean)
 
     registry = ClassRegistry()
-    registry.preload(XVIEW_TYPE_ID_TO_NAME.values())
-    registry.preload(DOTA_CLASSES)
-    registry.preload(DIOR_CLASSES)
-    registry.preload(SODAA_CLASSES)
+    if args.taxonomy == "optical-defense":
+        registry.preload(DEFENSE_PARENT_CLASSES)
+        if args.include_distractors:
+            registry.preload(DISTRACTOR_PARENT_CLASSES)
+    else:
+        registry.preload(XVIEW_TYPE_ID_TO_NAME.values())
+        registry.preload(DOTA_CLASSES)
+        registry.preload(DIOR_CLASSES)
+        registry.preload(SODAA_CLASSES)
 
     for dataset in selected_datasets:
         dataset_raw = raw_root / dataset
@@ -1608,12 +1879,15 @@ def main() -> int:
                 args.overlap,
                 args.min_visibility,
                 args.include_empty_ratio,
+                args.hard_negative_ratio,
+                args.taxonomy,
+                args.include_distractors,
                 args.max_instances_per_class,
                 manifest,
             ))
 
     write_data_yaml(yolo_root, registry)
-    write_summary(yolo_root, stats, registry)
+    write_summary(yolo_root, stats, registry, args)
     print("\nPrepared YOLO dataset:")
     print(f"  {yolo_root}")
     print(f"  classes: {len(registry.names)}")

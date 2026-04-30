@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from typing import Any
 
+from detection_policy import parent_class_for_label
+
 
 THREAT_LEVELS = {"low", "medium", "high", "critical"}
 
@@ -83,6 +85,15 @@ def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
 
 
 def category_for_class(det_class: str) -> str:
+    parent_class = parent_class_for_label(det_class)
+    if parent_class == "aircraft":
+        return "air"
+    if parent_class in {"ship", "harbor"}:
+        return "maritime"
+    if parent_class in {"vehicle", "military_vehicle"}:
+        return "combat" if parent_class == "military_vehicle" else "ground"
+    if parent_class in {"storage_tank", "building", "bridge", "airfield", "infrastructure"}:
+        return "infrastructure"
     text = clean_detection_class(det_class).lower()
     if _contains_any(text, CRITICAL_TERMS):
         return "combat"

@@ -9,6 +9,7 @@ from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 import numpy as np
 from PIL import Image
+from detection_policy import active_detection_policy, detection_decision
 
 # SAHI + Ultralytics imports
 try:
@@ -46,7 +47,8 @@ def resolve_model_path() -> str:
 
 MODEL_PATH = resolve_model_path()
 MODEL_TASK = os.getenv("MODEL_TASK") or ("obb" if "obb" in os.path.basename(MODEL_PATH).lower() else "detect")
-CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.4"))
+DETECTION_POLICY = active_detection_policy()
+CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", str(DETECTION_POLICY["global_confidence_floor"])))
 NMS_IOU_THRESHOLD = float(os.getenv("NMS_IOU_THRESHOLD", "0.5"))
 MAX_DETECTIONS_PER_CHIP = int(os.getenv("MAX_DETECTIONS_PER_CHIP", "300"))
 
@@ -264,10 +266,18 @@ def run_inference(image: Image.Image, metadata: dict = None):
                 w = (x2 - x1) / img_w
                 h = (y2 - y1) / img_h
                 
+                cls_name = obj.category.name if hasattr(obj.category, 'name') else str(obj.category.id)
+                cls_conf = float(obj.score.value)
+                decision = detection_decision(cls_name, cls_conf, DETECTION_POLICY)
+                if not decision["class_enabled"] or decision["review_status"] == "below_class_threshold":
+                    continue
                 detections.append({
-                    "class": obj.category.name if hasattr(obj.category, 'name') else str(obj.category.id),
+                    "class": decision["parent_class"],
+                    "original_class": decision["original_class"],
+                    "parent_class": decision["parent_class"],
                     "bbox": [cx, cy, w, h],
-                    "confidence": float(obj.score.value)
+                    "confidence": cls_conf,
+                    **decision,
                 })
         except Exception as e:
             print(f"[INFERENCE] SAHI inference error: {e}")
@@ -305,16 +315,20 @@ def run_inference(image: Image.Image, metadata: dict = None):
                         cls_id = int(classes[index])
                         cls_name = model.names.get(cls_id, f"class_{cls_id}")
                         cls_conf = float(confidences[index]) if len(confidences) > index else 0.0
-                        if cls_conf < PER_CLASS_CONFIDENCE.get(cls_name, 0.0):
+                        decision = detection_decision(cls_name, cls_conf, DETECTION_POLICY)
+                        if not decision["class_enabled"] or decision["review_status"] == "below_class_threshold":
                             continue
                         detections.append({
-                            "class": cls_name,
+                            "class": decision["parent_class"],
+                            "original_class": decision["original_class"],
+                            "parent_class": decision["parent_class"],
                             "bbox": [cx, cy, w, h],
                             "obb": [
                                 max(0.0, min(1.0, flat[i] / (img_w if i % 2 == 0 else img_h)))
                                 for i in range(8)
                             ],
                             "confidence": cls_conf,
+                            **decision,
                         })
                     continue
 
@@ -332,13 +346,17 @@ def run_inference(image: Image.Image, metadata: dict = None):
                     cls_id = int(box.cls[0])
                     cls_name = model.names.get(cls_id, f"class_{cls_id}")
                     cls_conf = float(box.conf[0])
-                    if cls_conf < PER_CLASS_CONFIDENCE.get(cls_name, 0.0):
+                    decision = detection_decision(cls_name, cls_conf, DETECTION_POLICY)
+                    if not decision["class_enabled"] or decision["review_status"] == "below_class_threshold":
                         continue
 
                     detections.append({
-                        "class": cls_name,
+                        "class": decision["parent_class"],
+                        "original_class": decision["original_class"],
+                        "parent_class": decision["parent_class"],
                         "bbox": [cx, cy, w, h],
-                        "confidence": cls_conf
+                        "confidence": cls_conf,
+                        **decision,
                     })
         except Exception as e:
             print(f"[INFERENCE] YOLO inference error: {e}")
@@ -354,7 +372,11 @@ def run_inference(image: Image.Image, metadata: dict = None):
         "processing_time_ms": round(processing_time * 1000, 2),
         "model": MODEL_PATH,
         "task": MODEL_TASK,
-        "device": device
+        "device": device,
+        "model_version": DETECTION_POLICY["model_version"],
+        "taxonomy_version": DETECTION_POLICY["taxonomy_version"],
+        "threshold_profile": DETECTION_POLICY["threshold_profile"],
+        "global_confidence_floor": CONFIDENCE_THRESHOLD,
     }
 
 
@@ -406,5 +428,8 @@ def health():
         "cpu_threads": CPU_THREADS,
         "model_replicas": len(detection_models),
         "sahi_available": SAHI_AVAILABLE,
-        "yolo_available": YOLO_AVAILABLE
+        "yolo_available": YOLO_AVAILABLE,
+        "detection_policy": DETECTION_POLICY,
+        "confidence_threshold": CONFIDENCE_THRESHOLD,
+        "nms_iou_threshold": NMS_IOU_THRESHOLD,
     }

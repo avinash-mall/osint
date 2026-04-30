@@ -18,6 +18,7 @@ import uvicorn
 from database import db, postgis_db
 from ai import AIUnavailable, ai_status, get_ai_response, get_llm_json
 from imagery_metadata import extract_raster_metadata
+from detection_policy import active_detection_policy, detection_decision, parent_class_for_label
 from threat_assessment import assess_detection_threat, clean_detection_class, conservative_detection_ontology
 from worker import celery_app, process_satellite_imagery
 
@@ -26,6 +27,7 @@ app = FastAPI(title="SentinelOS API")
 _platform_schema_lock = threading.Lock()
 _platform_schema_ready = False
 _llm_detection_ontology_cache: dict[str, dict] = {}
+DETECTION_POLICY = active_detection_policy()
 
 def get_cors_origins() -> list[str]:
     raw = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
@@ -755,6 +757,17 @@ def llm_detection_ontology(det_class: str, count: int = 0, avg_confidence: float
 
 def enriched_detection_metadata(det_class: str, metadata: Optional[dict]) -> dict:
     enriched = dict(metadata or {})
+    original_class = enriched.get("original_class") or det_class
+    parent_class = enriched.get("parent_class") or parent_class_for_label(original_class)
+    decision = detection_decision(original_class, enriched.get("confidence", 0), DETECTION_POLICY)
+    enriched.setdefault("original_class", original_class)
+    enriched.setdefault("parent_class", parent_class)
+    enriched.setdefault("calibrated_confidence", enriched.get("confidence", 0))
+    enriched.setdefault("review_status", decision["review_status"])
+    enriched.setdefault("threshold_profile", decision["threshold_profile"])
+    enriched.setdefault("class_threshold", decision["class_threshold"])
+    enriched.setdefault("model_version", decision["model_version"])
+    enriched.setdefault("taxonomy_version", decision["taxonomy_version"])
     ontology = dict(enriched.get("ontology") or {})
     generated = conservative_detection_ontology(
         det_class,
@@ -762,7 +775,7 @@ def enriched_detection_metadata(det_class: str, metadata: Optional[dict]) -> dic
         allegiance=enriched.get("allegiance"),
         description=ontology.get("description"),
     )
-    enriched["ontology"] = {**generated, **ontology}
+    enriched["ontology"] = {**generated, "original_class": original_class, "parent_class": parent_class, **ontology}
     assessment = assess_detection_threat(
         det_class,
         confidence=enriched.get("confidence", 0),
@@ -1306,6 +1319,7 @@ def health():
         "neo4j": "unknown",
         "postgis": "unknown",
         "ai": ai_status(),
+        "detection_policy": DETECTION_POLICY,
     }
     try:
         with db.get_session() as session:
@@ -2807,6 +2821,8 @@ def get_detection_classes(
         WITH filtered AS (
             SELECT d.class,
                    d.confidence,
+                   coalesce(d.metadata->>'parent_class', d.class) AS parent_class,
+                   coalesce(d.metadata->>'review_status', 'review_candidate') AS review_status,
                    coalesce(d.metadata->>'allegiance', 'unknown') AS allegiance
             FROM detections d
             JOIN satellite_passes sp ON d.pass_id = sp.id
@@ -2827,11 +2843,12 @@ def get_detection_classes(
         ),
         class_counts AS (
             SELECT class,
+                   parent_class,
                    count(*) AS count,
                    max(confidence) AS max_confidence,
                    avg(confidence) AS avg_confidence
             FROM filtered
-            GROUP BY class
+            GROUP BY class, parent_class
         ),
         allegiance_counts AS (
             SELECT class, allegiance, count(*) AS count
@@ -2844,6 +2861,7 @@ def get_detection_classes(
             GROUP BY class
         )
         SELECT c.class,
+               c.parent_class,
                c.count,
                c.max_confidence,
                c.avg_confidence,
@@ -2870,6 +2888,7 @@ def get_detection_classes(
                     classification_status = "unavailable"
             classes.append({
                 "class": row["class"],
+                "parent_class": row["parent_class"],
                 "label": ontology["label"],
                 "count": row["count"],
                 "max_confidence": float(row["max_confidence"] or 0),
@@ -2927,6 +2946,16 @@ def get_detections_geojson(
                     "class": row["class"],
                     "label": metadata["ontology"]["label"],
                     "confidence": row["confidence"],
+                    "calibrated_confidence": metadata.get("calibrated_confidence", row["confidence"]),
+                    "original_class": metadata.get("original_class", row["class"]),
+                    "parent_class": metadata.get("parent_class", row["class"]),
+                    "review_status": metadata.get("review_status", "review_candidate"),
+                    "threshold_profile": metadata.get("threshold_profile"),
+                    "class_threshold": metadata.get("class_threshold"),
+                    "model_version": metadata.get("model_version"),
+                    "taxonomy_version": metadata.get("taxonomy_version"),
+                    "chip_id": metadata.get("chip_id"),
+                    "coverage_fraction": metadata.get("coverage_fraction"),
                     "pass_id": row["pass_id"],
                     "pass_name": row["pass_name"],
                     "acquisition_time": row["acquisition_time"],
