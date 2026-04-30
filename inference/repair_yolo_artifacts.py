@@ -86,6 +86,14 @@ def manifest_reports(yolo_root: Path) -> dict[str, Any]:
     manifest = yolo_root / "manifest.jsonl"
     if not manifest.exists():
         return {"manifest_found": False}
+    summary_path = yolo_root / "summary.json"
+    expected_tiles = None
+    summary = None
+    if summary_path.exists():
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        datasets = summary.get("datasets") if isinstance(summary, dict) else None
+        if isinstance(datasets, list):
+            expected_tiles = sum(int(item.get("tiles_written") or 0) for item in datasets)
 
     split_counts: dict[str, Counter] = defaultdict(Counter)
     source_counts: dict[tuple[str, str], Counter] = defaultdict(Counter)
@@ -106,6 +114,31 @@ def manifest_reports(yolo_root: Path) -> dict[str, Any]:
             if item.get("hard_negative"):
                 split_counts[split]["hard_negative_tiles"] += 1
                 source_counts[(split, dataset)]["hard_negative_tiles"] += 1
+
+    if expected_tiles is not None and rows_seen != expected_tiles:
+        if isinstance(summary, dict) and isinstance(summary.get("datasets"), list):
+            source_rows = [
+                {
+                    "split": "all",
+                    "dataset": item["dataset"],
+                    "tiles": int(item.get("tiles_written") or 0),
+                    "labels": int(item.get("labels_written") or 0),
+                    "hard_negative_tiles": "",
+                }
+                for item in summary["datasets"]
+            ]
+            write_csv(
+                yolo_root / "source_distribution.csv",
+                source_rows,
+                ["split", "dataset", "tiles", "labels", "hard_negative_tiles"],
+            )
+        return {
+            "manifest_found": True,
+            "manifest_rows": rows_seen,
+            "manifest_expected_tiles": expected_tiles,
+            "manifest_matches_summary": False,
+            "manifest_reports_written": False,
+        }
 
     split_rows = [
         {
@@ -139,6 +172,8 @@ def manifest_reports(yolo_root: Path) -> dict[str, Any]:
     return {
         "manifest_found": True,
         "manifest_rows": rows_seen,
+        "manifest_matches_summary": True,
+        "manifest_reports_written": True,
         "split_rows": len(split_rows),
         "source_rows": len(source_rows),
     }
@@ -177,6 +212,7 @@ def label_file_reports(yolo_root: Path, names: list[str]) -> dict[str, Any]:
 
 def write_taxonomy(yolo_root: Path, names: list[str], report: dict[str, Any]) -> None:
     policy = active_detection_policy()
+    parent_dataset = set(names) == set(DEFENSE_PARENT_CLASSES)
     class_map = []
     parent_counts = Counter()
     disabled = set(policy["disabled_parent_classes"])
@@ -191,13 +227,17 @@ def write_taxonomy(yolo_root: Path, names: list[str], report: dict[str, Any]) ->
         })
 
     taxonomy = {
-        "taxonomy": "source-with-optical-defense-mapping",
+        "taxonomy": "optical-defense" if parent_dataset else "source-with-optical-defense-mapping",
         "taxonomy_version": TAXONOMY_VERSION,
-        "dataset_label_space": "source",
+        "dataset_label_space": "parent" if parent_dataset else "source",
         "note": (
-            "This taxonomy.json was repaired from an old copied dataset. The label files still use "
-            "source-specific classes, not the collapsed optical-defense training classes. Use it for "
-            "audit/inference mapping, but regenerate the dataset for robust retraining."
+            "This taxonomy.json was repaired from copied metadata for a collapsed optical-defense dataset."
+            if parent_dataset
+            else (
+                "This taxonomy.json was repaired from an old copied dataset. The label files still use "
+                "source-specific classes, not the collapsed optical-defense training classes. Use it for "
+                "audit/inference mapping, but regenerate the dataset for robust retraining."
+            )
         ),
         "defense_parent_classes": list(DEFENSE_PARENT_CLASSES),
         "distractor_parent_classes": list(DISTRACTOR_PARENT_CLASSES),
