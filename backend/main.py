@@ -18,7 +18,7 @@ import uvicorn
 from database import db, postgis_db
 from ai import AIUnavailable, ai_status, get_ai_response, get_llm_json
 from imagery_metadata import extract_raster_metadata
-from threat_assessment import assess_detection_threat, clean_detection_class, conservative_detection_ontology
+from threat_assessment import assess_detection_threat, category_for_class, clean_detection_class, conservative_detection_ontology
 from worker import celery_app, process_satellite_imagery
 
 app = FastAPI(title="SentinelOS API")
@@ -3819,9 +3819,6 @@ def chat(req: ChatRequest):
 # ---------------------------------------------------------------------------
 # Detection Tracks API
 # ---------------------------------------------------------------------------
-
-from threat_assessment import category_for_class  # noqa: E402 (already imported module)
-
 
 def _dt_iso(v) -> Optional[str]:
     if v is None:
