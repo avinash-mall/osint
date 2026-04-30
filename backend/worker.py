@@ -1170,6 +1170,14 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
         candidate_count = generate_candidate_links_for_pass(pass_id)
         logger.info("[WORKER] Stored %s detections and generated %s candidate links.", stored_count, candidate_count)
 
+        # Invoke detection tracker — failure must not poison detection ingest
+        try:
+            from tracker import update_tracks_for_pass
+            tracker_stats = update_tracks_for_pass(pass_id, postgis_db=postgis_db)
+            logger.info("[WORKER] Tracker updated for pass %s: %s", pass_id, tracker_stats)
+        except Exception as exc:
+            logger.exception("[WORKER] Tracker update failed for pass %s: %s", pass_id, exc)
+
         llm_task_id = None
         llm_should_queue = False
         llm_status = "unavailable"
