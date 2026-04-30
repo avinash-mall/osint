@@ -211,6 +211,7 @@ const getDetectionStyle = (feature: any) => {
 
 type DetectionClassStat = {
   rawClass: string;
+  parentClass?: string;
   label: string;
   count: number;
   maxConfidence: number;
@@ -386,11 +387,13 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
 
     for (const meta of detectionClasses) {
       const rawClass = String(meta.class || meta.label || 'Unknown');
+      const parentClass = String(meta.parent_class || meta.ontology?.parent_class || rawClass);
       const category = detectionCategoryForLabel(rawClass, meta?.ontology?.category);
       const existing = stats.get(rawClass);
       stats.set(rawClass, {
         ...existing,
         rawClass,
+        parentClass,
         label: meta?.label || existing?.label || detectionClassLabel(rawClass),
         count: Number(meta?.count || existing?.count || 0),
         maxConfidence: Number(meta?.max_confidence || existing?.maxConfidence || 0),
@@ -405,11 +408,13 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
     const classesFromApi = new Set(detectionClasses.map((item) => String(item.class || item.label || 'Unknown')));
     for (const feature of detectionsGeoJSON.features || []) {
       const rawClass = detectionLabel(feature);
+      const parentClass = String(feature?.properties?.parent_class || feature?.properties?.metadata?.parent_class || rawClass);
       const category = detectionCategoryForFeature(feature);
       const existing = stats.get(rawClass);
       stats.set(rawClass, {
         ...existing,
         rawClass,
+        parentClass,
         label: feature?.properties?.label || existing?.label || detectionClassLabel(rawClass),
         count: Number(existing?.count || 0) + (classesFromApi.has(rawClass) ? 0 : 1),
         maxConfidence: Math.max(Number(existing?.maxConfidence || 0), confidenceValue(feature)),
@@ -441,7 +446,7 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
   const filteredDetectionClassStats = useMemo(() => {
     const query = detectionLabelSearch.trim().toLowerCase();
     return query
-      ? detectionLabelStats.filter((item) => `${item.label} ${item.rawClass} ${DETECTION_CATEGORIES[item.category].label} ${item.source} ${item.ontology?.category || ''} ${item.threatLevel || ''}`.toLowerCase().includes(query))
+      ? detectionLabelStats.filter((item) => `${item.label} ${item.rawClass} ${item.parentClass || ''} ${DETECTION_CATEGORIES[item.category].label} ${item.source} ${item.ontology?.category || ''} ${item.threatLevel || ''}`.toLowerCase().includes(query))
       : detectionLabelStats;
   }, [detectionLabelSearch, detectionLabelStats]);
 
@@ -862,6 +867,9 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
     const props = feature.properties;
     const category = detectionCategoryForFeature(feature);
     const categoryMeta = DETECTION_CATEGORIES[category];
+    const reviewStatus = props.review_status || props.metadata?.review_status || 'review_candidate';
+    const originalClass = props.original_class || props.metadata?.original_class || props.class;
+    const parentClass = props.parent_class || props.metadata?.parent_class || props.class;
     layer.bindPopup(`
       <div style="font-family: sans-serif; min-width: 210px;">
         <div style="font-weight: 700; font-size: 13px; margin-bottom: 8px; color: #e8ebee; border-bottom: 1px solid #373e46; padding-bottom: 4px;">
@@ -870,8 +878,10 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
         <div style="font-size: 12px; color: #aab2bb; line-height: 1.6;">
           <div>ID: <span style="color:#e8ebee">${props.id}</span></div>
           <div>Category: <span style="color:${categoryMeta.color}">${categoryMeta.label}</span></div>
-          <div>Class: <span style="color:#e8ebee">${props.class}</span></div>
+          <div>Parent: <span style="color:#e8ebee">${parentClass}</span></div>
+          <div>Original: <span style="color:#e8ebee">${originalClass}</span></div>
           <div>Confidence: <span style="color:#e8ebee">${(Number(props.confidence || 0) * 100).toFixed(1)}%</span></div>
+          <div>Review: <span style="color:#e8ebee">${reviewStatus}</span></div>
           <div>Threat: <span style="color:#e8ebee">${props.threat_level || 'unknown'}</span></div>
           <div>Tag: <span style="color:#e8ebee">${props.allegiance || 'unknown'}</span></div>
         </div>
@@ -1167,7 +1177,8 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
                       </div>
                       <div className="font-mono text-[11px] text-sentinel-muted">
                         CAT <span style={{ color: categoryMeta.color }}>{categoryMeta.label}</span><br />
-                        CLASS {props.class || 'unknown'}<br />
+                        PARENT {props.parent_class || props.class || 'unknown'}<br />
+                        ORIG {props.original_class || props.metadata?.original_class || props.class || 'unknown'}<br />
                         CONF {Math.round(Number(props.confidence || 0) * 100)}%
                       </div>
                     </div>
@@ -1403,7 +1414,7 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
                   const categoryMeta = DETECTION_CATEGORIES[category];
                   return (
                     <>
-                      <div className="font-mono text-[10px] text-sentinel-muted">DET-{selectedDetection.properties?.id} / {selectedDetection.properties?.class}</div>
+                      <div className="font-mono text-[10px] text-sentinel-muted">DET-{selectedDetection.properties?.id} / {selectedDetection.properties?.parent_class || selectedDetection.properties?.class}</div>
                       <div className="mt-1 flex items-center gap-2">
                         <span style={{ color: categoryMeta.color }}><CategoryIcon category={category} /></span>
                         <div className="text-lg font-semibold text-slate-100">{selectedDetection.properties?.label || detectionClassLabel(selectedDetection.properties?.class)}</div>
@@ -1415,12 +1426,16 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
                   <span className={`sentinel-tag ${threatClass(selectedDetection.properties?.threat_level)}`}>{selectedDetection.properties?.threat_level || 'low'}</span>
                   <span className="sentinel-tag">{selectedDetection.properties?.allegiance || 'unknown'}</span>
                   <span className="sentinel-tag info">{Math.round(Number(selectedDetection.properties?.confidence || 0) * 100)}% CONF</span>
+                  <span className="sentinel-tag acc">{selectedDetection.properties?.review_status || selectedDetection.properties?.metadata?.review_status || 'review'}</span>
                 </div>
               </div>
               <div className="border-b border-sentinel-line p-3 text-xs leading-relaxed text-sentinel-muted">
                 {selectedDetection.properties?.ontology?.description || 'Detection ontology unavailable.'}
                 <div className="mt-2 grid grid-cols-[92px_1fr] gap-y-1 font-mono text-[10px]">
                   <span>ASSESS</span><span>{selectedDetection.properties?.assessment_status || selectedDetection.properties?.ontology?.assessment_status || 'unconfirmed'}</span>
+                  <span>ORIGINAL</span><span>{selectedDetection.properties?.original_class || selectedDetection.properties?.metadata?.original_class || selectedDetection.properties?.class || 'unknown'}</span>
+                  <span>PROFILE</span><span>{selectedDetection.properties?.threshold_profile || selectedDetection.properties?.metadata?.threshold_profile || 'n/a'}</span>
+                  <span>COVERAGE</span><span>{selectedDetection.properties?.coverage_fraction ? `${Math.round(Number(selectedDetection.properties.coverage_fraction) * 100)}%` : 'n/a'}</span>
                   <span>THREAT SCORE</span><span>{Number(selectedDetection.properties?.threat_confidence || selectedDetection.properties?.ontology?.threat_confidence || 0).toFixed(2)}</span>
                   <span>EVIDENCE</span><span>{(selectedDetection.properties?.evidence || selectedDetection.properties?.ontology?.evidence || []).join(' / ') || 'none'}</span>
                 </div>

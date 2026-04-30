@@ -12,6 +12,7 @@ Default promoted output:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import shutil
@@ -132,9 +133,9 @@ def resolve_device(requested: str | None) -> str | None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train YOLOv8 for SentinelOS GEOINT inference.")
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA, help="YOLO data.yaml path.")
-    parser.add_argument("--base-model", default="yolov8n-obb.pt", help="Base OBB checkpoint, e.g. yolov8n-obb.pt/yolov8s-obb.pt.")
+    parser.add_argument("--base-model", default="yolov8s-obb.pt", help="Base OBB checkpoint, e.g. yolov8s-obb.pt/yolov8m-obb.pt.")
     parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--imgsz", type=int, default=640)
+    parser.add_argument("--imgsz", type=int, default=1024)
     parser.add_argument("--batch", type=parse_batch, default=-1, help="Batch size, GPU memory fraction, or auto.")
     parser.add_argument("--device", default="auto", help="Ultralytics device, e.g. auto, cpu, 0, 0,1.")
     parser.add_argument("--workers", type=int, default=None, help="Dataloader workers. Defaults to an automatic CPU/GPU-aware value.")
@@ -143,7 +144,30 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--name", default="geoint_yolov8")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="Promoted model path used by inference.")
     parser.add_argument("--no-promote", action="store_true", help="Do not copy best.pt to the inference models directory.")
+    parser.add_argument("--min-recall", type=float, default=0.525, help="Minimum final validation recall required for promotion.")
+    parser.add_argument("--promote-anyway", action="store_true", help="Promote even when validation recall is below --min-recall.")
+    parser.add_argument("--threshold-profile", default="recall_review", help="Inference threshold profile recorded in promoted metadata.")
+    parser.add_argument("--taxonomy-version", default="optical-defense-v1", help="Training taxonomy version recorded in promoted metadata.")
     return parser
+
+
+def read_final_metrics(save_dir: Path) -> dict[str, float]:
+    results_csv = save_dir / "results.csv"
+    if not results_csv.exists():
+        return {}
+    with results_csv.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    if not rows:
+        return {}
+    final = rows[-1]
+    metrics: dict[str, float] = {}
+    for key, value in final.items():
+        clean_key = key.strip().replace("metrics/", "").replace("(B)", "").replace("(M)", "")
+        try:
+            metrics[clean_key] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return metrics
 
 
 def main() -> int:
@@ -189,7 +213,28 @@ def main() -> int:
     if not best_model.exists():
         raise SystemExit(f"Training finished but best.pt was not found at {best_model}")
 
+    final_metrics = read_final_metrics(save_dir)
+    final_recall = final_metrics.get("recall", final_metrics.get("recall50", 0.0))
+    promotion_allowed = bool(args.promote_anyway or final_recall >= args.min_recall)
+    if final_metrics:
+        print(
+            "Final validation metrics: "
+            f"precision={final_metrics.get('precision', 0):.4f}, "
+            f"recall={final_recall:.4f}, "
+            f"mAP50={final_metrics.get('mAP50', 0):.4f}, "
+            f"mAP50-95={final_metrics.get('mAP50-95', final_metrics.get('mAP50-95', 0)):.4f}"
+        )
+    if not promotion_allowed:
+        print(
+            f"Promotion blocked: recall {final_recall:.4f} is below required {args.min_recall:.4f}. "
+            "Use --promote-anyway only after reviewing class-wise failure reports."
+        )
+
     if not args.no_promote:
+        if not promotion_allowed:
+            print(f"Training run: {save_dir}")
+            print(f"Best checkpoint: {best_model}")
+            return 2
         args.output.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(best_model, args.output)
         metadata = {
@@ -203,6 +248,12 @@ def main() -> int:
             "device": resolved_device or args.device,
             "cpu_threads": cpu_threads,
             "workers": workers,
+            "metrics": final_metrics,
+            "promotion_min_recall": args.min_recall,
+            "threshold_profile": args.threshold_profile,
+            "taxonomy_version": args.taxonomy_version,
+            "model_version": f"{args.base_model}:{args.imgsz}:{args.taxonomy_version}",
+            "optical_only": True,
         }
         args.output.with_suffix(".json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
         print(f"Promoted trained model to {args.output}")

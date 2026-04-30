@@ -16,6 +16,7 @@ import numpy as np
 from PIL import Image
 from ai import AIUnavailable, ai_status, get_llm_json
 from imagery_metadata import extract_raster_metadata
+from detection_policy import active_detection_policy, detection_decision, parent_class_for_label
 from threat_assessment import assess_detection_threat, clean_detection_class, conservative_detection_ontology
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -37,7 +38,10 @@ def env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-MAX_INFERENCE_CHIPS = env_int("MAX_INFERENCE_CHIPS", 1200)
+MAX_INFERENCE_CHIPS = env_int("MAX_INFERENCE_CHIPS", 0)
+DEFAULT_INFERENCE_CHIP_SIZE = env_int("INFERENCE_CHIP_SIZE", 1024)
+DEFAULT_INFERENCE_OVERLAP = env_int("INFERENCE_CHIP_OVERLAP", 256)
+DETECTION_POLICY = active_detection_policy()
 ENABLE_LLM_DETECTION_CLASSIFICATION = env_bool("ENABLE_LLM_DETECTION_CLASSIFICATION", True)
 LLM_DETECTION_BATCH_SIZE = max(1, env_int("LLM_DETECTION_BATCH_SIZE", 8))
 LLM_DETECTION_CLASS_TIMEOUT_SECONDS = env_int("LLM_DETECTION_CLASS_TIMEOUT_SECONDS", 3)
@@ -282,6 +286,8 @@ def chip_to_uint8_rgb(chip: np.ndarray) -> np.ndarray:
 
 
 def bbox_iou(a: list[float], b: list[float]) -> float:
+    if len(a) != 4 or len(b) != 4:
+        return 0.0
     ax1, ay1, ax2, ay2 = a
     bx1, by1, bx2, by2 = b
     inter_x1 = max(ax1, bx1)
@@ -295,6 +301,30 @@ def bbox_iou(a: list[float], b: list[float]) -> float:
     area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
     union = area_a + area_b - inter_area
     return inter_area / union if union else 0.0
+
+
+def polygon_iou(a: list[float], b: list[float]) -> float:
+    if len(a) != 8 or len(b) != 8:
+        return 0.0
+    try:
+        poly_a = Polygon(list(zip(a[0::2], a[1::2]))).buffer(0)
+        poly_b = Polygon(list(zip(b[0::2], b[1::2]))).buffer(0)
+        if poly_a.is_empty or poly_b.is_empty or not poly_a.is_valid or not poly_b.is_valid:
+            return 0.0
+        inter_area = poly_a.intersection(poly_b).area
+        if inter_area <= 0:
+            return 0.0
+        union_area = poly_a.union(poly_b).area
+        return float(inter_area / union_area) if union_area else 0.0
+    except Exception:
+        return 0.0
+
+
+def detection_overlap(a: dict, b: dict) -> float:
+    obb_iou = polygon_iou(a.get("pixel_obb", []), b.get("pixel_obb", []))
+    if obb_iou > 0:
+        return obb_iou
+    return bbox_iou(a.get("pixel_bbox", []), b.get("pixel_bbox", []))
 
 
 def clamp_float(value: float, low: float, high: float) -> float:
@@ -321,17 +351,18 @@ def deduplicate_detections(
         x1, y1, x2, y2 = det["pixel_bbox"]
         cx = int(((x1 + x2) / 2) // bucket_size)
         cy = int(((y1 + y2) / 2) // bucket_size)
-        det_class = det.get("class")
+        det_class = det.get("parent_class") or det.get("class")
         nearby = []
         for dx in (-1, 0, 1):
             for dy in (-1, 0, 1):
                 nearby.extend(buckets.get((det_class, cx + dx, cy + dy), []))
 
         duplicate = any(
-            bbox_iou(det["pixel_bbox"], existing.get("pixel_bbox", [])) >= iou_threshold
+            detection_overlap(det, existing) >= iou_threshold
             for existing in nearby
         )
         if not duplicate:
+            det.setdefault("dedupe_method", "obb_nms")
             kept.append(det)
             buckets.setdefault((det_class, cx, cy), []).append(det)
     return kept
@@ -473,8 +504,8 @@ def classify_detection_ontologies(detections: list, progress_callback=None) -> d
 def slice_and_infer(
     cog_path: str,
     pass_id: int,
-    chip_size: int = 640,
-    overlap: int = 100,
+    chip_size: int = DEFAULT_INFERENCE_CHIP_SIZE,
+    overlap: int = DEFAULT_INFERENCE_OVERLAP,
     max_chips: int = MAX_INFERENCE_CHIPS,
     progress_callback=None,
 ):
@@ -494,6 +525,22 @@ def slice_and_infer(
         total_windows = grid["planned_total"]
         processed_windows = 0
         last_reported_percent = None
+        coverage_fraction = round(total_windows / max(1, grid["source_total"]), 4)
+        inference_summary = {
+            "chip_size": chip_size,
+            "overlap": overlap,
+            "step": step,
+            "planned_chips": total_windows,
+            "source_total_chips": grid["source_total"],
+            "processed_chips": 0,
+            "coverage_fraction": coverage_fraction,
+            "sampling_enabled": grid["sampled"],
+            "max_inference_chips": grid["max_chips"],
+            "dedupe_method": "obb_nms",
+            "threshold_profile": DETECTION_POLICY["threshold_profile"],
+            "taxonomy_version": DETECTION_POLICY["taxonomy_version"],
+            "model_version": DETECTION_POLICY["model_version"],
+        }
 
         if progress_callback and grid["sampled"]:
             progress_callback(
@@ -501,12 +548,13 @@ def slice_and_infer(
                 55,
                 f"Large raster detected; sampling {total_windows} of {grid['source_total']} chips for inference.",
                 {
-                    "planned_chips": total_windows,
-                    "source_total_chips": grid["source_total"],
-                    "max_inference_chips": grid["max_chips"],
-                    "sampling_enabled": True,
-                },
-            )
+                                "planned_chips": total_windows,
+                                "source_total_chips": grid["source_total"],
+                                "max_inference_chips": grid["max_chips"],
+                                "sampling_enabled": True,
+                                "coverage_fraction": coverage_fraction,
+                            },
+                        )
 
         for y_index in grid["y_indices"]:
             y = y_index * step
@@ -532,6 +580,7 @@ def slice_and_infer(
                                 "planned_chips": total_windows,
                                 "source_total_chips": grid["source_total"],
                                 "sampling_enabled": grid["sampled"],
+                                "coverage_fraction": coverage_fraction,
                             },
                         )
                 win_width = min(chip_size, width - x)
@@ -564,7 +613,8 @@ def slice_and_infer(
                             timeout=60
                         )
                     resp.raise_for_status()
-                    chip_detections = resp.json().get("detections", [])
+                    inference_response = resp.json()
+                    chip_detections = inference_response.get("detections", [])
 
                     for det in chip_detections:
                         # Convert normalized bbox to pixel coords in chip
@@ -615,10 +665,29 @@ def slice_and_infer(
                         geo_polygon = [coord for point in zip(lons, lats) for coord in point]
                         lon1, lat1, lon2, lat2 = min(lons), min(lats), max(lons), max(lats)
 
+                        original_class = det.get("original_class") or det.get("class", "unknown")
+                        confidence = float(det.get("confidence") or det.get("calibrated_confidence") or 0.0)
+                        decision = detection_decision(original_class, confidence, DETECTION_POLICY)
+                        if not decision["class_enabled"] or decision["review_status"] == "below_class_threshold":
+                            continue
+
+                        det["class"] = decision["parent_class"]
+                        det.update({**decision, **{
+                            "model_version": inference_response.get("model_version") or decision["model_version"],
+                            "taxonomy_version": inference_response.get("taxonomy_version") or decision["taxonomy_version"],
+                            "threshold_profile": inference_response.get("threshold_profile") or decision["threshold_profile"],
+                        }})
                         det["pixel_bbox"] = [abs_px_x1, abs_px_y1, abs_px_x2, abs_px_y2]
                         det["pixel_obb"] = pixel_obb
                         det["geo_bbox"] = [lon1, lat1, lon2, lat2]
                         det["geo_polygon"] = geo_polygon
+                        det["chip_id"] = f"{pass_id}:{x}:{y}:{win_width}:{win_height}"
+                        det["chip_window"] = [x, y, win_width, win_height]
+                        det["coverage_fraction"] = coverage_fraction
+                        det["planned_chips"] = total_windows
+                        det["source_total_chips"] = grid["source_total"]
+                        det["sampling_enabled"] = grid["sampled"]
+                        det["dedupe_method"] = "obb_nms"
                         detections.append(det)
                     
                 except Exception as e:
@@ -628,7 +697,12 @@ def slice_and_infer(
                     if os.path.exists(chip_path):
                         os.remove(chip_path)
     
-    return deduplicate_detections(detections)
+    deduped = deduplicate_detections(detections)
+    inference_summary["processed_chips"] = processed_windows
+    inference_summary["raw_detections"] = len(detections)
+    inference_summary["deduped_detections"] = len(deduped)
+    inference_summary["suppressed_detections"] = max(0, len(detections) - len(deduped))
+    return {"detections": deduped, "summary": inference_summary}
 
 
 def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str, dict] = None):
@@ -641,10 +715,15 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
             lon1, lat1, lon2, lat2 = det["geo_bbox"]
             confidence = det.get("confidence", 0.0)
             det_class = det.get("class", "Unknown")
+            original_class = det.get("original_class") or det_class
+            parent_class = det.get("parent_class") or parent_class_for_label(original_class)
+            decision = detection_decision(original_class, confidence, DETECTION_POLICY)
             ontology = (ontology_by_class or {}).get(det_class) or detection_ontology(det_class)
             assessment = assess_detection_threat(det_class, confidence=confidence, allegiance=det.get("allegiance", "unknown"))
             ontology = {
                 **ontology,
+                "original_class": original_class,
+                "parent_class": parent_class,
                 "threat_level": assessment["threat_level"],
                 "threat_confidence": assessment["threat_confidence"],
                 "assessment_status": assessment["assessment_status"],
@@ -674,9 +753,24 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
                 json.dumps({"bbox": pixel_bbox, "obb": det.get("pixel_obb", [])}),
                 json.dumps({
                     "source": "inference",
-                    "chip_size": 640,
+                    "chip_size": det.get("chip_window", [None, None, None, None])[2] or DEFAULT_INFERENCE_CHIP_SIZE,
                     "geo_polygon": geo_polygon,
                     "confidence": confidence,
+                    "calibrated_confidence": det.get("calibrated_confidence", confidence),
+                    "original_class": original_class,
+                    "parent_class": parent_class,
+                    "review_status": det.get("review_status") or decision["review_status"],
+                    "threshold_profile": det.get("threshold_profile") or DETECTION_POLICY["threshold_profile"],
+                    "class_threshold": det.get("class_threshold") or decision["class_threshold"],
+                    "model_version": det.get("model_version") or DETECTION_POLICY["model_version"],
+                    "taxonomy_version": det.get("taxonomy_version") or DETECTION_POLICY["taxonomy_version"],
+                    "chip_id": det.get("chip_id"),
+                    "chip_window": det.get("chip_window"),
+                    "coverage_fraction": det.get("coverage_fraction"),
+                    "planned_chips": det.get("planned_chips"),
+                    "source_total_chips": det.get("source_total_chips"),
+                    "sampling_enabled": det.get("sampling_enabled"),
+                    "dedupe_method": det.get("dedupe_method", "obb_nms"),
                     "ontology": ontology,
                     "threat_level": assessment["threat_level"],
                     "threat_confidence": assessment["threat_confidence"],
@@ -694,7 +788,13 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
                     postgis_id: $det_id,
                     class: $det_class,
                     label: $label,
+                    original_class: $original_class,
+                    parent_class: $parent_class,
                     confidence: $confidence,
+                    review_status: $review_status,
+                    threshold_profile: $threshold_profile,
+                    model_version: $model_version,
+                    taxonomy_version: $taxonomy_version,
                     threat_level: $threat_level,
                     threat_confidence: $threat_confidence,
                     assessment_status: $assessment_status,
@@ -710,7 +810,13 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
                 "det_id": det_id,
                 "det_class": det_class,
                 "label": ontology["label"],
+                "original_class": original_class,
+                "parent_class": parent_class,
                 "confidence": confidence,
+                "review_status": det.get("review_status") or decision["review_status"],
+                "threshold_profile": det.get("threshold_profile") or DETECTION_POLICY["threshold_profile"],
+                "model_version": det.get("model_version") or DETECTION_POLICY["model_version"],
+                "taxonomy_version": det.get("taxonomy_version") or DETECTION_POLICY["taxonomy_version"],
                 "threat_level": assessment["threat_level"],
                 "threat_confidence": assessment["threat_confidence"],
                 "assessment_status": assessment["assessment_status"],
@@ -1136,7 +1242,7 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
         report_progress(self, upload_id, input_path, "inference", 55, "Starting chip inference.", {"pass_id": pass_id})
         clear_existing_detections(pass_id)
         logger.info("[WORKER] Starting tiling inference...")
-        detections = slice_and_infer(
+        inference_result = slice_and_infer(
             cog_path,
             pass_id,
             progress_callback=lambda stage, progress, message, extra=None: report_progress(
@@ -1149,8 +1255,18 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
                 {"pass_id": pass_id, **(extra or {})},
             ),
         )
+        detections = inference_result["detections"]
+        inference_summary = inference_result["summary"]
         logger.info("[WORKER] Total detections after dedupe: %s", len(detections))
-        report_progress(self, upload_id, input_path, "classification", 90, "Inference complete; labeling detection classes.", {"pass_id": pass_id, "detections_count": len(detections)})
+        report_progress(
+            self,
+            upload_id,
+            input_path,
+            "classification",
+            90,
+            "Inference complete; labeling detection classes.",
+            {"pass_id": pass_id, "detections_count": len(detections), "inference_summary": inference_summary},
+        )
         ontology_by_class = classify_detection_ontologies(
             detections,
             progress_callback=lambda stage, progress, message, extra=None: report_progress(
@@ -1199,6 +1315,7 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
             "acquisition_time": acq_time,
             "replacement": replacement,
             "llm_task_id": llm_task_id,
+            "inference_summary": inference_summary,
         }
         update_upload_job(upload_id=upload_id, file_path=input_path, status="ready", metadata={
             **payload,

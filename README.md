@@ -65,6 +65,20 @@ open http://localhost:3000
 > **LLM (Ava):** point `.env` → `OPENAI_API_BASE` at a local vLLM / Ollama instance.
 > Without it the Ava chat tab returns a graceful error — all other tabs work offline.
 
+### Optical-Defense Detection Workflow
+
+The detector is now configured as an optical-only, OBB-first analyst-review workflow. Source labels are normalized into defense parent classes, known distractors such as dams and sports courts are disabled by default, and low-confidence detections are surfaced as review candidates rather than confirmed targets.
+
+Detailed operating instructions and next steps are in [ProjectPlan/OPTICAL_DEFENSE_DETECTION.md](ProjectPlan/OPTICAL_DEFENSE_DETECTION.md).
+
+| Setting | Default | Purpose |
+|---|---|---|
+| `DETECTION_THRESHOLD_PROFILE` | `recall_review` | Recall-first review mode |
+| `CONFIDENCE_THRESHOLD` | `0.12` | Low global inference floor |
+| `INFERENCE_CHIP_SIZE` | `1024` | Better small-object recall than 640 px chips |
+| `INFERENCE_CHIP_OVERLAP` | `256` | Reduces chip-boundary misses |
+| `MAX_INFERENCE_CHIPS` | `0` | Full raster coverage; no silent chip sampling |
+
 ### Environment Variables (`.env`)
 
 | Variable | Default | Description |
@@ -80,6 +94,12 @@ open http://localhost:3000
 | `OPENAI_API_BASE` | *(unset)* | Local LLM endpoint |
 | `OPENAI_API_KEY` | `dummy` | |
 | `OPENAI_MODEL` | `google/gemma-4-31B-it` | |
+| `DETECTION_THRESHOLD_PROFILE` | `recall_review` | Detection policy profile: `recall_review`, `balanced`, or `high_precision` |
+| `GLOBAL_CONFIDENCE_FLOOR` | profile default | Optional inference confidence floor override |
+| `HIGH_CONFIDENCE_THRESHOLD` | profile default | Confidence required for `high_confidence` review status |
+| `ENABLED_PARENT_CLASSES` | defense parent classes | Comma-separated enabled parent classes |
+| `DISABLED_PARENT_CLASSES` | `dam,recreation,water,unknown` | Comma-separated distractor classes suppressed by policy |
+| `PER_CLASS_CONFIDENCE_OVERRIDES` | `{}` | JSON map of parent/original class thresholds |
 
 ---
 
@@ -117,6 +137,8 @@ The dashboard is a single-page application with a sidebar of 7 tabs.
 ---
 
 ## Imagery Pipeline
+
+Current optical-defense inference uses overlapping 1024x1024 RGB chips by default, OBB-aware cross-chip dedupe, and full-raster coverage unless `MAX_INFERENCE_CHIPS` is explicitly capped. Stored detections include parent class, original class, calibrated confidence, review status, threshold profile, chip provenance, model/taxonomy version, and coverage metadata.
 
 ### Ingest a GeoTIFF
 
@@ -184,9 +206,12 @@ http://localhost:3001/ne_countries/{z}/{x}/{y}
 
 - **Model**: prefers OBB checkpoint `inference/models/geoint_yolov8_obb.pt`; falls back to bundled `inference/yolov8n.pt`
 - **Modes**: YOLOv8 OBB for trained GEOINT models; SAHI sliced prediction remains available for horizontal fallback models
+- **Policy**: optical-defense taxonomy with threshold profiles and default suppression of `dam`, `recreation`, `water`, and `unknown`
 - **Input**: `multipart/form-data` with `image` (PNG/JPEG, RGB) + `metadata` (JSON string)
 - **Output**: `{"status": "success", "detections": [{class, bbox, confidence}], "processing_time_ms": ...}`
 - **Health**: `GET /health` returns model path, model availability, SAHI availability, and device
+
+Current detection responses also include `original_class`, `parent_class`, `calibrated_confidence`, `review_status`, `threshold_profile`, `model_version`, and `taxonomy_version`. `GET /health` includes the active detection policy.
 
 ### GPU Portability
 
@@ -254,6 +279,8 @@ training_dataset/raw/
 
 #### Prepare
 
+The default preparation mode is now `--taxonomy optical-defense`. It collapses source-specific labels into defense parent classes, preserves original labels in `manifest.jsonl`, and keeps distractor-only tiles as hard negatives unless `--include-distractors` is set.
+
 ```bash
 # Verify each parser independently first — catches malformed/missing archives early.
 # Each run prints a balance report and per-dataset tile/label counts.
@@ -267,10 +294,15 @@ done
 # collapsing minority classes to zero.
 python inference/prepare_datasets.py \
     --datasets xview dota fair1m dior sodaa hrsc2016 \
-    --max-instances-per-class 50000 --clean
+    --tile-size 1024 \
+    --overlap 0.2 \
+    --include-empty-ratio 0.05 \
+    --hard-negative-ratio 0.5 \
+    --max-instances-per-class 50000 \
+    --clean
 ```
 
-A successful combined run produces approximately **~135k tiles, ~1.6M labels, ~120 classes** under `training_dataset/yolo/`. Inspect `summary.json` for the per-dataset breakdown. If any single-dataset run prints `0 tiles, 0 labels`, the diagnostics block (images found, files matched, parsed annotations) tells you what the parser missed.
+A successful combined run writes the YOLO dataset and audit artifacts under `training_dataset/yolo/`: `data.yaml`, `classes.json`, `taxonomy.json`, `manifest.jsonl`, `split_summary.json`, `class_distribution.csv`, `source_distribution.csv`, and `object_size_distribution.csv`. Inspect these before training. If any single-dataset run prints `0 tiles, 0 labels`, the diagnostics block tells you what the parser missed.
 
 Importing pre-staged archives without rearranging the raw tree:
 
@@ -301,18 +333,34 @@ The trainer promotes `best.pt` from the run to `inference/models/geoint_yolov8_o
 python inference/train_model.py \
     --data training_dataset/yolo/data.yaml \
     --base-model yolov8s-obb.pt \
-    --epochs 100 --imgsz 640 --batch -1 --device 0
+    --epochs 100 --imgsz 1024 --batch auto --device 0
 
 # Multi GPU (e.g. 4× H100 / A100)
 python inference/train_model.py \
     --data training_dataset/yolo/data.yaml \
     --base-model yolov8s-obb.pt \
-    --epochs 100 --imgsz 640 --batch 64 --device 0,1,2,3
+    --epochs 100 --imgsz 1024 --batch 64 --device 0,1,2,3
 ```
 
 With ~120 classes and ~1.6M labels, `yolov8n-obb.pt` (the default base) is undersized — use `yolov8s-obb.pt` (small, ~11M params) or `yolov8m-obb.pt` (medium, ~26M params) for meaningful per-class accuracy. Larger backbones cost proportionally more wall-clock per epoch but are necessary at this class count.
 
 ---
+
+### Current Promotion Policy
+
+Training promotion is blocked unless final validation recall is at least `0.525`, the current copied-run baseline. Use `--promote-anyway` only after reviewing class-wise metrics and the failure benchmark. With the defense taxonomy, `yolov8s-obb.pt` or `yolov8m-obb.pt` should be the first baselines.
+
+Audit a copied run without the original dataset:
+
+```bash
+python inference/audit_training_run.py --run-dir training_dataset/runs/geoint_yolov8
+```
+
+Repair copied YOLO metadata when `taxonomy.json` is missing:
+
+```bash
+python inference/repair_yolo_artifacts.py --yolo-root training_dataset/yolo
+```
 
 ## Development
 

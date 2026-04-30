@@ -11,7 +11,10 @@ services:
     environment:
       - DEVICE=auto
       - TRAINED_MODEL_PATH=/app/models/geoint_yolov8_obb.pt
-      - CONFIDENCE_THRESHOLD=0.25
+      - DETECTION_THRESHOLD_PROFILE=recall_review
+      - CONFIDENCE_THRESHOLD=0.12
+      - NMS_IOU_THRESHOLD=0.55
+      - MODEL_VERSION=geoint-yolov8-obb-optical-defense
     volumes:
       - ./inference:/app
       - imagery_data:/data/imagery:ro

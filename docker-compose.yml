@@ -53,6 +53,8 @@ services:
       - IMAGERY_PATH=/data/imagery
       - FMV_PATH=/data/fmv
       - DATASET_PATH=/data/datasets
+      - DETECTION_THRESHOLD_PROFILE=recall_review
+      - MODEL_VERSION=geoint-yolov8-obb-optical-defense
     env_file:
       - .env
     depends_on:
@@ -115,7 +117,10 @@ services:
     environment:
       - DEVICE=auto
       - TRAINED_MODEL_PATH=/app/models/geoint_yolov8_obb.pt
-      - CONFIDENCE_THRESHOLD=0.25
+      - DETECTION_THRESHOLD_PROFILE=recall_review
+      - CONFIDENCE_THRESHOLD=0.12
+      - NMS_IOU_THRESHOLD=0.55
+      - MODEL_VERSION=geoint-yolov8-obb-optical-defense
     volumes:
       - ./inference:/app
       - imagery_data:/data/imagery:ro
@@ -147,6 +152,11 @@ services:
       - IMAGERY_PATH=/data/imagery
       - FMV_PATH=/data/fmv
       - DATASET_PATH=/data/datasets
+      - DETECTION_THRESHOLD_PROFILE=recall_review
+      - MODEL_VERSION=geoint-yolov8-obb-optical-defense
+      - INFERENCE_CHIP_SIZE=1024
+      - INFERENCE_CHIP_OVERLAP=256
+      - MAX_INFERENCE_CHIPS=0
     depends_on:
       neo4j:
         condition: service_healthy
