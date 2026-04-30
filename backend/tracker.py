@@ -197,8 +197,7 @@ def update_tracks_for_pass(pass_id: int, *, postgis_db) -> dict:
         return stats  # can't track without a timestamp
     # ensure timezone-aware
     if acq_time.tzinfo is None:
-        import datetime
-        acq_time = acq_time.replace(tzinfo=datetime.timezone.utc)
+        acq_time = acq_time.replace(tzinfo=timezone.utc)
     footprint_wkb = pass_row.get("footprint")  # may be None
     cloud_cover: float = float(pass_row["cloud_cover"] or 0.0)
     occluded_by_cloud = cloud_cover > CLOUD_COVER_OCCLUSION
