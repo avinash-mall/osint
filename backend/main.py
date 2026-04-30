@@ -3816,5 +3816,303 @@ def chat(req: ChatRequest):
     except AIUnavailable as e:
         raise HTTPException(status_code=503, detail=str(e))
 
+# ---------------------------------------------------------------------------
+# Detection Tracks API
+# ---------------------------------------------------------------------------
+
+from threat_assessment import category_for_class  # noqa: E402 (already imported module)
+
+
+def _dt_iso(v) -> Optional[str]:
+    if v is None:
+        return None
+    if isinstance(v, str):
+        return v
+    return v.isoformat()
+
+
+class PinRequest(BaseModel):
+    detection_id: int
+
+
+class ReprocessRequest(BaseModel):
+    since: Optional[str] = None
+
+
+@app.get("/api/tracks/detections")
+def list_detection_tracks(
+    bbox: Optional[str] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    status: str = "confirmed,coast,pinned",
+    category: Optional[str] = None,
+    min_obs: int = 1,
+    limit: int = 200,
+):
+    limit = min(limit, 500)
+    status_list = [s.strip() for s in status.split(",") if s.strip()]
+
+    start_dt = datetime.fromisoformat(start_time) if start_time else None
+    end_dt = datetime.fromisoformat(end_time) if end_time else None
+
+    bbox_parts = None
+    if bbox:
+        try:
+            bbox_parts = [float(x) for x in bbox.split(",")]
+            if len(bbox_parts) != 4:
+                bbox_parts = None
+        except ValueError:
+            bbox_parts = None
+
+    sql = """
+        SELECT
+            dt.id, dt.track_uid, dt.primary_class, dt.category, dt.threat_level,
+            dt.status, dt.pinned, dt.obs_count, dt.miss_count,
+            dt.first_seen, dt.last_seen,
+            ST_X(dt.last_centroid) AS lon, ST_Y(dt.last_centroid) AS lat,
+            dt.last_velocity, dt.metadata,
+            ST_AsGeoJSON(dt.path)::text AS path_geojson,
+            json_agg(
+                json_build_object(
+                    'lat', ST_Y(m.centroid),
+                    'lng', ST_X(m.centroid),
+                    'time', m.observed_at,
+                    'detection_id', m.detection_id,
+                    'seq_index', m.seq_index,
+                    'cost', m.cost
+                ) ORDER BY m.observed_at
+            ) AS history
+        FROM detection_tracks dt
+        LEFT JOIN detection_track_members m ON m.track_id = dt.id
+        WHERE dt.status = ANY(%s)
+          AND dt.obs_count >= %s
+          AND (%s IS NULL OR dt.last_seen >= %s)
+          AND (%s IS NULL OR dt.first_seen <= %s)
+          AND (%s IS NULL OR dt.category = %s)
+          AND (%s IS NULL OR ST_Intersects(dt.last_centroid,
+              ST_MakeEnvelope(%s, %s, %s, %s, 4326)))
+        GROUP BY dt.id
+        ORDER BY dt.last_seen DESC NULLS LAST
+        LIMIT %s
+    """
+    bbox_minlon = bbox_parts[0] if bbox_parts else None
+    bbox_minlat = bbox_parts[1] if bbox_parts else None
+    bbox_maxlon = bbox_parts[2] if bbox_parts else None
+    bbox_maxlat = bbox_parts[3] if bbox_parts else None
+
+    params = (
+        status_list, min_obs,
+        start_dt, start_dt,
+        end_dt, end_dt,
+        category, category,
+        bbox_minlon, bbox_minlon, bbox_minlat, bbox_maxlon, bbox_maxlat,
+        limit,
+    )
+
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+
+    tracks = []
+    for row in rows:
+        row = dict(row)
+        tracks.append({
+            "id": row["track_uid"],
+            "track_uid": row["track_uid"],
+            "primary_class": row["primary_class"],
+            "category": row["category"],
+            "threat_level": row["threat_level"],
+            "status": row["status"],
+            "pinned": row["pinned"],
+            "obs_count": row["obs_count"],
+            "miss_count": row["miss_count"],
+            "first_seen": _dt_iso(row["first_seen"]),
+            "last_seen": _dt_iso(row["last_seen"]),
+            "latest": {"lat": row["lat"], "lon": row["lon"], "class": row["primary_class"]},
+            "history": row["history"] or [],
+            "path_geojson": row["path_geojson"],
+            "last_velocity": row["last_velocity"] or {},
+            "metadata": row["metadata"] or {},
+        })
+    return {"tracks": tracks, "total": len(tracks)}
+
+
+@app.get("/api/tracks/detections/{track_uid}")
+def get_detection_track(track_uid: str):
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT dt.id, dt.track_uid, dt.primary_class, dt.category, dt.threat_level,
+                   dt.status, dt.pinned, dt.obs_count, dt.miss_count,
+                   dt.first_seen, dt.last_seen,
+                   ST_X(dt.last_centroid) AS lon, ST_Y(dt.last_centroid) AS lat,
+                   dt.last_velocity, dt.metadata,
+                   ST_AsGeoJSON(dt.path)::text AS path_geojson
+            FROM detection_tracks dt WHERE dt.track_uid = %s
+        """, (track_uid,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Track not found")
+        row = dict(row)
+
+        cursor.execute("""
+            SELECT m.detection_id, m.pass_id, m.observed_at,
+                   ST_Y(m.centroid) AS lat, ST_X(m.centroid) AS lon,
+                   m.seq_index, m.cost,
+                   d.class, d.confidence
+            FROM detection_track_members m
+            JOIN detections d ON d.id = m.detection_id
+            WHERE m.track_id = %s
+            ORDER BY m.observed_at
+        """, (row["id"],))
+        members = [dict(r) for r in cursor.fetchall()]
+
+    history = [
+        {
+            "lat": m["lat"], "lng": m["lon"],
+            "time": _dt_iso(m["observed_at"]),
+            "detection_id": m["detection_id"],
+            "seq_index": m["seq_index"],
+            "cost": m["cost"],
+            "class": m["class"],
+            "confidence": m["confidence"],
+        }
+        for m in members
+    ]
+
+    track = {
+        "id": row["track_uid"],
+        "track_uid": row["track_uid"],
+        "primary_class": row["primary_class"],
+        "category": row["category"],
+        "threat_level": row["threat_level"],
+        "status": row["status"],
+        "pinned": row["pinned"],
+        "obs_count": row["obs_count"],
+        "miss_count": row["miss_count"],
+        "first_seen": _dt_iso(row["first_seen"]),
+        "last_seen": _dt_iso(row["last_seen"]),
+        "latest": {"lat": row["lat"], "lon": row["lon"], "class": row["primary_class"]},
+        "history": history,
+        "path_geojson": row["path_geojson"],
+        "last_velocity": row["last_velocity"] or {},
+        "metadata": row["metadata"] or {},
+    }
+    return {"track": track}
+
+
+@app.post("/api/tracks/detections/reprocess")
+def reprocess_detection_tracks(req: ReprocessRequest):
+    since_dt = None
+    if req.since:
+        try:
+            since_dt = datetime.fromisoformat(req.since)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid since datetime format")
+    try:
+        from tracker import reprocess_all_tracks
+    except ImportError:
+        raise HTTPException(status_code=501, detail="Tracker module not available")
+    result = reprocess_all_tracks(postgis_db=postgis_db, since=since_dt)
+    return {"status": "ok", "result": result}
+
+
+@app.post("/api/tracks/detections/pin")
+def pin_detection(req: PinRequest):
+    detection_id = req.detection_id
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT d.id, d.class, d.confidence, d.pass_id,
+                   ST_Y(d.centroid) AS lat, ST_X(d.centroid) AS lon,
+                   sp.acquisition_time
+            FROM detections d
+            JOIN satellite_passes sp ON sp.id = d.pass_id
+            WHERE d.id = %s
+        """, (detection_id,))
+        det = cursor.fetchone()
+        if not det:
+            raise HTTPException(status_code=404, detail="Detection not found")
+        det = dict(det)
+
+        cursor.execute(
+            "SELECT track_id FROM detection_track_members WHERE detection_id = %s",
+            (detection_id,)
+        )
+        existing = cursor.fetchone()
+        existing_track_id = existing["track_id"] if existing else None
+
+    if existing_track_id:
+        with postgis_db.get_cursor(commit=True) as cursor:
+            cursor.execute("""
+                UPDATE detection_tracks SET pinned = TRUE, status = 'pinned', updated_at = NOW()
+                WHERE id = %s
+                RETURNING id, track_uid, status, pinned, primary_class, obs_count
+            """, (existing_track_id,))
+            updated = dict(cursor.fetchone())
+        return {"track": updated, "action": "pinned_existing"}
+
+    det_class = det["class"]
+    try:
+        cat = category_for_class(det_class)
+    except Exception:
+        cat = "unknown"
+    try:
+        threat = assess_detection_threat(det_class, confidence=det["confidence"]).get("threat_level", "unknown")
+    except Exception:
+        threat = "unknown"
+
+    track_uid = "dt_" + uuid.uuid4().hex[:12]
+    acq_time = det["acquisition_time"]
+
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            INSERT INTO detection_tracks
+              (track_uid, primary_class, category, threat_level, status, pinned, obs_count,
+               first_seen, last_seen, last_centroid, last_velocity, metadata)
+            VALUES (%s, %s, %s, %s, 'pinned', TRUE, 1, %s, %s,
+                    ST_SetSRID(ST_MakePoint(%s, %s), 4326), '{}', %s)
+            RETURNING id
+        """, (
+            track_uid, det_class, cat, threat,
+            acq_time, acq_time,
+            det["lon"], det["lat"],
+            json.dumps({"source": "analyst_pin", "pinned_by": "analyst"}),
+        ))
+        new_track_id = cursor.fetchone()["id"]
+
+        cursor.execute("""
+            INSERT INTO detection_track_members
+              (track_id, detection_id, pass_id, observed_at, centroid, seq_index, cost)
+            VALUES (%s, %s, %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326), 0, 0.0)
+            ON CONFLICT (detection_id) DO NOTHING
+        """, (
+            new_track_id, detection_id, det["pass_id"],
+            acq_time, det["lon"], det["lat"],
+        ))
+
+    return {"track": {"track_uid": track_uid, "status": "pinned", "pinned": True,
+                      "primary_class": det_class, "obs_count": 1}, "action": "created"}
+
+
+@app.delete("/api/tracks/detections/{track_uid}/pin")
+def unpin_detection_track(track_uid: str):
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            UPDATE detection_tracks SET
+              pinned = FALSE,
+              status = CASE
+                WHEN miss_count >= 3 THEN 'lost'
+                WHEN obs_count >= 2 THEN 'confirmed'
+                ELSE 'tentative'
+              END,
+              updated_at = NOW()
+            WHERE track_uid = %s
+            RETURNING id, status
+        """, (track_uid,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Track not found")
+    return {"status": "unpinned", "track_uid": track_uid, "new_status": row["status"]}
+
+
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8080)
