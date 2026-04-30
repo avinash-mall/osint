@@ -18,3 +18,5 @@ rioxarray
 pillow
 numpy
 requests
+scipy>=1.11
+pyproj>=3.6

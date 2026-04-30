@@ -181,3 +181,43 @@ BEGIN
     RETURN result;
 END;
 $$ LANGUAGE plpgsql;
+
+-- Detection tracking tables (satellite-pass temporal association)
+CREATE TABLE IF NOT EXISTS detection_tracks (
+    id              SERIAL PRIMARY KEY,
+    track_uid       VARCHAR(64) UNIQUE NOT NULL,
+    primary_class   VARCHAR(100) NOT NULL,
+    category        VARCHAR(50),
+    threat_level    VARCHAR(20),
+    status          VARCHAR(20) DEFAULT 'tentative',
+    pinned          BOOLEAN DEFAULT FALSE,
+    obs_count       INTEGER DEFAULT 0,
+    miss_count      INTEGER DEFAULT 0,
+    first_seen      TIMESTAMP WITH TIME ZONE,
+    last_seen       TIMESTAMP WITH TIME ZONE,
+    last_centroid   GEOMETRY(POINT, 4326),
+    last_velocity   JSONB DEFAULT '{}',
+    path            GEOMETRY(LINESTRING, 4326),
+    metadata        JSONB DEFAULT '{}',
+    created_at      TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at      TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_detection_tracks_status        ON detection_tracks(status);
+CREATE INDEX IF NOT EXISTS idx_detection_tracks_last_seen     ON detection_tracks(last_seen);
+CREATE INDEX IF NOT EXISTS idx_detection_tracks_last_centroid ON detection_tracks USING GIST(last_centroid);
+CREATE INDEX IF NOT EXISTS idx_detection_tracks_path          ON detection_tracks USING GIST(path);
+
+CREATE TABLE IF NOT EXISTS detection_track_members (
+    id            SERIAL PRIMARY KEY,
+    track_id      INTEGER REFERENCES detection_tracks(id) ON DELETE CASCADE,
+    detection_id  INTEGER REFERENCES detections(id) ON DELETE CASCADE UNIQUE,
+    pass_id       INTEGER REFERENCES satellite_passes(id) ON DELETE CASCADE,
+    observed_at   TIMESTAMP WITH TIME ZONE,
+    centroid      GEOMETRY(POINT, 4326),
+    seq_index     INTEGER,
+    cost          REAL,
+    created_at    TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_dtm_track     ON detection_track_members(track_id, observed_at);
+CREATE INDEX IF NOT EXISTS idx_dtm_detection ON detection_track_members(detection_id);
+CREATE INDEX IF NOT EXISTS idx_dtm_pass      ON detection_track_members(pass_id);

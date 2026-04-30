@@ -1174,9 +1174,9 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
         try:
             from tracker import update_tracks_for_pass
             tracker_stats = update_tracks_for_pass(pass_id, postgis_db=postgis_db)
-            logger.info("Tracker updated for pass %s: %s", pass_id, tracker_stats)
+            logger.info("[WORKER] Tracker updated for pass %s: %s", pass_id, tracker_stats)
         except Exception as exc:
-            logger.exception("Tracker update failed for pass %s: %s", pass_id, exc)
+            logger.exception("[WORKER] Tracker update failed for pass %s: %s", pass_id, exc)
 
         llm_task_id = None
         llm_should_queue = False

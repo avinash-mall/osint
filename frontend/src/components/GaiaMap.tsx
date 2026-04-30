@@ -104,6 +104,66 @@ function detectionCenter(feature: any): [number, number] | null {
   return Number.isFinite(lat) && Number.isFinite(lon) ? [lat, lon] : null;
 }
 
+interface DetectionTrackHistoryPoint {
+  lat: number;
+  lng: number;
+  time: string;
+  detection_id: number;
+  seq_index: number;
+  cost: number;
+}
+
+interface DetectionTrack {
+  id: string;
+  track_uid: string;
+  primary_class: string;
+  category: string;
+  threat_level: string;
+  status: 'tentative' | 'confirmed' | 'coast' | 'lost' | 'pinned';
+  pinned: boolean;
+  obs_count: number;
+  miss_count: number;
+  first_seen: string | null;
+  last_seen: string | null;
+  latest: { lat: number; lon: number; class: string };
+  history: DetectionTrackHistoryPoint[];
+  path_geojson: string | null;
+  last_velocity: { vx_mps?: number; vy_mps?: number };
+  metadata: Record<string, unknown>;
+}
+
+const TRACKER_CATEGORY_TO_CATEGORY_ID: Record<string, DetectionCategoryId> = {
+  maritime: 'sea',
+  ground: 'vehicle',
+  air: 'air',
+  combat: 'mil',
+  infrastructure: 'infra',
+  default: 'other',
+  unknown: 'other',
+};
+
+function trackColor(category: string): string {
+  const catId = TRACKER_CATEGORY_TO_CATEGORY_ID[category] ?? 'other';
+  return DETECTION_CATEGORIES[catId]?.color ?? '#727a83';
+}
+
+function trackDashArray(status: DetectionTrack['status']): string | undefined {
+  if (status === 'confirmed' || status === 'pinned') return undefined;
+  if (status === 'coast') return '4 6';
+  if (status === 'tentative') return '2 8';
+  return undefined;
+}
+
+function relativeTime(iso: string | null): string {
+  if (!iso) return 'never';
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
 function extendBoundsWithCoordinates(bounds: L.LatLngBounds, coordinates: any): void {
   if (!Array.isArray(coordinates)) return;
   if (coordinates.length >= 2 && typeof coordinates[0] === 'number' && typeof coordinates[1] === 'number') {
@@ -278,6 +338,8 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
   const [detectionsLayerVersion, setDetectionsLayerVersion] = useState(0);
   const [detectionLabelSearch, setDetectionLabelSearch] = useState('');
   const [selectedDetection, setSelectedDetection] = useState<any | null>(null);
+  const [detectionTracks, setDetectionTracks] = useState<DetectionTrack[]>([]);
+  const [selectedDetectionTrack, setSelectedDetectionTrack] = useState<DetectionTrack | null>(null);
   const [showBbox, setShowBbox] = useState(true);
   const [timelineWindowMinutes, setTimelineWindowMinutes] = useState(60);
   const [timelinePlaying, setTimelinePlaying] = useState(false);
@@ -295,6 +357,7 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
     satellite: true,
     detections: true,
     tracks: true,
+    detectionTracks: true,
     static: true,
     grid: true,
   });
@@ -513,6 +576,37 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
     }
   }, []);
 
+  const fetchDetectionTracks = useCallback(async () => {
+    try {
+      const params = new URLSearchParams({
+        status: 'confirmed,coast,pinned,tentative',
+        start_time: timeRange.start,
+        end_time: timeRange.end,
+        limit: '200',
+      });
+      if (mapBounds) params.set('bbox', mapBounds);
+      const response = await axios.get(`${API_URL}/api/tracks/detections?${params.toString()}`, { timeout: 10000 });
+      setDetectionTracks(response.data?.tracks || []);
+    } catch (error) {
+      console.error('Error fetching detection tracks:', error);
+    }
+  }, [timeRange, mapBounds]);
+
+  const pinTrack = useCallback(async (detectionId: number) => {
+    setIsActionBusy(true);
+    setActionStatus('Pinning track...');
+    try {
+      await axios.post(`${API_URL}/api/tracks/detections/pin`, { detection_id: detectionId }, { timeout: 10000 });
+      setActionStatus('Track pinned.');
+      fetchDetectionTracks();
+    } catch (error) {
+      console.error('Error pinning track:', error);
+      setActionStatus('Track pin failed.');
+    } finally {
+      setIsActionBusy(false);
+    }
+  }, [fetchDetectionTracks]);
+
   const fetchUploadJobs = useCallback(async () => {
     try {
       const response = await axios.get(`${API_URL}/api/ingest/uploads`);
@@ -569,6 +663,7 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
   useEffect(() => { fetchUploadJobs(); }, [fetchUploadJobs]);
   useEffect(() => { fetchImagery(); }, [fetchImagery]);
   useEffect(() => { fetchDetections(); }, [fetchDetections]);
+  useEffect(() => { fetchDetectionTracks(); }, [fetchDetectionTracks]);
 
   useEffect(() => {
     const fetchBasemap = async () => {
@@ -592,9 +687,10 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
   useEventStream('detections', useCallback((message: any) => {
     focusTimeRange(message?.acquisition_time);
     fetchDetections();
+    fetchDetectionTracks();
     fetchImagery();
     fetchUploadJobs();
-  }, [focusTimeRange, fetchDetections, fetchImagery, fetchUploadJobs]));
+  }, [focusTimeRange, fetchDetections, fetchDetectionTracks, fetchImagery, fetchUploadJobs]));
   useEventStream('imagery', useCallback((message: any) => {
     focusTimeRange(message?.acquisition_time);
     fetchImagery();
@@ -1117,6 +1213,75 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
                 </div>
               );
             })}
+
+            {activeLayers.detectionTracks && detectionTracks
+              .filter((track) => track.status !== 'lost' && track.history.length >= 2)
+              .map((track) => {
+                const color = trackColor(track.category);
+                const dashArray = trackDashArray(track.status);
+                const positions: [number, number][] = track.history.map((h) => [h.lat, h.lng]);
+                const isSelected = selectedDetectionTrack?.track_uid === track.track_uid;
+                return (
+                  <div key={track.track_uid}>
+                    {track.status === 'confirmed' && track.threat_level === 'critical' && (
+                      <Polyline
+                        positions={positions}
+                        pathOptions={{ color, weight: 6, opacity: 0.18 }}
+                      />
+                    )}
+                    {track.pinned && (
+                      <Polyline
+                        positions={positions}
+                        pathOptions={{ color: '#ffffff', weight: isSelected ? 6 : 4, opacity: 0.25 }}
+                      />
+                    )}
+                    <Polyline
+                      positions={positions}
+                      pathOptions={{
+                        color,
+                        weight: isSelected ? 3 : 2,
+                        opacity: isSelected ? 1 : 0.75,
+                        dashArray,
+                      }}
+                      eventHandlers={{ click: () => setSelectedDetectionTrack(track) }}
+                    />
+                    {track.history.map((h, i) => (
+                      <CircleMarker
+                        key={`${track.track_uid}-${i}`}
+                        center={[h.lat, h.lng]}
+                        radius={2}
+                        pathOptions={{
+                          color,
+                          fillColor: color,
+                          fillOpacity: 0.3 + 0.7 * (i / Math.max(1, track.history.length - 1)),
+                          opacity: 0,
+                          weight: 0,
+                        }}
+                      />
+                    ))}
+                    {track.latest && (
+                      <Marker
+                        position={[track.latest.lat, track.latest.lon]}
+                        icon={createIcon(color)}
+                        eventHandlers={{ click: () => setSelectedDetectionTrack(track) }}
+                      >
+                        <Popup className="gotham-popup">
+                          <div className="border border-sentinel-line bg-sentinel-panel p-2 text-slate-200">
+                            <div className="mb-2 border-b border-sentinel-line pb-1 text-xs font-bold uppercase tracking-wider">
+                              DT-{track.track_uid.slice(-6)} {track.pinned ? '· PINNED' : ''}
+                            </div>
+                            <div className="font-mono text-[11px] text-sentinel-muted">
+                              CLASS {track.primary_class}<br />
+                              STATUS {track.status.toUpperCase()}<br />
+                              OBS {track.obs_count} · {relativeTime(track.last_seen)}
+                            </div>
+                          </div>
+                        </Popup>
+                      </Marker>
+                    )}
+                  </div>
+                );
+              })}
           </MapContainer>
 
           <div className="pointer-events-none absolute inset-0">
@@ -1265,6 +1430,15 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
                 <button type="button" disabled={isActionBusy} onClick={() => tagDetection(selectedDetection.properties.id, 'hostile')} className="sentinel-btn justify-center disabled:opacity-40"><Swords className="h-3.5 w-3.5" /> Hostile</button>
                 <button type="button" disabled={isActionBusy} onClick={() => tagDetection(selectedDetection.properties.id, 'neutral')} className="sentinel-btn justify-center disabled:opacity-40"><CircleHelp className="h-3.5 w-3.5" /> Neutral</button>
                 <button type="button" disabled={isActionBusy} onClick={() => tagDetection(selectedDetection.properties.id, 'unknown')} className="sentinel-btn justify-center disabled:opacity-40">Clear</button>
+                <button
+                  type="button"
+                  disabled={isActionBusy}
+                  onClick={() => pinTrack(selectedDetection.properties.id)}
+                  className="sentinel-btn col-span-2 justify-center disabled:opacity-40"
+                  title="Force-create a track from this detection regardless of confidence"
+                >
+                  <Crosshair className="h-3.5 w-3.5" /> Track Object
+                </button>
               </div>
               <div className="border-b border-sentinel-line p-3">
                 <div className="mb-2 flex items-center gap-2">
@@ -1338,6 +1512,42 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
               <span className="sentinel-tag info">LIVE</span>
             </div>
           ))}
+
+          <div className="sentinel-panel-header">
+            <Crosshair className="h-4 w-4" />
+            <span>Detection Tracks</span>
+            <span className="sentinel-tag info ml-auto">{detectionTracks.filter((t) => t.status !== 'lost').length}</span>
+          </div>
+          {detectionTracks.length === 0 && (
+            <div className="border-b border-sentinel-line p-3 text-[11px] text-sentinel-muted">No detection tracks. Process imagery to generate tracks.</div>
+          )}
+          {detectionTracks.filter((t) => t.status !== 'lost').slice(0, 8).map((track) => {
+            const color = trackColor(track.category);
+            const isSelected = selectedDetectionTrack?.track_uid === track.track_uid;
+            return (
+              <button
+                type="button"
+                key={track.track_uid}
+                className={`sentinel-row grid-cols-[1fr_auto] w-full text-left ${isSelected ? 'bg-sentinel-line-2' : ''}`}
+                onClick={() => setSelectedDetectionTrack(isSelected ? null : track)}
+              >
+                <span className="min-w-0">
+                  <span className="flex items-center gap-1.5">
+                    <span style={{ color }} className="text-[8px]">●</span>
+                    <span className="truncate text-xs text-slate-200">{track.primary_class}</span>
+                    <span className={`sentinel-tag ${threatClass(track.threat_level)}`}>{track.threat_level}</span>
+                    {track.pinned && <span className="sentinel-tag warn">PIN</span>}
+                  </span>
+                  <span className="block truncate font-mono text-[10px] text-sentinel-muted">
+                    DT-{track.track_uid.slice(-6)} · {track.obs_count} obs · {relativeTime(track.last_seen)}
+                  </span>
+                </span>
+                <span className={`sentinel-tag ${track.status === 'confirmed' || track.status === 'pinned' ? 'ok' : track.status === 'coast' ? 'warn' : 'info'}`}>
+                  {track.status.toUpperCase()}
+                </span>
+              </button>
+            );
+          })}
 
           <div className="sentinel-panel-header">
             <Activity className="h-4 w-4" />
