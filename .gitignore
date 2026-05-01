@@ -43,6 +43,7 @@ vite-*.log
 /runs/
 /wandb/
 /mlruns/
+/sample/
 
 # Model checkpoints and exported weights
 *.pt

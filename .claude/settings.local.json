@@ -21,7 +21,14 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\('d:/osint/inference/prepare_datasets.py'\\).read\\(\\)\\); ast.parse\\(open\\('d:/osint/backend/threat_assessment.py'\\).read\\(\\)\\); ast.parse\\(open\\('d:/osint/backend/worker.py'\\).read\\(\\)\\); ast.parse\\(open\\('d:/osint/backend/main.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "Bash(npx --no-install tsc --noEmit -p tsconfig.json)",
       "Bash(./node_modules/.bin/tsc --noEmit src/utils/detectionTaxonomy.ts)",
-      "Bash(./node_modules/.bin/tsc --noEmit)"
+      "Bash(./node_modules/.bin/tsc --noEmit)",
+      "Bash(touch /nvme/osint/.git/objects/test_write)",
+      "Bash(rm /nvme/osint/.git/objects/test_write)",
+      "Bash(git ls-remote *)",
+      "Bash(docker compose *)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('/nvme/osint/inference-lae-dino/main.py'\\).read\\(\\)\\); print\\('main.py syntax OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('/nvme/osint/inference-lae-dino/serve.py'\\).read\\(\\)\\); print\\('serve.py syntax OK'\\)\")",
+      "Bash(python3 -c ' *)"
     ]
   }
 }
