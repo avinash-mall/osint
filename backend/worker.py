@@ -21,6 +21,11 @@ from threat_assessment import assess_detection_threat, clean_detection_class, co
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 INFERENCE_URL = os.getenv("INFERENCE_URL", "http://localhost:8001")
+INFERENCE_LAE_DINO_URL = os.getenv("INFERENCE_LAE_DINO_URL", "http://inference-lae-dino:8001")
+INFERENCE_PROVIDERS = {
+    "yolo": INFERENCE_URL,
+    "lae-dino": INFERENCE_LAE_DINO_URL,
+}
 IMAGERY_PATH = os.getenv("IMAGERY_PATH", "/data/imagery")
 
 
@@ -331,6 +336,33 @@ def clamp_float(value: float, low: float, high: float) -> float:
     return max(low, min(high, float(value)))
 
 
+def _provider_set(det: dict) -> list[str]:
+    explicit = det.get("providers")
+    if isinstance(explicit, (list, tuple)) and explicit:
+        return [str(p) for p in explicit if p]
+    single = det.get("provider")
+    return [str(single)] if single else []
+
+
+def _merge_provider_into(kept: dict, dropped: dict) -> None:
+    """Fold a dropped duplicate's provider attribution into the surviving (higher-confidence)
+    detection. The kept detection's bbox/obb/confidence are preserved unchanged; only the
+    provider list and per-provider confidences are extended. Used to mark a hit as
+    cross-confirmed when multiple providers find the same object."""
+    merged = set(_provider_set(kept))
+    merged.update(_provider_set(dropped))
+    kept["providers"] = sorted(p for p in merged if p)
+    pc = dict(kept.get("provider_confidences") or {})
+    dropped_conf = float(dropped.get("confidence") or 0.0)
+    for p in _provider_set(dropped):
+        pc[p] = max(pc.get(p, 0.0), dropped_conf)
+    kept_conf = float(kept.get("confidence") or 0.0)
+    for p in _provider_set(kept):
+        pc.setdefault(p, kept_conf)
+    if pc:
+        kept["provider_confidences"] = pc
+
+
 def deduplicate_detections(
     detections: list,
     iou_threshold: float = 0.45,
@@ -357,11 +389,14 @@ def deduplicate_detections(
             for dy in (-1, 0, 1):
                 nearby.extend(buckets.get((det_class, cx + dx, cy + dy), []))
 
-        duplicate = any(
-            detection_overlap(det, existing) >= iou_threshold
-            for existing in nearby
+        overlap_kept = next(
+            (existing for existing in nearby
+             if detection_overlap(det, existing) >= iou_threshold),
+            None,
         )
-        if not duplicate:
+        if overlap_kept is not None:
+            _merge_provider_into(overlap_kept, det)
+        else:
             det.setdefault("dedupe_method", "obb_nms")
             kept.append(det)
             buckets.setdefault((det_class, cx, cy), []).append(det)
@@ -508,10 +543,17 @@ def slice_and_infer(
     overlap: int = DEFAULT_INFERENCE_OVERLAP,
     max_chips: int = MAX_INFERENCE_CHIPS,
     progress_callback=None,
+    providers: list[str] = None,
 ):
     """
-    Slice COG into chips, send to inference service, and store results in PostGIS + Neo4j.
+    Slice COG into chips, send to inference service(s), and store results in PostGIS + Neo4j.
+    `providers` is a list of provider names (keys of INFERENCE_PROVIDERS). When more than one
+    provider is supplied, each chip is sent to all of them and detections are merged later
+    by deduplicate_detections.
     """
+    selected_providers = [p for p in (providers or ["yolo"]) if p in INFERENCE_PROVIDERS]
+    if not selected_providers:
+        selected_providers = ["yolo"]
     with rasterio.open(cog_path) as src:
         width = src.width
         height = src.height
@@ -603,18 +645,56 @@ def slice_and_infer(
                 # and multispectral rasters without relying on PNG geotags.
                 Image.fromarray(chip_to_uint8_rgb(chip), mode="RGB").save(chip_path)
                 
-                # Inference
+                # Inference — fan out to each selected provider. A failure in one
+                # provider is logged and skipped; other providers' results still land.
+                provider_responses: list[tuple[str, dict]] = []
+                chip_meta_payload = json.dumps({
+                    "pass_id": pass_id,
+                    "window": [x, y, win_width, win_height],
+                })
                 try:
-                    with open(chip_path, "rb") as f:
-                        resp = requests.post(
-                            f"{INFERENCE_URL}/detect",
-                            files={"image": f},
-                            data={"metadata": f'{{"pass_id": {pass_id}, "window": [{x}, {y}, {win_width}, {win_height}]}}'},
-                            timeout=60
+                    for provider_name in selected_providers:
+                        provider_url = INFERENCE_PROVIDERS[provider_name]
+                        try:
+                            with open(chip_path, "rb") as f:
+                                resp = requests.post(
+                                    f"{provider_url}/detect",
+                                    files={"image": f},
+                                    data={"metadata": chip_meta_payload},
+                                    timeout=120,
+                                )
+                            resp.raise_for_status()
+                            provider_responses.append((provider_name, resp.json()))
+                        except Exception as exc:
+                            logger.warning(
+                                "[WORKER] %s inference failed on chip %s: %s",
+                                provider_name, chip_path, exc,
+                            )
+                    if not provider_responses:
+                        # All providers failed for this chip — surface as a hard error to
+                        # match prior single-provider behaviour.
+                        raise RuntimeError(
+                            f"All providers failed for chip {chip_path}: {selected_providers}"
                         )
-                    resp.raise_for_status()
-                    inference_response = resp.json()
-                    chip_detections = inference_response.get("detections", [])
+
+                    chip_detections = []
+                    for provider_name, inference_response in provider_responses:
+                        for det in inference_response.get("detections", []):
+                            det["provider"] = provider_name
+                            det["providers"] = [provider_name]
+                            det["model_version"] = (
+                                inference_response.get("model_version")
+                                or det.get("model_version")
+                            )
+                            det["taxonomy_version"] = (
+                                inference_response.get("taxonomy_version")
+                                or det.get("taxonomy_version")
+                            )
+                            det["threshold_profile"] = (
+                                inference_response.get("threshold_profile")
+                                or det.get("threshold_profile")
+                            )
+                            chip_detections.append(det)
 
                     for det in chip_detections:
                         # Convert normalized bbox to pixel coords in chip
@@ -672,10 +752,19 @@ def slice_and_infer(
                             continue
 
                         det["class"] = decision["parent_class"]
+                        # Preserve provider/version that we tagged from chip_response above;
+                        # decision values are policy-side fallbacks.
+                        provider_name = det.get("provider")
+                        provider_list = det.get("providers") or ([provider_name] if provider_name else [])
+                        det_model_version = det.get("model_version") or decision["model_version"]
+                        det_taxonomy_version = det.get("taxonomy_version") or decision["taxonomy_version"]
+                        det_threshold_profile = det.get("threshold_profile") or decision["threshold_profile"]
                         det.update({**decision, **{
-                            "model_version": inference_response.get("model_version") or decision["model_version"],
-                            "taxonomy_version": inference_response.get("taxonomy_version") or decision["taxonomy_version"],
-                            "threshold_profile": inference_response.get("threshold_profile") or decision["threshold_profile"],
+                            "model_version": det_model_version,
+                            "taxonomy_version": det_taxonomy_version,
+                            "threshold_profile": det_threshold_profile,
+                            "provider": provider_name,
+                            "providers": provider_list,
                         }})
                         det["pixel_bbox"] = [abs_px_x1, abs_px_y1, abs_px_x2, abs_px_y2]
                         det["pixel_obb"] = pixel_obb
@@ -777,6 +866,9 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
                     "assessment_status": assessment["assessment_status"],
                     "evidence": assessment["evidence"],
                     "allegiance": det.get("allegiance", "unknown"),
+                    "provider": det.get("provider"),
+                    "providers": _provider_set(det),
+                    "provider_confidences": det.get("provider_confidences") or {},
                 })
             ))
             
@@ -1099,6 +1191,17 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
         filename = os.path.basename(input_path)
         upload_job = get_upload_job(upload_id)
         original_filename = upload_job.get("filename") or filename
+        upload_meta = upload_job.get("metadata") or {}
+        if isinstance(upload_meta, str):
+            try:
+                upload_meta = json.loads(upload_meta)
+            except (TypeError, ValueError):
+                upload_meta = {}
+        selected_providers = upload_meta.get("inference_providers") or ["yolo"]
+        selected_providers = [p for p in selected_providers if p in INFERENCE_PROVIDERS]
+        if not selected_providers:
+            selected_providers = ["yolo"]
+        logger.info("[WORKER] upload %s using inference providers: %s", upload_id, selected_providers)
         report_progress(self, upload_id, input_path, "metadata", 8, "Reading raster metadata and computing file hash.")
         raster_metadata = extract_raster_metadata(input_path)
         source_hash = raster_metadata.get("source_hash")
@@ -1245,6 +1348,7 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
         inference_result = slice_and_infer(
             cog_path,
             pass_id,
+            providers=selected_providers,
             progress_callback=lambda stage, progress, message, extra=None: report_progress(
                 self,
                 upload_id,

@@ -3249,16 +3249,32 @@ def trigger_ingest(req: IngestRequest):
     }
 
 
+_KNOWN_INFERENCE_PROVIDERS = ("yolo", "lae-dino")
+
+
+def _parse_inference_providers(raw: str) -> list[str]:
+    requested = [p.strip().lower() for p in (raw or "").split(",") if p.strip()]
+    seen: set[str] = set()
+    providers: list[str] = []
+    for p in requested:
+        if p in _KNOWN_INFERENCE_PROVIDERS and p not in seen:
+            providers.append(p)
+            seen.add(p)
+    return providers or ["yolo"]
+
+
 @app.post("/api/ingest/upload")
 async def upload_imagery(
     file: UploadFile = File(...),
     sensor_type: str = Form("Optical"),
     acquisition_time: Optional[str] = Form(None),
     auto_process: bool = Form(True),
+    inference_providers: str = Form("yolo"),
 ):
     ensure_platform_tables()
     filename = safe_filename(file.filename or "upload.tif")
     media_type, handler = classify_upload(filename)
+    selected_providers = _parse_inference_providers(inference_providers)
 
     if media_type == "fmv":
         upload_dir = Path(os.getenv("FMV_PATH", "/data/fmv")) / "incoming"
@@ -3299,6 +3315,7 @@ async def upload_imagery(
         "media_type": media_type,
         "handler": handler,
         "metadata": raster_metadata,
+        "inference_providers": selected_providers,
     }
     domain = domain_for_media(media_type, sensor_type)
     celery_task_id = None
@@ -3328,6 +3345,7 @@ async def upload_imagery(
                     "stage": "stored",
                     "progress": 0,
                     "message": "Upload stored.",
+                    "inference_providers": selected_providers,
                 }),
             ))
         upload_job_recorded = True

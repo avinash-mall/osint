@@ -50,6 +50,7 @@ services:
       - POSTGIS_URI=postgresql://gotham:gotham@postgis:5432/gotham
       - TITILER_URL=http://titiler:8080
       - INFERENCE_URL=http://inference:8001
+      - INFERENCE_LAE_DINO_URL=http://inference-lae-dino:8001
       - IMAGERY_PATH=/data/imagery
       - FMV_PATH=/data/fmv
       - DATASET_PATH=/data/datasets
@@ -169,6 +170,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - POSTGIS_URI=postgresql://gotham:gotham@postgis:5432/gotham
       - INFERENCE_URL=http://inference:8001
+      - INFERENCE_LAE_DINO_URL=http://inference-lae-dino:8001
       - IMAGERY_PATH=/data/imagery
       - FMV_PATH=/data/fmv
       - DATASET_PATH=/data/datasets

@@ -25,6 +25,8 @@ export default function IngestConnect() {
   const [file, setFile] = useState<File | null>(null);
   const [sensorType, setSensorType] = useState('Optical');
   const [autoProcess, setAutoProcess] = useState(true);
+  const [useYolo, setUseYolo] = useState(true);
+  const [useLaeDino, setUseLaeDino] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState('');
   const [uploadTransferProgress, setUploadTransferProgress] = useState(0);
@@ -94,6 +96,11 @@ export default function IngestConnect() {
 
   const uploadImage = async () => {
     if (!file || uploading) return;
+    const providers = [useYolo && 'yolo', useLaeDino && 'lae-dino'].filter(Boolean) as string[];
+    if (providers.length === 0) {
+      setUploadStatus('Select at least one inference provider.');
+      return;
+    }
     setUploading(true);
     setUploadTransferProgress(0);
     setUploadStatus('');
@@ -102,6 +109,7 @@ export default function IngestConnect() {
       form.append('file', file);
       form.append('sensor_type', sensorType);
       form.append('auto_process', String(autoProcess));
+      form.append('inference_providers', providers.join(','));
       const response = await axios.post(`${API_URL}/api/ingest/upload`, form, {
         headers: { 'Content-Type': 'multipart/form-data' },
         onUploadProgress: (event) => {
@@ -162,6 +170,42 @@ export default function IngestConnect() {
             />
           </label>
 
+          <div className="border border-slate-700 bg-slate-900 rounded px-4 py-3 flex flex-col gap-2">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-mono">
+              Inference Providers
+            </div>
+            <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={useYolo}
+                  onChange={(event) => setUseYolo(event.target.checked)}
+                />
+                <span className="text-slate-200">YOLOv8 OBB</span>
+                <span className="text-[10px] text-slate-500 font-mono">geoint-yolov8-obb</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={useLaeDino}
+                  onChange={(event) => setUseLaeDino(event.target.checked)}
+                />
+                <span className="text-slate-200">LAE-DINO</span>
+                <span className="text-[10px] text-slate-500 font-mono">open-vocab Swin-T</span>
+              </label>
+            </div>
+            {!useYolo && !useLaeDino && (
+              <div className="text-[10px] font-mono text-rose-400">
+                select at least one provider
+              </div>
+            )}
+            {useYolo && useLaeDino && (
+              <div className="text-[10px] font-mono text-emerald-400/80">
+                results from both will be merged (cross-confirmed detections tagged)
+              </div>
+            )}
+          </div>
+
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <select
               value={sensorType}
@@ -184,7 +228,7 @@ export default function IngestConnect() {
             </label>
             <button
               onClick={uploadImage}
-              disabled={!file || uploading}
+              disabled={!file || uploading || (!useYolo && !useLaeDino)}
               className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed rounded px-4 py-3 text-sm font-bold uppercase tracking-wider flex items-center justify-center gap-2"
             >
               <DatabaseZap className="w-4 h-4" /> Upload

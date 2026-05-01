@@ -28,7 +28,9 @@
       "Bash(docker compose *)",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('/nvme/osint/inference-lae-dino/main.py'\\).read\\(\\)\\); print\\('main.py syntax OK'\\)\")",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('/nvme/osint/inference-lae-dino/serve.py'\\).read\\(\\)\\); print\\('serve.py syntax OK'\\)\")",
-      "Bash(python3 -c ' *)"
+      "Bash(python3 -c ' *)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('/nvme/osint/backend/worker.py'\\).read\\(\\)\\); print\\('worker.py syntax OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('/nvme/osint/backend/main.py'\\).read\\(\\)\\); print\\('main.py syntax OK'\\)\")"
     ]
   }
 }
