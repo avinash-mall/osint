@@ -11,8 +11,8 @@ An open-source GEOINT exploitation platform inspired by Palantir Gotham. Ingests
 │  Nginx  :8090  (tile cache proxy + FMV HLS static files)     │
 ├──────────────┬───────────────┬──────────────────────────────-┤
 │  Frontend    │  Backend API  │  Inference                     │
-│  React 19    │  FastAPI      │  YOLOv8n + SAHI               │
-│  :3000       │  :8080        │  :8001                         │
+│  React 19    │  FastAPI      │  YOLO OBB + LAE-DINO          │
+│  :3000       │  :8080        │  :8002 / :8004                 │
 ├──────────────┴───────────────┴────────────────────────────────┤
 │  Celery worker (imagery + default queues)                     │
 ├──────────┬───────────────┬──────────┬──────────┬─────────────┤
@@ -22,7 +22,7 @@ An open-source GEOINT exploitation platform inspired by Palantir Gotham. Ingests
 └──────────┴───────────────┴──────────┴──────────┴─────────────┘
 ```
 
-**10 services** — all containerised, all healthy on an air-gapped host.
+**11 services** — all containerised, including YOLO OBB and LAE-DINO inference services.
 
 ---
 
@@ -36,7 +36,7 @@ An open-source GEOINT exploitation platform inspired by Palantir Gotham. Ingests
 | Task queue | Celery + Redis alpine (queues: `imagery`, `default`) |
 | Tile server | TiTiler — Cloud-Optimised GeoTIFF on-the-fly |
 | Vector tiles | Martin — PostGIS → Mapbox Vector Tiles |
-| AI inference | YOLOv8n + SAHI, CPU-only |
+| AI inference | YOLOv8 OBB optical detector + LAE-DINO open-vocabulary detector |
 | Frontend | React 19 · TypeScript · Vite 8 · Tailwind CSS v4 |
 | Map | react-leaflet (2D) · react-globe.gl (3D globe) · CesiumJS 1.124 (3D terrain) |
 | Reverse proxy | Nginx alpine — tile cache (24 h TTL) + FMV HLS serving |
@@ -60,6 +60,16 @@ docker exec -it osint-backend-1 python add_constellation.py  # Satellite constel
 
 # 4. Open the dashboard
 open http://localhost:3000
+```
+
+Default Compose runs LAE-DINO on CPU. Use the GPU overlay only on machines with the NVIDIA container runtime:
+
+```bash
+# CPU full stack
+docker compose up -d --build
+
+# GPU full stack
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
 ```
 
 > **LLM (Ava):** point `.env` → `OPENAI_API_BASE` at a local vLLM / Ollama instance.
@@ -90,6 +100,7 @@ Detailed operating instructions and next steps are in [ProjectPlan/OPTICAL_DEFEN
 | `REDIS_URL` | `redis://redis:6379/0` | Celery broker |
 | `TITILER_URL` | `http://titiler:8080` | Internal tile server |
 | `INFERENCE_URL` | `http://inference:8001` | Internal inference service |
+| `INFERENCE_LAE_DINO_URL` | `http://inference-lae-dino:8001` | Internal LAE-DINO open-vocabulary inference service |
 | `IMAGERY_PATH` | `/data/imagery` | Shared volume mount |
 | `OPENAI_API_BASE` | *(unset)* | Local LLM endpoint |
 | `OPENAI_API_KEY` | `dummy` | |
@@ -109,12 +120,13 @@ Detailed operating instructions and next steps are in [ProjectPlan/OPTICAL_DEFEN
 |---------|-------|------|---------|
 | `neo4j` | `neo4j:5.20.0` | 7474 / 7687 | Graph ontology + APOC |
 | `postgis` | `postgis/postgis:16-3.4` | 5432 | Spatial catalog, detections |
-| `backend` | `gotham-backend:latest` | 8080 | REST API |
-| `worker` | `gotham-backend:latest` | — | Celery imagery worker |
-| `frontend` | `gotham-frontend:latest` | 3000 | Vite dev server |
+| `backend` | `sentinelos-backend:latest` | 8080 | REST API |
+| `worker` | `sentinelos-backend:latest` | — | Celery imagery worker |
+| `frontend` | `sentinelos-frontend:latest` | 3000 | Vite dev server |
 | `titiler` | `developmentseed/titiler:latest` | 8081 | COG tile server |
 | `martin` | `maplibre/martin:latest` | 3001 | PostGIS → MVT |
-| `inference` | `gotham-inference:latest` | 8001 | YOLOv8n detection |
+| `inference` | `sentinelos-inference:latest` | 8002 -> 8001 | YOLOv8 OBB optical detection |
+| `inference-lae-dino` | `sentinelos-inference-lae-dino:cpu` or `:gpu` | 8004 -> 8001 | LAE-DINO open-vocabulary detection |
 | `redis` | `redis:alpine` | 6379 | Task queue |
 | `nginx` | `nginx:alpine` | 8090 | Tile cache + FMV HLS |
 
@@ -154,8 +166,8 @@ The `imagery` Celery worker then:
 1. Converts the raster to a Cloud-Optimised GeoTIFF (COG) via `gdal_translate`
 2. Catalogs the pass in PostGIS with a `MULTIPOLYGON` footprint
 3. Creates a `SatellitePass` node in Neo4j
-4. Slices the COG into 640×640 uint8 PNG chips
-5. Sends each chip to the inference service (`POST /detect`)
+4. Slices the COG into overlapping 1024x1024 uint8 PNG chips by default
+5. Sends each chip to the selected inference provider (`POST /detect`)
 6. Georeferences bounding boxes back to Lat/Lon
 7. Stores detections in PostGIS and Neo4j
 
@@ -206,6 +218,7 @@ http://localhost:3001/ne_countries/{z}/{x}/{y}
 
 - **Model**: prefers OBB checkpoint `inference/models/geoint_yolov8_obb.pt`; falls back to bundled `inference/yolov8n.pt`
 - **Modes**: YOLOv8 OBB for trained GEOINT models; SAHI sliced prediction remains available for horizontal fallback models
+- **Open vocabulary**: LAE-DINO is available as a second provider at `http://localhost:8004`
 - **Policy**: optical-defense taxonomy with threshold profiles and default suppression of `dam`, `recreation`, `water`, and `unknown`
 - **Input**: `multipart/form-data` with `image` (PNG/JPEG, RGB) + `metadata` (JSON string)
 - **Output**: `{"status": "success", "detections": [{class, bbox, confidence}], "processing_time_ms": ...}`
@@ -213,15 +226,43 @@ http://localhost:3001/ne_countries/{z}/{x}/{y}
 
 Current detection responses also include `original_class`, `parent_class`, `calibrated_confidence`, `review_status`, `threshold_profile`, `model_version`, and `taxonomy_version`. `GET /health` includes the active detection policy.
 
+### LAE-DINO CPU/GPU Images
+
+The base Compose file builds LAE-DINO with `inference-lae-dino/Dockerfile.cpu` and image tag `sentinelos-inference-lae-dino:cpu`. The GPU overlay switches only that service to `inference-lae-dino/Dockerfile.gpu`, image tag `sentinelos-inference-lae-dino:gpu`, `gpus: all`, and `DEVICE=auto`.
+
+```bash
+# CPU build and health check
+docker compose build inference-lae-dino
+docker compose up -d inference-lae-dino
+curl http://localhost:8004/health
+
+# GPU build and health check
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml build inference-lae-dino
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d inference-lae-dino
+curl http://localhost:8004/health
+```
+
+The verified CPU image uses:
+
+```text
+torch 2.0.0+cpu
+numpy 1.26.4
+transformers 4.42.3
+mmcv 2.1.0
+mmengine 0.10.7
+```
+
+Healthy LAE-DINO startup should report `model_loaded: true`, `mmdet_available: true`, `model_exists: true`, `bert_exists: true`, and `device: cpu` for the CPU path.
+
 ### GPU Portability
 
 Inference and training use `DEVICE=auto` by default: CUDA is preferred when the installed PyTorch build can use the host driver, otherwise inference falls back to CPU and training stops unless `--device cpu` is explicit. PyTorch CUDA wheels are not universal across all NVIDIA drivers, so choose the wheel index that matches the target machine when building or preparing an environment.
 
 ```bash
-# Full stack with GPU inference. Use both files; docker-compose.gpu.yml is the GPU overlay.
+# Full stack with GPU YOLO and GPU LAE-DINO. Use both files; docker-compose.gpu.yml is the GPU overlay.
 TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
 
-# Inference service only, with GPU access.
+# Inference services only, with GPU access. This does not start the databases, backend, or frontend.
 TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124 docker compose -f docker-compose.gpu.yml up -d --build
 
 # Build only, driver reports CUDA 12.4, for example NVIDIA driver 550.x
@@ -230,11 +271,11 @@ TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124 docker compose -f docker-
 # Newer CUDA wheel families can be selected the same way.
 TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128 docker compose -f docker-compose.yml -f docker-compose.gpu.yml build inference
 
-# CPU-only full stack for machines without NVIDIA GPUs.
+# CPU-only full stack for machines without NVIDIA GPUs. LAE-DINO uses Dockerfile.cpu by default.
 TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu docker compose up -d --build
 ```
 
-Do not run `docker compose -f docker-compose.gpu.yml up -d` when you want the full application stack; that file starts only the inference service. Use `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d` for all services plus GPU inference.
+Do not run `docker compose -f docker-compose.gpu.yml up -d` when you want the full application stack; that file starts only the GPU inference overrides. Use `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d` for all services plus GPU inference.
 
 For direct `.venv` usage, install the matching PyTorch wheel before training or running `uvicorn`:
 
@@ -246,7 +287,7 @@ python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda
 
 On multi-GPU machines, training auto-selects all visible GPUs by passing `device=0,1,...` to Ultralytics. Override with `--device 0`, `--device 1`, or `--device 0,1` to limit training to specific GPUs. Dataloader workers and CPU compute threads are calculated automatically unless `--workers`, `OMP_NUM_THREADS`, or `MKL_NUM_THREADS` are set.
 
-Inference also auto-selects all visible GPUs. The service loads one model replica per GPU and round-robins concurrent requests across those replicas. To restrict inference devices, set `DEVICE=0`, `DEVICE=0,1`, `DEVICE=cuda:2`, or `DEVICE=cpu`. The `/detect` endpoint offloads model work to a threadpool, while each model replica is locked so concurrent requests do not share the same model object unsafely. On CPU-only machines, start inference with `python inference/serve.py`; it automatically calculates Uvicorn worker processes and CPU threads per process. Override with `WEB_CONCURRENCY` or `CPU_THREADS` only when needed.
+YOLO inference auto-selects all visible GPUs when the GPU overlay is used. The service loads one model replica per GPU and round-robins concurrent requests across those replicas. To restrict YOLO inference devices, set `DEVICE=0`, `DEVICE=0,1`, `DEVICE=cuda:2`, or `DEVICE=cpu`. LAE-DINO uses `DEVICE=cpu` in the base Compose file and `DEVICE=auto` with `gpus: all` in the GPU overlay. The `/detect` endpoints offload model work to a threadpool, while each model replica is locked so concurrent requests do not share the same model object unsafely. On CPU-only machines, start inference with `python inference/serve.py`; it automatically calculates Uvicorn worker processes and CPU threads per process. Override with `WEB_CONCURRENCY` or `CPU_THREADS` only when needed.
 
 ### GEOINT Model Training
 
@@ -390,7 +431,7 @@ cd frontend && npm run build
 | Backend | Python / FastAPI | 3.11 |
 | Tile server | TiTiler | latest |
 | Vector tiles | Martin | latest |
-| AI inference | YOLOv8n + SAHI | ultralytics 8.x |
+| AI inference | YOLOv8 OBB + LAE-DINO | ultralytics 8.x, OpenMMLab/MMCV |
 | Worker queue | Celery + Redis | redis:alpine |
 | Reverse proxy | Nginx | alpine |
 | Frontend | React | 19 |
