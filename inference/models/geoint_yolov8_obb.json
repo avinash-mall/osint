@@ -1,0 +1,38 @@
+{
+  "promoted_at": "2026-05-01T03:30:00+00:00",
+  "source_checkpoint": "training_dataset/runs/runs/geoint_yolov8m_1024_defense/weights/best.pt",
+  "run_dir": "training_dataset/runs/runs/geoint_yolov8m_1024_defense",
+  "data": "training_dataset/yolo/data.yaml",
+  "base_model": "yolov8m-obb.pt",
+  "epochs": 100,
+  "imgsz": 1024,
+  "batch": 64,
+  "device": "0,1,2,3",
+  "taxonomy": "optical-defense",
+  "taxonomy_version": "optical-defense-v1",
+  "threshold_profile": "recall_review",
+  "metrics": {
+    "final": {
+      "epoch": 94,
+      "precision": 0.76712,
+      "recall": 0.68655,
+      "mAP50": 0.72322,
+      "mAP50-95": 0.54337
+    },
+    "best_recall": {
+      "epoch": 50,
+      "precision": 0.76522,
+      "recall": 0.69717,
+      "mAP50": 0.73416,
+      "mAP50-95": 0.54731
+    },
+    "best_mAP50_95": {
+      "epoch": 69,
+      "precision": 0.78544,
+      "recall": 0.68717,
+      "mAP50": 0.73412,
+      "mAP50-95": 0.55038
+    }
+  },
+  "promotion_reason": "Best local candidate among copied optical-defense 1024 OBB runs; improves recall from the previous baseline around 0.525 to 0.69717 and improves mAP50-95 from about 0.391 to 0.55038."
+}

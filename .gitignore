@@ -58,6 +58,8 @@ vite-*.log
 !inference/models/.gitkeep
 inference/models/*
 !inference/models/.gitkeep
+!inference/models/geoint_yolov8_obb.pt
+!inference/models/geoint_yolov8_obb.json
 
 # Large geospatial and media artifacts
 *.tif
