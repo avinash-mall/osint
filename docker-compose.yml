@@ -135,6 +135,10 @@ services:
     ports:
       - "8004:8001"
     environment:
+      # DEVICE=auto picks GPU when present (via gpus: all in docker-compose.gpu.yml)
+      # and falls back to CPU otherwise. Image is built on torch 2.7+cu128 which
+      # supports sm_90 binaries + PTX fall-through, JIT-compiling for sm_120
+      # (Blackwell, RTX 50-series) at first launch.
       - DEVICE=auto
       - DEFAULT_TEXT_PROMPT=aircraft . ship . vehicle . military_vehicle . storage_tank . bridge . harbor . airfield . building . infrastructure
       - DETECTION_THRESHOLD_PROFILE=recall_review
