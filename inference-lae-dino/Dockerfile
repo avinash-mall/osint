@@ -63,26 +63,38 @@ ENV FORCE_CUDA=1
 RUN pip install --no-cache-dir --no-build-isolation "mmcv==2.2.0"
 
 WORKDIR /opt/LAE-DINO/mmdetection_lae
-RUN pip install --no-cache-dir -v -e .
+# --no-build-isolation: setup.py imports torch (and mmcv) at build time;
+# default isolation hides them and the build aborts with ModuleNotFoundError.
+# editable_mode=compat: fall back to legacy egg-link mode so we don't need
+# the system setuptools to ship PEP 660 (build_editable). Also force-upgrade
+# setuptools first to be safe.
+RUN pip install --no-cache-dir --upgrade "setuptools>=70" wheel \
+    && pip install --no-cache-dir --no-build-isolation \
+        --config-settings editable_mode=compat -v -e .
 
 # pycocoevalcap pulls puccinialin (Python>=3.9) — fine on Python 3.10 now,
 # but it's eval-only so we still skip it. Keep the inference-only deps.
-RUN pip install --no-cache-dir fairscale jsonlines nltk transformers emoji \
+RUN pip install --no-cache-dir fairscale jsonlines nltk emoji \
+    && pip install --no-cache-dir "transformers==4.42.3" \
     && pip install --no-cache-dir "git+https://github.com/openai/CLIP.git" \
     && pip install --no-cache-dir open-clip-torch
 
-RUN pip install --no-cache-dir "huggingface_hub[cli]"
+RUN pip install --no-cache-dir "huggingface_hub"
 
-RUN HF_HUB_OFFLINE=0 huggingface-cli download \
-        --resume-download \
-        google-bert/bert-base-uncased \
-        --local-dir /opt/LAE-DINO/weights/bert-base-uncased
+# Use the Python API (API-stable) rather than `huggingface-cli` / `hf` whose
+# CLI binary was renamed across hub versions.
+RUN HF_HUB_OFFLINE=0 python -c "\
+from huggingface_hub import snapshot_download; \
+snapshot_download(repo_id='google-bert/bert-base-uncased', \
+                  local_dir='/opt/LAE-DINO/weights/bert-base-uncased', \
+                  local_dir_use_symlinks=False)"
 
-RUN HF_HUB_OFFLINE=0 huggingface-cli download \
-        --resume-download \
-        jaychempan/LAE-DINO \
-        checkpoints/${LAE_DINO_CHECKPOINT} \
-        --local-dir /opt/LAE-DINO/weights
+RUN HF_HUB_OFFLINE=0 python -c "\
+from huggingface_hub import hf_hub_download; \
+hf_hub_download(repo_id='jaychempan/LAE-DINO', \
+                filename='checkpoints/${LAE_DINO_CHECKPOINT}', \
+                local_dir='/opt/LAE-DINO/weights', \
+                local_dir_use_symlinks=False)"
 
 WORKDIR /app
 COPY requirements.txt .

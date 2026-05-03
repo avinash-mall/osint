@@ -51,6 +51,12 @@ RECREATION_TERMS = (
     "swimming",
     "ground_track",
     "groundtrack",
+    "groundtrackfield",
+    "baseballfield",
+    "basketballcourt",
+    "tenniscourt",
+    "golffield",
+    "soccer_ball_field",
     "amusement",
     "park",
     "zoo",
@@ -156,13 +162,13 @@ def parent_class_for_label(label: Any) -> str:
     if _has_any(text, ("shipping_container", "container_lot", "container_crane")):
         return "infrastructure"
     if (
-        _has_any(text, ("aircraft_carrier", "vessel", "boat", "tanker", "barge", "tug", "ferry", "yacht", "hovercraft"))
+        _has_any(text, ("aircraft_carrier", "vessel", "boat", "tanker", "barge", "tug", "ferry", "yacht", "hovercraft", "warship", "cargo_ship", "engineering_ship", "fishing_boat", "motorboat", "sailboat"))
         or text == "ship"
         or text.startswith("ship_")
         or text.endswith("_ship")
     ):
         return "ship"
-    if _has_any(text, ("aircraft", "airplane", "plane", "helicopter", "boeing", "airbus", "a220", "a321", "a330", "a350", "arj21", "c919")):
+    if _has_any(text, ("aircraft", "airplane", "plane", "helicopter", "fixed_wing", "boeing", "airbus", "a220", "a321", "a330", "a350", "arj21", "c919")):
         return "aircraft"
     if _has_any(text, ("airport", "runway", "airstrip", "airfield", "helipad", "hangar")):
         return "airfield"
@@ -170,11 +176,11 @@ def parent_class_for_label(label: Any) -> str:
         return "harbor"
     if _has_any(text, ("bridge", "overpass")):
         return "bridge"
-    if _has_any(text, ("vehicle", "truck", "car", "bus", "van", "trailer", "tractor", "locomotive", "railway")):
+    if _has_any(text, ("vehicle", "truck", "car", "bus", "van", "trailer", "tractor", "locomotive", "railway", "excavator", "grader", "bulldozer", "loader", "mixer", "stacker", "carrier", "mobile_crane")):
         return "vehicle"
-    if _has_any(text, ("building", "facility", "depot", "bunker", "shed", "hut", "terminal", "station")):
+    if _has_any(text, ("building", "facility", "depot", "bunker", "shed", "hut", "tent", "terminal")):
         return "building"
-    if _has_any(text, ("container", "crane", "chimney", "windmill", "tower", "pylon", "substation", "powerplant", "factory", "plant", "construction")):
+    if _has_any(text, ("container", "crane", "chimney", "windmill", "tower", "pylon", "substation", "powerplant", "factory", "plant", "construction", "roundabout", "intersection", "trainstation", "expressway")):
         return "infrastructure"
     return "unknown"
 

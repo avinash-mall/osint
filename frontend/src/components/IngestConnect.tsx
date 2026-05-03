@@ -25,8 +25,9 @@ export default function IngestConnect() {
   const [file, setFile] = useState<File | null>(null);
   const [sensorType, setSensorType] = useState('Optical');
   const [autoProcess, setAutoProcess] = useState(true);
-  const [useYolo, setUseYolo] = useState(true);
+  const [useYolo, setUseYolo] = useState(false);
   const [useLaeDino, setUseLaeDino] = useState(true);
+  const [useMmrotate, setUseMmrotate] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState('');
   const [uploadTransferProgress, setUploadTransferProgress] = useState(0);
@@ -96,7 +97,7 @@ export default function IngestConnect() {
 
   const uploadImage = async () => {
     if (!file || uploading) return;
-    const providers = [useYolo && 'yolo', useLaeDino && 'lae-dino'].filter(Boolean) as string[];
+    const providers = [useYolo && 'yolo', useLaeDino && 'lae-dino', useMmrotate && 'mmrotate'].filter(Boolean) as string[];
     if (providers.length === 0) {
       setUploadStatus('Select at least one inference provider.');
       return;
@@ -193,15 +194,24 @@ export default function IngestConnect() {
                 <span className="text-slate-200">LAE-DINO</span>
                 <span className="text-[10px] text-slate-500 font-mono">open-vocab Swin-T</span>
               </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={useMmrotate}
+                  onChange={(event) => setUseMmrotate(event.target.checked)}
+                />
+                <span className="text-slate-200">MMRotate</span>
+                <span className="text-[10px] text-slate-500 font-mono">DOTA Oriented R-CNN</span>
+              </label>
             </div>
-            {!useYolo && !useLaeDino && (
+            {!useYolo && !useLaeDino && !useMmrotate && (
               <div className="text-[10px] font-mono text-rose-400">
                 select at least one provider
               </div>
             )}
-            {useYolo && useLaeDino && (
+            {[useYolo, useLaeDino, useMmrotate].filter(Boolean).length > 1 && (
               <div className="text-[10px] font-mono text-emerald-400/80">
-                results from both will be merged (cross-confirmed detections tagged)
+                results will be merged; detections confirm when cross-confirmed or high confidence
               </div>
             )}
           </div>
@@ -228,7 +238,7 @@ export default function IngestConnect() {
             </label>
             <button
               onClick={uploadImage}
-              disabled={!file || uploading || (!useYolo && !useLaeDino)}
+              disabled={!file || uploading || (!useYolo && !useLaeDino && !useMmrotate)}
               className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed rounded px-4 py-3 text-sm font-bold uppercase tracking-wider flex items-center justify-center gap-2"
             >
               <DatabaseZap className="w-4 h-4" /> Upload

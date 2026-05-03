@@ -36,6 +36,8 @@ services:
   backend:
     build: ./backend
     image: sentinelos-backend:latest
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ulimits:
       nofile:
         soft: 65536
@@ -51,6 +53,7 @@ services:
       - TITILER_URL=http://titiler:8080
       - INFERENCE_URL=http://inference:8001
       - INFERENCE_LAE_DINO_URL=http://inference-lae-dino:8001
+      - INFERENCE_MMROTATE_URL=http://inference-mmrotate:8001
       - IMAGERY_PATH=/data/imagery
       - FMV_PATH=/data/fmv
       - DATASET_PATH=/data/datasets
@@ -72,6 +75,12 @@ services:
       - imagery_data:/data/imagery
       - fmv_data:/data/fmv
       - dataset_data:/data/datasets
+
+  llm-local-proxy:
+    image: alpine/socat:latest
+    network_mode: host
+    command: TCP-LISTEN:18001,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:8001
+    restart: unless-stopped
 
   frontend:
     build: ./frontend
@@ -139,15 +148,47 @@ services:
       DEVICE: cpu
       CPU_THREADS: auto
       WEB_CONCURRENCY: "1"
-      DEFAULT_TEXT_PROMPT: aircraft . ship . vehicle . military_vehicle . storage_tank . bridge . harbor . airfield . building . infrastructure
+      LAE_PROMPT_PROFILE: official_lae80c
+      LAE_PROMPT_CHUNK_SIZE: "20"
       DETECTION_THRESHOLD_PROFILE: recall_review
-      CONFIDENCE_THRESHOLD: "0.30"
+      CONFIDENCE_THRESHOLD: "0.25"
       MAX_DETECTIONS_PER_CHIP: "300"
-      MODEL_VERSION: lae-dino-swint-lae1m
+      LAE_BATCH_MAX_SIZE: "1"
+      LAE_BATCH_TIMEOUT_MS: "0"
+      MODEL_VERSION: grounding-dino-base
+      GROUNDING_DINO_MODEL_ID: /opt/grounding-dino
+      GROUNDING_DINO_BOX_THRESHOLD: "0.25"
+      GROUNDING_DINO_TEXT_THRESHOLD: "0.25"
       TRANSFORMERS_OFFLINE: "1"
       HF_HUB_OFFLINE: "1"
     volumes:
       - ./inference-lae-dino:/app
+      - imagery_data:/data/imagery:ro
+    working_dir: /app
+
+  inference-mmrotate:
+    build:
+      context: ./inference-mmrotate
+      args:
+        TORCH_INDEX_URL: ${MMROTATE_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}
+    image: sentinelos-inference-mmrotate:gpu
+    ports:
+      - "8005:8001"
+    gpus: all
+    environment:
+      DEVICE: auto
+      CPU_THREADS: auto
+      WEB_CONCURRENCY: "1"
+      DETECTION_THRESHOLD_PROFILE: recall_review
+      MMROTATE_CONFIDENCE_THRESHOLD: "0.10"
+      MAX_DETECTIONS_PER_CHIP: "300"
+      MODEL_VERSION: mmrotate-oriented-rcnn-dota
+      MMROTATE_CONFIG: /opt/mmrotate/configs/oriented_rcnn/oriented-rcnn-le90_r50_fpn_1x_dota.py
+      MMROTATE_MODEL_DIR: /models
+      MMROTATE_CHECKPOINT: /models/oriented_rcnn_r50_fpn_1x_dota_le90-6d2b2ce0.pth
+    volumes:
+      - ./inference-mmrotate:/app
+      - mmrotate_models:/models
       - imagery_data:/data/imagery:ro
     working_dir: /app
 
@@ -159,6 +200,8 @@ services:
   worker:
     build: ./backend
     image: sentinelos-backend:latest
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ulimits:
       nofile:
         soft: 65536
@@ -174,6 +217,7 @@ services:
       - POSTGIS_URI=postgresql://gotham:gotham@postgis:5432/gotham
       - INFERENCE_URL=http://inference:8001
       - INFERENCE_LAE_DINO_URL=http://inference-lae-dino:8001
+      - INFERENCE_MMROTATE_URL=http://inference-mmrotate:8001
       - IMAGERY_PATH=/data/imagery
       - FMV_PATH=/data/fmv
       - DATASET_PATH=/data/datasets
@@ -182,6 +226,11 @@ services:
       - INFERENCE_CHIP_SIZE=1024
       - INFERENCE_CHIP_OVERLAP=256
       - MAX_INFERENCE_CHIPS=0
+      # Chip dispatch concurrency to inference providers. The Grounding DINO
+      # container batches concurrent requests internally; without backend-side
+      # parallelism the batcher never gets multiple items to batch.
+      - INFERENCE_CHIP_CONCURRENCY=16
+      - INFERENCE_CHIP_TIMEOUT_S=120
     depends_on:
       neo4j:
         condition: service_healthy
@@ -190,6 +239,8 @@ services:
       redis:
         condition: service_started
       inference:
+        condition: service_started
+      inference-mmrotate:
         condition: service_started
     volumes:
       - ./backend:/app
@@ -213,3 +264,4 @@ volumes:
   imagery_data:
   fmv_data:
   dataset_data:
+  mmrotate_models:

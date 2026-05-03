@@ -1,6 +1,7 @@
 import os
 import json
 import requests
+from urllib.parse import urlsplit, urlunsplit
 from dotenv import load_dotenv
 from database import db
 
@@ -13,6 +14,29 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "google/gemma-4-31B-it")
 
 class AIUnavailable(RuntimeError):
     pass
+
+
+def _chat_completion_urls(api_base: str) -> list[str]:
+    base = api_base.rstrip("/")
+    primary = base if base.endswith("/chat/completions") else f"{base}/chat/completions"
+    urls = [primary]
+
+    parsed = urlsplit(primary)
+    if parsed.hostname in {"host.docker.internal", "localhost", "127.0.0.1"}:
+        fallback_hosts = {
+            "host.docker.internal": ["localhost", "127.0.0.1"],
+            "localhost": ["host.docker.internal", "127.0.0.1"],
+            "127.0.0.1": ["localhost", "host.docker.internal"],
+        }[parsed.hostname]
+        for host in fallback_hosts:
+            netloc = host
+            if parsed.port:
+                netloc = f"{netloc}:{parsed.port}"
+            fallback = urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+            if fallback not in urls:
+                urls.append(fallback)
+
+    return urls
 
 
 def ai_status() -> dict:
@@ -33,8 +57,6 @@ def get_llm_text(
     if not OPENAI_API_BASE:
         raise AIUnavailable("LLM classification is unavailable because OPENAI_API_BASE is not configured.")
 
-    base = OPENAI_API_BASE.rstrip("/")
-    url = base if base.endswith("/chat/completions") else f"{base}/chat/completions"
     headers = {"Content-Type": "application/json"}
     if OPENAI_API_KEY:
         headers["Authorization"] = f"Bearer {OPENAI_API_KEY}"
@@ -47,18 +69,22 @@ def get_llm_text(
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=timeout_seconds)
-        response.raise_for_status()
-        body = response.json()
-        content = body.get("choices", [{}])[0].get("message", {}).get("content")
-        if not content:
-            content = body.get("choices", [{}])[0].get("text")
-        if not content:
-            raise AIUnavailable("LLM returned an empty classification response.")
-        return str(content).strip()
-    except requests.RequestException as exc:
-        raise AIUnavailable("LLM classification request failed.") from exc
+    last_error = None
+    for url in _chat_completion_urls(OPENAI_API_BASE):
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=timeout_seconds)
+            response.raise_for_status()
+            body = response.json()
+            content = body.get("choices", [{}])[0].get("message", {}).get("content")
+            if not content:
+                content = body.get("choices", [{}])[0].get("text")
+            if not content:
+                raise AIUnavailable("LLM returned an empty classification response.")
+            return str(content).strip()
+        except requests.RequestException as exc:
+            last_error = exc
+            continue
+    raise AIUnavailable("LLM classification request failed.") from last_error
 
 
 def get_llm_json(prompt: str, system: str = "", max_tokens: int = 500, timeout_seconds: float = 8) -> dict:

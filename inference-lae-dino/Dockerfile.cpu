@@ -1,6 +1,4 @@
-# CPU-only LAE-DINO image.
-# Uses prebuilt CPU PyTorch and MMCV wheels to avoid compiling mmcv.
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -9,80 +7,42 @@ ENV DEVICE=cpu
 ENV TRANSFORMERS_OFFLINE=1
 ENV HF_HUB_OFFLINE=1
 
-ARG LAE_DINO_REPO=https://github.com/jaychempan/LAE-DINO.git
-ARG LAE_DINO_SHA=44726020759dd5e72fd05d5e5c1059619ead2284
-ARG LAE_DINO_CHECKPOINT=lae_dino_swint_lae1m-28ca3a15.pth
+ARG GROUNDING_DINO_MODEL_ID=IDEA-Research/grounding-dino-base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git \
-        wget \
         ca-certificates \
-        build-essential \
         libgl1 \
         libglib2.0-0 \
-        libsm6 \
-        libxext6 \
-        libxrender1 \
         libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
 RUN pip install --no-cache-dir \
-        torch==2.0.0 \
-        torchvision==0.15.1 \
+        torch==2.4.0+cpu \
+        torchvision==0.19.0+cpu \
         --index-url https://download.pytorch.org/whl/cpu
-RUN pip install --no-cache-dir "numpy==1.26.4"
-
-WORKDIR /opt
-
-RUN git clone ${LAE_DINO_REPO} LAE-DINO \
-    && cd LAE-DINO \
-    && git checkout ${LAE_DINO_SHA}
-
-RUN pip install --no-cache-dir -U openmim \
-    && mim install "mmengine>=0.7.1,<1.0.0" \
-    && pip install --no-cache-dir "mmcv==2.1.0" \
-        -f https://download.openmmlab.com/mmcv/dist/cpu/torch2.0.0/index.html
-RUN pip install --no-cache-dir "numpy==1.26.4"
-
-WORKDIR /opt/LAE-DINO/mmdetection_lae
-RUN pip install --no-cache-dir --no-build-isolation -v .
 
 RUN pip install --no-cache-dir \
-        fairscale \
-        jsonlines \
-        nltk \
-        "transformers==4.42.3" \
-        "huggingface_hub[cli]==0.23.4" \
-        "numpy==1.26.4" \
-        emoji \
-    && pip install --no-cache-dir "git+https://github.com/openai/CLIP.git" \
-    && pip install --no-cache-dir "open-clip-torch==2.26.1" "timm==1.0.9"
+        "transformers>=4.42,<5" \
+        "huggingface_hub>=0.24" \
+        "accelerate>=0.30" \
+        pillow \
+        numpy
 
-RUN HF_HUB_OFFLINE=0 huggingface-cli download \
-        --resume-download \
-        google-bert/bert-base-uncased \
-        --local-dir /opt/LAE-DINO/weights/bert-base-uncased
+RUN HF_HUB_OFFLINE=0 python -c "\
+from huggingface_hub import snapshot_download; \
+snapshot_download(repo_id='${GROUNDING_DINO_MODEL_ID}', \
+                  local_dir='/opt/grounding-dino', \
+                  local_dir_use_symlinks=False)"
 
-RUN HF_HUB_OFFLINE=0 huggingface-cli download \
-        --resume-download \
-        jaychempan/LAE-DINO \
-        checkpoints/${LAE_DINO_CHECKPOINT} \
-        --local-dir /opt/LAE-DINO/weights
+ENV GROUNDING_DINO_MODEL_ID=/opt/grounding-dino
 
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir "numpy==1.26.4"
 
 COPY . /app
-
-ENV LAE_DINO_ROOT=/opt/LAE-DINO
-ENV LAE_DINO_CONFIG=/opt/LAE-DINO/mmdetection_lae/configs/lae_dino/lae_dino_swin-t_pretrain_LAE-1M.py
-ENV LAE_DINO_CHECKPOINT=/opt/LAE-DINO/weights/checkpoints/lae_dino_swint_lae1m-28ca3a15.pth
-ENV LAE_DINO_BERT_PATH=/opt/LAE-DINO/weights/bert-base-uncased
-ENV PYTHONPATH=/opt/LAE-DINO/mmdetection_lae
 
 EXPOSE 8001
 

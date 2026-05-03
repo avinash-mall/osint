@@ -5,6 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV DEVICE=auto
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
+ARG INSTALL_TENSORRT=false
 
 # Install system dependencies for OpenCV and image processing
 RUN apt-get update && apt-get install -y \
@@ -31,6 +32,12 @@ RUN pip install --no-cache-dir \
 # Install remaining dependencies (ultralytics, sahi, etc.)
 RUN pip install --no-cache-dir \
     -r requirements.txt
+
+# TensorRT export/runtime support is enabled for GPU builds. Engines are still
+# generated on the target GPU host because TensorRT plans are hardware/runtime specific.
+RUN if [ "$INSTALL_TENSORRT" = "true" ]; then \
+        pip install --no-cache-dir --extra-index-url https://pypi.nvidia.com onnx onnxslim onnxruntime-gpu tensorrt; \
+    fi
 
 COPY . .
 

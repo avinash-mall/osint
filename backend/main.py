@@ -790,6 +790,11 @@ def enriched_detection_metadata(det_class: str, metadata: Optional[dict]) -> dic
     enriched["ontology"]["assessment_status"] = assessment["assessment_status"]
     enriched["ontology"]["evidence"] = assessment["evidence"]
     enriched.setdefault("allegiance", "unknown")
+    enriched.setdefault("providers", [])
+    enriched.setdefault("provider_confidences", {})
+    enriched.setdefault("cross_confirmed", False)
+    enriched.setdefault("confirmation_status", "unconfirmed")
+    enriched.setdefault("confirmation_reason", "single_provider")
     return enriched
 
 
@@ -2905,7 +2910,8 @@ def get_detections_geojson(
     bbox: Optional[str] = Query(None, description="min_lon,min_lat,max_lon,max_lat"),
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
-    det_class: Optional[str] = None
+    det_class: Optional[str] = None,
+    limit: int = Query(20000, ge=1, le=50000)
 ):
     """Return detections as GeoJSON FeatureCollection."""
     with postgis_db.get_cursor() as cursor:
@@ -2931,7 +2937,8 @@ def get_detections_geojson(
         if det_class:
             query += " AND d.class = %s"
             params.append(det_class)
-        query += " ORDER BY d.created_at DESC LIMIT 5000"
+        query += " ORDER BY d.created_at DESC LIMIT %s"
+        params.append(limit)
         cursor.execute(query, params)
         features = []
         for row in cursor.fetchall():
@@ -2956,6 +2963,11 @@ def get_detections_geojson(
                     "taxonomy_version": metadata.get("taxonomy_version"),
                     "chip_id": metadata.get("chip_id"),
                     "coverage_fraction": metadata.get("coverage_fraction"),
+                    "providers": metadata.get("providers", []),
+                    "provider_confidences": metadata.get("provider_confidences", {}),
+                    "cross_confirmed": metadata.get("cross_confirmed", False),
+                    "confirmation_status": metadata.get("confirmation_status"),
+                    "confirmation_reason": metadata.get("confirmation_reason"),
                     "pass_id": row["pass_id"],
                     "pass_name": row["pass_name"],
                     "acquisition_time": row["acquisition_time"],
@@ -3249,7 +3261,7 @@ def trigger_ingest(req: IngestRequest):
     }
 
 
-_KNOWN_INFERENCE_PROVIDERS = ("yolo", "lae-dino")
+_KNOWN_INFERENCE_PROVIDERS = ("yolo", "lae-dino", "mmrotate")
 
 
 def _parse_inference_providers(raw: str) -> list[str]:
@@ -3269,7 +3281,7 @@ async def upload_imagery(
     sensor_type: str = Form("Optical"),
     acquisition_time: Optional[str] = Form(None),
     auto_process: bool = Form(True),
-    inference_providers: str = Form("yolo"),
+    inference_providers: str = Form("lae-dino"),
 ):
     ensure_platform_tables()
     filename = safe_filename(file.filename or "upload.tif")

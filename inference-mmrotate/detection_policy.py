@@ -8,7 +8,7 @@ from typing import Any
 
 
 TAXONOMY_VERSION = os.getenv("DETECTION_TAXONOMY_VERSION", "optical-defense-v1")
-DEFAULT_MODEL_VERSION = os.getenv("MODEL_VERSION", "geoint-yolov8-obb-optical-defense")
+DEFAULT_MODEL_VERSION = os.getenv("MODEL_VERSION", "mmrotate-oriented-rcnn-dota")
 
 DEFENSE_PARENT_CLASSES = (
     "aircraft",
@@ -271,8 +271,3 @@ def detection_decision(label: Any, confidence: float | int | None, policy: dict[
         "taxonomy_version": policy["taxonomy_version"],
         "model_version": policy["model_version"],
     }
-
-
-def should_emit_detection(label: Any, confidence: float | int | None, policy: dict[str, Any] | None = None) -> bool:
-    decision = detection_decision(label, confidence, policy)
-    return decision["class_enabled"] and decision["review_status"] != "below_class_threshold"

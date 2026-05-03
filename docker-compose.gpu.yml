@@ -4,6 +4,7 @@ services:
       context: ./inference
       args:
         TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}
+        INSTALL_TENSORRT: "true"
     image: sentinelos-inference:latest
     ports:
       - "8002:8001"
@@ -11,6 +12,15 @@ services:
     environment:
       - DEVICE=auto
       - TRAINED_MODEL_PATH=/app/models/geoint_yolov8_obb.pt
+      - YOLO_RUNTIME=auto
+      - YOLO_ENGINE_PATH=/app/models/geoint_yolov8_obb.engine
+      - YOLO_TRT_PRECISION=fp16
+      - YOLO_IMGSZ=1024
+      - YOLO_BATCH_MAX_SIZE=8
+      - YOLO_BATCH_TIMEOUT_MS=10
+      - YOLO_TRT_AUTO_EXPORT=1
+      - YOLO_TRT_EXPORT_BATCHES=8,4,2,1
+      - YOLO_TRT_WORKSPACE=4
       - DETECTION_THRESHOLD_PROFILE=recall_review
       - CONFIDENCE_THRESHOLD=0.12
       - NMS_IOU_THRESHOLD=0.55
@@ -33,13 +43,30 @@ services:
       DEVICE: auto
       CPU_THREADS: auto
       WEB_CONCURRENCY: "1"
-      DEFAULT_TEXT_PROMPT: aircraft . ship . vehicle . military_vehicle . storage_tank . bridge . harbor . airfield . building . infrastructure
+      LAE_PROMPT_PROFILE: official_lae80c
+      LAE_PROMPT_CHUNK_SIZE: "20"
       DETECTION_THRESHOLD_PROFILE: recall_review
-      CONFIDENCE_THRESHOLD: "0.30"
+      CONFIDENCE_THRESHOLD: "0.25"
       MAX_DETECTIONS_PER_CHIP: "300"
-      MODEL_VERSION: lae-dino-swint-lae1m
+      # Grounding DINO is memory-bound on 1024 px chips; keep GPU forwards single-chip.
+      LAE_BATCH_MAX_SIZE: "1"
+      LAE_BATCH_TIMEOUT_MS: "0"
+      MODEL_VERSION: grounding-dino-base
+      GROUNDING_DINO_MODEL_ID: /opt/grounding-dino
+      GROUNDING_DINO_BOX_THRESHOLD: "0.25"
+      GROUNDING_DINO_TEXT_THRESHOLD: "0.25"
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
       TRANSFORMERS_OFFLINE: "1"
       HF_HUB_OFFLINE: "1"
+      # Mixed-precision auto-tune: "auto" probes CUDA dtypes in preference
+      # order and keeps the first one that works for the installed stack.
+      # Override values: bf16 | fp16 | fp32 | off
+      LAE_AUTOCAST_DTYPE: auto
+      # Startup sanity probe — verifies the chosen dtype still produces
+      # detections. Set LAE_MIN_PROBE_DETECTIONS > 0 to enforce auto fp32
+      # fallback when the probe falls short.
+      LAE_PROBE_IMAGE_PATH: /app/probes/probe_chip.png
+      LAE_MIN_PROBE_DETECTIONS: "0"
     volumes:
       - ./inference-lae-dino:/app
       - imagery_data:/data/imagery:ro
@@ -47,3 +74,4 @@ services:
 
 volumes:
   imagery_data:
+  mmrotate_models:

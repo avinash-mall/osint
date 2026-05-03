@@ -2,21 +2,30 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Circle, CircleMarker, GeoJSON, ImageOverlay, MapContainer, Marker, Polyline, Popup, TileLayer, useMap, useMapEvents, ZoomControl } from 'react-leaflet';
 import L from 'leaflet';
 import axios from 'axios';
+import { renderToStaticMarkup } from 'react-dom/server';
 import {
   Activity,
+  Anchor,
   Building2,
   BusFront,
+  Car,
   ChevronDown,
   ChevronRight,
   CircleHelp,
+  CircleParking,
+  Construction,
+  Container,
   Crosshair,
   Dumbbell,
   Eye,
   EyeOff,
+  Factory,
   FileText,
   Fuel,
   GitBranch,
   HardHat,
+  Helicopter,
+  Landmark,
   Layers,
   Minus,
   Navigation,
@@ -26,15 +35,18 @@ import {
   Plus,
   Package,
   RefreshCw,
+  Sailboat,
   Satellite,
   Search,
   Send,
   Shield,
   Ship,
+  ShipWheel,
   Swords,
   TrainFront,
   Truck,
   Waves,
+  Warehouse,
   Wheat,
 } from 'lucide-react';
 import 'leaflet/dist/leaflet.css';
@@ -42,7 +54,6 @@ import { useEventStream } from '../hooks/useEventStream';
 import { type UploadJob, isUploadActive, uploadMessage, uploadProgress, uploadProgressClass, uploadStage } from '../utils/uploadProgress';
 import {
   CATEGORY_ORDER,
-  CLASS_LIST,
   DETECTION_CATEGORIES,
   SOURCE_ORDER,
   classifyDetectionClass,
@@ -53,7 +64,6 @@ import {
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8080';
 const TILE_PROXY_URL = import.meta.env.VITE_TILE_PROXY_URL || 'http://127.0.0.1:8090';
-const DETECTION_LABEL_LIMIT = 150;
 const DETECTION_CENTER_MARKER_LIMIT = 800;
 const CanvasGeoJSON = GeoJSON as any;
 
@@ -71,12 +81,24 @@ const redIcon = createIcon('#ff3b30');
 const emeraldIcon = createIcon('#3dd68c');
 
 function detectionLabel(feature: any) {
-  return String(feature?.properties?.class || feature?.properties?.label || 'Unknown');
+  const props = feature?.properties || {};
+  return String(props.original_class || props.metadata?.original_class || props.class || props.label || 'Unknown');
+}
+
+function detectionClassKeys(feature: any): string[] {
+  const props = feature?.properties || {};
+  return Array.from(new Set([
+    props.original_class,
+    props.metadata?.original_class,
+    props.class,
+    props.parent_class,
+    props.metadata?.parent_class,
+  ].filter(Boolean).map((value) => String(value))));
 }
 
 function detectionCategoryForFeature(feature: any): DetectionCategoryId {
   const props = feature?.properties || {};
-  return classifyDetectionClass(props.class || props.label, props.ontology?.category || props.category);
+  return classifyDetectionClass(props.original_class || props.metadata?.original_class || props.class || props.label, props.ontology?.category || props.category);
 }
 
 function detectionCategoryForLabel(label: string, ontologyCategory?: string | null): DetectionCategoryId {
@@ -102,6 +124,33 @@ function detectionCenter(feature: any): [number, number] | null {
   const lon = points.reduce((sum: number, point: any) => sum + Number(point[0]), 0) / points.length;
   const lat = points.reduce((sum: number, point: any) => sum + Number(point[1]), 0) / points.length;
   return Number.isFinite(lat) && Number.isFinite(lon) ? [lat, lon] : null;
+}
+
+function detectionBadgePosition(feature: any): [number, number] | null {
+  const geometry = feature?.geometry;
+  const coordinates = geometry?.coordinates;
+  if (!geometry || !coordinates) return null;
+  if (geometry.type === 'Point' && coordinates.length >= 2) {
+    return [Number(coordinates[1]), Number(coordinates[0])];
+  }
+
+  const points: Array<[number, number]> = [];
+  const collectPoints = (items: any) => {
+    if (!Array.isArray(items)) return;
+    if (items.length >= 2 && typeof items[0] === 'number' && typeof items[1] === 'number') {
+      const lon = Number(items[0]);
+      const lat = Number(items[1]);
+      if (Number.isFinite(lat) && Number.isFinite(lon)) points.push([lat, lon]);
+      return;
+    }
+    for (const item of items) collectPoints(item);
+  };
+  collectPoints(coordinates);
+  if (points.length === 0) return null;
+
+  const north = Math.max(...points.map(([lat]) => lat));
+  const west = Math.min(...points.map(([, lon]) => lon));
+  return [north, west];
 }
 
 interface DetectionTrackHistoryPoint {
@@ -162,6 +211,14 @@ function relativeTime(iso: string | null): string {
   const hrs = Math.floor(mins / 60);
   if (hrs < 24) return `${hrs}h ago`;
   return `${Math.floor(hrs / 24)}d ago`;
+}
+
+function timestampInRange(timestamp: string | null | undefined, range: { start: string; end: string }): boolean {
+  if (!timestamp) return false;
+  const time = new Date(timestamp).getTime();
+  const start = new Date(range.start).getTime();
+  const end = new Date(range.end).getTime();
+  return Number.isFinite(time) && Number.isFinite(start) && Number.isFinite(end) && time >= start && time <= end;
 }
 
 function extendBoundsWithCoordinates(bounds: L.LatLngBounds, coordinates: any): void {
@@ -240,9 +297,63 @@ const categoryIcons: Record<DetectionCategoryId, any> = {
   other: CircleHelp,
 };
 
+function subclassIconComponent(value?: string | null, category?: DetectionCategoryId): any {
+  const raw = String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '_');
+  if (/helipad|helicopter/.test(raw)) return Helicopter;
+  if (/hangar/.test(raw)) return Warehouse;
+  if (/airport|airfield|runway|terminal/.test(raw)) return Landmark;
+  if (/aircraft|airplane|plane|boeing|a3\d\d|a2\d\d|arj21|c919|fixed_wing/.test(raw)) return Plane;
+  if (/warship|warcraft|destroyer|frigate|cruiser|aircraft_carrier|submarine|naval/.test(raw)) return Shield;
+  if (/sailboat|yacht/.test(raw)) return Sailboat;
+  if (/tugboat|barge|ferry|motorboat|fishing/.test(raw)) return Anchor;
+  if (/ship|vessel|tanker|harbor|harbour|port|shipyard|hovercraft/.test(raw)) return ShipWheel;
+  if (/bus/.test(raw)) return BusFront;
+  if (/truck|trailer|tractor|dump|hauler|mixer/.test(raw)) return Truck;
+  if (/car|van|passenger_vehicle|small_vehicle|vehicle_lot|parking/.test(raw)) return Car;
+  if (/locomotive|rail|train|tank_car|flat_car|cargo_car|passenger_car/.test(raw)) return TrainFront;
+  if (/crane|excavator|loader|grader|scraper|stacker|construction|engineering/.test(raw)) return Construction;
+  if (/container|shipping/.test(raw)) return Container;
+  if (/storage_?tank|oil|gas|fuel/.test(raw)) return Fuel;
+  if (/factory|powerplant|substation|solar|wind|chimney|smokestack/.test(raw)) return Factory;
+  if (/bridge|overpass|interchange|roundabout|toll|tunnel|road/.test(raw)) return Navigation;
+  if (/stadium|baseball|tennis|basketball|soccer|football|golf|race_track|swim|recreation|park/.test(raw)) return Dumbbell;
+  if (/crop|farm|aquaculture/.test(raw)) return Wheat;
+  if (/lake|pond|dam|flooded|water/.test(raw)) return Waves;
+  if (/facility|building|residential|office|mall|hospital|school|tower|shed|hut|barn/.test(raw)) return Building2;
+  if (category === 'transit') return CircleParking;
+  return category ? categoryIcons[category] || CircleHelp : CircleHelp;
+}
+
 function CategoryIcon({ category, className = 'h-3.5 w-3.5' }: { category: DetectionCategoryId; className?: string }) {
   const Icon = categoryIcons[category] || CircleHelp;
   return <Icon className={className} />;
+}
+
+function DetectionSubclassIcon({
+  label,
+  category,
+  className = 'h-3.5 w-3.5',
+}: {
+  label?: string | null;
+  category: DetectionCategoryId;
+  className?: string;
+}) {
+  const Icon = subclassIconComponent(label, category);
+  return <Icon className={className} />;
+}
+
+function detectionIcon(feature: any) {
+  const category = detectionCategoryForFeature(feature);
+  const color = DETECTION_CATEGORIES[category].color;
+  const props = feature?.properties || {};
+  const Icon = subclassIconComponent(props.original_class || props.class || props.label, category);
+  const iconMarkup = renderToStaticMarkup(<Icon size={12} strokeWidth={2.2} />);
+  return L.divIcon({
+    className: '',
+    iconSize: [14, 14],
+    iconAnchor: [15, 15],
+    html: `<div class="sentinel-detection-icon" style="color:${color};border-color:${color};box-shadow:0 0 8px ${color}55;">${iconMarkup}</div>`,
+  });
 }
 
 function MapBoundsUpdater({ onBoundsChange }: { onBoundsChange: (bounds: string) => void }) {
@@ -334,7 +445,7 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
   const [hiddenDetectionLabels, setHiddenDetectionLabels] = useState<string[]>([]);
   const [hiddenDetectionCategories, setHiddenDetectionCategories] = useState<DetectionCategoryId[]>([]);
   const [detectionClassFilter, setDetectionClassFilter] = useState<string | null>(null);
-  const [expandedDetectionGroups, setExpandedDetectionGroups] = useState<string[]>(['air', 'vehicle', 'mil']);
+  const [expandedDetectionGroups, setExpandedDetectionGroups] = useState<string[]>([]);
   const [detectionGroupMode, setDetectionGroupMode] = useState<'CAT' | 'SRC'>('CAT');
   const [detectionsLayerVersion, setDetectionsLayerVersion] = useState(0);
   const [detectionLabelSearch, setDetectionLabelSearch] = useState('');
@@ -372,14 +483,28 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
 
   const detectionLabelStats = useMemo<DetectionClassStat[]>(() => {
     const stats = new Map<string, DetectionClassStat>();
-    for (const rawClass of CLASS_LIST) {
-      const category = detectionCategoryForLabel(rawClass);
+    const parentClassesWithSubclassDetails = new Set<string>();
+
+    for (const feature of detectionsGeoJSON.features || []) {
+      const rawClass = detectionLabel(feature);
+      const parentClass = String(feature?.properties?.parent_class || feature?.properties?.metadata?.parent_class || rawClass);
+      const storedClass = String(feature?.properties?.class || '');
+      const category = detectionCategoryForLabel(rawClass, feature?.properties?.ontology?.category || feature?.properties?.category);
+      if (rawClass !== parentClass && rawClass !== storedClass) {
+        parentClassesWithSubclassDetails.add(parentClass);
+        if (storedClass) parentClassesWithSubclassDetails.add(storedClass);
+      }
+      const existing = stats.get(rawClass);
       stats.set(rawClass, {
+        ...existing,
         rawClass,
-        label: detectionClassLabel(rawClass),
-        count: 0,
-        maxConfidence: 0,
+        parentClass,
+        label: rawClass === storedClass ? feature?.properties?.label || existing?.label || detectionClassLabel(rawClass) : existing?.label || detectionClassLabel(rawClass),
+        count: Number(existing?.count || 0) + 1,
+        maxConfidence: Math.max(Number(existing?.maxConfidence || 0), confidenceValue(feature)),
         color: DETECTION_CATEGORIES[category].color,
+        ontology: existing?.ontology || feature?.properties?.ontology,
+        threatLevel: existing?.threatLevel || feature?.properties?.threat_level,
         category,
         source: detectionClassSource(rawClass),
       });
@@ -390,43 +515,23 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
       const parentClass = String(meta.parent_class || meta.ontology?.parent_class || rawClass);
       const category = detectionCategoryForLabel(rawClass, meta?.ontology?.category);
       const existing = stats.get(rawClass);
+      if (!existing && parentClassesWithSubclassDetails.has(rawClass)) continue;
       stats.set(rawClass, {
         ...existing,
         rawClass,
         parentClass,
-        label: meta?.label || existing?.label || detectionClassLabel(rawClass),
-        count: Number(meta?.count || existing?.count || 0),
-        maxConfidence: Number(meta?.max_confidence || existing?.maxConfidence || 0),
+        label: existing?.label || meta?.label || detectionClassLabel(rawClass),
+        count: Number(existing?.count ?? meta?.count ?? 0),
+        maxConfidence: Math.max(Number(existing?.maxConfidence || 0), Number(meta?.max_confidence || 0)),
         color: DETECTION_CATEGORIES[category].color,
-        ontology: meta?.ontology || existing?.ontology,
-        threatLevel: meta?.threat_level || existing?.threatLevel,
+        ontology: existing?.ontology || meta?.ontology,
+        threatLevel: existing?.threatLevel || meta?.threat_level,
         category,
         source: detectionClassSource(rawClass),
       });
     }
 
-    const classesFromApi = new Set(detectionClasses.map((item) => String(item.class || item.label || 'Unknown')));
-    for (const feature of detectionsGeoJSON.features || []) {
-      const rawClass = detectionLabel(feature);
-      const parentClass = String(feature?.properties?.parent_class || feature?.properties?.metadata?.parent_class || rawClass);
-      const category = detectionCategoryForFeature(feature);
-      const existing = stats.get(rawClass);
-      stats.set(rawClass, {
-        ...existing,
-        rawClass,
-        parentClass,
-        label: feature?.properties?.label || existing?.label || detectionClassLabel(rawClass),
-        count: Number(existing?.count || 0) + (classesFromApi.has(rawClass) ? 0 : 1),
-        maxConfidence: Math.max(Number(existing?.maxConfidence || 0), confidenceValue(feature)),
-        color: DETECTION_CATEGORIES[category].color,
-        ontology: existing?.ontology || feature?.properties?.ontology,
-        threatLevel: existing?.threatLevel || feature?.properties?.threat_level,
-        category,
-        source: detectionClassSource(rawClass),
-      });
-    }
-
-    return Array.from(stats.values()).sort((a, b) => (
+    return Array.from(stats.values()).filter((item) => item.count > 0).sort((a, b) => (
       CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category)
       || b.count - a.count
       || a.label.localeCompare(b.label)
@@ -436,10 +541,10 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
   const filteredDetectionsGeoJSON = useMemo(() => ({
     ...detectionsGeoJSON,
     features: (detectionsGeoJSON.features || []).filter((feature: any) => {
-      const label = detectionLabel(feature);
-      if (detectionClassFilter && label !== detectionClassFilter) return false;
+      const labels = detectionClassKeys(feature);
+      if (detectionClassFilter && !labels.includes(detectionClassFilter)) return false;
       if (hiddenDetectionCategories.includes(detectionCategoryForFeature(feature))) return false;
-      return !hiddenDetectionLabels.includes(label);
+      return !labels.some((label) => hiddenDetectionLabels.includes(label));
     }),
   }), [detectionsGeoJSON, detectionClassFilter, hiddenDetectionCategories, hiddenDetectionLabels]);
 
@@ -480,7 +585,6 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
 
   const maxDetectionLabelCount = Math.max(1, ...detectionLabelStats.map((item) => item.count));
   const visibleDetectionCount = filteredDetectionsGeoJSON.features?.length || 0;
-  const showDetectionLabels = visibleDetectionCount > 0 && visibleDetectionCount <= DETECTION_LABEL_LIMIT;
   const showDetectionCenterMarkers = visibleDetectionCount > 0 && (
     visibleDetectionCount <= DETECTION_CENTER_MARKER_LIMIT || !showBbox
   );
@@ -627,13 +731,23 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
       params.append('start_time', timeRange.start);
       params.append('end_time', timeRange.end);
       const response = await axios.get(`${API_URL}/api/imagery?${params.toString()}`);
-      const rows = response.data.imagery || [];
+      let rows = response.data.imagery || [];
+      let usedLatestFallback = false;
+      if (rows.length === 0) {
+        const latestResponse = await axios.get(`${API_URL}/api/imagery`);
+        rows = latestResponse.data.imagery || [];
+        usedLatestFallback = rows.length > 0;
+      }
       setImagery(rows);
+      const selectedRow = rows.find((row: any) => row.id === selectedImagery) || rows[0] || null;
       setSelectedImagery((current) => (current && rows.some((row: any) => row.id === current) ? current : rows[0]?.id || null));
+      if (usedLatestFallback && selectedRow?.acquisition_time && !timestampInRange(selectedRow.acquisition_time, timeRange)) {
+        focusTimeRange(selectedRow.acquisition_time);
+      }
     } catch (error) {
       console.error('Error fetching imagery:', error);
     }
-  }, [timeRange]);
+  }, [focusTimeRange, selectedImagery, timeRange]);
 
   const fetchDetections = useCallback(async () => {
     if (!mapBounds) return;
@@ -641,11 +755,9 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
     try {
       const classParams = new URLSearchParams({ start_time: timeRange.start, end_time: timeRange.end, llm: 'true' });
       const geoParams = new URLSearchParams({ start_time: timeRange.start, end_time: timeRange.end });
-      if (detectionClassFilter) {
-        geoParams.set('det_class', detectionClassFilter);
-      } else {
-        geoParams.set('bbox', mapBounds);
-      }
+      classParams.set('bbox', mapBounds);
+      geoParams.set('bbox', mapBounds);
+      geoParams.set('limit', '20000');
       const [geojsonResponse, classResponse] = await Promise.allSettled([
         axios.get(`${API_URL}/api/detections/geojson?${geoParams.toString()}`, { timeout: 10000 }),
         axios.get(`${API_URL}/api/detections/classes?${classParams.toString()}`, { timeout: 10000 }),
@@ -868,8 +980,10 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
     const category = detectionCategoryForFeature(feature);
     const categoryMeta = DETECTION_CATEGORIES[category];
     const reviewStatus = props.review_status || props.metadata?.review_status || 'review_candidate';
+    const confirmationStatus = props.confirmation_status || props.metadata?.confirmation_status || 'unconfirmed';
     const originalClass = props.original_class || props.metadata?.original_class || props.class;
     const parentClass = props.parent_class || props.metadata?.parent_class || props.class;
+    const hoverLabel = originalClass && originalClass !== props.class ? detectionClassLabel(originalClass) : props.label || props.class || 'Detection';
     layer.bindPopup(`
       <div style="font-family: sans-serif; min-width: 210px;">
         <div style="font-weight: 700; font-size: 13px; margin-bottom: 8px; color: #e8ebee; border-bottom: 1px solid #373e46; padding-bottom: 4px;">
@@ -882,19 +996,18 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
           <div>Original: <span style="color:#e8ebee">${originalClass}</span></div>
           <div>Confidence: <span style="color:#e8ebee">${(Number(props.confidence || 0) * 100).toFixed(1)}%</span></div>
           <div>Review: <span style="color:#e8ebee">${reviewStatus}</span></div>
+          <div>Confirm: <span style="color:#e8ebee">${confirmationStatus}</span></div>
           <div>Threat: <span style="color:#e8ebee">${props.threat_level || 'unknown'}</span></div>
           <div>Tag: <span style="color:#e8ebee">${props.allegiance || 'unknown'}</span></div>
         </div>
       </div>
     `);
-    if (showDetectionLabels) {
-      layer.bindTooltip(`${categoryMeta.short} / ${props.label || props.class || 'Detection'}`, {
-        permanent: true,
-        direction: 'center',
-        className: 'sentinel-detection-label',
-        opacity: 0.95,
-      });
-    }
+    layer.bindTooltip(`${categoryMeta.short} / ${hoverLabel}`, {
+      direction: 'top',
+      className: 'sentinel-detection-label',
+      opacity: 0.95,
+      sticky: true,
+    });
     layer.on('click', () => setSelectedDetection(feature));
   };
 
@@ -1044,7 +1157,7 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
                             {hidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                           </button>
                           <span style={{ color: hidden ? 'var(--ink-2)' : item.color }}>
-                            <CategoryIcon category={item.category} className="h-3 w-3" />
+                            <DetectionSubclassIcon label={item.rawClass} category={item.category} className="h-3 w-3" />
                           </span>
                           <button type="button" className="min-w-0 text-left" onClick={() => soloDetectionClass(item.rawClass)}>
                             <span className={`block truncate text-[11px] ${hidden ? 'text-sentinel-muted' : 'text-slate-200'}`}>{item.label}{solo ? ' / SOLO' : ''}</span>
@@ -1150,6 +1263,37 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
             })}
 
             {activeLayers.detections && showDetectionCenterMarkers && filteredDetectionsGeoJSON.features?.map((feature: any) => {
+              const badgePosition = detectionBadgePosition(feature);
+              if (!badgePosition) return null;
+              const category = detectionCategoryForFeature(feature);
+              const categoryMeta = DETECTION_CATEGORIES[category];
+              const props = feature.properties || {};
+              return (
+                <Marker
+                  key={`det-marker-${props.id || props.class}-${badgePosition[0]}-${badgePosition[1]}`}
+                  position={badgePosition}
+                  icon={detectionIcon(feature)}
+                  eventHandlers={{ click: () => setSelectedDetection(feature) }}
+                >
+                  <Popup className="gotham-popup">
+                    <div className="border border-sentinel-line bg-sentinel-panel p-2 text-slate-200">
+                      <div className="mb-2 flex items-center gap-2 border-b border-sentinel-line pb-1 text-xs font-bold uppercase tracking-wider">
+                        <span style={{ color: categoryMeta.color }}><DetectionSubclassIcon label={props.original_class || props.class || props.label} category={category} /></span>
+                        <span>{props.label || detectionClassLabel(props.class)}</span>
+                      </div>
+                      <div className="font-mono text-[11px] text-sentinel-muted">
+                        CAT <span style={{ color: categoryMeta.color }}>{categoryMeta.label}</span><br />
+                        PARENT {props.parent_class || props.class || 'unknown'}<br />
+                        ORIG {props.original_class || props.metadata?.original_class || props.class || 'unknown'}<br />
+                        CONF {Math.round(Number(props.confidence || 0) * 100)}%
+                      </div>
+                    </div>
+                  </Popup>
+                </Marker>
+              );
+            })}
+
+            {activeLayers.detections && !showDetectionCenterMarkers && !showBbox && filteredDetectionsGeoJSON.features?.map((feature: any) => {
               const center = detectionCenter(feature);
               if (!center) return null;
               const category = detectionCategoryForFeature(feature);
@@ -1157,22 +1301,22 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
               const props = feature.properties || {};
               return (
                 <CircleMarker
-                  key={`det-marker-${props.id || props.class}-${center[0]}-${center[1]}`}
+                  key={`det-dot-${props.id || props.class}-${center[0]}-${center[1]}`}
                   center={center}
                   renderer={detectionCanvasRenderer}
-                  radius={4}
+                  radius={3}
                   pathOptions={{
                     color: categoryMeta.color,
                     fillColor: categoryMeta.color,
                     fillOpacity: 0.8,
-                    weight: 1.5,
+                    weight: 1,
                   }}
                   eventHandlers={{ click: () => setSelectedDetection(feature) }}
                 >
                   <Popup className="gotham-popup">
                     <div className="border border-sentinel-line bg-sentinel-panel p-2 text-slate-200">
                       <div className="mb-2 flex items-center gap-2 border-b border-sentinel-line pb-1 text-xs font-bold uppercase tracking-wider">
-                        <span style={{ color: categoryMeta.color }}><CategoryIcon category={category} /></span>
+                        <span style={{ color: categoryMeta.color }}><DetectionSubclassIcon label={props.original_class || props.class || props.label} category={category} /></span>
                         <span>{props.label || detectionClassLabel(props.class)}</span>
                       </div>
                       <div className="font-mono text-[11px] text-sentinel-muted">
@@ -1302,9 +1446,7 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
             <div className="absolute left-1/2 top-8 -translate-x-1/2 border border-sentinel-line-2 bg-sentinel-panel px-3 py-1 font-mono text-[11px]">
               <span className="text-sentinel-accent">{visibleDetectionCount}</span>
               <span className="text-sentinel-muted"> / {detectionsGeoJSON.features?.length || 0} detections / last {timelineWindowMinutes}m</span>
-              {!showDetectionLabels && visibleDetectionCount > DETECTION_LABEL_LIMIT && (
-                <span className="text-sentinel-muted"> / labels suppressed</span>
-              )}
+              {visibleDetectionCount > 0 && <span className="text-sentinel-muted"> / hover labels</span>}
             </div>
             <div className="absolute left-3 bottom-4 border border-sentinel-line-2 bg-sentinel-panel px-3 py-2 font-mono text-[11px]">
               <div className="sentinel-label">cursor</div>
@@ -1427,6 +1569,7 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
                   <span className="sentinel-tag">{selectedDetection.properties?.allegiance || 'unknown'}</span>
                   <span className="sentinel-tag info">{Math.round(Number(selectedDetection.properties?.confidence || 0) * 100)}% CONF</span>
                   <span className="sentinel-tag acc">{selectedDetection.properties?.review_status || selectedDetection.properties?.metadata?.review_status || 'review'}</span>
+                  <span className="sentinel-tag info">{selectedDetection.properties?.confirmation_status || selectedDetection.properties?.metadata?.confirmation_status || 'unconfirmed'}</span>
                 </div>
               </div>
               <div className="border-b border-sentinel-line p-3 text-xs leading-relaxed text-sentinel-muted">
@@ -1435,6 +1578,7 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
                   <span>ASSESS</span><span>{selectedDetection.properties?.assessment_status || selectedDetection.properties?.ontology?.assessment_status || 'unconfirmed'}</span>
                   <span>ORIGINAL</span><span>{selectedDetection.properties?.original_class || selectedDetection.properties?.metadata?.original_class || selectedDetection.properties?.class || 'unknown'}</span>
                   <span>PROFILE</span><span>{selectedDetection.properties?.threshold_profile || selectedDetection.properties?.metadata?.threshold_profile || 'n/a'}</span>
+                  <span>CONFIRM</span><span>{selectedDetection.properties?.confirmation_reason || selectedDetection.properties?.metadata?.confirmation_reason || 'n/a'}</span>
                   <span>COVERAGE</span><span>{selectedDetection.properties?.coverage_fraction ? `${Math.round(Number(selectedDetection.properties.coverage_fraction) * 100)}%` : 'n/a'}</span>
                   <span>THREAT SCORE</span><span>{Number(selectedDetection.properties?.threat_confidence || selectedDetection.properties?.ontology?.threat_confidence || 0).toFixed(2)}</span>
                   <span>EVIDENCE</span><span>{(selectedDetection.properties?.evidence || selectedDetection.properties?.ontology?.evidence || []).join(' / ') || 'none'}</span>

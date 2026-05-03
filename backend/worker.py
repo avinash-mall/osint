@@ -1,10 +1,13 @@
 import os
+import io
 import json
 import requests
 import subprocess
 import uuid
 import logging
 import math
+import concurrent.futures
+import threading
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 from celery import Celery
@@ -22,9 +25,11 @@ from threat_assessment import assess_detection_threat, clean_detection_class, co
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 INFERENCE_URL = os.getenv("INFERENCE_URL", "http://localhost:8001")
 INFERENCE_LAE_DINO_URL = os.getenv("INFERENCE_LAE_DINO_URL", "http://inference-lae-dino:8001")
+INFERENCE_MMROTATE_URL = os.getenv("INFERENCE_MMROTATE_URL", "http://inference-mmrotate:8001")
 INFERENCE_PROVIDERS = {
     "yolo": INFERENCE_URL,
     "lae-dino": INFERENCE_LAE_DINO_URL,
+    "mmrotate": INFERENCE_MMROTATE_URL,
 }
 IMAGERY_PATH = os.getenv("IMAGERY_PATH", "/data/imagery")
 
@@ -32,6 +37,13 @@ IMAGERY_PATH = os.getenv("IMAGERY_PATH", "/data/imagery")
 def env_int(name: str, default: int) -> int:
     try:
         return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
     except (TypeError, ValueError):
         return default
 
@@ -46,6 +58,10 @@ def env_bool(name: str, default: bool = False) -> bool:
 MAX_INFERENCE_CHIPS = env_int("MAX_INFERENCE_CHIPS", 0)
 DEFAULT_INFERENCE_CHIP_SIZE = env_int("INFERENCE_CHIP_SIZE", 1024)
 DEFAULT_INFERENCE_OVERLAP = env_int("INFERENCE_CHIP_OVERLAP", 256)
+INFERENCE_CHIP_CONCURRENCY = max(1, env_int("INFERENCE_CHIP_CONCURRENCY", 8))
+INFERENCE_CHIP_TIMEOUT_S = env_int("INFERENCE_CHIP_TIMEOUT_S", 120)
+INFERENCE_MIN_VALID_CHIP_FRACTION = max(0.0, min(1.0, env_float("INFERENCE_MIN_VALID_CHIP_FRACTION", 0.01)))
+INFERENCE_MIN_VALID_DETECTION_FRACTION = max(0.0, min(1.0, env_float("INFERENCE_MIN_VALID_DETECTION_FRACTION", 0.20)))
 DETECTION_POLICY = active_detection_policy()
 ENABLE_LLM_DETECTION_CLASSIFICATION = env_bool("ENABLE_LLM_DETECTION_CLASSIFICATION", True)
 LLM_DETECTION_BATCH_SIZE = max(1, env_int("LLM_DETECTION_BATCH_SIZE", 8))
@@ -112,7 +128,13 @@ def publish_event(topic: str, payload: dict) -> None:
         logger.warning("Failed to publish %s event: %s", topic, e)
 
 
-def update_upload_job(upload_id: str = None, file_path: str = None, status: str = None, metadata: dict = None) -> None:
+def update_upload_job(
+    upload_id: str = None,
+    file_path: str = None,
+    status: str = None,
+    metadata: dict = None,
+    clear_metadata_keys: tuple[str, ...] = (),
+) -> None:
     if not upload_id and not file_path:
         return
 
@@ -121,9 +143,17 @@ def update_upload_job(upload_id: str = None, file_path: str = None, status: str 
     if status:
         clauses.append("status = %s")
         params.append(status)
+    metadata_expr = "coalesce(metadata, '{}'::jsonb)"
+    metadata_params = []
     if metadata:
-        clauses.append("metadata = coalesce(metadata, '{}'::jsonb) || %s::jsonb")
-        params.append(json.dumps(metadata, default=str))
+        metadata_expr = f"({metadata_expr} || %s::jsonb)"
+        metadata_params.append(json.dumps(metadata, default=str))
+    for key in clear_metadata_keys:
+        metadata_expr = f"({metadata_expr} - %s)"
+        metadata_params.append(key)
+    if metadata or clear_metadata_keys:
+        clauses.append(f"metadata = {metadata_expr}")
+        params.extend(metadata_params)
     clauses.append("updated_at = NOW()")
 
     where = []
@@ -290,6 +320,66 @@ def chip_to_uint8_rgb(chip: np.ndarray) -> np.ndarray:
     return np.moveaxis(chip_rgb, 0, -1)
 
 
+def valid_data_mask(src: rasterio.io.DatasetReader, window: Window) -> np.ndarray | None:
+    """Return a boolean valid-data mask for a raster window, or None when the
+    dataset does not expose no-data/alpha masking information."""
+    try:
+        mask = src.dataset_mask(window=window)
+    except Exception:
+        return None
+    if mask is None:
+        return None
+    valid = np.asarray(mask) > 0
+    if valid.size == 0:
+        return None
+    if np.all(valid):
+        return None
+    return valid
+
+
+def clip_box_to_valid_mask(
+    valid_mask: np.ndarray | None,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+) -> tuple[float, float, float, float] | None:
+    if valid_mask is None:
+        return x1, y1, x2, y2
+    height, width = valid_mask.shape[:2]
+    if width <= 0 or height <= 0:
+        return None
+
+    center_x = int(min(width - 1, max(0, round((x1 + x2) / 2.0))))
+    center_y = int(min(height - 1, max(0, round((y1 + y2) / 2.0))))
+    if not bool(valid_mask[center_y, center_x]):
+        return None
+
+    ix1 = max(0, min(width, int(math.floor(x1))))
+    iy1 = max(0, min(height, int(math.floor(y1))))
+    ix2 = max(0, min(width, int(math.ceil(x2))))
+    iy2 = max(0, min(height, int(math.ceil(y2))))
+    if ix2 <= ix1 or iy2 <= iy1:
+        return None
+
+    box_mask = valid_mask[iy1:iy2, ix1:ix2]
+    valid_count = int(np.count_nonzero(box_mask))
+    if valid_count <= 0:
+        return None
+    valid_fraction = valid_count / max(1, box_mask.size)
+    if valid_fraction < INFERENCE_MIN_VALID_DETECTION_FRACTION:
+        return None
+
+    valid_y, valid_x = np.nonzero(box_mask)
+    clipped_x1 = float(ix1 + int(valid_x.min()))
+    clipped_y1 = float(iy1 + int(valid_y.min()))
+    clipped_x2 = float(ix1 + int(valid_x.max()) + 1)
+    clipped_y2 = float(iy1 + int(valid_y.max()) + 1)
+    if clipped_x2 <= clipped_x1 or clipped_y2 <= clipped_y1:
+        return None
+    return clipped_x1, clipped_y1, clipped_x2, clipped_y2
+
+
 def bbox_iou(a: list[float], b: list[float]) -> float:
     if len(a) != 4 or len(b) != 4:
         return 0.0
@@ -361,6 +451,55 @@ def _merge_provider_into(kept: dict, dropped: dict) -> None:
         pc.setdefault(p, kept_conf)
     if pc:
         kept["provider_confidences"] = pc
+
+
+def apply_confirmation_policy(
+    detections: list[dict],
+    selected_provider_count: int,
+    policy: dict | None = None,
+) -> list[dict]:
+    """Annotate multi-provider detections with confirmation status.
+
+    Single-provider ingest keeps its historical behavior. For multi-provider
+    ingest, a detection is confirmed when another provider overlaps the same
+    object or when the winning detection is high-confidence by the active policy.
+    """
+    if selected_provider_count <= 1:
+        return detections
+
+    policy = policy or DETECTION_POLICY
+    high_threshold = float(policy.get("high_confidence_threshold", 0.55))
+    for det in detections:
+        providers = _provider_set(det)
+        confidence = float(det.get("confidence") or 0.0)
+        cross_confirmed = len(set(providers)) > 1
+        high_confidence = confidence >= high_threshold
+        if cross_confirmed:
+            confirmation_status = "confirmed"
+            confirmation_reason = "cross_provider"
+        elif high_confidence:
+            confirmation_status = "confirmed"
+            confirmation_reason = "high_confidence"
+        else:
+            confirmation_status = "review_candidate"
+            confirmation_reason = "single_provider_low_confidence"
+            det["review_status"] = "review_candidate"
+
+        provider_confidences = dict(det.get("provider_confidences") or {})
+        for provider in providers:
+            provider_confidences.setdefault(provider, confidence)
+        det["cross_confirmed"] = cross_confirmed
+        det["confirmation_status"] = confirmation_status
+        det["confirmation_reason"] = confirmation_reason
+        det["provider_confidences"] = provider_confidences
+    return detections
+
+
+def is_official_lae_detection(det: dict) -> bool:
+    return (
+        det.get("provider") == "lae-dino"
+        and det.get("prompt_profile") in {"official_lae80c", "lae1m_file"}
+    )
 
 
 def deduplicate_detections(
@@ -536,6 +675,38 @@ def classify_detection_ontologies(detections: list, progress_callback=None) -> d
     return ontology_by_class
 
 
+def _post_chip_to_providers(
+    session: requests.Session,
+    png_bytes: bytes,
+    chip_meta_payload: str,
+    selected_providers: list[str],
+    chip_label: str,
+) -> list[tuple[str, dict]]:
+    """POST a single chip to every selected inference provider, sharing one HTTP
+    session for connection-pool reuse. Returns the list of (provider, response_json)
+    tuples from providers that succeeded; per-provider failures are logged and
+    skipped (matching the prior single-provider error semantics — the caller
+    raises only if every provider failed for a chip)."""
+    responses: list[tuple[str, dict]] = []
+    for provider_name in selected_providers:
+        provider_url = INFERENCE_PROVIDERS[provider_name]
+        try:
+            resp = session.post(
+                f"{provider_url}/detect",
+                files={"image": ("chip.png", png_bytes, "image/png")},
+                data={"metadata": chip_meta_payload},
+                timeout=INFERENCE_CHIP_TIMEOUT_S,
+            )
+            resp.raise_for_status()
+            responses.append((provider_name, resp.json()))
+        except Exception as exc:
+            logger.warning(
+                "[WORKER] %s inference failed on chip %s: %s",
+                provider_name, chip_label, exc,
+            )
+    return responses
+
+
 def slice_and_infer(
     cog_path: str,
     pass_id: int,
@@ -598,199 +769,258 @@ def slice_and_infer(
                             },
                         )
 
-        for y_index in grid["y_indices"]:
-            y = y_index * step
-            for x_index in grid["x_indices"]:
-                x = x_index * step
-                processed_windows += 1
-                if progress_callback:
-                    inferred_percent = int(processed_windows / total_windows * 100)
-                    if (
-                        processed_windows == 1
-                        or processed_windows == total_windows
-                        or last_reported_percent is None
-                        or inferred_percent > last_reported_percent
-                    ):
-                        last_reported_percent = inferred_percent
-                        progress_callback(
-                            "inference",
-                            55 + int(inferred_percent * 0.35),
-                            f"Running inference on raster chips ({processed_windows}/{total_windows}).",
-                            {
-                                "processed_chips": processed_windows,
-                                "total_chips": total_windows,
-                                "planned_chips": total_windows,
-                                "source_total_chips": grid["source_total"],
-                                "sampling_enabled": grid["sampled"],
-                                "coverage_fraction": coverage_fraction,
-                            },
-                        )
-                win_width = min(chip_size, width - x)
-                win_height = min(chip_size, height - y)
-                window = Window(x, y, win_width, win_height)
-                
-                # Read chip
-                chip = src.read(window=window)
-                
-                # Skip mostly empty / nodata chips
-                if np.all(chip == 0) or (src.nodata is not None and np.all(chip == src.nodata)):
-                    continue
-                
-                # Save temporary chip image
-                chip_filename = f"chip_{pass_id}_{x}_{y}.png"
-                chip_path = os.path.join(IMAGERY_PATH, "chips", chip_filename)
-                os.makedirs(os.path.dirname(chip_path), exist_ok=True)
-                
-                # Write a display-scaled RGB chip. This handles float, single-band,
-                # and multispectral rasters without relying on PNG geotags.
-                Image.fromarray(chip_to_uint8_rgb(chip), mode="RGB").save(chip_path)
-                
-                # Inference — fan out to each selected provider. A failure in one
-                # provider is logged and skipped; other providers' results still land.
-                provider_responses: list[tuple[str, dict]] = []
-                chip_meta_payload = json.dumps({
-                    "pass_id": pass_id,
-                    "window": [x, y, win_width, win_height],
-                })
+        # HTTP session shared across the chip ThreadPoolExecutor so connection
+        # pooling actually engages (default requests.post opens a fresh TCP per
+        # call). pool_maxsize must be >= concurrency or requests will warn and
+        # silently drop connections.
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=INFERENCE_CHIP_CONCURRENCY * 2,
+            pool_maxsize=INFERENCE_CHIP_CONCURRENCY * 2,
+        )
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=INFERENCE_CHIP_CONCURRENCY,
+            thread_name_prefix="chip-post",
+        )
+        pending: dict[concurrent.futures.Future, dict] = {}
+
+        def _apply_chip_responses(ctx: dict, provider_responses: list[tuple[str, dict]]) -> None:
+            x = ctx["x"]; y = ctx["y"]
+            win_width = ctx["win_width"]; win_height = ctx["win_height"]
+            valid_mask = ctx.get("valid_mask")
+            chip_detections = []
+            for provider_name, inference_response in provider_responses:
+                for det in inference_response.get("detections", []):
+                    det["provider"] = provider_name
+                    det["providers"] = [provider_name]
+                    det["model_version"] = (
+                        inference_response.get("model_version")
+                        or det.get("model_version")
+                    )
+                    det["taxonomy_version"] = (
+                        inference_response.get("taxonomy_version")
+                        or det.get("taxonomy_version")
+                    )
+                    det["threshold_profile"] = (
+                        inference_response.get("threshold_profile")
+                        or det.get("threshold_profile")
+                    )
+                    chip_detections.append(det)
+
+            for det in chip_detections:
                 try:
-                    for provider_name in selected_providers:
-                        provider_url = INFERENCE_PROVIDERS[provider_name]
-                        try:
-                            with open(chip_path, "rb") as f:
-                                resp = requests.post(
-                                    f"{provider_url}/detect",
-                                    files={"image": f},
-                                    data={"metadata": chip_meta_payload},
-                                    timeout=120,
-                                )
-                            resp.raise_for_status()
-                            provider_responses.append((provider_name, resp.json()))
-                        except Exception as exc:
-                            logger.warning(
-                                "[WORKER] %s inference failed on chip %s: %s",
-                                provider_name, chip_path, exc,
-                            )
-                    if not provider_responses:
-                        # All providers failed for this chip — surface as a hard error to
-                        # match prior single-provider behaviour.
-                        raise RuntimeError(
-                            f"All providers failed for chip {chip_path}: {selected_providers}"
-                        )
+                    cx, cy, w, h = [float(value) for value in det["bbox"][:4]]
+                except (KeyError, TypeError, ValueError):
+                    continue
 
-                    chip_detections = []
-                    for provider_name, inference_response in provider_responses:
-                        for det in inference_response.get("detections", []):
-                            det["provider"] = provider_name
-                            det["providers"] = [provider_name]
-                            det["model_version"] = (
-                                inference_response.get("model_version")
-                                or det.get("model_version")
-                            )
-                            det["taxonomy_version"] = (
-                                inference_response.get("taxonomy_version")
-                                or det.get("taxonomy_version")
-                            )
-                            det["threshold_profile"] = (
-                                inference_response.get("threshold_profile")
-                                or det.get("threshold_profile")
-                            )
-                            chip_detections.append(det)
+                chip_px_cx = cx * win_width
+                chip_px_cy = cy * win_height
+                chip_px_w = max(0.0, w * win_width)
+                chip_px_h = max(0.0, h * win_height)
 
-                    for det in chip_detections:
-                        # Convert normalized bbox to pixel coords in chip
-                        try:
-                            cx, cy, w, h = [float(value) for value in det["bbox"][:4]]  # normalized [x_center, y_center, width, height]
-                        except (KeyError, TypeError, ValueError):
-                            continue
+                local_box = clip_box_to_valid_mask(
+                    valid_mask,
+                    chip_px_cx - chip_px_w / 2,
+                    chip_px_cy - chip_px_h / 2,
+                    chip_px_cx + chip_px_w / 2,
+                    chip_px_cy + chip_px_h / 2,
+                )
+                if local_box is None:
+                    continue
+                local_x1, local_y1, local_x2, local_y2 = local_box
 
-                        chip_px_cx = cx * win_width
-                        chip_px_cy = cy * win_height
-                        chip_px_w = max(0.0, w * win_width)
-                        chip_px_h = max(0.0, h * win_height)
+                abs_px_x1 = clamp_float(x + local_x1, 0, width)
+                abs_px_y1 = clamp_float(y + local_y1, 0, height)
+                abs_px_x2 = clamp_float(x + local_x2, 0, width)
+                abs_px_y2 = clamp_float(y + local_y2, 0, height)
+                if abs_px_x2 <= abs_px_x1 or abs_px_y2 <= abs_px_y1:
+                    continue
 
-                        # Convert to absolute pixel coords in full image
-                        abs_px_x1 = clamp_float(x + chip_px_cx - chip_px_w / 2, 0, width)
-                        abs_px_y1 = clamp_float(y + chip_px_cy - chip_px_h / 2, 0, height)
-                        abs_px_x2 = clamp_float(x + chip_px_cx + chip_px_w / 2, 0, width)
-                        abs_px_y2 = clamp_float(y + chip_px_cy + chip_px_h / 2, 0, height)
-                        if abs_px_x2 <= abs_px_x1 or abs_px_y2 <= abs_px_y1:
-                            continue
-
-                        pixel_obb = []
-                        if det.get("obb") and len(det["obb"]) == 8:
-                            for index, value in enumerate(det["obb"]):
-                                if index % 2 == 0:
-                                    pixel_obb.append(clamp_float(x + float(value) * win_width, 0, width))
-                                else:
-                                    pixel_obb.append(clamp_float(y + float(value) * win_height, 0, height))
+                pixel_obb = []
+                if det.get("obb") and len(det["obb"]) == 8:
+                    for index, value in enumerate(det["obb"]):
+                        if index % 2 == 0:
+                            pixel_obb.append(clamp_float(x + float(value) * win_width, 0, width))
                         else:
-                            pixel_obb = [
-                                abs_px_x1, abs_px_y1,
-                                abs_px_x2, abs_px_y1,
-                                abs_px_x2, abs_px_y2,
-                                abs_px_x1, abs_px_y2,
-                            ]
+                            pixel_obb.append(clamp_float(y + float(value) * win_height, 0, height))
+                else:
+                    pixel_obb = [
+                        abs_px_x1, abs_px_y1,
+                        abs_px_x2, abs_px_y1,
+                        abs_px_x2, abs_px_y2,
+                        abs_px_x1, abs_px_y2,
+                    ]
 
-                        pixel_points = list(zip(pixel_obb[0::2], pixel_obb[1::2]))
-                        lons, lats = [], []
-                        for px, py in pixel_points:
-                            lon, lat = transform * (px, py)
-                            lons.append(lon)
-                            lats.append(lat)
+                pixel_points = list(zip(pixel_obb[0::2], pixel_obb[1::2]))
+                lons, lats = [], []
+                for px, py in pixel_points:
+                    lon, lat = transform * (px, py)
+                    lons.append(lon)
+                    lats.append(lat)
 
-                        if crs and crs.to_string() != "EPSG:4326":
-                            from rasterio.warp import transform as rasterio_transform
-                            lons, lats = rasterio_transform(crs, "EPSG:4326", lons, lats)
+                if crs and crs.to_string() != "EPSG:4326":
+                    from rasterio.warp import transform as rasterio_transform
+                    lons, lats = rasterio_transform(crs, "EPSG:4326", lons, lats)
 
-                        geo_polygon = [coord for point in zip(lons, lats) for coord in point]
-                        lon1, lat1, lon2, lat2 = min(lons), min(lats), max(lons), max(lats)
+                geo_polygon = [coord for point in zip(lons, lats) for coord in point]
+                lon1, lat1, lon2, lat2 = min(lons), min(lats), max(lons), max(lats)
 
-                        original_class = det.get("original_class") or det.get("class", "unknown")
-                        confidence = float(det.get("confidence") or det.get("calibrated_confidence") or 0.0)
-                        decision = detection_decision(original_class, confidence, DETECTION_POLICY)
-                        if not decision["class_enabled"] or decision["review_status"] == "below_class_threshold":
-                            continue
+                original_class = det.get("original_class") or det.get("class", "unknown")
+                confidence = float(det.get("confidence") or det.get("calibrated_confidence") or 0.0)
+                decision = detection_decision(original_class, confidence, DETECTION_POLICY)
+                official_lae = is_official_lae_detection(det)
+                policy_review_status = decision["review_status"]
+                if official_lae and decision["review_status"] in {"disabled_distractor", "below_class_threshold"}:
+                    decision = {**decision, "review_status": "review_candidate"}
+                elif not decision["class_enabled"] or decision["review_status"] == "below_class_threshold":
+                    continue
 
-                        det["class"] = decision["parent_class"]
-                        # Preserve provider/version that we tagged from chip_response above;
-                        # decision values are policy-side fallbacks.
-                        provider_name = det.get("provider")
-                        provider_list = det.get("providers") or ([provider_name] if provider_name else [])
-                        det_model_version = det.get("model_version") or decision["model_version"]
-                        det_taxonomy_version = det.get("taxonomy_version") or decision["taxonomy_version"]
-                        det_threshold_profile = det.get("threshold_profile") or decision["threshold_profile"]
-                        det.update({**decision, **{
-                            "model_version": det_model_version,
-                            "taxonomy_version": det_taxonomy_version,
-                            "threshold_profile": det_threshold_profile,
-                            "provider": provider_name,
-                            "providers": provider_list,
-                        }})
-                        det["pixel_bbox"] = [abs_px_x1, abs_px_y1, abs_px_x2, abs_px_y2]
-                        det["pixel_obb"] = pixel_obb
-                        det["geo_bbox"] = [lon1, lat1, lon2, lat2]
-                        det["geo_polygon"] = geo_polygon
-                        det["chip_id"] = f"{pass_id}:{x}:{y}:{win_width}:{win_height}"
-                        det["chip_window"] = [x, y, win_width, win_height]
-                        det["coverage_fraction"] = coverage_fraction
-                        det["planned_chips"] = total_windows
-                        det["source_total_chips"] = grid["source_total"]
-                        det["sampling_enabled"] = grid["sampled"]
-                        det["dedupe_method"] = "obb_nms"
-                        detections.append(det)
-                    
-                except Exception as e:
-                    raise RuntimeError(f"Inference failed for chip {chip_path}: {e}") from e
-                finally:
-                    # Clean up chip file
-                    if os.path.exists(chip_path):
-                        os.remove(chip_path)
+                det["class"] = decision["original_class"] if official_lae else decision["parent_class"]
+                provider_name = det.get("provider")
+                provider_list = det.get("providers") or ([provider_name] if provider_name else [])
+                det_model_version = det.get("model_version") or decision["model_version"]
+                det_taxonomy_version = det.get("taxonomy_version") or decision["taxonomy_version"]
+                det_threshold_profile = det.get("threshold_profile") or decision["threshold_profile"]
+                det.update({**decision, **{
+                    "model_version": det_model_version,
+                    "taxonomy_version": det_taxonomy_version,
+                    "threshold_profile": det_threshold_profile,
+                    "provider": provider_name,
+                    "providers": provider_list,
+                    "policy_review_status": det.get("policy_review_status") or policy_review_status,
+                }})
+                det["pixel_bbox"] = [abs_px_x1, abs_px_y1, abs_px_x2, abs_px_y2]
+                det["pixel_obb"] = pixel_obb
+                det["geo_bbox"] = [lon1, lat1, lon2, lat2]
+                det["geo_polygon"] = geo_polygon
+                det["chip_id"] = f"{pass_id}:{x}:{y}:{win_width}:{win_height}"
+                det["chip_window"] = [x, y, win_width, win_height]
+                det["chip_valid_fraction"] = ctx.get("valid_fraction")
+                det["coverage_fraction"] = coverage_fraction
+                det["planned_chips"] = total_windows
+                det["source_total_chips"] = grid["source_total"]
+                det["sampling_enabled"] = grid["sampled"]
+                det["dedupe_method"] = "obb_nms"
+                detections.append(det)
+
+        def _consume_one(fut: concurrent.futures.Future) -> None:
+            nonlocal processed_windows, last_reported_percent
+            ctx = pending.pop(fut)
+            try:
+                provider_responses = fut.result()
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Inference failed for chip pass={pass_id} x={ctx['x']} y={ctx['y']}: {exc}"
+                ) from exc
+            if not provider_responses:
+                raise RuntimeError(
+                    f"All providers failed for chip pass={pass_id} x={ctx['x']} y={ctx['y']}: "
+                    f"{selected_providers}"
+                )
+            _apply_chip_responses(ctx, provider_responses)
+            processed_windows += 1
+            if progress_callback:
+                inferred_percent = int(processed_windows / total_windows * 100)
+                if (
+                    processed_windows == 1
+                    or processed_windows == total_windows
+                    or last_reported_percent is None
+                    or inferred_percent > last_reported_percent
+                ):
+                    last_reported_percent = inferred_percent
+                    progress_callback(
+                        "inference",
+                        55 + int(inferred_percent * 0.35),
+                        f"Running inference on raster chips ({processed_windows}/{total_windows}).",
+                        {
+                            "processed_chips": processed_windows,
+                            "total_chips": total_windows,
+                            "planned_chips": total_windows,
+                            "source_total_chips": grid["source_total"],
+                            "sampling_enabled": grid["sampled"],
+                            "coverage_fraction": coverage_fraction,
+                        },
+                    )
+
+        # Cap in-flight chips at 4× concurrency to bound memory: each PNG is ~1-3MB
+        # for a 1024² uint8 RGB chip, so 4×8 = 32 buffers ≈ 100MB worst case.
+        pending_limit = INFERENCE_CHIP_CONCURRENCY * 4
+
+        try:
+            for y_index in grid["y_indices"]:
+                y = y_index * step
+                for x_index in grid["x_indices"]:
+                    x = x_index * step
+                    win_width = min(chip_size, width - x)
+                    win_height = min(chip_size, height - y)
+                    window = Window(x, y, win_width, win_height)
+
+                    chip = src.read(window=window)
+                    valid_mask = valid_data_mask(src, window)
+                    valid_fraction = (
+                        float(np.count_nonzero(valid_mask)) / max(1, valid_mask.size)
+                        if valid_mask is not None
+                        else 1.0
+                    )
+                    if valid_fraction < INFERENCE_MIN_VALID_CHIP_FRACTION:
+                        continue
+                    if np.all(chip == 0) or (src.nodata is not None and np.all(chip == src.nodata)):
+                        continue
+
+                    chip_rgb = chip_to_uint8_rgb(chip)
+                    if valid_mask is not None:
+                        chip_rgb = chip_rgb.copy()
+                        chip_rgb[~valid_mask] = 0
+                    png_buf = io.BytesIO()
+                    Image.fromarray(chip_rgb, mode="RGB").save(png_buf, format="PNG")
+                    png_bytes = png_buf.getvalue()
+                    chip_meta_payload = json.dumps({
+                        "pass_id": pass_id,
+                        "window": [x, y, win_width, win_height],
+                    })
+                    chip_label = f"pass={pass_id} x={x} y={y}"
+
+                    future = executor.submit(
+                        _post_chip_to_providers,
+                        session, png_bytes, chip_meta_payload,
+                        selected_providers, chip_label,
+                    )
+                    pending[future] = {
+                        "x": x, "y": y, "win_width": win_width, "win_height": win_height,
+                        "valid_mask": valid_mask,
+                        "valid_fraction": round(valid_fraction, 4),
+                    }
+
+                    while len(pending) >= pending_limit:
+                        done, _ = concurrent.futures.wait(
+                            list(pending.keys()),
+                            return_when=concurrent.futures.FIRST_COMPLETED,
+                        )
+                        for fut in done:
+                            _consume_one(fut)
+
+            while pending:
+                done, _ = concurrent.futures.wait(
+                    list(pending.keys()),
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                for fut in done:
+                    _consume_one(fut)
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+            session.close()
     
-    deduped = deduplicate_detections(detections)
+    deduped = apply_confirmation_policy(
+        deduplicate_detections(detections),
+        selected_provider_count=len(selected_providers),
+    )
     inference_summary["processed_chips"] = processed_windows
     inference_summary["raw_detections"] = len(detections)
     inference_summary["deduped_detections"] = len(deduped)
     inference_summary["suppressed_detections"] = max(0, len(detections) - len(deduped))
+    inference_summary["confirmation_policy"] = "multi_provider_or_high_confidence" if len(selected_providers) > 1 else "single_provider"
     return {"detections": deduped, "summary": inference_summary}
 
 
@@ -849,12 +1079,14 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
                     "original_class": original_class,
                     "parent_class": parent_class,
                     "review_status": det.get("review_status") or decision["review_status"],
+                    "policy_review_status": det.get("policy_review_status") or decision["review_status"],
                     "threshold_profile": det.get("threshold_profile") or DETECTION_POLICY["threshold_profile"],
                     "class_threshold": det.get("class_threshold") or decision["class_threshold"],
                     "model_version": det.get("model_version") or DETECTION_POLICY["model_version"],
                     "taxonomy_version": det.get("taxonomy_version") or DETECTION_POLICY["taxonomy_version"],
                     "chip_id": det.get("chip_id"),
                     "chip_window": det.get("chip_window"),
+                    "chip_valid_fraction": det.get("chip_valid_fraction"),
                     "coverage_fraction": det.get("coverage_fraction"),
                     "planned_chips": det.get("planned_chips"),
                     "source_total_chips": det.get("source_total_chips"),
@@ -869,6 +1101,13 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
                     "provider": det.get("provider"),
                     "providers": _provider_set(det),
                     "provider_confidences": det.get("provider_confidences") or {},
+                    "cross_confirmed": bool(det.get("cross_confirmed", False)),
+                    "confirmation_status": det.get("confirmation_status"),
+                    "confirmation_reason": det.get("confirmation_reason"),
+                    "prompt_profile": det.get("prompt_profile"),
+                    "prompt_chunk_index": det.get("prompt_chunk_index"),
+                    "prompt_total_chunks": det.get("prompt_total_chunks"),
+                    "prompt_text": det.get("prompt_text"),
                 })
             ))
             
@@ -1420,18 +1659,28 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
             "replacement": replacement,
             "llm_task_id": llm_task_id,
             "inference_summary": inference_summary,
+            "processed_chips": inference_summary.get("processed_chips"),
+            "total_chips": inference_summary.get("planned_chips"),
+            "planned_chips": inference_summary.get("planned_chips"),
+            "source_total_chips": inference_summary.get("source_total_chips"),
         }
-        update_upload_job(upload_id=upload_id, file_path=input_path, status="ready", metadata={
-            **payload,
-            "stage": "ready",
-            "progress": 100,
-            "message": "Imagery processing complete.",
-            "llm_status": llm_status,
-            "llm_stage": "llm queued" if llm_status == "queued" else llm_status,
-            "llm_progress": 0 if llm_status == "queued" else 100,
-            "llm_message": llm_message,
-            "llm_enabled": llm_status == "queued",
-        })
+        update_upload_job(
+            upload_id=upload_id,
+            file_path=input_path,
+            status="ready",
+            metadata={
+                **payload,
+                "stage": "ready",
+                "progress": 100,
+                "message": "Imagery processing complete.",
+                "llm_status": llm_status,
+                "llm_stage": "llm queued" if llm_status == "queued" else llm_status,
+                "llm_progress": 0 if llm_status == "queued" else 100,
+                "llm_message": llm_message,
+                "llm_enabled": llm_status == "queued",
+            },
+            clear_metadata_keys=("error",),
+        )
         if llm_should_queue:
             llm_task = classify_detection_ontologies_for_pass.delay(pass_id, upload_id)
             llm_task_id = llm_task.id

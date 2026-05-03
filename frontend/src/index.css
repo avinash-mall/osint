@@ -371,6 +371,20 @@ button {
   pointer-events: none;
 }
 
+.sentinel-detection-icon {
+  width: 14px;
+  height: 14px;
+  display: grid;
+  place-items: center;
+  border: 1px solid currentColor;
+  background: color-mix(in oklab, var(--bg-0) 82%, transparent);
+  border-radius: 2px;
+}
+
+.sentinel-detection-icon svg {
+  display: block;
+}
+
 .sentinel-detection-label::before {
   display: none;
 }
