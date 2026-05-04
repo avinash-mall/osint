@@ -44,8 +44,9 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir --upgrade pip "setuptools<70" wheel
 
-# Install PyTorch 2.5.1 for CUDA 12.4
-RUN pip install --no-cache-dir torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124 \
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
+# Install PyTorch for specified CUDA version
+RUN pip install --no-cache-dir torch torchvision torchaudio --index-url ${TORCH_INDEX_URL} \
     && pip uninstall -y nvidia-cudnn-cu12
 
 COPY requirements.txt .

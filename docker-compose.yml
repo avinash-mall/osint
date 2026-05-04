@@ -143,6 +143,8 @@ services:
     build:
       context: ./inference-lae-dino
       dockerfile: Dockerfile.cpu
+      args:
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
     image: sentinelos-inference-lae-dino:cpu
     ports:
       - "8004:8001"
@@ -171,6 +173,8 @@ services:
   inference-mmrotate:
     build:
       context: ./inference-mmrotate
+      args:
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}
     image: sentinelos-inference-mmrotate:gpu
     ports:
       - "8005:8001"
@@ -193,7 +197,10 @@ services:
     working_dir: /app
 
   inference-lsknet:
-    build: ./inference-lsknet
+    build:
+      context: ./inference-lsknet
+      args:
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}
     image: sentinelos-inference-lsknet:gpu
     ports:
       - "8006:8001"
@@ -213,7 +220,10 @@ services:
     working_dir: /app
 
   inference-sam2:
-    build: ./inference-sam2
+    build:
+      context: ./inference-sam2
+      args:
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}
     image: sentinelos-inference-sam2:gpu
     ports:
       - "8007:8001"

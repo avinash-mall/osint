@@ -21,8 +21,9 @@ RUN ln -sf /usr/bin/python3.10 /usr/bin/python \
 
 WORKDIR /app
 
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
 # Upgrade pip and install torch first as instructed
-RUN pip install --no-cache-dir torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 \
+RUN pip install --no-cache-dir torch torchvision torchaudio --index-url ${TORCH_INDEX_URL} \
     && pip uninstall -y nvidia-cudnn-cu12
 
 # GPU Compilation constraints

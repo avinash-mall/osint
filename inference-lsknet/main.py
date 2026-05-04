@@ -118,6 +118,8 @@ def load_model() -> None:
             from mmdet.apis import init_detector
 
             detection_model = init_detector(LSKNET_CONFIG, LSKNET_CHECKPOINT, device=DEVICE)
+            if DEVICE.startswith("cuda"):
+                detection_model = detection_model.cuda()
             print(
                 f"[INFERENCE-LSKNET] Loaded LSKNet model config={LSKNET_CONFIG} "
                 f"checkpoint={LSKNET_CHECKPOINT} device={DEVICE}"
@@ -242,13 +244,8 @@ def run_inference(image_array: np.ndarray, image_size: tuple[int, int], metadata
         import torch
         from mmdet.apis import inference_detector
 
-        on_cuda = DEVICE.startswith("cuda")
         with model_lock, torch.inference_mode():
-            if on_cuda:
-                with torch.autocast(device_type="cuda", dtype=torch.float16):
-                    raw_result = inference_detector(detection_model, image_array)
-            else:
-                raw_result = inference_detector(detection_model, image_array)
+            raw_result = inference_detector(detection_model, image_array)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"LSKNet inference failed: {exc}") from exc
     detections = detections_from_mmrotate_result(raw_result, image_size)
