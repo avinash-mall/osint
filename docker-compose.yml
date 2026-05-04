@@ -54,6 +54,8 @@ services:
       - INFERENCE_URL=http://inference:8001
       - INFERENCE_LAE_DINO_URL=http://inference-lae-dino:8001
       - INFERENCE_MMROTATE_URL=http://inference-mmrotate:8001
+      - INFERENCE_LSKNET_URL=http://inference-lsknet:8001
+      - INFERENCE_SAM2_URL=http://inference-sam2:8001
       - IMAGERY_PATH=/data/imagery
       - FMV_PATH=/data/fmv
       - DATASET_PATH=/data/datasets
@@ -169,8 +171,6 @@ services:
   inference-mmrotate:
     build:
       context: ./inference-mmrotate
-      args:
-        TORCH_INDEX_URL: ${MMROTATE_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}
     image: sentinelos-inference-mmrotate:gpu
     ports:
       - "8005:8001"
@@ -189,6 +189,43 @@ services:
     volumes:
       - ./inference-mmrotate:/app
       - mmrotate_models:/models
+      - imagery_data:/data/imagery:ro
+    working_dir: /app
+
+  inference-lsknet:
+    build: ./inference-lsknet
+    image: sentinelos-inference-lsknet:gpu
+    ports:
+      - "8006:8001"
+    gpus: all
+    environment:
+      DEVICE: auto
+      CPU_THREADS: auto
+      WEB_CONCURRENCY: "2"
+      DETECTION_THRESHOLD_PROFILE: recall_review
+      LSKNET_CONFIDENCE_THRESHOLD: "0.10"
+      MAX_DETECTIONS_PER_CHIP: "300"
+      MODEL_VERSION: lsknet-s-dota
+    volumes:
+      - ./inference-lsknet:/app
+      - lsknet_models:/models
+      - imagery_data:/data/imagery:ro
+    working_dir: /app
+
+  inference-sam2:
+    build: ./inference-sam2
+    image: sentinelos-inference-sam2:gpu
+    ports:
+      - "8007:8001"
+    gpus: all
+    environment:
+      DEVICE: auto
+      CPU_THREADS: auto
+      WEB_CONCURRENCY: "1"
+      SAM2_MODEL_SIZE: "large"
+    volumes:
+      - ./inference-sam2:/app
+      - sam2_models:/models
       - imagery_data:/data/imagery:ro
     working_dir: /app
 
@@ -218,6 +255,8 @@ services:
       - INFERENCE_URL=http://inference:8001
       - INFERENCE_LAE_DINO_URL=http://inference-lae-dino:8001
       - INFERENCE_MMROTATE_URL=http://inference-mmrotate:8001
+      - INFERENCE_LSKNET_URL=http://inference-lsknet:8001
+      - INFERENCE_SAM2_URL=http://inference-sam2:8001
       - IMAGERY_PATH=/data/imagery
       - FMV_PATH=/data/fmv
       - DATASET_PATH=/data/datasets
@@ -242,6 +281,10 @@ services:
         condition: service_started
       inference-mmrotate:
         condition: service_started
+      inference-lsknet:
+        condition: service_started
+      inference-sam2:
+        condition: service_started
     volumes:
       - ./backend:/app
       - imagery_data:/data/imagery
@@ -265,3 +308,5 @@ volumes:
   fmv_data:
   dataset_data:
   mmrotate_models:
+  lsknet_models:
+  sam2_models:

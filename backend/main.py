@@ -3261,7 +3261,7 @@ def trigger_ingest(req: IngestRequest):
     }
 
 
-_KNOWN_INFERENCE_PROVIDERS = ("yolo", "lae-dino", "mmrotate")
+_KNOWN_INFERENCE_PROVIDERS = ("yolo", "lae-dino", "mmrotate", "lsknet", "sam2")
 
 
 def _parse_inference_providers(raw: str) -> list[str]:

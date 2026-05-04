@@ -54,40 +54,32 @@ def test_cross_provider_detection_is_confirmed():
     assert det["confirmation_reason"] == "cross_provider"
 
 
-def test_single_provider_high_confidence_is_confirmed_in_multi_provider_run():
+def test_single_provider_high_confidence_is_discarded_in_multi_provider_run():
     helpers = load_worker_helpers()
     det = {"providers": ["mmrotate"], "confidence": 0.8}
 
-    helpers["apply_confirmation_policy"]([det], selected_provider_count=2)
+    result = helpers["apply_confirmation_policy"]([det], selected_provider_count=2)
 
-    assert det["cross_confirmed"] is False
-    assert det["confirmation_status"] == "confirmed"
-    assert det["confirmation_reason"] == "high_confidence"
+    assert len(result) == 0
 
 
-def test_single_provider_low_confidence_stays_review_candidate_in_multi_provider_run():
+def test_single_provider_low_confidence_is_discarded_in_multi_provider_run():
     helpers = load_worker_helpers()
     det = {"providers": ["mmrotate"], "confidence": 0.3, "review_status": "high_confidence"}
 
-    helpers["apply_confirmation_policy"]([det], selected_provider_count=2)
+    result = helpers["apply_confirmation_policy"]([det], selected_provider_count=2)
 
-    assert det["cross_confirmed"] is False
-    assert det["confirmation_status"] == "review_candidate"
-    assert det["confirmation_reason"] == "single_provider_low_confidence"
-    assert det["review_status"] == "review_candidate"
+    assert len(result) == 0
 
 
-def test_unrelated_provider_detections_are_not_cross_confirmed():
+def test_unrelated_provider_detections_are_discarded():
     helpers = load_worker_helpers()
     left = {"providers": ["yolo"], "confidence": 0.3}
     right = {"providers": ["mmrotate"], "confidence": 0.3}
 
-    helpers["apply_confirmation_policy"]([left, right], selected_provider_count=2)
+    result = helpers["apply_confirmation_policy"]([left, right], selected_provider_count=2)
 
-    assert left["cross_confirmed"] is False
-    assert right["cross_confirmed"] is False
-    assert left["confirmation_status"] == "review_candidate"
-    assert right["confirmation_status"] == "review_candidate"
+    assert len(result) == 0
 
 
 def test_single_provider_run_is_unchanged():

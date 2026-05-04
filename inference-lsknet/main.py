@@ -15,10 +15,12 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from PIL import Image
 from starlette.concurrency import run_in_threadpool
 
+import cv2
 from detection_policy import active_detection_policy, detection_decision
 
+cv2.setNumThreads(0)
 
-app = FastAPI(title="Magritte AIP Node - MMRotate Inference")
+app = FastAPI(title="Magritte AIP Node - LSKNet Inference")
 
 DOTA_CLASSES = (
     "plane",
@@ -38,7 +40,7 @@ DOTA_CLASSES = (
     "helicopter",
 )
 
-DEFAULT_MODEL_DIR = Path(os.getenv("MMROTATE_MODEL_DIR", "/models"))
+DEFAULT_MODEL_DIR = Path(os.getenv("LSKNET_MODEL_DIR", "/models"))
 DEFAULT_CONFIG = "/opt/mmrotate/configs/oriented_rcnn/oriented_rcnn_r50_fpn_1x_dota_le90.py"
 DEFAULT_CHECKPOINT = str(DEFAULT_MODEL_DIR / "oriented_rcnn_r50_fpn_1x_dota_le90-6d2b2ce0.pth")
 DEFAULT_CHECKPOINT_URL = (
@@ -47,12 +49,12 @@ DEFAULT_CHECKPOINT_URL = (
     "oriented_rcnn_r50_fpn_1x_dota_le90-6d2b2ce0.pth"
 )
 
-MMROTATE_CONFIG = os.getenv("MMROTATE_CONFIG", DEFAULT_CONFIG)
-MMROTATE_CHECKPOINT = os.getenv("MMROTATE_CHECKPOINT", DEFAULT_CHECKPOINT)
-MMROTATE_CHECKPOINT_URL = os.getenv("MMROTATE_CHECKPOINT_URL", DEFAULT_CHECKPOINT_URL)
-MMROTATE_CONFIDENCE_THRESHOLD = float(os.getenv("MMROTATE_CONFIDENCE_THRESHOLD", "0.10"))
+LSKNET_CONFIG = os.getenv("LSKNET_CONFIG", DEFAULT_CONFIG)
+LSKNET_CHECKPOINT = os.getenv("LSKNET_CHECKPOINT", DEFAULT_CHECKPOINT)
+LSKNET_CHECKPOINT_URL = os.getenv("LSKNET_CHECKPOINT_URL", DEFAULT_CHECKPOINT_URL)
+LSKNET_CONFIDENCE_THRESHOLD = float(os.getenv("LSKNET_CONFIDENCE_THRESHOLD", "0.10"))
 MAX_DETECTIONS_PER_CHIP = int(os.getenv("MAX_DETECTIONS_PER_CHIP", "300"))
-MODEL_VERSION = os.getenv("MODEL_VERSION", "mmrotate-oriented-rcnn-dota")
+MODEL_VERSION = os.getenv("MODEL_VERSION", "lsknet-s-dota")
 DETECTION_POLICY = active_detection_policy()
 
 detection_model = None
@@ -74,7 +76,7 @@ def normalize_device(value: str) -> str:
             if supported_arches and device_arch not in supported_arches:
                 # Arch not natively compiled in, but PTX JIT forward-compat will handle it.
                 print(
-                    f"[INFERENCE-MMROTATE] CUDA device arch {device_arch} not in torch build "
+                    f"[INFERENCE-LSKNET] CUDA device arch {device_arch} not in torch build "
                     f"arch list ({sorted(supported_arches)}); using CUDA anyway via PTX JIT"
                 )
             return "cuda:0"
@@ -87,14 +89,14 @@ DEVICE = normalize_device(os.getenv("DEVICE", "auto"))
 
 
 def ensure_checkpoint() -> None:
-    path = Path(MMROTATE_CHECKPOINT)
+    path = Path(LSKNET_CHECKPOINT)
     if path.exists():
         return
-    if not MMROTATE_CHECKPOINT_URL:
+    if not LSKNET_CHECKPOINT_URL:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"[INFERENCE-MMROTATE] Downloading checkpoint to {path}")
-    with requests.get(MMROTATE_CHECKPOINT_URL, stream=True, timeout=600) as response:
+    print(f"[INFERENCE-LSKNET] Downloading checkpoint to {path}")
+    with requests.get(LSKNET_CHECKPOINT_URL, stream=True, timeout=600) as response:
         response.raise_for_status()
         with path.open("wb") as handle:
             for chunk in response.iter_content(chunk_size=1024 * 1024):
@@ -115,15 +117,15 @@ def load_model() -> None:
             import mmrotate  # noqa: F401
             from mmdet.apis import init_detector
 
-            detection_model = init_detector(MMROTATE_CONFIG, MMROTATE_CHECKPOINT, device=DEVICE)
+            detection_model = init_detector(LSKNET_CONFIG, LSKNET_CHECKPOINT, device=DEVICE)
             print(
-                f"[INFERENCE-MMROTATE] Loaded MMRotate model config={MMROTATE_CONFIG} "
-                f"checkpoint={MMROTATE_CHECKPOINT} device={DEVICE}"
+                f"[INFERENCE-LSKNET] Loaded LSKNet model config={LSKNET_CONFIG} "
+                f"checkpoint={LSKNET_CHECKPOINT} device={DEVICE}"
             )
         except Exception as exc:
             model_error = str(exc)
             detection_model = None
-            print(f"[INFERENCE-MMROTATE] Model load failed: {exc}")
+            print(f"[INFERENCE-LSKNET] Model load failed: {exc}")
 
 
 def _as_numpy(value: Any) -> np.ndarray:
@@ -198,7 +200,7 @@ def detections_from_mmrotate_result(result: Any, image_size: tuple[int, int]) ->
         if len(row) < 6 or class_index < 0 or class_index >= len(DOTA_CLASSES):
             continue
         cx, cy, w, h, angle, score = (float(value) for value in row[:6])
-        if score < MMROTATE_CONFIDENCE_THRESHOLD or w <= 0 or h <= 0:
+        if score < LSKNET_CONFIDENCE_THRESHOLD or w <= 0 or h <= 0:
             continue
         cls_name = DOTA_CLASSES[class_index]
         decision = detection_decision(cls_name, score, DETECTION_POLICY)
@@ -234,7 +236,7 @@ def detections_from_mmrotate_result(result: Any, image_size: tuple[int, int]) ->
 def run_inference(image_array: np.ndarray, image_size: tuple[int, int], metadata: dict | None = None) -> dict[str, Any]:
     load_model()
     if detection_model is None:
-        raise HTTPException(status_code=503, detail=f"No MMRotate model loaded: {model_error or 'unknown error'}")
+        raise HTTPException(status_code=503, detail=f"No LSKNet model loaded: {model_error or 'unknown error'}")
     start_time = time.time()
     try:
         import torch
@@ -248,21 +250,21 @@ def run_inference(image_array: np.ndarray, image_size: tuple[int, int], metadata
             else:
                 raw_result = inference_detector(detection_model, image_array)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"MMRotate inference failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"LSKNet inference failed: {exc}") from exc
     detections = detections_from_mmrotate_result(raw_result, image_size)
     return {
         "status": "success",
         "detections": detections,
         "processing_time_ms": round((time.time() - start_time) * 1000, 2),
-        "model": MMROTATE_CHECKPOINT,
-        "config": MMROTATE_CONFIG,
+        "model": LSKNET_CHECKPOINT,
+        "config": LSKNET_CONFIG,
         "task": "rotated_detect",
         "device": DEVICE,
         "model_version": MODEL_VERSION,
         "taxonomy_version": DETECTION_POLICY["taxonomy_version"],
         "threshold_profile": DETECTION_POLICY["threshold_profile"],
         "global_confidence_floor": DETECTION_POLICY["global_confidence_floor"],
-        "confidence_threshold": MMROTATE_CONFIDENCE_THRESHOLD,
+        "confidence_threshold": LSKNET_CONFIDENCE_THRESHOLD,
     }
 
 
@@ -304,14 +306,14 @@ def health() -> dict[str, Any]:
         "status": "ok",
         "model_loaded": detection_model is not None,
         "model_error": model_error,
-        "model_path": MMROTATE_CHECKPOINT,
-        "model_exists": Path(MMROTATE_CHECKPOINT).exists(),
-        "config_path": MMROTATE_CONFIG,
-        "config_exists": Path(MMROTATE_CONFIG).exists(),
+        "model_path": LSKNET_CHECKPOINT,
+        "model_exists": Path(LSKNET_CHECKPOINT).exists(),
+        "config_path": LSKNET_CONFIG,
+        "config_exists": Path(LSKNET_CONFIG).exists(),
         "device": DEVICE,
         "model_version": MODEL_VERSION,
         "detection_policy": DETECTION_POLICY,
-        "confidence_threshold": MMROTATE_CONFIDENCE_THRESHOLD,
+        "confidence_threshold": LSKNET_CONFIDENCE_THRESHOLD,
         "max_detections_per_chip": MAX_DETECTIONS_PER_CHIP,
         "classes": DOTA_CLASSES,
     }

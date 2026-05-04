@@ -751,12 +751,12 @@ def _run_inference_plan_batch(items: List[dict], prompt_plan: dict[str, Any]) ->
     return combined
 
 
-def run_inference(image: Image.Image, metadata: Optional[dict] = None) -> dict:
+def run_inference(image_array: np.ndarray, image_size: tuple[int, int], metadata: Optional[dict] = None) -> dict:
     start_time = time.time()
     prompt_plan = resolve_prompt_plan(metadata)
     item = {
-        "image_array": np.array(image),
-        "image_size": image.size,
+        "image_array": image_array,
+        "image_size": image_size,
         "start_time": start_time,
     }
     return _run_inference_plan_batch([item], prompt_plan)[0]
@@ -802,7 +802,7 @@ class LaeInferenceBatcher:
         self.last_batch_size = 0
         self.last_batch_ms = None
 
-    async def submit(self, image: Image.Image, metadata: Optional[dict]) -> dict:
+    async def submit(self, image_array: np.ndarray, image_size: tuple[int, int], metadata: Optional[dict]) -> dict:
         prompt_plan = resolve_prompt_plan(metadata)
         queue_key = json.dumps({
             "profile": prompt_plan["profile"],
@@ -812,8 +812,8 @@ class LaeInferenceBatcher:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
         item = {
-            "image_array": np.array(image),
-            "image_size": image.size,
+            "image_array": image_array,
+            "image_size": image_size,
             "start_time": time.time(),
             "future": future,
         }
@@ -905,6 +905,14 @@ def startup_event():
     load_model()
 
 
+def decode_image(contents: bytes) -> tuple[np.ndarray, tuple[int, int]]:
+    pil_image = Image.open(io.BytesIO(contents))
+    if pil_image.mode != "RGB":
+        pil_image = pil_image.convert("RGB")
+    image_array = np.array(pil_image)
+    return image_array, pil_image.size
+
+
 @app.post("/detect")
 async def detect_objects(
     image: UploadFile = File(...),
@@ -917,16 +925,14 @@ async def detect_objects(
 
     contents = await image.read()
     try:
-        pil_image = Image.open(io.BytesIO(contents))
-        if pil_image.mode != "RGB":
-            pil_image = pil_image.convert("RGB")
+        image_array, image_size = await run_in_threadpool(decode_image, contents)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid image file: {exc}")
 
     if LAE_BATCH_MAX_SIZE > 1:
-        result = await lae_batcher.submit(pil_image, meta)
+        result = await lae_batcher.submit(image_array, image_size, meta)
     else:
-        result = await run_in_threadpool(run_inference, pil_image, meta)
+        result = await run_in_threadpool(run_inference, image_array, image_size, meta)
     result["input_metadata"] = meta
     return result
 

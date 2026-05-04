@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -10,10 +10,9 @@ ENV MMROTATE_CHECKPOINT=/models/oriented_rcnn_r50_fpn_1x_dota_le90-6d2b2ce0.pth
 ENV MODEL_VERSION=mmrotate-oriented-rcnn-dota
 
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
-ARG TORCH_VERSION=2.9.1+cu128
-ARG TORCHVISION_VERSION=0.24.1+cu128
+ARG TORCH_VERSION=2.9.1
+ARG TORCHVISION_VERSION=0.24.1
 ARG MMENGINE_VERSION=0.10.5
-ARG MMCV_WHEEL_URL=https://download.openmmlab.com/mmcv/dist/cu117/torch2.0.0/mmcv-2.0.0-cp310-cp310-manylinux1_x86_64.whl
 ARG MMDET_VERSION=3.1.0
 ARG MMROTATE_REF=dev-1.x
 
@@ -30,27 +29,38 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxext6 \
     libxrender-dev \
     libgomp1 \
+    ninja-build \
     && rm -rf /var/lib/apt/lists/* \
     && ln -sf /usr/bin/python3 /usr/local/bin/python
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+RUN pip install --no-cache-dir --upgrade pip "setuptools<70" wheel
 
+# Install PyTorch with CUDA 12.8 support (Blackwell-compatible)
 RUN pip install --no-cache-dir \
     torch==${TORCH_VERSION} \
     torchvision==${TORCHVISION_VERSION} \
-    --index-url ${TORCH_INDEX_URL}
+    --index-url ${TORCH_INDEX_URL} \
+    && pip uninstall -y nvidia-cudnn-cu12
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir --timeout 1000 --retries 10 -r requirements.txt
 
-# Install openmmlab stack with versions that satisfy all constraints without patching:
-#   mmdet 3.1.0 requires mmcv>=2.0.0rc4, <2.1.0
-#   mmrotate 1.0.0rc1 requires mmcv>=2.0.0rc4, <=2.1.0
-#   mmcv 2.0.0 satisfies both
-RUN pip install --no-cache-dir "numpy<2" "mmengine==${MMENGINE_VERSION}" \
-    && pip install --no-cache-dir "${MMCV_WHEEL_URL}" \
+ENV TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0+PTX"
+ENV MMCV_WITH_OPS=1
+ENV FORCE_CUDA="1"
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+# Limit parallel ninja jobs to prevent OOM crash during CUDA extension compilation
+ENV MAX_JOBS=4
+
+RUN echo "Force rebuild mmcv 2"
+RUN pip install --no-cache-dir "numpy<2" "mmengine==${MMENGINE_VERSION}" ninja cython \
+    && git clone -b v2.0.0 https://github.com/open-mmlab/mmcv.git /opt/mmcv \
+    && cd /opt/mmcv \
+    && sed -i 's/c++14/c++17/g' setup.py \
+    && pip install --no-cache-dir --no-build-isolation -e . \
     && pip install --no-cache-dir "mmdet==${MMDET_VERSION}"
 
 RUN git clone --depth 1 --branch ${MMROTATE_REF} https://github.com/open-mmlab/mmrotate.git /opt/mmrotate \

@@ -1,0 +1,129 @@
+ Image sentinelos-inference-mmrotate:gpu Building 
+ Image sentinelos-inference-lsknet:gpu Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 1.03kB done
+#1 DONE 0.0s
+
+#2 [inference-lsknet internal] load build definition from Dockerfile
+#2 transferring dockerfile: 2.40kB done
+#2 DONE 0.0s
+
+#3 [inference-mmrotate internal] load build definition from Dockerfile
+#3 transferring dockerfile: 2.41kB done
+#3 DONE 0.0s
+
+#4 [inference-lsknet internal] load metadata for docker.io/nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
+#4 DONE 0.0s
+
+#5 [inference-mmrotate internal] load .dockerignore
+#5 transferring context: 65B done
+#5 DONE 0.0s
+
+#6 [inference-lsknet internal] load .dockerignore
+#6 transferring context: 2B done
+#6 DONE 0.0s
+
+#7 [inference-mmrotate internal] load build context
+#7 transferring context: 759B done
+#7 DONE 0.0s
+
+#8 [inference-mmrotate  1/11] FROM docker.io/nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04@sha256:ad6d59a3bbf3e82c1c849c9ac09cfc2a3e0bbb8655042fd899be6681b3fe2a85
+#8 resolve docker.io/nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04@sha256:ad6d59a3bbf3e82c1c849c9ac09cfc2a3e0bbb8655042fd899be6681b3fe2a85 0.0s done
+#8 DONE 0.0s
+
+#9 [inference-lsknet internal] load build context
+#9 transferring context: 161B done
+#9 DONE 0.0s
+
+#10 [inference-mmrotate 10/11] RUN mkdir -p /models     && wget --continue --tries=20 --timeout=60 --read-timeout=300 -O /models/oriented_rcnn_r50_fpn_1x_dota_le90-6d2b2ce0.pth     https://download.openmmlab.com/mmrotate/v0.1.0/oriented_rcnn/oriented_rcnn_r50_fpn_1x_dota_le90/oriented_rcnn_r50_fpn_1x_dota_le90-6d2b2ce0.pth
+#10 CACHED
+
+#11 [inference-mmrotate  6/11] COPY requirements.txt .
+#11 CACHED
+
+#12 [inference-mmrotate  4/11] RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+#12 CACHED
+
+#13 [inference-mmrotate  3/11] WORKDIR /app
+#13 CACHED
+
+#14 [inference-mmrotate  9/11] RUN git clone --depth 1 --branch dev-1.x https://github.com/open-mmlab/mmrotate.git /opt/mmrotate     && pip install --no-cache-dir -e /opt/mmrotate     && pip install --no-cache-dir "numpy<2" "opencv-python<4.12" "opencv-python-headless<4.12"
+#14 CACHED
+
+#15 [inference-mmrotate  8/11] RUN pip install --no-cache-dir "numpy<2" "mmengine==0.10.5" ninja cython     && git clone -b v2.0.0 https://github.com/open-mmlab/mmcv.git /opt/mmcv     && cd /opt/mmcv     && sed -i 's/c++14/c++17/g' setup.py     && pip install --no-cache-dir --no-build-isolation -e .     && pip install --no-cache-dir "mmdet==3.1.0"
+#15 CACHED
+
+#16 [inference-mmrotate  7/11] RUN pip install --no-cache-dir --timeout 1000 --retries 10 -r requirements.txt
+#16 CACHED
+
+#17 [inference-mmrotate  2/11] RUN apt-get update && apt-get install -y --no-install-recommends     python3     python3-pip     python3-dev     git     wget     ca-certificates     libgl1     libglib2.0-0     libsm6     libxext6     libxrender-dev     libgomp1     ninja-build     && rm -rf /var/lib/apt/lists/*     && ln -sf /usr/bin/python3 /usr/local/bin/python
+#17 CACHED
+
+#18 [inference-mmrotate  5/11] RUN pip install --no-cache-dir     torch==2.5.1     torchvision==0.20.1     --index-url https://download.pytorch.org/whl/cu124     && pip uninstall -y nvidia-cudnn-cu12
+#18 CACHED
+
+#19 [inference-lsknet  3/12] WORKDIR /app
+#19 CACHED
+
+#20 [inference-lsknet  8/12] RUN pip install --no-cache-dir "numpy<2" cython ninja     && git clone -b v1.7.1 https://github.com/open-mmlab/mmcv.git /opt/mmcv     && cd /opt/mmcv     && sed -i 's/c++14/c++17/g' setup.py     && pip install --no-cache-dir --no-build-isolation -e .     && pip install --no-cache-dir "mmdet==2.28.2"
+#20 CACHED
+
+#21 [inference-lsknet  2/12] RUN apt-get update && apt-get install -y --no-install-recommends     python3     python3-pip     python3-dev     git     wget     ca-certificates     libgl1     libglib2.0-0     libsm6     libxext6     libxrender-dev     libgomp1     ninja-build     && rm -rf /var/lib/apt/lists/*     && ln -sf /usr/bin/python3 /usr/local/bin/python
+#21 CACHED
+
+#22 [inference-lsknet  5/12] RUN pip install --no-cache-dir torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu124     && pip uninstall -y nvidia-cudnn-cu12
+#22 CACHED
+
+#23 [inference-lsknet  9/12] RUN git clone --depth 1 https://github.com/zcablii/LSKNet.git /opt/lsknet     && cd /opt/lsknet     && pip install -v -e .     && pip install --no-cache-dir "numpy<2" "opencv-python<4.12" "opencv-python-headless<4.12"
+#23 CACHED
+
+#24 [inference-lsknet 11/12] RUN pip install --no-cache-dir timm==0.6.13
+#24 CACHED
+
+#25 [inference-lsknet  4/12] RUN pip install --no-cache-dir --upgrade pip "setuptools<70" wheel
+#25 CACHED
+
+#26 [inference-lsknet  7/12] RUN pip install --no-cache-dir --timeout 1000 --retries 10 -r requirements.txt
+#26 CACHED
+
+#27 [inference-lsknet 10/12] RUN mkdir -p /models     && wget --continue --tries=20 --timeout=60 --read-timeout=300 -O /models/lsk_s_fpn_1x_dota_le90_20230116-99749191.pth     https://download.openmmlab.com/mmrotate/v1.0/lsknet/lsk_s_fpn_1x_dota_le90/lsk_s_fpn_1x_dota_le90_20230116-99749191.pth
+#27 CACHED
+
+#28 [inference-lsknet  6/12] COPY requirements.txt .
+#28 CACHED
+
+#29 [inference-mmrotate 11/11] COPY . .
+#29 CACHED
+
+#30 [inference-lsknet 12/12] COPY . .
+#30 CACHED
+
+#31 [inference-mmrotate] exporting to image
+#31 exporting layers done
+#31 exporting manifest sha256:ed18d96171c546d68bf143cf63380e9f901b29325ad61cbb3f8b7e4429feaf4e done
+#31 exporting config sha256:75b565a79fd5395b9a79c62ff39f767c7c9d19fcf2709b9d1597218a6dd8dc81 done
+#31 exporting attestation manifest sha256:55248cf8b6c7fef54882da42a4e6b5d95f049e6047df88e96b401f41cb94c610
+#31 exporting attestation manifest sha256:55248cf8b6c7fef54882da42a4e6b5d95f049e6047df88e96b401f41cb94c610 0.1s done
+#31 exporting manifest list sha256:cd634b84966af370bbbdde8a93b83e54185ab622a3d2411fa3242705b5a4128f 0.0s done
+#31 naming to docker.io/library/sentinelos-inference-mmrotate:gpu
+#31 naming to docker.io/library/sentinelos-inference-mmrotate:gpu done
+#31 unpacking to docker.io/library/sentinelos-inference-mmrotate:gpu 0.0s done
+#31 DONE 0.2s
+
+#32 [inference-lsknet] exporting to image
+#32 exporting layers 0.0s done
+#32 exporting manifest sha256:8191503833efcdaa5ade65546964168b305c3674b7c5cb33b531da1db23553db done
+#32 exporting config sha256:10d39e06316ff9d0e78b5b9cd04d41b2e1707336adc1293f98737d29ac2762f0 done
+#32 exporting attestation manifest sha256:1520689fbb2d17bb6a4fb103132f2f6713e351703ba51924bb69f3ee662e381b 0.1s done
+#32 exporting manifest list sha256:6bfba35a125a0570c692c33f63c9386bf8d7e5e84d00e7f1b02610ea4ed526b8 0.0s done
+#32 naming to docker.io/library/sentinelos-inference-lsknet:gpu done
+#32 unpacking to docker.io/library/sentinelos-inference-lsknet:gpu 0.0s done
+#32 DONE 0.2s
+
+#33 [inference-mmrotate] resolving provenance for metadata file
+#33 DONE 0.0s
+
+#34 [inference-lsknet] resolving provenance for metadata file
+#34 DONE 0.0s
+ Image sentinelos-inference-mmrotate:gpu Built 
+ Image sentinelos-inference-lsknet:gpu Built 

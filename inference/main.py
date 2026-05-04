@@ -733,11 +733,11 @@ def run_yolo_batch(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def run_inference(image: Image.Image, metadata: dict | None = None):
+def run_inference(image: Image.Image, image_array: np.ndarray, image_size: tuple[int, int], metadata: dict | None = None):
     item = {
         "image": image,
-        "image_array": np.array(image),
-        "image_size": image.size,
+        "image_array": image_array,
+        "image_size": image_size,
         "start_time": time.time(),
     }
     return run_yolo_batch([item])[0]
@@ -755,13 +755,13 @@ class YoloInferenceBatcher:
         self.last_batch_size = 0
         self.last_batch_ms = None
 
-    async def submit(self, image: Image.Image, metadata: Optional[dict]) -> dict[str, Any]:
+    async def submit(self, image: Image.Image, image_array: np.ndarray, image_size: tuple[int, int], metadata: Optional[dict]) -> dict[str, Any]:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
         item = {
             "image": image,
-            "image_array": np.array(image),
-            "image_size": image.size,
+            "image_array": image_array,
+            "image_size": image_size,
             "start_time": time.time(),
             "future": future,
         }
@@ -847,6 +847,14 @@ def startup_event():
     load_model()
 
 
+def decode_image(contents: bytes) -> tuple[Image.Image, np.ndarray, tuple[int, int]]:
+    pil_image = Image.open(io.BytesIO(contents))
+    if pil_image.mode != "RGB":
+        pil_image = pil_image.convert("RGB")
+    image_array = np.array(pil_image)
+    return pil_image, image_array, pil_image.size
+
+
 @app.post("/detect")
 async def detect_objects(
     image: UploadFile = File(...),
@@ -859,16 +867,14 @@ async def detect_objects(
 
     contents = await image.read()
     try:
-        pil_image = Image.open(io.BytesIO(contents))
-        if pil_image.mode != "RGB":
-            pil_image = pil_image.convert("RGB")
+        pil_image, image_array, image_size = await run_in_threadpool(decode_image, contents)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid image file: {exc}")
 
     if YOLO_BATCH_MAX_SIZE > 1 and MODEL_TASK == "obb":
-        result = await yolo_batcher.submit(pil_image, meta)
+        result = await yolo_batcher.submit(pil_image, image_array, image_size, meta)
     else:
-        result = await run_in_threadpool(run_inference, pil_image, meta)
+        result = await run_in_threadpool(run_inference, pil_image, image_array, image_size, meta)
     result["input_metadata"] = meta
     return result
 

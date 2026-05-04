@@ -19,7 +19,7 @@ def warmup() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the MMRotate inference API.")
+    parser = argparse.ArgumentParser(description="Run the LSKNet inference API.")
     parser.add_argument("--host", default=os.getenv("HOST", "0.0.0.0"))
     parser.add_argument("--port", type=int, default=int(os.getenv("PORT", "8001")))
     parser.add_argument("--workers", type=int, default=int(os.getenv("WEB_CONCURRENCY", "1")))

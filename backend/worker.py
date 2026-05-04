@@ -26,10 +26,14 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 INFERENCE_URL = os.getenv("INFERENCE_URL", "http://localhost:8001")
 INFERENCE_LAE_DINO_URL = os.getenv("INFERENCE_LAE_DINO_URL", "http://inference-lae-dino:8001")
 INFERENCE_MMROTATE_URL = os.getenv("INFERENCE_MMROTATE_URL", "http://inference-mmrotate:8001")
+INFERENCE_LSKNET_URL = os.getenv("INFERENCE_LSKNET_URL", "http://inference-lsknet:8001")
+INFERENCE_SAM2_URL = os.getenv("INFERENCE_SAM2_URL", "http://inference-sam2:8001")
 INFERENCE_PROVIDERS = {
     "yolo": INFERENCE_URL,
     "lae-dino": INFERENCE_LAE_DINO_URL,
     "mmrotate": INFERENCE_MMROTATE_URL,
+    "lsknet": INFERENCE_LSKNET_URL,
+    "sam2": INFERENCE_SAM2_URL,
 }
 IMAGERY_PATH = os.getenv("IMAGERY_PATH", "/data/imagery")
 
@@ -462,28 +466,23 @@ def apply_confirmation_policy(
 
     Single-provider ingest keeps its historical behavior. For multi-provider
     ingest, a detection is confirmed when another provider overlaps the same
-    object or when the winning detection is high-confidence by the active policy.
+    object. Detections without cross-provider agreement are discarded.
     """
     if selected_provider_count <= 1:
         return detections
 
-    policy = policy or DETECTION_POLICY
-    high_threshold = float(policy.get("high_confidence_threshold", 0.55))
+    filtered_detections = []
     for det in detections:
         providers = _provider_set(det)
-        confidence = float(det.get("confidence") or 0.0)
         cross_confirmed = len(set(providers)) > 1
-        high_confidence = confidence >= high_threshold
-        if cross_confirmed:
-            confirmation_status = "confirmed"
-            confirmation_reason = "cross_provider"
-        elif high_confidence:
-            confirmation_status = "confirmed"
-            confirmation_reason = "high_confidence"
-        else:
-            confirmation_status = "review_candidate"
-            confirmation_reason = "single_provider_low_confidence"
-            det["review_status"] = "review_candidate"
+        
+        if not cross_confirmed:
+            continue
+            
+        confidence = float(det.get("confidence") or 0.0)
+        
+        confirmation_status = "confirmed"
+        confirmation_reason = "cross_provider"
 
         provider_confidences = dict(det.get("provider_confidences") or {})
         for provider in providers:
@@ -492,7 +491,10 @@ def apply_confirmation_policy(
         det["confirmation_status"] = confirmation_status
         det["confirmation_reason"] = confirmation_reason
         det["provider_confidences"] = provider_confidences
-    return detections
+        
+        filtered_detections.append(det)
+        
+    return filtered_detections
 
 
 def is_official_lae_detection(det: dict) -> bool:

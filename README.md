@@ -11,8 +11,8 @@ An open-source GEOINT exploitation platform inspired by Palantir Gotham. Ingests
 │  Nginx  :8090  (tile cache proxy + FMV HLS static files)     │
 ├──────────────┬───────────────┬──────────────────────────────-┤
 │  Frontend    │  Backend API  │  Inference                     │
-│  React 19    │  FastAPI      │  YOLO + DINO + MMRotate       │
-│  :3000       │  :8080        │  :8002 / :8004 / :8005        │
+│  React 19    │  FastAPI      │  YOLO + DINO + MMRotate + LSK  │
+│  :3000       │  :8080        │  :8002 / :8004 / :8005 / :8006 │
 ├──────────────┴───────────────┴────────────────────────────────┤
 │  Celery worker (imagery + default queues)                     │
 ├──────────┬───────────────┬──────────┬──────────┬─────────────┤
@@ -22,7 +22,7 @@ An open-source GEOINT exploitation platform inspired by Palantir Gotham. Ingests
 └──────────┴───────────────┴──────────┴──────────┴─────────────┘
 ```
 
-**12 services** — all containerised, including YOLO OBB, Grounding DINO, and MMRotate inference services.
+**13 services** — all containerised, including YOLO OBB, Grounding DINO, MMRotate, and LSKNet inference services.
 
 ---
 
@@ -36,9 +36,10 @@ An open-source GEOINT exploitation platform inspired by Palantir Gotham. Ingests
 | Task queue | Celery + Redis alpine (queues: `imagery`, `default`) |
 | Tile server | TiTiler — Cloud-Optimised GeoTIFF on-the-fly |
 | Vector tiles | Martin — PostGIS → Mapbox Vector Tiles |
-| AI inference | YOLOv8 OBB optical detector + Grounding DINO open-vocabulary detector + MMRotate DOTA Oriented R-CNN |
+| AI inference | YOLOv8 OBB + Grounding DINO + MMRotate (Oriented R-CNN) + LSKNet |
 | Frontend | React 19 · TypeScript · Vite 8 · Tailwind CSS v4 |
 | Map | react-leaflet (2D) · react-globe.gl (3D globe) · CesiumJS 1.124 (3D terrain) |
+| GPU | NVIDIA RTX 50-series (Blackwell `sm_120`) supported via CUDA 12.8 |
 | Reverse proxy | Nginx alpine — tile cache (24 h TTL) + FMV HLS serving |
 
 ---
@@ -62,7 +63,7 @@ docker exec -it osint-backend-1 python add_constellation.py  # Satellite constel
 open http://localhost:3000
 ```
 
-Default Compose runs Grounding DINO on CPU through the `inference-lae-dino` service. Use the GPU overlay only on machines with the NVIDIA container runtime:
+Default Compose runs Grounding DINO on CPU through the `inference-lae-dino` service. Use the GPU overlay only on machines with the NVIDIA container runtime (supports RTX 30/40/50-series):
 
 ```bash
 # CPU full stack
@@ -103,6 +104,7 @@ Detailed operating instructions and next steps are in [ProjectPlan/OPTICAL_DEFEN
 | `INFERENCE_URL` | `http://inference:8001` | Internal inference service |
 | `INFERENCE_LAE_DINO_URL` | `http://inference-lae-dino:8001` | Internal Grounding DINO open-vocabulary inference service |
 | `INFERENCE_MMROTATE_URL` | `http://inference-mmrotate:8001` | Internal MMRotate rotated-object inference service |
+| `INFERENCE_LSKNET_URL` | `http://inference-lsknet:8001` | Internal LSKNet large selective kernel inference service |
 | `IMAGERY_PATH` | `/data/imagery` | Shared volume mount |
 | `OPENAI_API_BASE` | *(unset)* | Local LLM endpoint |
 | `OPENAI_API_KEY` | `dummy` | |
@@ -112,6 +114,8 @@ Detailed operating instructions and next steps are in [ProjectPlan/OPTICAL_DEFEN
 | `HIGH_CONFIDENCE_THRESHOLD` | profile default | Confidence required for `high_confidence` review status |
 | `ENABLED_PARENT_CLASSES` | defense parent classes | Comma-separated enabled parent classes |
 | `DISABLED_PARENT_CLASSES` | `dam,recreation,water,unknown` | Comma-separated distractor classes suppressed by policy |
+| `INFERENCE_CHIP_CONCURRENCY` | `16` | Chip dispatch concurrency to inference providers |
+| `INFERENCE_CHIP_TIMEOUT_S` | `120` | Timeout for inference requests |
 | `PER_CLASS_CONFIDENCE_OVERRIDES` | `{}` | JSON map of parent/original class thresholds |
 
 ---
@@ -130,6 +134,7 @@ Detailed operating instructions and next steps are in [ProjectPlan/OPTICAL_DEFEN
 | `inference` | `sentinelos-inference:latest` | 8002 -> 8001 | YOLOv8 OBB optical detection |
 | `inference-lae-dino` | `sentinelos-inference-lae-dino:cpu` or `:gpu` | 8004 -> 8001 | Grounding DINO open-vocabulary detection |
 | `inference-mmrotate` | `sentinelos-inference-mmrotate:cpu` or `:gpu` | 8005 -> 8001 | MMRotate DOTA Oriented R-CNN rotated detection |
+| `inference-lsknet` | `sentinelos-inference-lsknet:cpu` or `:gpu` | 8006 -> 8001 | LSKNet DOTA rotated-object detection |
 | `redis` | `redis:alpine` | 6379 | Task queue |
 | `nginx` | `nginx:alpine` | 8090 | Tile cache + FMV HLS |
 
@@ -153,7 +158,7 @@ The dashboard is a single-page application with a sidebar of 7 tabs.
 
 ## Imagery Pipeline
 
-Current optical-defense inference uses overlapping 1024x1024 RGB chips by default, OBB-aware cross-chip dedupe, and full-raster coverage unless `MAX_INFERENCE_CHIPS` is explicitly capped. Stored detections include parent class, original class, calibrated confidence, review status, threshold profile, provider confirmation, chip provenance, model/taxonomy version, and coverage metadata. When multiple providers are selected, detections are confirmed only when more than one provider overlaps the same object or the winning detection reaches the active high-confidence threshold.
+Current optical-defense inference uses overlapping 1024x1024 RGB chips by default, OBB-aware cross-chip dedupe, and full-raster coverage unless `MAX_INFERENCE_CHIPS` is explicitly capped. Stored detections include parent class, original class, calibrated confidence, review status, threshold profile, provider confirmation, chip provenance, model/taxonomy version, and coverage metadata. When multiple providers are selected, detections are confirmed only when more than one provider overlaps the same object (cross-provider consensus). Detections without cross-provider agreement are discarded to reduce false positives in high-precision workflows.
 
 ### Ingest a GeoTIFF
 
@@ -223,8 +228,10 @@ http://localhost:3001/ne_countries/{z}/{x}/{y}
 - **Modes**: YOLOv8 OBB for trained GEOINT models; SAHI sliced prediction remains available for horizontal fallback models
 - **YOLO acceleration**: GPU builds enable TensorRT dependencies, automatic per-GPU TensorRT export, and YOLO micro-batching; default runtime is `YOLO_RUNTIME=auto`, `YOLO_TRT_AUTO_EXPORT=1`, `YOLO_BATCH_MAX_SIZE=8`, `YOLO_BATCH_TIMEOUT_MS=10`
 - **Open vocabulary**: Grounding DINO is available at `http://localhost:8004` through the `inference-lae-dino` service and defaults to the official LAE-80C vocabulary in period-separated chunks
-- **MMRotate**: DOTA v1.0 Oriented R-CNN is available at `http://localhost:8005` through the `inference-mmrotate` service and is selectable from imagery upload
-- **Policy**: optical-defense taxonomy enriches detections with parent classes and review metadata; official LAE-80C vocabulary detections are not hard-suppressed by the distractor policy
+- **MMRotate**: DOTA v1.0 Oriented R-CNN is available at `http://localhost:8005` through the `inference-mmrotate` service and is selectable from imagery upload.
+- **LSKNet**: Large Selective Kernel Network for DOTA is available at `http://localhost:8006` through the `inference-lsknet` service.
+- **Stability**: Sequential PTX JIT warmups are performed on startup for MMRotate and LSKNet to prevent API timeouts during initial kernel compilation on new GPUs.
+- **Policy**: optical-defense taxonomy enriches detections with parent classes and review metadata; official LAE-80C vocabulary detections are not hard-suppressed by the distractor policy.
 - **Input**: `multipart/form-data` with `image` (PNG/JPEG, RGB) + `metadata` (JSON string)
 - **Output**: `{"status": "success", "detections": [{class, bbox, confidence}], "processing_time_ms": ...}`
 - **Health**: `GET /health` returns active runtime, engine path, engine availability, batcher stats, warmup result, torch/CUDA info, model availability, SAHI availability, and device
@@ -256,7 +263,7 @@ transformers >=4.42,<5
 Grounding DINO model snapshot at /opt/grounding-dino
 ```
 
-The GPU image uses CUDA 12.8 with `torch 2.7.1+cu128`, which supports newer NVIDIA cards such as RTX 50-series / `sm_120`. The GPU overlay runs Grounding DINO with `LAE_BATCH_MAX_SIZE=1` by default because 1024 px satellite chips can OOM on 16 GB cards when multiple chips are batched.
+The GPU image uses CUDA 12.8 with `torch 2.7.1+cu128`, which supports newer NVIDIA cards such as RTX 50-series / `sm_120`. The GPU overlay runs Grounding DINO with `LAE_BATCH_MAX_SIZE=1` by default because 1024 px satellite chips can OOM on 16 GB cards when multiple chips are batched. Mixed-precision is managed via `LAE_AUTOCAST_DTYPE=auto`, which probes `bf16` -> `fp16` -> `fp32` and selects the first stable format for the hardware. Startup health is verified via a silicon-level sanity probe (`LAE_MIN_PROBE_DETECTIONS`) before marking the service as ready.
 
 Healthy Grounding DINO startup should report `model_loaded: true`, `processor_loaded: true`, a non-empty `model_id`, a non-empty `transformers_version`, and `device: cpu` for the CPU path.
 
