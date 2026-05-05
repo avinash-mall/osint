@@ -9,9 +9,9 @@ ENV MMROTATE_CONFIG=/opt/mmrotate/configs/oriented_rcnn/oriented-rcnn-le90_r50_f
 ENV MMROTATE_CHECKPOINT=/models/oriented_rcnn_r50_fpn_1x_dota_le90-6d2b2ce0.pth
 ENV MODEL_VERSION=mmrotate-oriented-rcnn-dota
 
-ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
-ARG TORCH_VERSION=2.9.1
-ARG TORCHVISION_VERSION=0.24.1
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
+ARG TORCH_VERSION=2.6.0
+ARG TORCHVISION_VERSION=0.21.0
 ARG MMENGINE_VERSION=0.10.5
 ARG MMDET_VERSION=3.1.0
 ARG MMROTATE_REF=dev-1.x

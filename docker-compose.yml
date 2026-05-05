@@ -229,6 +229,8 @@ services:
       context: ./inference-mmrotate
       args:
         TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}
+        TORCH_VERSION: ${TORCH_VERSION}
+        TORCHVISION_VERSION: ${TORCHVISION_VERSION}
     image: sentinelos-inference-mmrotate:gpu
     ports:
       - "8005:8001"
