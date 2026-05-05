@@ -220,8 +220,10 @@ def active_detection_policy() -> dict[str, Any]:
     disabled = set(_parse_csv_env("DISABLED_PARENT_CLASSES", DISTRACTOR_PARENT_CLASSES))
     thresholds = {normalize_label(k): float(v) for k, v in profile.get("class_thresholds", {}).items()}
     thresholds.update(_load_json_thresholds("PER_CLASS_CONFIDENCE_OVERRIDES"))
-    global_floor = float(os.getenv("GLOBAL_CONFIDENCE_FLOOR", profile["global_confidence_floor"]))
-    high_threshold = float(os.getenv("HIGH_CONFIDENCE_THRESHOLD", profile["high_confidence_threshold"]))
+    global_floor_env = os.getenv("GLOBAL_CONFIDENCE_FLOOR")
+    global_floor = float(global_floor_env) if global_floor_env else profile["global_confidence_floor"]
+    high_threshold_env = os.getenv("HIGH_CONFIDENCE_THRESHOLD")
+    high_threshold = float(high_threshold_env) if high_threshold_env else profile["high_confidence_threshold"]
     return {
         "taxonomy_version": TAXONOMY_VERSION,
         "model_version": DEFAULT_MODEL_VERSION,

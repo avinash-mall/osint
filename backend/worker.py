@@ -1633,7 +1633,10 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
 
         # Invoke detection tracker — failure must not poison detection ingest
         try:
-            from tracker import update_tracks_for_pass
+            try:
+                from tracker import update_tracks_for_pass
+            except ImportError:
+                from .tracker import update_tracks_for_pass
             tracker_stats = update_tracks_for_pass(pass_id, postgis_db=postgis_db)
             logger.info("[WORKER] Tracker updated for pass %s: %s", pass_id, tracker_stats)
         except Exception as exc:

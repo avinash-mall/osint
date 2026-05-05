@@ -118,8 +118,6 @@ def load_model() -> None:
             from mmdet.apis import init_detector
 
             detection_model = init_detector(LSKNET_CONFIG, LSKNET_CHECKPOINT, device=DEVICE)
-            if DEVICE.startswith("cuda"):
-                detection_model = detection_model.cuda()
             print(
                 f"[INFERENCE-LSKNET] Loaded LSKNet model config={LSKNET_CONFIG} "
                 f"checkpoint={LSKNET_CHECKPOINT} device={DEVICE}"

@@ -77,12 +77,23 @@ services:
       - imagery_data:/data/imagery
       - fmv_data:/data/fmv
       - dataset_data:/data/datasets
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import socket; s = socket.socket(); s.settimeout(2); exit(0 if s.connect_ex((\"127.0.0.1\", 8080)) == 0 else 1)' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   llm-local-proxy:
     image: alpine/socat:latest
     network_mode: host
     command: TCP-LISTEN:18001,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:8001
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 18001 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   frontend:
     build: ./frontend
@@ -96,6 +107,11 @@ services:
       - VITE_TITILER_URL=http://localhost:8081
       - VITE_TILE_PROXY_URL=http://localhost:8090
       - VITE_MARTIN_URL=http://localhost:3001
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 3000 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   titiler:
     image: developmentseed/titiler:latest
@@ -106,6 +122,11 @@ services:
     environment:
       - PORT=8080
       - WORKERS_PER_CORE=1
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import socket; s = socket.socket(); s.settimeout(2); exit(0 if s.connect_ex((\"127.0.0.1\", 8080)) == 0 else 1)' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   martin:
     image: maplibre/martin:latest
@@ -117,18 +138,34 @@ services:
     depends_on:
       postgis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 3000 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   inference:
     build:
       context: ./inference
       args:
         TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}
+        INSTALL_TENSORRT: "true"
     image: sentinelos-inference:latest
     ports:
       - "8002:8001"
+    gpus: all
     environment:
       - DEVICE=auto
       - TRAINED_MODEL_PATH=/app/models/geoint_yolov8_obb.pt
+      - YOLO_RUNTIME=auto
+      - YOLO_ENGINE_PATH=/app/models/geoint_yolov8_obb.engine
+      - YOLO_TRT_PRECISION=fp16
+      - YOLO_IMGSZ=1024
+      - YOLO_BATCH_MAX_SIZE=8
+      - YOLO_BATCH_TIMEOUT_MS=10
+      - YOLO_TRT_AUTO_EXPORT=1
+      - YOLO_TRT_EXPORT_BATCHES=8,4,2,1
+      - YOLO_TRT_WORKSPACE=4
       - DETECTION_THRESHOLD_PROFILE=recall_review
       - CONFIDENCE_THRESHOLD=0.12
       - NMS_IOU_THRESHOLD=0.55
@@ -138,37 +175,54 @@ services:
       - imagery_data:/data/imagery:ro
       - ./training_dataset:/training_dataset
     working_dir: /app
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import socket; s = socket.socket(); s.settimeout(2); exit(0 if s.connect_ex((\"127.0.0.1\", 8001)) == 0 else 1)' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   inference-lae-dino:
     build:
       context: ./inference-lae-dino
-      dockerfile: Dockerfile.cpu
+      dockerfile: Dockerfile.gpu
       args:
-        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
-    image: sentinelos-inference-lae-dino:cpu
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}
+    image: sentinelos-inference-lae-dino:gpu
     ports:
       - "8004:8001"
+    gpus: all
     environment:
-      DEVICE: cpu
-      CPU_THREADS: auto
-      WEB_CONCURRENCY: "1"
-      LAE_PROMPT_PROFILE: official_lae80c
-      LAE_PROMPT_CHUNK_SIZE: "20"
-      DETECTION_THRESHOLD_PROFILE: recall_review
-      CONFIDENCE_THRESHOLD: "0.25"
-      MAX_DETECTIONS_PER_CHIP: "300"
-      LAE_BATCH_MAX_SIZE: "1"
-      LAE_BATCH_TIMEOUT_MS: "0"
-      MODEL_VERSION: grounding-dino-base
-      GROUNDING_DINO_MODEL_ID: /opt/grounding-dino
-      GROUNDING_DINO_BOX_THRESHOLD: "0.25"
-      GROUNDING_DINO_TEXT_THRESHOLD: "0.25"
-      TRANSFORMERS_OFFLINE: "1"
-      HF_HUB_OFFLINE: "1"
+      - DEVICE=auto
+      - CPU_THREADS=auto
+      - WEB_CONCURRENCY=1
+      - LAE_PROMPT_PROFILE=official_lae80c
+      - LAE_PROMPT_CHUNK_SIZE=20
+      - DETECTION_THRESHOLD_PROFILE=recall_review
+      - CONFIDENCE_THRESHOLD=0.25
+      - MAX_DETECTIONS_PER_CHIP=300
+      - LAE_BATCH_MAX_SIZE=1
+      - LAE_BATCH_TIMEOUT_MS=0
+      - MODEL_VERSION=grounding-dino-base
+      - GROUNDING_DINO_MODEL_ID=/opt/grounding-dino
+      - GROUNDING_DINO_BOX_THRESHOLD=0.25
+      - GROUNDING_DINO_TEXT_THRESHOLD=0.25
+      - TRANSFORMERS_OFFLINE=1
+      - HF_HUB_OFFLINE=1
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - LAE_AUTOCAST_DTYPE=auto
+      - LAE_PROBE_IMAGE_PATH=/app/probes/probe_chip.png
+      - LAE_MIN_PROBE_DETECTIONS=0
     volumes:
       - ./inference-lae-dino:/app
       - imagery_data:/data/imagery:ro
     working_dir: /app
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import socket; s = socket.socket(); s.settimeout(2); exit(0 if s.connect_ex((\"127.0.0.1\", 8001)) == 0 else 1)' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   inference-mmrotate:
     build:
@@ -195,6 +249,12 @@ services:
       - mmrotate_models:/models
       - imagery_data:/data/imagery:ro
     working_dir: /app
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import socket; s = socket.socket(); s.settimeout(2); exit(0 if s.connect_ex((\"127.0.0.1\", 8001)) == 0 else 1)' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   inference-lsknet:
     build:
@@ -206,7 +266,7 @@ services:
       - "8006:8001"
     gpus: all
     environment:
-      DEVICE: auto
+      DEVICE: cpu
       CPU_THREADS: auto
       WEB_CONCURRENCY: "2"
       DETECTION_THRESHOLD_PROFILE: recall_review
@@ -218,6 +278,12 @@ services:
       - lsknet_models:/models
       - imagery_data:/data/imagery:ro
     working_dir: /app
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import socket; s = socket.socket(); s.settimeout(2); exit(0 if s.connect_ex((\"127.0.0.1\", 8001)) == 0 else 1)' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   inference-sam2:
     build:
@@ -238,11 +304,22 @@ services:
       - sam2_models:/models
       - imagery_data:/data/imagery:ro
     working_dir: /app
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import socket; s = socket.socket(); s.settimeout(2); exit(0 if s.connect_ex((\"127.0.0.1\", 8001)) == 0 else 1)' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   redis:
     image: redis:alpine
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   worker:
     build: ./backend
@@ -300,6 +377,11 @@ services:
       - imagery_data:/data/imagery
       - fmv_data:/data/fmv
       - dataset_data:/data/datasets
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f celery || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   nginx:
     image: nginx:alpine
@@ -310,6 +392,11 @@ services:
       - fmv_data:/data/fmv:ro
     depends_on:
       - titiler
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider localhost:80 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   neo4j_data:
