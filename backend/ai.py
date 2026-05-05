@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import requests
 from urllib.parse import urlsplit, urlunsplit
 from dotenv import load_dotenv
@@ -14,6 +15,10 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "google/gemma-4-31B-it")
 
 class AIUnavailable(RuntimeError):
     pass
+
+
+_FENCED_JSON_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
+_JSON_START_RE = re.compile(r"[\[{]")
 
 
 def _chat_completion_urls(api_base: str) -> list[str]:
@@ -89,17 +94,43 @@ def get_llm_text(
 
 def get_llm_json(prompt: str, system: str = "", max_tokens: int = 500, timeout_seconds: float = 8) -> dict:
     content = get_llm_text(prompt, system=system, max_tokens=max_tokens, temperature=0, timeout_seconds=timeout_seconds)
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        start = content.find("{")
-        end = content.rfind("}")
-        if start >= 0 and end > start:
+    parsed = extract_json_object(content)
+    if not isinstance(parsed, dict):
+        raise AIUnavailable("LLM classification response JSON was not an object.")
+    return parsed
+
+
+def extract_json_object(content: str) -> dict:
+    """Extract the first JSON object from an LLM response.
+
+    Handles strict JSON, fenced JSON blocks, and prose-wrapped responses without
+    relying on a first-brace/last-brace slice that can span unrelated blocks.
+    """
+    candidates = [str(content or "").strip()]
+    candidates.extend(match.group(1).strip() for match in _FENCED_JSON_RE.finditer(str(content or "")))
+    decoder = json.JSONDecoder()
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+        else:
+            if isinstance(parsed, dict):
+                return parsed
+
+    for candidate in candidates:
+        for match in _JSON_START_RE.finditer(candidate):
             try:
-                return json.loads(content[start:end + 1])
+                parsed, _end = decoder.raw_decode(candidate[match.start():])
             except json.JSONDecodeError:
-                pass
-        raise AIUnavailable("LLM classification response was not valid JSON.")
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+
+    raise AIUnavailable("LLM classification response was not valid JSON.")
 
 
 def get_ai_response(question: str) -> str:

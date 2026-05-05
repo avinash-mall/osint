@@ -1,5 +1,4 @@
 import os
-import io
 import json
 import requests
 import subprocess
@@ -7,7 +6,7 @@ import uuid
 import logging
 import math
 import concurrent.futures
-import threading
+import tempfile
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 from celery import Celery
@@ -70,6 +69,14 @@ DETECTION_POLICY = active_detection_policy()
 ENABLE_LLM_DETECTION_CLASSIFICATION = env_bool("ENABLE_LLM_DETECTION_CLASSIFICATION", True)
 LLM_DETECTION_BATCH_SIZE = max(1, env_int("LLM_DETECTION_BATCH_SIZE", 8))
 LLM_DETECTION_CLASS_TIMEOUT_SECONDS = env_int("LLM_DETECTION_CLASS_TIMEOUT_SECONDS", 3)
+INFERENCE_MAX_PENDING_CHIPS = max(
+    1,
+    env_int("INFERENCE_MAX_PENDING_CHIPS", INFERENCE_CHIP_CONCURRENCY * 2),
+)
+INFERENCE_CHIP_SPOOL_MAX_BYTES = max(
+    64 * 1024,
+    env_int("INFERENCE_CHIP_SPOOL_MAX_BYTES", 4 * 1024 * 1024),
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +85,7 @@ celery_app = Celery("sentinelos_worker", broker=REDIS_URL, backend=REDIS_URL)
 
 def ensure_worker_imagery_schema() -> None:
     with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("sentinelos_platform_schema",))
         cursor.execute("ALTER TABLE satellite_passes ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'")
         cursor.execute("ALTER TABLE satellite_passes ADD COLUMN IF NOT EXISTS source_hash VARCHAR(64)")
         cursor.execute("ALTER TABLE satellite_passes ADD COLUMN IF NOT EXISTS source_filename VARCHAR(255)")
@@ -184,6 +192,7 @@ def get_upload_job(upload_id: str = None) -> dict:
             row = cursor.fetchone()
             return dict(row) if row else {}
     except Exception:
+        logger.warning("Failed to fetch upload job %s", upload_id, exc_info=True)
         return {}
 
 
@@ -679,7 +688,7 @@ def classify_detection_ontologies(detections: list, progress_callback=None) -> d
 
 def _post_chip_to_providers(
     session: requests.Session,
-    png_bytes: bytes,
+    png_file,
     chip_meta_payload: str,
     selected_providers: list[str],
     chip_label: str,
@@ -690,22 +699,26 @@ def _post_chip_to_providers(
     skipped (matching the prior single-provider error semantics — the caller
     raises only if every provider failed for a chip)."""
     responses: list[tuple[str, dict]] = []
-    for provider_name in selected_providers:
-        provider_url = INFERENCE_PROVIDERS[provider_name]
-        try:
-            resp = session.post(
-                f"{provider_url}/detect",
-                files={"image": ("chip.png", png_bytes, "image/png")},
-                data={"metadata": chip_meta_payload},
-                timeout=INFERENCE_CHIP_TIMEOUT_S,
-            )
-            resp.raise_for_status()
-            responses.append((provider_name, resp.json()))
-        except Exception as exc:
-            logger.warning(
-                "[WORKER] %s inference failed on chip %s: %s",
-                provider_name, chip_label, exc,
-            )
+    try:
+        for provider_name in selected_providers:
+            provider_url = INFERENCE_PROVIDERS[provider_name]
+            try:
+                png_file.seek(0)
+                resp = session.post(
+                    f"{provider_url}/detect",
+                    files={"image": ("chip.png", png_file, "image/png")},
+                    data={"metadata": chip_meta_payload},
+                    timeout=INFERENCE_CHIP_TIMEOUT_S,
+                )
+                resp.raise_for_status()
+                responses.append((provider_name, resp.json()))
+            except Exception as exc:
+                logger.warning(
+                    "[WORKER] %s inference failed on chip %s: %s",
+                    provider_name, chip_label, exc,
+                )
+    finally:
+        png_file.close()
     return responses
 
 
@@ -755,6 +768,8 @@ def slice_and_infer(
             "threshold_profile": DETECTION_POLICY["threshold_profile"],
             "taxonomy_version": DETECTION_POLICY["taxonomy_version"],
             "model_version": DETECTION_POLICY["model_version"],
+            "max_pending_chips": INFERENCE_MAX_PENDING_CHIPS,
+            "chip_spool_max_bytes": INFERENCE_CHIP_SPOOL_MAX_BYTES,
         }
 
         if progress_callback and grid["sampled"]:
@@ -946,9 +961,9 @@ def slice_and_infer(
                         },
                     )
 
-        # Cap in-flight chips at 4× concurrency to bound memory: each PNG is ~1-3MB
-        # for a 1024² uint8 RGB chip, so 4×8 = 32 buffers ≈ 100MB worst case.
-        pending_limit = INFERENCE_CHIP_CONCURRENCY * 4
+        # Cap in-flight chips and spool oversized PNGs to disk so large rasters
+        # cannot accumulate unbounded encoded chip buffers in memory.
+        pending_limit = INFERENCE_MAX_PENDING_CHIPS
 
         try:
             for y_index in grid["y_indices"]:
@@ -975,9 +990,9 @@ def slice_and_infer(
                     if valid_mask is not None:
                         chip_rgb = chip_rgb.copy()
                         chip_rgb[~valid_mask] = 0
-                    png_buf = io.BytesIO()
-                    Image.fromarray(chip_rgb, mode="RGB").save(png_buf, format="PNG")
-                    png_bytes = png_buf.getvalue()
+                    png_file = tempfile.SpooledTemporaryFile(max_size=INFERENCE_CHIP_SPOOL_MAX_BYTES)
+                    Image.fromarray(chip_rgb, mode="RGB").save(png_file, format="PNG")
+                    png_file.seek(0)
                     chip_meta_payload = json.dumps({
                         "pass_id": pass_id,
                         "window": [x, y, win_width, win_height],
@@ -986,9 +1001,10 @@ def slice_and_infer(
 
                     future = executor.submit(
                         _post_chip_to_providers,
-                        session, png_bytes, chip_meta_payload,
+                        session, png_file, chip_meta_payload,
                         selected_providers, chip_label,
                     )
+                    del chip, chip_rgb
                     pending[future] = {
                         "x": x, "y": y, "win_width": win_width, "win_height": win_height,
                         "valid_mask": valid_mask,

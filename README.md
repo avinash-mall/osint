@@ -99,6 +99,8 @@ Detailed operating instructions and next steps are in [ProjectPlan/OPTICAL_DEFEN
 | `NEO4J_USERNAME` | `neo4j` | |
 | `NEO4J_PASSWORD` | `password` | |
 | `POSTGIS_URI` | `postgresql://gotham:gotham@postgis:5432/gotham` | Spatial database |
+| `POSTGIS_POOL_MIN` | `1` | Minimum PostGIS connections held per backend/worker process |
+| `POSTGIS_POOL_MAX` | `10` | Maximum PostGIS connections held per backend/worker process |
 | `REDIS_URL` | `redis://redis:6379/0` | Celery broker |
 | `TITILER_URL` | `http://titiler:8080` | Internal tile server |
 | `INFERENCE_URL` | `http://inference:8001` | Internal inference service |
@@ -115,6 +117,8 @@ Detailed operating instructions and next steps are in [ProjectPlan/OPTICAL_DEFEN
 | `ENABLED_PARENT_CLASSES` | defense parent classes | Comma-separated enabled parent classes |
 | `DISABLED_PARENT_CLASSES` | `dam,recreation,water,unknown` | Comma-separated distractor classes suppressed by policy |
 | `INFERENCE_CHIP_CONCURRENCY` | `16` | Chip dispatch concurrency to inference providers |
+| `INFERENCE_MAX_PENDING_CHIPS` | `32` | Maximum encoded raster chips queued while inference requests run |
+| `INFERENCE_CHIP_SPOOL_MAX_BYTES` | `4194304` | Encoded chip PNGs larger than this spill to a temp file |
 | `INFERENCE_CHIP_TIMEOUT_S` | `120` | Timeout for inference requests |
 | `PER_CLASS_CONFIDENCE_OVERRIDES` | `{}` | JSON map of parent/original class thresholds |
 

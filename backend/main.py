@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -23,6 +24,7 @@ from threat_assessment import assess_detection_threat, category_for_class, clean
 from worker import celery_app, process_satellite_imagery
 
 app = FastAPI(title="SentinelOS API")
+logger = logging.getLogger(__name__)
 
 _platform_schema_lock = threading.Lock()
 _platform_schema_ready = False
@@ -192,8 +194,28 @@ def safe_filename(filename: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", name) or "upload.tif"
 
 
+def save_upload_file(file: UploadFile, local_path: Path, chunk_size: int = 1024 * 1024) -> int:
+    size = 0
+    try:
+        with local_path.open("wb") as handle:
+            while True:
+                chunk = file.file.read(chunk_size)
+                if not chunk:
+                    break
+                size += len(chunk)
+                handle.write(chunk)
+    finally:
+        file.file.close()
+    return size
+
+
+def acquire_schema_xact_lock(cursor, lock_name: str = "sentinelos_platform_schema") -> None:
+    cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (lock_name,))
+
+
 def ensure_feed_tables() -> None:
     with postgis_db.get_cursor(commit=True) as cursor:
+        acquire_schema_xact_lock(cursor)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS feed_sources (
                 id SERIAL PRIMARY KEY,
@@ -229,6 +251,7 @@ def ensure_feed_tables() -> None:
 
 def ensure_collection_tables() -> None:
     with postgis_db.get_cursor(commit=True) as cursor:
+        acquire_schema_xact_lock(cursor)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS collection_tasks (
                 id SERIAL PRIMARY KEY,
@@ -261,6 +284,7 @@ def ensure_platform_tables() -> None:
         ensure_feed_tables()
         ensure_collection_tables()
         with postgis_db.get_cursor(commit=True) as cursor:
+            acquire_schema_xact_lock(cursor)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS upload_jobs (
                     id SERIAL PRIMARY KEY,
@@ -591,7 +615,7 @@ def publish_event(topic: str, payload: dict) -> None:
         client = get_redis_client()
         client.publish(f"events:{topic}", json.dumps(payload, default=str))
     except Exception:
-        pass
+        logger.warning("Failed to publish %s event", topic, exc_info=True)
 
 
 def normalize_domain(value: Optional[str], fallback: str = "OSINT") -> str:
@@ -639,7 +663,7 @@ def record_timeline_event(
                 occurred_at,
             ))
     except Exception:
-        pass
+        logger.warning("Failed to record timeline event type=%s domain=%s", event_type, domain, exc_info=True)
 
 
 def record_observation(
@@ -690,7 +714,7 @@ def record_observation(
                     observed_at,
                 ))
     except Exception:
-        pass
+        logger.warning("Failed to record observation type=%s domain=%s", event_type, domain, exc_info=True)
 
 
 def clean_detection_class(det_class: str) -> str:
@@ -2043,7 +2067,7 @@ def list_tracks(limit: int = 200):
 
 
 @app.post("/api/fmv/clips")
-async def upload_fmv_clip(file: UploadFile = File(...), name: Optional[str] = Form(None)):
+def upload_fmv_clip(file: UploadFile = File(...), name: Optional[str] = Form(None)):
     ensure_platform_tables()
     filename = safe_filename(file.filename or "clip.mp4")
     media_type, _handler = classify_upload(filename)
@@ -2056,17 +2080,7 @@ async def upload_fmv_clip(file: UploadFile = File(...), name: Optional[str] = Fo
     clip_dir.mkdir(parents=True, exist_ok=True)
     local_path = clip_dir / filename
 
-    size = 0
-    try:
-        with local_path.open("wb") as handle:
-            while True:
-                chunk = await file.read(1024 * 1024)
-                if not chunk:
-                    break
-                size += len(chunk)
-                handle.write(chunk)
-    finally:
-        await file.close()
+    size = save_upload_file(file, local_path)
     if size == 0:
         local_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="Uploaded video is empty")
@@ -2478,7 +2492,7 @@ def list_model_datasets():
 
 
 @app.post("/api/models/datasets")
-async def upload_model_dataset(
+def upload_model_dataset(
     file: UploadFile = File(...),
     name: Optional[str] = Form(None),
     dataset_type: str = Form("object_detection"),
@@ -2490,17 +2504,7 @@ async def upload_model_dataset(
     root = Path(os.getenv("DATASET_PATH", "/data/datasets"))
     root.mkdir(parents=True, exist_ok=True)
     local_path = root / f"{dataset_id}_{filename}"
-    size = 0
-    try:
-        with local_path.open("wb") as handle:
-            while True:
-                chunk = await file.read(1024 * 1024)
-                if not chunk:
-                    break
-                size += len(chunk)
-                handle.write(chunk)
-    finally:
-        await file.close()
+    size = save_upload_file(file, local_path)
     if size == 0:
         local_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="Uploaded dataset is empty")
@@ -3027,7 +3031,7 @@ def tag_detection(detection_id: int, update: DetectionTagUpdate):
                 "assessment_status": "analyst_override" if allegiance == "hostile" else assessment["assessment_status"],
             })
     except Exception:
-        pass
+        logger.warning("Failed to mirror detection tag to Neo4j detection_id=%s", detection_id, exc_info=True)
     publish_event("detections", {"type": "detection_tagged", "id": detection_id, "allegiance": allegiance})
     return {"id": row["id"], "class": row["class"], "metadata": enriched_detection_metadata(row["class"], row["metadata"])}
 
@@ -3276,7 +3280,7 @@ def _parse_inference_providers(raw: str) -> list[str]:
 
 
 @app.post("/api/ingest/upload")
-async def upload_imagery(
+def upload_imagery(
     file: UploadFile = File(...),
     sensor_type: str = Form("Optical"),
     acquisition_time: Optional[str] = Form(None),
@@ -3296,17 +3300,7 @@ async def upload_imagery(
     upload_id = uuid.uuid4().hex
     local_path = upload_dir / f"{upload_id}_{filename}"
 
-    size = 0
-    try:
-        with local_path.open("wb") as handle:
-            while True:
-                chunk = await file.read(1024 * 1024)
-                if not chunk:
-                    break
-                size += len(chunk)
-                handle.write(chunk)
-    finally:
-        await file.close()
+    size = save_upload_file(file, local_path)
 
     if size == 0:
         local_path.unlink(missing_ok=True)
