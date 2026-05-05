@@ -4,7 +4,9 @@ FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y \
+RUN sed -i 's/archive.ubuntu.com/azure.archive.ubuntu.com/g' /etc/apt/sources.list && \
+    apt-get update -o Acquire::Retries=10 && \
+    apt-get install -y --fix-missing \
     python3.10 \
     python3.10-dev \
     python3-pip \
@@ -24,6 +26,7 @@ WORKDIR /app
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
 # Upgrade pip and install torch first as instructed
 RUN pip install --no-cache-dir torch torchvision torchaudio --index-url ${TORCH_INDEX_URL} \
+    --extra-index-url https://pypi.org/simple \
     && pip uninstall -y nvidia-cudnn-cu12
 
 # GPU Compilation constraints

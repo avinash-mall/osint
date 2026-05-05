@@ -23,7 +23,9 @@ ENV OPENBLAS_NUM_THREADS=1
 ENV VECLIB_MAXIMUM_THREADS=1
 ENV NUMEXPR_NUM_THREADS=1
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN sed -i 's/archive.ubuntu.com/azure.archive.ubuntu.com/g' /etc/apt/sources.list && \
+    apt-get update -o Acquire::Retries=10 && \
+    apt-get install -y --no-install-recommends --fix-missing \
     python3 \
     python3-pip \
     python3-dev \
@@ -47,6 +49,7 @@ RUN pip install --no-cache-dir --upgrade pip "setuptools<70" wheel
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
 # Install PyTorch for specified CUDA version
 RUN pip install --no-cache-dir torch torchvision torchaudio --index-url ${TORCH_INDEX_URL} \
+    --extra-index-url https://pypi.org/simple \
     && pip uninstall -y nvidia-cudnn-cu12
 
 COPY requirements.txt .

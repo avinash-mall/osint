@@ -9,14 +9,16 @@ ENV MMROTATE_CONFIG=/opt/mmrotate/configs/oriented_rcnn/oriented-rcnn-le90_r50_f
 ENV MMROTATE_CHECKPOINT=/models/oriented_rcnn_r50_fpn_1x_dota_le90-6d2b2ce0.pth
 ENV MODEL_VERSION=mmrotate-oriented-rcnn-dota
 
-ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
-ARG TORCH_VERSION=2.6.0
-ARG TORCHVISION_VERSION=0.21.0
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu132
+ARG TORCH_VERSION=
+ARG TORCHVISION_VERSION=
 ARG MMENGINE_VERSION=0.10.5
 ARG MMDET_VERSION=3.1.0
 ARG MMROTATE_REF=dev-1.x
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN sed -i 's/archive.ubuntu.com/azure.archive.ubuntu.com/g' /etc/apt/sources.list && \
+    apt-get update -o Acquire::Retries=10 && \
+    apt-get install -y --no-install-recommends --fix-missing \
     python3 \
     python3-pip \
     python3-dev \
@@ -39,9 +41,10 @@ RUN pip install --no-cache-dir --upgrade pip "setuptools<70" wheel
 
 # Install PyTorch with CUDA 12.8 support (Blackwell-compatible)
 RUN pip install --no-cache-dir \
-    torch==${TORCH_VERSION} \
-    torchvision==${TORCHVISION_VERSION} \
+    torch \
+    torchvision \
     --index-url ${TORCH_INDEX_URL} \
+    --extra-index-url https://pypi.org/simple \
     && pip uninstall -y nvidia-cudnn-cu12
 
 COPY requirements.txt .

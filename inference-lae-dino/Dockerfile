@@ -17,7 +17,9 @@ ARG LAE_DINO_CHECKPOINT=lae_dino_swint_lae1m-28ca3a15.pth
 # Compute caps for mmcv source build. Includes sm_120 + PTX for forward compat.
 ARG TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;12.0+PTX"
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN sed -i 's/archive.ubuntu.com/azure.archive.ubuntu.com/g' /etc/apt/sources.list && \
+    apt-get update -o Acquire::Retries=10 && \
+    apt-get install -y --no-install-recommends --fix-missing \
         git \
         wget \
         ca-certificates \
@@ -43,7 +45,8 @@ RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel
 RUN pip3 install --no-cache-dir \
         torch==2.7.1+cu128 \
         torchvision==0.22.1+cu128 \
-        --index-url https://download.pytorch.org/whl/cu128
+        --index-url https://download.pytorch.org/whl/cu128 \
+        --extra-index-url https://pypi.org/simple
 
 WORKDIR /opt
 
