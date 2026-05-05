@@ -106,6 +106,9 @@ inference/models/*
 # Local runtime data
 /data/
 /logs/
+*_logs.txt
+*_output.txt
+build_*.txt
 *.log
 /tmp/
 /temp/
