@@ -33,6 +33,18 @@ def test_resolve_common_datacenter_gpu():
     assert "8.9" in profile.torch_cuda_arch_list
 
 
+def test_resolve_a100_pcie_uses_ampere_profile():
+    profile = resolve_gpu_profile("NVIDIA A100 80GB PCIe")
+
+    assert profile.name == "ampere_sm80_86"
+    assert profile.cuda_version == "12.4.1"
+    assert profile.torch_index_url.endswith("/cu124")
+    assert profile.torch_version == "2.6.0"
+    assert profile.torchvision_version == "0.21.0"
+    assert profile.torchaudio_version == "2.6.0"
+    assert "8.0" in profile.torch_cuda_arch_list
+
+
 def test_resolve_blackwell_datacenter_gpu():
     profile = resolve_gpu_profile("NVIDIA B200")
 

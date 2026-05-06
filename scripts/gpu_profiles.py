@@ -19,6 +19,7 @@ class GpuBuildProfile:
     torchaudio_version: str
     torch_cuda_arch_list: str
     compute_capability: str
+    min_driver_version: str
 
     def build_env(self, prefix: str = "MMROTATE_") -> dict[str, str]:
         return {
@@ -41,6 +42,7 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         torchaudio_version="2.6.0",
         torch_cuda_arch_list="7.5;8.0;8.6;8.9;9.0+PTX",
         compute_capability="7.5",
+        min_driver_version="550.54.14",
     ),
     "ampere_sm80_86": GpuBuildProfile(
         name="ampere_sm80_86",
@@ -51,6 +53,7 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         torchaudio_version="2.6.0",
         torch_cuda_arch_list="8.0;8.6;8.9;9.0+PTX",
         compute_capability="8.x",
+        min_driver_version="550.54.14",
     ),
     "ada_sm89": GpuBuildProfile(
         name="ada_sm89",
@@ -61,6 +64,7 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         torchaudio_version="2.6.0",
         torch_cuda_arch_list="8.9;9.0+PTX",
         compute_capability="8.9",
+        min_driver_version="550.54.14",
     ),
     "hopper_sm90": GpuBuildProfile(
         name="hopper_sm90",
@@ -71,6 +75,7 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         torchaudio_version="2.6.0",
         torch_cuda_arch_list="9.0+PTX",
         compute_capability="9.0",
+        min_driver_version="550.54.14",
     ),
     "blackwell_sm100": GpuBuildProfile(
         name="blackwell_sm100",
@@ -81,6 +86,7 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         torchaudio_version="2.7.1",
         torch_cuda_arch_list="9.0;10.0;12.0+PTX",
         compute_capability="10.0",
+        min_driver_version="570.26",
     ),
     "blackwell_sm120": GpuBuildProfile(
         name="blackwell_sm120",
@@ -91,6 +97,7 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         torchaudio_version="2.7.1",
         torch_cuda_arch_list="8.0;8.6;8.9;9.0;12.0+PTX",
         compute_capability="12.0",
+        min_driver_version="570.26",
     ),
 }
 
@@ -116,6 +123,10 @@ GPU_MODELS: Mapping[str, str] = {
     "nvidia a30": "ampere_sm80_86",
     "nvidia a40": "ampere_sm80_86",
     "nvidia a100": "ampere_sm80_86",
+    "nvidia a100 40gb pcie": "ampere_sm80_86",
+    "nvidia a100 80gb pcie": "ampere_sm80_86",
+    "nvidia a100-pcie-40gb": "ampere_sm80_86",
+    "nvidia a100-pcie-80gb": "ampere_sm80_86",
     "nvidia a100-sxm4-40gb": "ampere_sm80_86",
     "nvidia a100-sxm4-80gb": "ampere_sm80_86",
     "nvidia geforce rtx 3050": "ampere_sm80_86",

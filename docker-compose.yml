@@ -138,17 +138,17 @@ services:
     build:
       context: ./inference
       args:
-        CUDA_VERSION: ${INFERENCE_CUDA_VERSION:-12.8.1}
-        TORCH_INDEX_URL: ${INFERENCE_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}
-        TORCH_VERSION: ${INFERENCE_TORCH_VERSION:-2.7.1}
-        TORCHVISION_VERSION: ${INFERENCE_TORCHVISION_VERSION:-0.22.1}
+        CUDA_VERSION: ${INFERENCE_CUDA_VERSION:?Run python scripts/configure_host.py first}
+        TORCH_INDEX_URL: ${INFERENCE_TORCH_INDEX_URL:?Run python scripts/configure_host.py first}
+        TORCH_VERSION: ${INFERENCE_TORCH_VERSION:?Run python scripts/configure_host.py first}
+        TORCHVISION_VERSION: ${INFERENCE_TORCHVISION_VERSION:?Run python scripts/configure_host.py first}
         INSTALL_TENSORRT: "true"
         TENSORRT_VERSION: ${TENSORRT_VERSION:-10.16.1.11}
     image: sentinelos-inference:gpu
     gpus: all
     environment:
-      - GPU_MODEL=${GPU_MODEL:-unknown}
-      - INFERENCE_GPU_PROFILE=${INFERENCE_GPU_PROFILE:-blackwell_sm120}
+      - GPU_MODEL=${GPU_MODEL:?Run python scripts/configure_host.py first}
+      - INFERENCE_GPU_PROFILE=${INFERENCE_GPU_PROFILE:?Run python scripts/configure_host.py first}
       - DEVICE=${INFERENCE_DEVICE:-auto}
       - CUDA_UNSUPPORTED_ARCH_POLICY=${CUDA_UNSUPPORTED_ARCH_POLICY:-cpu}
       - TRAINED_MODEL_PATH=/app/models/geoint_yolov8_obb.pt
@@ -182,15 +182,15 @@ services:
       context: ./inference-lae-dino
       dockerfile: Dockerfile.gpu
       args:
-        CUDA_VERSION: ${LAE_DINO_CUDA_VERSION:-12.8.1}
-        TORCH_INDEX_URL: ${LAE_DINO_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}
-        TORCH_VERSION: ${LAE_DINO_TORCH_VERSION:-2.7.1}
-        TORCHVISION_VERSION: ${LAE_DINO_TORCHVISION_VERSION:-0.22.1}
+        CUDA_VERSION: ${LAE_DINO_CUDA_VERSION:?Run python scripts/configure_host.py first}
+        TORCH_INDEX_URL: ${LAE_DINO_TORCH_INDEX_URL:?Run python scripts/configure_host.py first}
+        TORCH_VERSION: ${LAE_DINO_TORCH_VERSION:?Run python scripts/configure_host.py first}
+        TORCHVISION_VERSION: ${LAE_DINO_TORCHVISION_VERSION:?Run python scripts/configure_host.py first}
     image: sentinelos-inference-lae-dino:gpu
     gpus: all
     environment:
-      - GPU_MODEL=${GPU_MODEL:-unknown}
-      - LAE_DINO_GPU_PROFILE=${LAE_DINO_GPU_PROFILE:-blackwell_sm120}
+      - GPU_MODEL=${GPU_MODEL:?Run python scripts/configure_host.py first}
+      - LAE_DINO_GPU_PROFILE=${LAE_DINO_GPU_PROFILE:?Run python scripts/configure_host.py first}
       - DEVICE=${LAE_DINO_DEVICE:-auto}
       - CUDA_UNSUPPORTED_ARCH_POLICY=${CUDA_UNSUPPORTED_ARCH_POLICY:-cpu}
       - CPU_THREADS=auto
@@ -227,16 +227,16 @@ services:
     build:
       context: ./inference-mmrotate
       args:
-        CUDA_VERSION: ${MMROTATE_CUDA_VERSION:-12.8.1}
-        TORCH_INDEX_URL: ${MMROTATE_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}
-        TORCH_VERSION: ${MMROTATE_TORCH_VERSION:-2.7.1}
-        TORCHVISION_VERSION: ${MMROTATE_TORCHVISION_VERSION:-0.22.1}
-        TORCH_CUDA_ARCH_LIST: ${MMROTATE_TORCH_CUDA_ARCH_LIST:-8.0;8.6;8.9;9.0;12.0+PTX}
+        CUDA_VERSION: ${MMROTATE_CUDA_VERSION:?Run python scripts/configure_host.py first}
+        TORCH_INDEX_URL: ${MMROTATE_TORCH_INDEX_URL:?Run python scripts/configure_host.py first}
+        TORCH_VERSION: ${MMROTATE_TORCH_VERSION:?Run python scripts/configure_host.py first}
+        TORCHVISION_VERSION: ${MMROTATE_TORCHVISION_VERSION:?Run python scripts/configure_host.py first}
+        TORCH_CUDA_ARCH_LIST: ${MMROTATE_TORCH_CUDA_ARCH_LIST:?Run python scripts/configure_host.py first}
     image: sentinelos-inference-mmrotate:gpu
     gpus: all
     environment:
-      GPU_MODEL: ${GPU_MODEL:-unknown}
-      MMROTATE_GPU_PROFILE: ${MMROTATE_GPU_PROFILE:-blackwell_sm120}
+      GPU_MODEL: ${GPU_MODEL:?Run python scripts/configure_host.py first}
+      MMROTATE_GPU_PROFILE: ${MMROTATE_GPU_PROFILE:?Run python scripts/configure_host.py first}
       DEVICE: ${MMROTATE_DEVICE:-auto}
       CUDA_UNSUPPORTED_ARCH_POLICY: ${CUDA_UNSUPPORTED_ARCH_POLICY:-cpu}
       CPU_THREADS: auto
@@ -264,17 +264,17 @@ services:
     build:
       context: ./inference-lsknet
       args:
-        CUDA_VERSION: ${LSKNET_CUDA_VERSION:-12.8.1}
-        TORCH_INDEX_URL: ${LSKNET_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}
-        TORCH_VERSION: ${LSKNET_TORCH_VERSION:-2.7.1}
-        TORCHVISION_VERSION: ${LSKNET_TORCHVISION_VERSION:-0.22.1}
-        TORCHAUDIO_VERSION: ${LSKNET_TORCHAUDIO_VERSION:-2.7.1}
-        TORCH_CUDA_ARCH_LIST: ${LSKNET_TORCH_CUDA_ARCH_LIST:-8.0;8.6;8.9;9.0;12.0+PTX}
+        CUDA_VERSION: ${LSKNET_CUDA_VERSION:?Run python scripts/configure_host.py first}
+        TORCH_INDEX_URL: ${LSKNET_TORCH_INDEX_URL:?Run python scripts/configure_host.py first}
+        TORCH_VERSION: ${LSKNET_TORCH_VERSION:?Run python scripts/configure_host.py first}
+        TORCHVISION_VERSION: ${LSKNET_TORCHVISION_VERSION:?Run python scripts/configure_host.py first}
+        TORCHAUDIO_VERSION: ${LSKNET_TORCHAUDIO_VERSION:?Run python scripts/configure_host.py first}
+        TORCH_CUDA_ARCH_LIST: ${LSKNET_TORCH_CUDA_ARCH_LIST:?Run python scripts/configure_host.py first}
     image: sentinelos-inference-lsknet:gpu
     gpus: all
     environment:
-      GPU_MODEL: ${GPU_MODEL:-unknown}
-      LSKNET_GPU_PROFILE: ${LSKNET_GPU_PROFILE:-blackwell_sm120}
+      GPU_MODEL: ${GPU_MODEL:?Run python scripts/configure_host.py first}
+      LSKNET_GPU_PROFILE: ${LSKNET_GPU_PROFILE:?Run python scripts/configure_host.py first}
       DEVICE: ${LSKNET_DEVICE:-auto}
       CUDA_UNSUPPORTED_ARCH_POLICY: ${CUDA_UNSUPPORTED_ARCH_POLICY:-cpu}
       CPU_THREADS: auto
@@ -299,17 +299,17 @@ services:
     build:
       context: ./inference-sam2
       args:
-        CUDA_VERSION: ${SAM2_CUDA_VERSION:-12.8.1}
-        TORCH_INDEX_URL: ${SAM2_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}
-        TORCH_VERSION: ${SAM2_TORCH_VERSION:-2.7.1}
-        TORCHVISION_VERSION: ${SAM2_TORCHVISION_VERSION:-0.22.1}
-        TORCHAUDIO_VERSION: ${SAM2_TORCHAUDIO_VERSION:-2.7.1}
-        TORCH_CUDA_ARCH_LIST: ${SAM2_TORCH_CUDA_ARCH_LIST:-8.0;8.6;8.9;9.0;12.0+PTX}
+        CUDA_VERSION: ${SAM2_CUDA_VERSION:?Run python scripts/configure_host.py first}
+        TORCH_INDEX_URL: ${SAM2_TORCH_INDEX_URL:?Run python scripts/configure_host.py first}
+        TORCH_VERSION: ${SAM2_TORCH_VERSION:?Run python scripts/configure_host.py first}
+        TORCHVISION_VERSION: ${SAM2_TORCHVISION_VERSION:?Run python scripts/configure_host.py first}
+        TORCHAUDIO_VERSION: ${SAM2_TORCHAUDIO_VERSION:?Run python scripts/configure_host.py first}
+        TORCH_CUDA_ARCH_LIST: ${SAM2_TORCH_CUDA_ARCH_LIST:?Run python scripts/configure_host.py first}
     image: sentinelos-inference-sam2:gpu
     gpus: all
     environment:
-      GPU_MODEL: ${GPU_MODEL:-unknown}
-      SAM2_GPU_PROFILE: ${SAM2_GPU_PROFILE:-blackwell_sm120}
+      GPU_MODEL: ${GPU_MODEL:?Run python scripts/configure_host.py first}
+      SAM2_GPU_PROFILE: ${SAM2_GPU_PROFILE:?Run python scripts/configure_host.py first}
       DEVICE: ${SAM2_DEVICE:-auto}
       CUDA_UNSUPPORTED_ARCH_POLICY: ${CUDA_UNSUPPORTED_ARCH_POLICY:-cpu}
       CPU_THREADS: auto
