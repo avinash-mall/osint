@@ -402,7 +402,15 @@ services:
       - ./nginx/tile-proxy.conf:/etc/nginx/conf.d/default.conf
       - fmv_data:/data/fmv:ro
     depends_on:
+      - frontend
+      - backend
       - titiler
+      - martin
+      - inference
+      - inference-lae-dino
+      - inference-mmrotate
+      - inference-lsknet
+      - inference-sam2
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1/ || exit 1"]
       interval: 10s
