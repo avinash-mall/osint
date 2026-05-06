@@ -522,6 +522,8 @@ def load_yolo_model(device: str) -> dict[str, Any]:
                     print(f"[INFERENCE] WARNING: unable to move YOLO model to {device}: {exc}")
             entry = model_entry(model, device, "yolo", runtime=runtime, model_path=path)
             run_yolo_warmup(entry)
+            if entry.get("warmup_error"):
+                raise RuntimeError(f"{runtime} warmup failed on {device}: {entry['warmup_error']}")
             return entry
         except Exception as exc:
             errors.append(f"{runtime} load failed from {path}: {exc}")
