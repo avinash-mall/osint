@@ -409,6 +409,19 @@ def maybe_auto_export_yolo_engine(device: str) -> None:
         YOLO_AUTO_EXPORT_STATUS["status"] = "existing_compatible"
         YOLO_AUTO_EXPORT_STATUS["selected_batch"] = YOLO_ENGINE_METADATA.get("batch")
         return
+    if (
+        os.path.exists(YOLO_ENGINE_PATH)
+        and not YOLO_TRT_FORCE_REEXPORT
+        and YOLO_ENGINE_METADATA.get("task") == MODEL_TASK
+    ):
+        YOLO_AUTO_EXPORT_STATUS["status"] = "existing_unverified_model_signature"
+        YOLO_AUTO_EXPORT_STATUS["selected_batch"] = YOLO_ENGINE_METADATA.get("batch")
+        YOLO_AUTO_EXPORT_STATUS["warning"] = (
+            "Using existing TensorRT engine because it is marked as OBB, but its metadata "
+            "does not prove it was exported from the current .pt checkpoint. Delete the "
+            ".engine/.engine.json files or set YOLO_TRT_FORCE_REEXPORT=1 to rebuild it."
+        )
+        return
     if not os.path.exists(MODEL_PATH):
         YOLO_AUTO_EXPORT_STATUS["status"] = "skipped_missing_model"
         return
