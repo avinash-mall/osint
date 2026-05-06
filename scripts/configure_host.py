@@ -121,6 +121,8 @@ def generated_env_values(info: HostGpuInfo) -> dict[str, str]:
         "GPU_COUNT": str(len(info.gpus)),
         "GPU_MEMORY_TOTAL_MB": str(primary_gpu.memory_total_mb),
         "GPU_MEMORY_FREE_MB": str(primary_gpu.memory_free_mb),
+        "NVIDIA_VISIBLE_DEVICES": "all",
+        "NVIDIA_DRIVER_CAPABILITIES": "compute,utility",
     }
 
     for prefix in SERVICE_PREFIXES:

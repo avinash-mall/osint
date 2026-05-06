@@ -44,6 +44,8 @@ def test_a100_driver_550_generates_cu124_values():
     values = generated_env_values(info)
 
     assert values["GPU_MODEL"] == "NVIDIA A100 80GB PCIe"
+    assert values["NVIDIA_VISIBLE_DEVICES"] == "all"
+    assert values["NVIDIA_DRIVER_CAPABILITIES"] == "compute,utility"
     assert values["INFERENCE_GPU_PROFILE"] == "ampere_sm80_86"
     assert values["LAE_DINO_GPU_PROFILE"] == "ampere_sm80_86"
     assert values["LAE_DINO_CUDA_VERSION"] == "12.4.1"

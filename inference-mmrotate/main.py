@@ -57,8 +57,10 @@ GPU_MODEL = os.getenv("GPU_MODEL", "unknown")
 MMROTATE_GPU_PROFILE = os.getenv("MMROTATE_GPU_PROFILE", "unknown")
 DETECTION_POLICY = active_detection_policy()
 
-detection_model = None
-model_lock = threading.Lock()
+detection_models: list[dict[str, Any]] = []
+model_pool_lock = threading.Lock()
+model_pool_index = 0
+load_lock = threading.Lock()
 model_error: str | None = None
 
 
@@ -67,16 +69,20 @@ def _cuda_unsupported_arch_policy() -> str:
     return policy if policy in {"cpu", "cuda"} else "cpu"
 
 
-def _auto_cuda_device(torch_module: Any) -> str | None:
+def _auto_cuda_devices(torch_module: Any) -> list[str]:
     supported_arches = set(torch_module.cuda.get_arch_list())
     unsupported: list[str] = []
+    devices: list[str] = []
     for index in range(torch_module.cuda.device_count()):
         capability = torch_module.cuda.get_device_capability(index)
         device_arch = f"sm_{capability[0]}{capability[1]}"
         device_name = torch_module.cuda.get_device_name(index)
         if not supported_arches or device_arch in supported_arches:
-            return f"cuda:{index}"
+            devices.append(f"cuda:{index}")
+            continue
         unsupported.append(f"cuda:{index} {device_name} {device_arch}")
+    if devices:
+        return devices
 
     if unsupported:
         message = (
@@ -84,29 +90,46 @@ def _auto_cuda_device(torch_module: Any) -> str | None:
             f"arch list ({sorted(supported_arches)}); unsupported devices: {unsupported}"
         )
         if _cuda_unsupported_arch_policy() == "cuda":
-            print(f"{message}; forcing cuda:0 by CUDA_UNSUPPORTED_ARCH_POLICY=cuda")
-            return "cuda:0"
+            devices = [f"cuda:{index}" for index in range(torch_module.cuda.device_count())]
+            print(f"{message}; forcing CUDA devices by CUDA_UNSUPPORTED_ARCH_POLICY=cuda")
+            return devices
         print(f"{message}; falling back to CPU")
-    return None
+    return []
 
 
-def normalize_device(value: str) -> str:
+def normalize_device_list(value: str) -> list[str]:
+    devices: list[str] = []
+    for item in value.split(","):
+        device = item.strip()
+        if not device:
+            continue
+        devices.append(f"cuda:{device}" if device.isdigit() else device)
+    return devices or ["cpu"]
+
+
+def resolve_devices(value: str) -> list[str]:
     requested = (value or "auto").strip().lower()
     if requested and requested != "auto":
-        return f"cuda:{requested}" if requested.isdigit() else requested
+        return normalize_device_list(requested)
     try:
         import torch
 
         if torch.cuda.is_available():
-            device = _auto_cuda_device(torch)
-            if device:
-                return device
+            devices = _auto_cuda_devices(torch)
+            if devices:
+                names = [torch.cuda.get_device_name(int(device.split(":")[1])) for device in devices]
+                print(
+                    f"[INFERENCE-MMROTATE] Using CUDA devices {', '.join(devices)}: "
+                    f"{', '.join(names)}"
+                )
+                return devices
     except Exception:
         pass
-    return "cpu"
+    return ["cpu"]
 
 
-DEVICE = normalize_device(os.getenv("DEVICE", "auto"))
+DEVICES = resolve_devices(os.getenv("DEVICE", "auto"))
+DEVICE = ",".join(DEVICES)
 
 
 def torch_cuda_diagnostics() -> dict[str, Any]:
@@ -152,27 +175,48 @@ def ensure_checkpoint() -> None:
 
 
 def load_model() -> None:
-    global detection_model, model_error
-    if detection_model is not None:
+    global detection_models, model_error
+    if detection_models:
         return
-    with model_lock:
-        if detection_model is not None:
+    with load_lock:
+        if detection_models:
             return
         model_error = None
+        loaded: list[dict[str, Any]] = []
         try:
             ensure_checkpoint()
             import mmrotate  # noqa: F401
             from mmdet.apis import init_detector
-
-            detection_model = init_detector(MMROTATE_CONFIG, MMROTATE_CHECKPOINT, device=DEVICE)
-            print(
-                f"[INFERENCE-MMROTATE] Loaded MMRotate model config={MMROTATE_CONFIG} "
-                f"checkpoint={MMROTATE_CHECKPOINT} device={DEVICE}"
-            )
         except Exception as exc:
             model_error = str(exc)
-            detection_model = None
-            print(f"[INFERENCE-MMROTATE] Model load failed: {exc}")
+            print(f"[INFERENCE-MMROTATE] Model prerequisites failed: {exc}")
+            return
+
+        for device in DEVICES:
+            try:
+                model = init_detector(MMROTATE_CONFIG, MMROTATE_CHECKPOINT, device=device)
+                loaded.append({"model": model, "device": device, "lock": threading.Lock()})
+                print(
+                    f"[INFERENCE-MMROTATE] Loaded MMRotate model config={MMROTATE_CONFIG} "
+                    f"checkpoint={MMROTATE_CHECKPOINT} device={device}"
+                )
+            except Exception as exc:
+                model_error = str(exc)
+                print(f"[INFERENCE-MMROTATE] Model load failed on {device}: {exc}")
+
+        detection_models = loaded
+
+
+def next_model_entry() -> dict[str, Any] | None:
+    global model_pool_index
+    if not detection_models:
+        load_model()
+    if not detection_models:
+        return None
+    with model_pool_lock:
+        entry = detection_models[model_pool_index % len(detection_models)]
+        model_pool_index += 1
+    return entry
 
 
 def _as_numpy(value: Any) -> np.ndarray:
@@ -281,21 +325,22 @@ def detections_from_mmrotate_result(result: Any, image_size: tuple[int, int]) ->
 
 
 def run_inference(image_array: np.ndarray, image_size: tuple[int, int], metadata: dict | None = None) -> dict[str, Any]:
-    load_model()
-    if detection_model is None:
+    entry = next_model_entry()
+    if entry is None:
         raise HTTPException(status_code=503, detail=f"No MMRotate model loaded: {model_error or 'unknown error'}")
     start_time = time.time()
     try:
         import torch
         from mmdet.apis import inference_detector
 
-        on_cuda = DEVICE.startswith("cuda")
-        with model_lock, torch.inference_mode():
+        device = entry["device"]
+        on_cuda = device.startswith("cuda")
+        with entry["lock"], torch.inference_mode():
             if on_cuda:
                 with torch.autocast(device_type="cuda", dtype=torch.float16):
-                    raw_result = inference_detector(detection_model, image_array)
+                    raw_result = inference_detector(entry["model"], image_array)
             else:
-                raw_result = inference_detector(detection_model, image_array)
+                raw_result = inference_detector(entry["model"], image_array)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"MMRotate inference failed: {exc}") from exc
     detections = detections_from_mmrotate_result(raw_result, image_size)
@@ -306,7 +351,8 @@ def run_inference(image_array: np.ndarray, image_size: tuple[int, int], metadata
         "model": MMROTATE_CHECKPOINT,
         "config": MMROTATE_CONFIG,
         "task": "rotated_detect",
-        "device": DEVICE,
+        "device": device,
+        "devices": DEVICES,
         "gpu_model": GPU_MODEL,
         "gpu_profile": MMROTATE_GPU_PROFILE,
         "cuda": torch_cuda_diagnostics(),
@@ -354,13 +400,19 @@ async def detect_objects(
 def health() -> dict[str, Any]:
     return {
         "status": "ok",
-        "model_loaded": detection_model is not None,
+        "model_loaded": bool(detection_models),
         "model_error": model_error,
         "model_path": MMROTATE_CHECKPOINT,
         "model_exists": Path(MMROTATE_CHECKPOINT).exists(),
         "config_path": MMROTATE_CONFIG,
         "config_exists": Path(MMROTATE_CONFIG).exists(),
         "device": DEVICE,
+        "devices": DEVICES,
+        "model_replicas": len(detection_models),
+        "replicas": [
+            {"device": entry["device"]}
+            for entry in detection_models
+        ],
         "gpu_model": GPU_MODEL,
         "gpu_profile": MMROTATE_GPU_PROFILE,
         "cuda": torch_cuda_diagnostics(),

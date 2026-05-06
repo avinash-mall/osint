@@ -149,6 +149,8 @@ services:
     environment:
       - GPU_MODEL=${GPU_MODEL:?Run python scripts/configure_host.py first}
       - INFERENCE_GPU_PROFILE=${INFERENCE_GPU_PROFILE:?Run python scripts/configure_host.py first}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
       - DEVICE=${INFERENCE_DEVICE:-auto}
       - CUDA_UNSUPPORTED_ARCH_POLICY=${CUDA_UNSUPPORTED_ARCH_POLICY:-cpu}
       - TRAINED_MODEL_PATH=/app/models/geoint_yolov8_obb.pt
@@ -191,6 +193,8 @@ services:
     environment:
       - GPU_MODEL=${GPU_MODEL:?Run python scripts/configure_host.py first}
       - LAE_DINO_GPU_PROFILE=${LAE_DINO_GPU_PROFILE:?Run python scripts/configure_host.py first}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
       - DEVICE=${LAE_DINO_DEVICE:-auto}
       - CUDA_UNSUPPORTED_ARCH_POLICY=${CUDA_UNSUPPORTED_ARCH_POLICY:-cpu}
       - CPU_THREADS=auto
@@ -237,6 +241,8 @@ services:
     environment:
       GPU_MODEL: ${GPU_MODEL:?Run python scripts/configure_host.py first}
       MMROTATE_GPU_PROFILE: ${MMROTATE_GPU_PROFILE:?Run python scripts/configure_host.py first}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
       DEVICE: ${MMROTATE_DEVICE:-auto}
       CUDA_UNSUPPORTED_ARCH_POLICY: ${CUDA_UNSUPPORTED_ARCH_POLICY:-cpu}
       CPU_THREADS: auto
@@ -275,6 +281,8 @@ services:
     environment:
       GPU_MODEL: ${GPU_MODEL:?Run python scripts/configure_host.py first}
       LSKNET_GPU_PROFILE: ${LSKNET_GPU_PROFILE:?Run python scripts/configure_host.py first}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
       DEVICE: ${LSKNET_DEVICE:-auto}
       CUDA_UNSUPPORTED_ARCH_POLICY: ${CUDA_UNSUPPORTED_ARCH_POLICY:-cpu}
       CPU_THREADS: auto
@@ -310,6 +318,8 @@ services:
     environment:
       GPU_MODEL: ${GPU_MODEL:?Run python scripts/configure_host.py first}
       SAM2_GPU_PROFILE: ${SAM2_GPU_PROFILE:?Run python scripts/configure_host.py first}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
       DEVICE: ${SAM2_DEVICE:-auto}
       CUDA_UNSUPPORTED_ARCH_POLICY: ${CUDA_UNSUPPORTED_ARCH_POLICY:-cpu}
       CPU_THREADS: auto

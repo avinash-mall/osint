@@ -53,8 +53,10 @@ MODEL_VERSION = os.getenv("MODEL_VERSION", f"sam2.1-hiera-{SAM2_MODEL_SIZE}")
 GPU_MODEL = os.getenv("GPU_MODEL", "unknown")
 SAM2_GPU_PROFILE = os.getenv("SAM2_GPU_PROFILE", "unknown")
 
-mask_generator = None
-model_lock = threading.Lock()
+mask_generators: list[dict[str, Any]] = []
+model_pool_lock = threading.Lock()
+model_pool_index = 0
+load_lock = threading.Lock()
 model_error: str | None = None
 
 def _cuda_unsupported_arch_policy() -> str:
@@ -62,16 +64,20 @@ def _cuda_unsupported_arch_policy() -> str:
     return policy if policy in {"cpu", "cuda"} else "cpu"
 
 
-def _auto_cuda_device(torch_module: Any) -> str | None:
+def _auto_cuda_devices(torch_module: Any) -> list[str]:
     supported_arches = set(torch_module.cuda.get_arch_list())
     unsupported: list[str] = []
+    devices: list[str] = []
     for index in range(torch_module.cuda.device_count()):
         capability = torch_module.cuda.get_device_capability(index)
         device_arch = f"sm_{capability[0]}{capability[1]}"
         device_name = torch_module.cuda.get_device_name(index)
         if not supported_arches or device_arch in supported_arches:
-            return f"cuda:{index}"
+            devices.append(f"cuda:{index}")
+            continue
         unsupported.append(f"cuda:{index} {device_name} {device_arch}")
+    if devices:
+        return devices
 
     if unsupported:
         message = (
@@ -79,27 +85,44 @@ def _auto_cuda_device(torch_module: Any) -> str | None:
             f"arch list ({sorted(supported_arches)}); unsupported devices: {unsupported}"
         )
         if _cuda_unsupported_arch_policy() == "cuda":
-            print(f"{message}; forcing cuda:0 by CUDA_UNSUPPORTED_ARCH_POLICY=cuda")
-            return "cuda:0"
+            devices = [f"cuda:{index}" for index in range(torch_module.cuda.device_count())]
+            print(f"{message}; forcing CUDA devices by CUDA_UNSUPPORTED_ARCH_POLICY=cuda")
+            return devices
         print(f"{message}; falling back to CPU")
-    return None
+    return []
 
 
-def normalize_device(value: str) -> str:
+def normalize_device_list(value: str) -> list[str]:
+    devices: list[str] = []
+    for item in value.split(","):
+        device = item.strip()
+        if not device:
+            continue
+        devices.append(f"cuda:{device}" if device.isdigit() else device)
+    return devices or ["cpu"]
+
+
+def resolve_devices(value: str) -> list[str]:
     requested = (value or "auto").strip().lower()
     if requested and requested != "auto":
-        return f"cuda:{requested}" if requested.isdigit() else requested
+        return normalize_device_list(requested)
     try:
         import torch
         if torch.cuda.is_available():
-            device = _auto_cuda_device(torch)
-            if device:
-                return device
+            devices = _auto_cuda_devices(torch)
+            if devices:
+                names = [torch.cuda.get_device_name(int(device.split(":")[1])) for device in devices]
+                print(
+                    f"[INFERENCE-SAM2] Using CUDA devices {', '.join(devices)}: "
+                    f"{', '.join(names)}"
+                )
+                return devices
     except Exception:
         pass
-    return "cpu"
+    return ["cpu"]
 
-DEVICE = normalize_device(os.getenv("DEVICE", "auto"))
+DEVICES = resolve_devices(os.getenv("DEVICE", "auto"))
+DEVICE = ",".join(DEVICES)
 
 
 def torch_cuda_diagnostics() -> dict[str, Any]:
@@ -142,46 +165,67 @@ def ensure_checkpoint() -> None:
                     handle.write(chunk)
 
 def load_model() -> None:
-    global mask_generator, model_error
-    if mask_generator is not None:
+    global mask_generators, model_error
+    if mask_generators:
         return
-    with model_lock:
-        if mask_generator is not None:
+    with load_lock:
+        if mask_generators:
             return
         model_error = None
+        loaded: list[dict[str, Any]] = []
         try:
             ensure_checkpoint()
-            import torch
             from sam2.build_sam import build_sam2
             from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
-            
-            if DEVICE.startswith("cuda"):
-                torch.autocast(device_type="cuda", dtype=torch.bfloat16).__enter__()
-
-            sam2_model = build_sam2(SAM2_CONFIG, SAM2_CHECKPOINT, device=DEVICE)
-            
-            # Use Automatic Mask Generator
-            mask_generator = SAM2AutomaticMaskGenerator(sam2_model)
-            print(
-                f"[INFERENCE-SAM2] Loaded SAM 2 model config={SAM2_CONFIG} "
-                f"checkpoint={SAM2_CHECKPOINT} device={DEVICE}"
-            )
         except Exception as exc:
             model_error = str(exc)
-            mask_generator = None
-            print(f"[INFERENCE-SAM2] Model load failed: {exc}")
+            print(f"[INFERENCE-SAM2] Model prerequisites failed: {exc}")
+            return
+
+        for device in DEVICES:
+            try:
+                sam2_model = build_sam2(SAM2_CONFIG, SAM2_CHECKPOINT, device=device)
+                loaded.append({
+                    "generator": SAM2AutomaticMaskGenerator(sam2_model),
+                    "device": device,
+                    "lock": threading.Lock(),
+                })
+                print(
+                    f"[INFERENCE-SAM2] Loaded SAM 2 model config={SAM2_CONFIG} "
+                    f"checkpoint={SAM2_CHECKPOINT} device={device}"
+                )
+            except Exception as exc:
+                model_error = str(exc)
+                print(f"[INFERENCE-SAM2] Model load failed on {device}: {exc}")
+
+        mask_generators = loaded
+
+
+def next_model_entry() -> dict[str, Any] | None:
+    global model_pool_index
+    if not mask_generators:
+        load_model()
+    if not mask_generators:
+        return None
+    with model_pool_lock:
+        entry = mask_generators[model_pool_index % len(mask_generators)]
+        model_pool_index += 1
+    return entry
 
 def run_inference(image_array: np.ndarray, image_size: tuple[int, int], metadata: dict | None = None) -> dict[str, Any]:
-    load_model()
-    if mask_generator is None:
+    entry = next_model_entry()
+    if entry is None:
         raise HTTPException(status_code=503, detail=f"No SAM 2 model loaded: {model_error or 'unknown error'}")
     
     start_time = time.time()
     try:
         import torch
-        with model_lock, torch.inference_mode():
-            # Generate masks
-            masks = mask_generator.generate(image_array)
+        with entry["lock"], torch.inference_mode():
+            if entry["device"].startswith("cuda"):
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    masks = entry["generator"].generate(image_array)
+            else:
+                masks = entry["generator"].generate(image_array)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"SAM 2 inference failed: {exc}") from exc
         
@@ -222,7 +266,8 @@ def run_inference(image_array: np.ndarray, image_size: tuple[int, int], metadata
         "model": SAM2_CHECKPOINT,
         "config": SAM2_CONFIG,
         "task": "segmentation",
-        "device": DEVICE,
+        "device": entry["device"],
+        "devices": DEVICES,
         "gpu_model": GPU_MODEL,
         "gpu_profile": SAM2_GPU_PROFILE,
         "cuda": torch_cuda_diagnostics(),
@@ -263,12 +308,18 @@ async def detect_objects(
 def health() -> dict[str, Any]:
     return {
         "status": "ok",
-        "model_loaded": mask_generator is not None,
+        "model_loaded": bool(mask_generators),
         "model_error": model_error,
         "model_path": SAM2_CHECKPOINT,
         "model_exists": Path(SAM2_CHECKPOINT).exists(),
         "config_path": SAM2_CONFIG,
         "device": DEVICE,
+        "devices": DEVICES,
+        "model_replicas": len(mask_generators),
+        "replicas": [
+            {"device": entry["device"]}
+            for entry in mask_generators
+        ],
         "gpu_model": GPU_MODEL,
         "gpu_profile": SAM2_GPU_PROFILE,
         "cuda": torch_cuda_diagnostics(),
