@@ -48,7 +48,7 @@ def test_a100_driver_550_generates_cu124_values():
     assert values["LAE_DINO_GPU_PROFILE"] == "ampere_sm80_86"
     assert values["LAE_DINO_CUDA_VERSION"] == "12.4.1"
     assert values["LAE_DINO_TORCH_INDEX_URL"].endswith("/cu124")
-    assert values["LAE_DINO_TORCH_VERSION"] == "2.6.0"
+    assert values["LAE_DINO_TORCH_VERSION"] == "2.6.0+cu124"
 
 
 def test_blackwell_compatible_driver_generates_cu128_values():
@@ -63,7 +63,7 @@ def test_blackwell_compatible_driver_generates_cu128_values():
     assert values["INFERENCE_GPU_PROFILE"] == "blackwell_sm120"
     assert values["INFERENCE_CUDA_VERSION"] == "12.8.1"
     assert values["INFERENCE_TORCH_INDEX_URL"].endswith("/cu128")
-    assert values["INFERENCE_TORCH_VERSION"] == "2.7.1"
+    assert values["INFERENCE_TORCH_VERSION"] == "2.7.1+cu128"
 
 
 def test_blackwell_incompatible_driver_fails_fast():

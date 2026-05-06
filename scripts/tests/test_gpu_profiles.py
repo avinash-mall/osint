@@ -20,9 +20,9 @@ def test_resolve_rtx_5070_ti_uses_blackwell_profile():
     assert profile.name == "blackwell_sm120"
     assert profile.cuda_version == "12.8.1"
     assert profile.torch_index_url.endswith("/cu128")
-    assert profile.torch_version == "2.7.1"
-    assert profile.torchvision_version == "0.22.1"
-    assert profile.torchaudio_version == "2.7.1"
+    assert profile.torch_version == "2.7.1+cu128"
+    assert profile.torchvision_version == "0.22.1+cu128"
+    assert profile.torchaudio_version == "2.7.1+cu128"
     assert "12.0+PTX" in profile.torch_cuda_arch_list
 
 
@@ -39,9 +39,9 @@ def test_resolve_a100_pcie_uses_ampere_profile():
     assert profile.name == "ampere_sm80_86"
     assert profile.cuda_version == "12.4.1"
     assert profile.torch_index_url.endswith("/cu124")
-    assert profile.torch_version == "2.6.0"
-    assert profile.torchvision_version == "0.21.0"
-    assert profile.torchaudio_version == "2.6.0"
+    assert profile.torch_version == "2.6.0+cu124"
+    assert profile.torchvision_version == "0.21.0+cu124"
+    assert profile.torchaudio_version == "2.6.0+cu124"
     assert "8.0" in profile.torch_cuda_arch_list
 
 

@@ -37,6 +37,7 @@ COPY requirements.txt .
 
 # Install CUDA-capable PyTorch by default. Override TORCH_INDEX_URL at build time
 # if your NVIDIA driver requires a different CUDA wheel family.
+RUN echo "Installing torch=${TORCH_VERSION} torchvision=${TORCHVISION_VERSION} from ${TORCH_INDEX_URL} on CUDA image ${CUDA_VERSION}"
 RUN pip install --no-cache-dir \
     "torch==${TORCH_VERSION}" \
     "torchvision==${TORCHVISION_VERSION}" \
