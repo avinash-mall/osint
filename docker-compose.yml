@@ -108,7 +108,7 @@ services:
       - VITE_TILE_PROXY_URL=http://localhost:8090
       - VITE_MARTIN_URL=http://localhost:3001
     healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 3000 || exit 1"]
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 3000 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -139,7 +139,7 @@ services:
       postgis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 3000 || exit 1"]
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 3000 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -148,14 +148,21 @@ services:
     build:
       context: ./inference
       args:
-        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}
+        CUDA_VERSION: ${INFERENCE_CUDA_VERSION:-12.8.1}
+        TORCH_INDEX_URL: ${INFERENCE_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}
+        TORCH_VERSION: ${INFERENCE_TORCH_VERSION:-2.7.1}
+        TORCHVISION_VERSION: ${INFERENCE_TORCHVISION_VERSION:-0.22.1}
         INSTALL_TENSORRT: "true"
-    image: sentinelos-inference:latest
+        TENSORRT_VERSION: ${TENSORRT_VERSION:-10.16.1.11}
+    image: sentinelos-inference:gpu
     ports:
       - "8002:8001"
     gpus: all
     environment:
-      - DEVICE=auto
+      - GPU_MODEL=${GPU_MODEL:-unknown}
+      - INFERENCE_GPU_PROFILE=${INFERENCE_GPU_PROFILE:-blackwell_sm120}
+      - DEVICE=${INFERENCE_DEVICE:-auto}
+      - CUDA_UNSUPPORTED_ARCH_POLICY=${CUDA_UNSUPPORTED_ARCH_POLICY:-cpu}
       - TRAINED_MODEL_PATH=/app/models/geoint_yolov8_obb.pt
       - YOLO_RUNTIME=auto
       - YOLO_ENGINE_PATH=/app/models/geoint_yolov8_obb.engine
@@ -187,13 +194,19 @@ services:
       context: ./inference-lae-dino
       dockerfile: Dockerfile.gpu
       args:
-        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}
+        CUDA_VERSION: ${LAE_DINO_CUDA_VERSION:-12.8.1}
+        TORCH_INDEX_URL: ${LAE_DINO_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}
+        TORCH_VERSION: ${LAE_DINO_TORCH_VERSION:-2.7.1}
+        TORCHVISION_VERSION: ${LAE_DINO_TORCHVISION_VERSION:-0.22.1}
     image: sentinelos-inference-lae-dino:gpu
     ports:
       - "8004:8001"
     gpus: all
     environment:
-      - DEVICE=auto
+      - GPU_MODEL=${GPU_MODEL:-unknown}
+      - LAE_DINO_GPU_PROFILE=${LAE_DINO_GPU_PROFILE:-blackwell_sm120}
+      - DEVICE=${LAE_DINO_DEVICE:-auto}
+      - CUDA_UNSUPPORTED_ARCH_POLICY=${CUDA_UNSUPPORTED_ARCH_POLICY:-cpu}
       - CPU_THREADS=auto
       - WEB_CONCURRENCY=1
       - LAE_PROMPT_PROFILE=official_lae80c
@@ -228,15 +241,20 @@ services:
     build:
       context: ./inference-mmrotate
       args:
-        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}
-        TORCH_VERSION: ${TORCH_VERSION}
-        TORCHVISION_VERSION: ${TORCHVISION_VERSION}
+        CUDA_VERSION: ${MMROTATE_CUDA_VERSION:-12.8.1}
+        TORCH_INDEX_URL: ${MMROTATE_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}
+        TORCH_VERSION: ${MMROTATE_TORCH_VERSION:-2.7.1}
+        TORCHVISION_VERSION: ${MMROTATE_TORCHVISION_VERSION:-0.22.1}
+        TORCH_CUDA_ARCH_LIST: ${MMROTATE_TORCH_CUDA_ARCH_LIST:-8.0;8.6;8.9;9.0;12.0+PTX}
     image: sentinelos-inference-mmrotate:gpu
     ports:
       - "8005:8001"
     gpus: all
     environment:
-      DEVICE: auto
+      GPU_MODEL: ${GPU_MODEL:-unknown}
+      MMROTATE_GPU_PROFILE: ${MMROTATE_GPU_PROFILE:-blackwell_sm120}
+      DEVICE: ${MMROTATE_DEVICE:-auto}
+      CUDA_UNSUPPORTED_ARCH_POLICY: ${CUDA_UNSUPPORTED_ARCH_POLICY:-cpu}
       CPU_THREADS: auto
       WEB_CONCURRENCY: "1"
       DETECTION_THRESHOLD_PROFILE: recall_review
@@ -262,15 +280,23 @@ services:
     build:
       context: ./inference-lsknet
       args:
-        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}
+        CUDA_VERSION: ${LSKNET_CUDA_VERSION:-12.8.1}
+        TORCH_INDEX_URL: ${LSKNET_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}
+        TORCH_VERSION: ${LSKNET_TORCH_VERSION:-2.7.1}
+        TORCHVISION_VERSION: ${LSKNET_TORCHVISION_VERSION:-0.22.1}
+        TORCHAUDIO_VERSION: ${LSKNET_TORCHAUDIO_VERSION:-2.7.1}
+        TORCH_CUDA_ARCH_LIST: ${LSKNET_TORCH_CUDA_ARCH_LIST:-8.0;8.6;8.9;9.0;12.0+PTX}
     image: sentinelos-inference-lsknet:gpu
     ports:
       - "8006:8001"
     gpus: all
     environment:
-      DEVICE: cpu
+      GPU_MODEL: ${GPU_MODEL:-unknown}
+      LSKNET_GPU_PROFILE: ${LSKNET_GPU_PROFILE:-blackwell_sm120}
+      DEVICE: ${LSKNET_DEVICE:-auto}
+      CUDA_UNSUPPORTED_ARCH_POLICY: ${CUDA_UNSUPPORTED_ARCH_POLICY:-cpu}
       CPU_THREADS: auto
-      WEB_CONCURRENCY: "2"
+      WEB_CONCURRENCY: "1"
       DETECTION_THRESHOLD_PROFILE: recall_review
       LSKNET_CONFIDENCE_THRESHOLD: "0.10"
       MAX_DETECTIONS_PER_CHIP: "300"
@@ -291,13 +317,21 @@ services:
     build:
       context: ./inference-sam2
       args:
-        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}
+        CUDA_VERSION: ${SAM2_CUDA_VERSION:-12.8.1}
+        TORCH_INDEX_URL: ${SAM2_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}
+        TORCH_VERSION: ${SAM2_TORCH_VERSION:-2.7.1}
+        TORCHVISION_VERSION: ${SAM2_TORCHVISION_VERSION:-0.22.1}
+        TORCHAUDIO_VERSION: ${SAM2_TORCHAUDIO_VERSION:-2.7.1}
+        TORCH_CUDA_ARCH_LIST: ${SAM2_TORCH_CUDA_ARCH_LIST:-8.0;8.6;8.9;9.0;12.0+PTX}
     image: sentinelos-inference-sam2:gpu
     ports:
       - "8007:8001"
     gpus: all
     environment:
-      DEVICE: auto
+      GPU_MODEL: ${GPU_MODEL:-unknown}
+      SAM2_GPU_PROFILE: ${SAM2_GPU_PROFILE:-blackwell_sm120}
+      DEVICE: ${SAM2_DEVICE:-auto}
+      CUDA_UNSUPPORTED_ARCH_POLICY: ${CUDA_UNSUPPORTED_ARCH_POLICY:-cpu}
       CPU_THREADS: auto
       WEB_CONCURRENCY: "1"
       SAM2_MODEL_SIZE: "large"
@@ -395,7 +429,7 @@ services:
     depends_on:
       - titiler
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider localhost:80 || exit 1"]
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1/ || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5

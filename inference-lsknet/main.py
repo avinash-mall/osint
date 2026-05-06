@@ -55,11 +55,41 @@ LSKNET_CHECKPOINT_URL = os.getenv("LSKNET_CHECKPOINT_URL", DEFAULT_CHECKPOINT_UR
 LSKNET_CONFIDENCE_THRESHOLD = float(os.getenv("LSKNET_CONFIDENCE_THRESHOLD", "0.10"))
 MAX_DETECTIONS_PER_CHIP = int(os.getenv("MAX_DETECTIONS_PER_CHIP", "300"))
 MODEL_VERSION = os.getenv("MODEL_VERSION", "lsknet-s-dota")
+GPU_MODEL = os.getenv("GPU_MODEL", "unknown")
+LSKNET_GPU_PROFILE = os.getenv("LSKNET_GPU_PROFILE", "unknown")
 DETECTION_POLICY = active_detection_policy()
 
 detection_model = None
 model_lock = threading.Lock()
 model_error: str | None = None
+
+
+def _cuda_unsupported_arch_policy() -> str:
+    policy = os.getenv("CUDA_UNSUPPORTED_ARCH_POLICY", "cpu").strip().lower()
+    return policy if policy in {"cpu", "cuda"} else "cpu"
+
+
+def _auto_cuda_device(torch_module: Any) -> str | None:
+    supported_arches = set(torch_module.cuda.get_arch_list())
+    unsupported: list[str] = []
+    for index in range(torch_module.cuda.device_count()):
+        capability = torch_module.cuda.get_device_capability(index)
+        device_arch = f"sm_{capability[0]}{capability[1]}"
+        device_name = torch_module.cuda.get_device_name(index)
+        if not supported_arches or device_arch in supported_arches:
+            return f"cuda:{index}"
+        unsupported.append(f"cuda:{index} {device_name} {device_arch}")
+
+    if unsupported:
+        message = (
+            f"[INFERENCE-LSKNET] No visible CUDA device has an arch in the torch build "
+            f"arch list ({sorted(supported_arches)}); unsupported devices: {unsupported}"
+        )
+        if _cuda_unsupported_arch_policy() == "cuda":
+            print(f"{message}; forcing cuda:0 by CUDA_UNSUPPORTED_ARCH_POLICY=cuda")
+            return "cuda:0"
+        print(f"{message}; falling back to CPU")
+    return None
 
 
 def normalize_device(value: str) -> str:
@@ -70,22 +100,41 @@ def normalize_device(value: str) -> str:
         import torch
 
         if torch.cuda.is_available():
-            capability = torch.cuda.get_device_capability(0)
-            device_arch = f"sm_{capability[0]}{capability[1]}"
-            supported_arches = set(torch.cuda.get_arch_list())
-            if supported_arches and device_arch not in supported_arches:
-                # Arch not natively compiled in, but PTX JIT forward-compat will handle it.
-                print(
-                    f"[INFERENCE-LSKNET] CUDA device arch {device_arch} not in torch build "
-                    f"arch list ({sorted(supported_arches)}); using CUDA anyway via PTX JIT"
-                )
-            return "cuda:0"
+            device = _auto_cuda_device(torch)
+            if device:
+                return device
     except Exception:
         pass
     return "cpu"
 
 
 DEVICE = normalize_device(os.getenv("DEVICE", "auto"))
+
+
+def torch_cuda_diagnostics() -> dict[str, Any]:
+    try:
+        import torch
+
+        diagnostics: dict[str, Any] = {
+            "torch_version": getattr(torch, "__version__", None),
+            "torch_cuda": getattr(torch.version, "cuda", None),
+            "cuda_available": torch.cuda.is_available(),
+            "cuda_device_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
+            "torch_cuda_arch_list": torch.cuda.get_arch_list() if hasattr(torch.cuda, "get_arch_list") else [],
+            "visible_devices": [],
+        }
+        if torch.cuda.is_available():
+            diagnostics["visible_devices"] = [
+                {
+                    "index": index,
+                    "name": torch.cuda.get_device_name(index),
+                    "capability": list(torch.cuda.get_device_capability(index)),
+                }
+                for index in range(torch.cuda.device_count())
+            ]
+        return diagnostics
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 def ensure_checkpoint() -> None:
@@ -255,6 +304,9 @@ def run_inference(image_array: np.ndarray, image_size: tuple[int, int], metadata
         "config": LSKNET_CONFIG,
         "task": "rotated_detect",
         "device": DEVICE,
+        "gpu_model": GPU_MODEL,
+        "gpu_profile": LSKNET_GPU_PROFILE,
+        "cuda": torch_cuda_diagnostics(),
         "model_version": MODEL_VERSION,
         "taxonomy_version": DETECTION_POLICY["taxonomy_version"],
         "threshold_profile": DETECTION_POLICY["threshold_profile"],
@@ -306,6 +358,9 @@ def health() -> dict[str, Any]:
         "config_path": LSKNET_CONFIG,
         "config_exists": Path(LSKNET_CONFIG).exists(),
         "device": DEVICE,
+        "gpu_model": GPU_MODEL,
+        "gpu_profile": LSKNET_GPU_PROFILE,
+        "cuda": torch_cuda_diagnostics(),
         "model_version": MODEL_VERSION,
         "detection_policy": DETECTION_POLICY,
         "confidence_threshold": LSKNET_CONFIDENCE_THRESHOLD,

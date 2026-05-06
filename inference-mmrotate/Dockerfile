@@ -1,4 +1,5 @@
-FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
+ARG CUDA_VERSION=12.8.1
+FROM nvidia/cuda:${CUDA_VERSION}-cudnn-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -9,9 +10,10 @@ ENV MMROTATE_CONFIG=/opt/mmrotate/configs/oriented_rcnn/oriented-rcnn-le90_r50_f
 ENV MMROTATE_CHECKPOINT=/models/oriented_rcnn_r50_fpn_1x_dota_le90-6d2b2ce0.pth
 ENV MODEL_VERSION=mmrotate-oriented-rcnn-dota
 
-ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu132
-ARG TORCH_VERSION=
-ARG TORCHVISION_VERSION=
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
+ARG TORCH_VERSION=2.7.1
+ARG TORCHVISION_VERSION=0.22.1
+ARG TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;12.0+PTX"
 ARG MMENGINE_VERSION=0.10.5
 ARG MMDET_VERSION=3.1.0
 ARG MMROTATE_REF=dev-1.x
@@ -39,10 +41,10 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir --upgrade pip "setuptools<70" wheel
 
-# Install PyTorch with CUDA 12.8 support (Blackwell-compatible)
+# Install PyTorch for the selected CUDA wheel index.
 RUN pip install --no-cache-dir \
-    torch \
-    torchvision \
+    "torch==${TORCH_VERSION}" \
+    "torchvision==${TORCHVISION_VERSION}" \
     --index-url ${TORCH_INDEX_URL} \
     --extra-index-url https://pypi.org/simple \
     && pip uninstall -y nvidia-cudnn-cu12
@@ -50,7 +52,7 @@ RUN pip install --no-cache-dir \
 COPY requirements.txt .
 RUN pip install --no-cache-dir --timeout 1000 --retries 10 -r requirements.txt
 
-ENV TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0+PTX"
+ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}
 ENV MMCV_WITH_OPS=1
 ENV FORCE_CUDA="1"
 ENV NVIDIA_VISIBLE_DEVICES=all

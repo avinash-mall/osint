@@ -50,10 +50,40 @@ SAM2_CHECKPOINT = str(DEFAULT_MODEL_DIR / config_info["ckpt"])
 SAM2_CHECKPOINT_URL = config_info["url"]
 
 MODEL_VERSION = os.getenv("MODEL_VERSION", f"sam2.1-hiera-{SAM2_MODEL_SIZE}")
+GPU_MODEL = os.getenv("GPU_MODEL", "unknown")
+SAM2_GPU_PROFILE = os.getenv("SAM2_GPU_PROFILE", "unknown")
 
 mask_generator = None
 model_lock = threading.Lock()
 model_error: str | None = None
+
+def _cuda_unsupported_arch_policy() -> str:
+    policy = os.getenv("CUDA_UNSUPPORTED_ARCH_POLICY", "cpu").strip().lower()
+    return policy if policy in {"cpu", "cuda"} else "cpu"
+
+
+def _auto_cuda_device(torch_module: Any) -> str | None:
+    supported_arches = set(torch_module.cuda.get_arch_list())
+    unsupported: list[str] = []
+    for index in range(torch_module.cuda.device_count()):
+        capability = torch_module.cuda.get_device_capability(index)
+        device_arch = f"sm_{capability[0]}{capability[1]}"
+        device_name = torch_module.cuda.get_device_name(index)
+        if not supported_arches or device_arch in supported_arches:
+            return f"cuda:{index}"
+        unsupported.append(f"cuda:{index} {device_name} {device_arch}")
+
+    if unsupported:
+        message = (
+            f"[INFERENCE-SAM2] No visible CUDA device has an arch in the torch build "
+            f"arch list ({sorted(supported_arches)}); unsupported devices: {unsupported}"
+        )
+        if _cuda_unsupported_arch_policy() == "cuda":
+            print(f"{message}; forcing cuda:0 by CUDA_UNSUPPORTED_ARCH_POLICY=cuda")
+            return "cuda:0"
+        print(f"{message}; falling back to CPU")
+    return None
+
 
 def normalize_device(value: str) -> str:
     requested = (value or "auto").strip().lower()
@@ -62,12 +92,41 @@ def normalize_device(value: str) -> str:
     try:
         import torch
         if torch.cuda.is_available():
-            return "cuda:0"
+            device = _auto_cuda_device(torch)
+            if device:
+                return device
     except Exception:
         pass
     return "cpu"
 
 DEVICE = normalize_device(os.getenv("DEVICE", "auto"))
+
+
+def torch_cuda_diagnostics() -> dict[str, Any]:
+    try:
+        import torch
+
+        diagnostics: dict[str, Any] = {
+            "torch_version": getattr(torch, "__version__", None),
+            "torch_cuda": getattr(torch.version, "cuda", None),
+            "cuda_available": torch.cuda.is_available(),
+            "cuda_device_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
+            "torch_cuda_arch_list": torch.cuda.get_arch_list() if hasattr(torch.cuda, "get_arch_list") else [],
+            "visible_devices": [],
+        }
+        if torch.cuda.is_available():
+            diagnostics["visible_devices"] = [
+                {
+                    "index": index,
+                    "name": torch.cuda.get_device_name(index),
+                    "capability": list(torch.cuda.get_device_capability(index)),
+                }
+                for index in range(torch.cuda.device_count())
+            ]
+        return diagnostics
+    except Exception as exc:
+        return {"error": str(exc)}
+
 
 def ensure_checkpoint() -> None:
     path = Path(SAM2_CHECKPOINT)
@@ -164,6 +223,9 @@ def run_inference(image_array: np.ndarray, image_size: tuple[int, int], metadata
         "config": SAM2_CONFIG,
         "task": "segmentation",
         "device": DEVICE,
+        "gpu_model": GPU_MODEL,
+        "gpu_profile": SAM2_GPU_PROFILE,
+        "cuda": torch_cuda_diagnostics(),
         "model_version": MODEL_VERSION
     }
 
@@ -207,5 +269,8 @@ def health() -> dict[str, Any]:
         "model_exists": Path(SAM2_CHECKPOINT).exists(),
         "config_path": SAM2_CONFIG,
         "device": DEVICE,
+        "gpu_model": GPU_MODEL,
+        "gpu_profile": SAM2_GPU_PROFILE,
+        "cuda": torch_cuda_diagnostics(),
         "model_version": MODEL_VERSION
     }

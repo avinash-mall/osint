@@ -75,6 +75,8 @@ def default_engine_path(model_path: str) -> str:
 
 MODEL_PATH = resolve_model_path()
 MODEL_TASK = os.getenv("MODEL_TASK") or ("obb" if "obb" in os.path.basename(MODEL_PATH).lower() else "detect")
+GPU_MODEL = os.getenv("GPU_MODEL", "unknown")
+INFERENCE_GPU_PROFILE = os.getenv("INFERENCE_GPU_PROFILE", "unknown")
 DETECTION_POLICY = active_detection_policy()
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", str(DETECTION_POLICY["global_confidence_floor"])))
 NMS_IOU_THRESHOLD = float(os.getenv("NMS_IOU_THRESHOLD", "0.5"))
@@ -178,6 +180,11 @@ def normalize_device_list(value: str) -> list[str]:
     return devices or ["cpu"]
 
 
+def cuda_unsupported_arch_policy() -> str:
+    policy = os.getenv("CUDA_UNSUPPORTED_ARCH_POLICY", "cpu").strip().lower()
+    return policy if policy in {"cpu", "cuda"} else "cpu"
+
+
 def resolve_devices() -> list[str]:
     requested = os.getenv("DEVICE", "auto").strip()
     if requested and requested.lower() != "auto":
@@ -192,10 +199,33 @@ def resolve_devices() -> list[str]:
 
     cuda_version = getattr(torch.version, "cuda", None)
     if torch.cuda.is_available():
-        devices = [f"cuda:{index}" for index in range(torch.cuda.device_count())]
-        names = [torch.cuda.get_device_name(index) for index in range(torch.cuda.device_count())]
-        print(f"[INFERENCE] Using CUDA devices {', '.join(devices)}: {', '.join(names)} (torch CUDA {cuda_version})")
-        return devices
+        supported_arches = set(torch.cuda.get_arch_list())
+        devices = []
+        unsupported = []
+        for index in range(torch.cuda.device_count()):
+            capability = torch.cuda.get_device_capability(index)
+            device_arch = f"sm_{capability[0]}{capability[1]}"
+            name = torch.cuda.get_device_name(index)
+            if not supported_arches or device_arch in supported_arches:
+                devices.append(f"cuda:{index}")
+            else:
+                unsupported.append(f"cuda:{index} {name} {device_arch}")
+        if devices:
+            names = [torch.cuda.get_device_name(int(device.split(":")[1])) for device in devices]
+            print(f"[INFERENCE] Using CUDA devices {', '.join(devices)}: {', '.join(names)} (torch CUDA {cuda_version})")
+            return devices
+        if unsupported and cuda_unsupported_arch_policy() == "cuda":
+            devices = [f"cuda:{index}" for index in range(torch.cuda.device_count())]
+            print(
+                f"[INFERENCE] No visible CUDA device has an arch in the torch build arch list "
+                f"({sorted(supported_arches)}); forcing CUDA devices by CUDA_UNSUPPORTED_ARCH_POLICY=cuda"
+            )
+            return devices
+        print(
+            f"[INFERENCE] No visible CUDA device has an arch in the torch build arch list "
+            f"({sorted(supported_arches)}); unsupported devices: {unsupported}; using CPU"
+        )
+        return ["cpu"]
 
     print(
         "[INFERENCE] WARNING: PyTorch reports CUDA is unavailable; using CPU. "
@@ -629,6 +659,8 @@ def yolo_response(
         "model": entry.get("model_path") or MODEL_PATH,
         "task": MODEL_TASK,
         "device": entry["device"],
+        "gpu_model": GPU_MODEL,
+        "gpu_profile": INFERENCE_GPU_PROFILE,
         "runtime": entry.get("runtime"),
         "batch_size": batch_size,
         "model_version": DETECTION_POLICY["model_version"],
@@ -755,7 +787,20 @@ class YoloInferenceBatcher:
         self.last_batch_size = 0
         self.last_batch_ms = None
 
-    async def submit(self, image: Image.Image, image_array: np.ndarray, image_size: tuple[int, int], metadata: Optional[dict]) -> dict[str, Any]:
+    async def submit(
+        self,
+        image: Image.Image,
+        image_array: np.ndarray | dict | None = None,
+        image_size: tuple[int, int] | None = None,
+        metadata: Optional[dict] = None,
+    ) -> dict[str, Any]:
+        if isinstance(image_array, dict) and image_size is None and metadata is None:
+            metadata = image_array
+            image_array = None
+        if image_array is None:
+            image_array = np.array(image)
+        if image_size is None:
+            image_size = image.size
         loop = asyncio.get_running_loop()
         future = loop.create_future()
         item = {
@@ -893,6 +938,7 @@ def torch_info() -> dict[str, Any]:
                     list(torch.cuda.get_device_capability(index))
                     for index in range(torch.cuda.device_count())
                 ],
+                "arch_list": torch.cuda.get_arch_list(),
             }
     except Exception as exc:
         info["error"] = str(exc)
@@ -928,6 +974,8 @@ def health():
         "model_exists": os.path.exists(active_model_path) if active_model_path else False,
         "device": DEVICE,
         "devices": DEVICES,
+        "gpu_model": GPU_MODEL,
+        "gpu_profile": INFERENCE_GPU_PROFILE,
         "cpu_threads": CPU_THREADS,
         "model_replicas": len(detection_models),
         "replicas": replicas,

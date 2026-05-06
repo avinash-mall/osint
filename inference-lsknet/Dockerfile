@@ -1,4 +1,5 @@
-FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
+ARG CUDA_VERSION=12.8.1
+FROM nvidia/cuda:${CUDA_VERSION}-cudnn-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -10,7 +11,8 @@ ENV LSKNET_CHECKPOINT=/models/lsk_s_fpn_1x_dota_le90_20230116-99749191.pth
 ENV MODEL_VERSION=lsknet-s-dota
 
 # GPU Compilation constraints
-ENV TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0+PTX"
+ARG TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;12.0+PTX"
+ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}
 ENV MMCV_WITH_OPS=1
 ENV FORCE_CUDA="1"
 ENV NVIDIA_VISIBLE_DEVICES=all
@@ -47,8 +49,15 @@ WORKDIR /app
 RUN pip install --no-cache-dir --upgrade pip "setuptools<70" wheel
 
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
+ARG TORCH_VERSION=2.7.1
+ARG TORCHVISION_VERSION=0.22.1
+ARG TORCHAUDIO_VERSION=2.7.1
 # Install PyTorch for specified CUDA version
-RUN pip install --no-cache-dir torch torchvision torchaudio --index-url ${TORCH_INDEX_URL} \
+RUN pip install --no-cache-dir \
+    "torch==${TORCH_VERSION}" \
+    "torchvision==${TORCHVISION_VERSION}" \
+    "torchaudio==${TORCHAUDIO_VERSION}" \
+    --index-url ${TORCH_INDEX_URL} \
     --extra-index-url https://pypi.org/simple \
     && pip uninstall -y nvidia-cudnn-cu12
 
@@ -67,6 +76,8 @@ RUN pip install --no-cache-dir "numpy<2" cython ninja \
 # Clone LSKNet and install it
 RUN git clone --depth 1 https://github.com/zcablii/LSKNet.git /opt/lsknet \
     && cd /opt/lsknet \
+    && sed -i 's/torch.arange(num_classes, dtype=torch.long)/torch.arange(num_classes, dtype=torch.long, device=scores.device)/' \
+        mmrotate/core/post_processing/bbox_nms_rotated.py \
     && pip install -v -e . \
     && pip install --no-cache-dir "numpy<2" "opencv-python<4.12" "opencv-python-headless<4.12"
 

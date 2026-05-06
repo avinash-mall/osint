@@ -1,4 +1,5 @@
-FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
+ARG CUDA_VERSION=12.8.1
+FROM nvidia/cuda:${CUDA_VERSION}-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -6,6 +7,8 @@ ENV PYTHONUNBUFFERED=1
 ENV DEVICE=auto
 ENV TRANSFORMERS_OFFLINE=1
 ENV HF_HUB_OFFLINE=1
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
 ARG GROUNDING_DINO_MODEL_ID=IDEA-Research/grounding-dino-base
 
@@ -24,8 +27,11 @@ RUN sed -i 's/archive.ubuntu.com/azure.archive.ubuntu.com/g' /etc/apt/sources.li
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
+ARG TORCH_VERSION=2.7.1
+ARG TORCHVISION_VERSION=0.22.1
 RUN pip install --no-cache-dir \
-        torch torchvision \
+        "torch==${TORCH_VERSION}" \
+        "torchvision==${TORCHVISION_VERSION}" \
         --index-url ${TORCH_INDEX_URL} \
         --extra-index-url https://pypi.org/simple
 

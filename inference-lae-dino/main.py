@@ -42,6 +42,8 @@ DETECTION_POLICY = active_detection_policy()
 CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.25"))
 MAX_DETECTIONS_PER_CHIP = int(os.getenv("MAX_DETECTIONS_PER_CHIP", "300"))
 MODEL_VERSION = os.getenv("MODEL_VERSION", "grounding-dino-base")
+GPU_MODEL = os.getenv("GPU_MODEL", "unknown")
+LAE_DINO_GPU_PROFILE = os.getenv("LAE_DINO_GPU_PROFILE", "unknown")
 
 # Mixed precision auto-tune. "auto" probes CUDA dtypes in preference order
 # and keeps the first one that works for the installed GPU/PyTorch stack.
@@ -81,6 +83,11 @@ def normalize_device_list(value: str) -> List[str]:
     return devices or ["cpu"]
 
 
+def cuda_unsupported_arch_policy() -> str:
+    policy = os.getenv("CUDA_UNSUPPORTED_ARCH_POLICY", "cpu").strip().lower()
+    return policy if policy in {"cpu", "cuda"} else "cpu"
+
+
 def resolve_devices() -> List[str]:
     requested = os.getenv("DEVICE", "auto").strip()
     if requested and requested.lower() != "auto":
@@ -95,13 +102,36 @@ def resolve_devices() -> List[str]:
 
     cuda_version = getattr(torch.version, "cuda", None)
     if torch.cuda.is_available():
-        devices = [f"cuda:{i}" for i in range(torch.cuda.device_count())]
-        names = [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())]
+        supported_arches = set(torch.cuda.get_arch_list())
+        devices = []
+        unsupported = []
+        for index in range(torch.cuda.device_count()):
+            capability = torch.cuda.get_device_capability(index)
+            device_arch = f"sm_{capability[0]}{capability[1]}"
+            name = torch.cuda.get_device_name(index)
+            if not supported_arches or device_arch in supported_arches:
+                devices.append(f"cuda:{index}")
+            else:
+                unsupported.append(f"cuda:{index} {name} {device_arch}")
+        if devices:
+            names = [torch.cuda.get_device_name(int(device.split(":")[1])) for device in devices]
+            print(
+                f"[INFERENCE-LAE] Using CUDA devices {', '.join(devices)}: "
+                f"{', '.join(names)} (torch CUDA {cuda_version})"
+            )
+            return devices
+        if unsupported and cuda_unsupported_arch_policy() == "cuda":
+            devices = [f"cuda:{index}" for index in range(torch.cuda.device_count())]
+            print(
+                f"[INFERENCE-LAE] No visible CUDA device has an arch in the torch build arch list "
+                f"({sorted(supported_arches)}); forcing CUDA devices by CUDA_UNSUPPORTED_ARCH_POLICY=cuda"
+            )
+            return devices
         print(
-            f"[INFERENCE-LAE] Using CUDA devices {', '.join(devices)}: "
-            f"{', '.join(names)} (torch CUDA {cuda_version})"
+            f"[INFERENCE-LAE] No visible CUDA device has an arch in the torch build arch list "
+            f"({sorted(supported_arches)}); unsupported devices: {unsupported}; using CPU"
         )
-        return devices
+        return ["cpu"]
 
     print(
         "[INFERENCE-LAE] WARNING: CUDA unavailable; using CPU. "
@@ -964,6 +994,7 @@ def health():
                     list(torch.cuda.get_device_capability(i))
                     for i in range(torch.cuda.device_count())
                 ],
+                "arch_list": torch.cuda.get_arch_list(),
             }
     except Exception as exc:
         torch_info["error"] = str(exc)
@@ -980,6 +1011,8 @@ def health():
         "transformers_version": transformers_version,
         "device": DEVICE,
         "devices": DEVICES,
+        "gpu_model": GPU_MODEL,
+        "gpu_profile": LAE_DINO_GPU_PROFILE,
         "cpu_threads": CPU_THREADS,
         "model_replicas": len(detection_models),
         "replicas": replicas,
