@@ -82,7 +82,7 @@ def main() -> None:
         f"model={args.model} engine={args.engine} precision={args.precision} "
         f"imgsz={args.imgsz} batch={args.batch} dynamic={not args.static}"
     )
-    exported = Path(YOLO(str(args.model)).export(**export_kwargs))
+    exported = Path(YOLO(str(args.model), task="obb").export(**export_kwargs))
     if exported.resolve() != args.engine.resolve():
         shutil.move(str(exported), str(args.engine))
     metadata_path = Path(f"{args.engine}.json")
@@ -91,6 +91,7 @@ def main() -> None:
             {
                 "model": str(args.model),
                 "engine": str(args.engine),
+                "task": "obb",
                 "precision": args.precision,
                 "imgsz": args.imgsz,
                 "batch": args.batch,

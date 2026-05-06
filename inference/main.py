@@ -92,7 +92,7 @@ def artifact_problem(path: str) -> str | None:
 
 
 MODEL_PATH = resolve_model_path()
-MODEL_TASK = os.getenv("MODEL_TASK") or ("obb" if "obb" in os.path.basename(MODEL_PATH).lower() else "detect")
+MODEL_TASK = "obb"
 GPU_MODEL = os.getenv("GPU_MODEL", "unknown")
 INFERENCE_GPU_PROFILE = os.getenv("INFERENCE_GPU_PROFILE", "unknown")
 DETECTION_POLICY = active_detection_policy()
@@ -337,6 +337,7 @@ def engine_metadata_matches_current_gpu(device: str) -> bool:
     return (
         str(YOLO_ENGINE_METADATA.get("model")) == str(MODEL_PATH)
         and str(YOLO_ENGINE_METADATA.get("engine")) == str(YOLO_ENGINE_PATH)
+        and str(YOLO_ENGINE_METADATA.get("task")) == MODEL_TASK
         and str(YOLO_ENGINE_METADATA.get("precision")) == YOLO_TRT_PRECISION
         and int(YOLO_ENGINE_METADATA.get("imgsz") or 0) == YOLO_IMGSZ
         and bool(YOLO_ENGINE_METADATA.get("dynamic", True))
@@ -348,6 +349,7 @@ def write_engine_metadata(batch: int, device: str) -> None:
     metadata = {
         "model": MODEL_PATH,
         "engine": YOLO_ENGINE_PATH,
+        "task": MODEL_TASK,
         "precision": YOLO_TRT_PRECISION,
         "imgsz": YOLO_IMGSZ,
         "batch": batch,
@@ -413,7 +415,7 @@ def maybe_auto_export_yolo_engine(device: str) -> None:
                 f"batch={batch}, imgsz={YOLO_IMGSZ}, precision={YOLO_TRT_PRECISION}"
             )
             started = time.time()
-            exported = YOLO(MODEL_PATH).export(**export_kwargs)
+            exported = YOLO(MODEL_PATH, task=MODEL_TASK).export(**export_kwargs)
             exported_path = os.fspath(exported)
             if os.path.abspath(exported_path) != os.path.abspath(YOLO_ENGINE_PATH):
                 shutil.move(exported_path, YOLO_ENGINE_PATH)
@@ -440,7 +442,15 @@ def yolo_runtime_candidates() -> list[tuple[str, str]]:
         print(f"[INFERENCE] WARNING: unsupported YOLO_RUNTIME={runtime}; using auto.")
         runtime = "auto"
     if runtime in {"auto", "tensorrt"}:
-        candidates.append(("tensorrt", YOLO_ENGINE_PATH))
+        engine_task = YOLO_ENGINE_METADATA.get("task")
+        if engine_task == MODEL_TASK:
+            candidates.append(("tensorrt", YOLO_ENGINE_PATH))
+        elif os.path.exists(YOLO_ENGINE_PATH):
+            print(
+                f"[INFERENCE] WARNING: skipping TensorRT engine {YOLO_ENGINE_PATH}; "
+                f"metadata task is {engine_task!r}, expected {MODEL_TASK!r}. "
+                "Re-export the engine with the current OBB exporter."
+            )
     if runtime in {"auto", "pytorch", "tensorrt"}:
         candidates.append(("pytorch", MODEL_PATH))
     return candidates
@@ -471,7 +481,7 @@ def load_yolo_model(device: str) -> dict[str, Any]:
             errors.append(f"{runtime} path missing: {path}")
             continue
         try:
-            model = YOLO(path)
+            model = YOLO(path, task=MODEL_TASK)
             if runtime == "pytorch":
                 try:
                     model.to(device)
