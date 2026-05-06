@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -10,6 +11,20 @@ from pathlib import Path
 
 DEFAULT_MODEL_PATH = Path(os.getenv("MODEL_PATH") or os.getenv("TRAINED_MODEL_PATH") or "/app/models/geoint_yolov8_obb.pt")
 DEFAULT_ENGINE_PATH = Path(os.getenv("YOLO_ENGINE_PATH") or DEFAULT_MODEL_PATH.with_suffix(".engine"))
+
+
+def file_signature(path: Path) -> dict:
+    stat = path.stat()
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {
+        "exists": True,
+        "size_bytes": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "sha256": digest.hexdigest(),
+    }
 
 
 def gpu_signature() -> dict:
@@ -92,6 +107,7 @@ def main() -> None:
                 "model": str(args.model),
                 "engine": str(args.engine),
                 "task": "obb",
+                "model_signature": file_signature(args.model),
                 "precision": args.precision,
                 "imgsz": args.imgsz,
                 "batch": args.batch,

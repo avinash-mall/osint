@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import io
 import json
 import os
@@ -91,8 +92,25 @@ def artifact_problem(path: str) -> str | None:
     return None
 
 
+def file_signature(path: str) -> dict[str, Any]:
+    if not path or not os.path.exists(path):
+        return {"exists": False}
+    stat = os.stat(path)
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {
+        "exists": True,
+        "size_bytes": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+        "sha256": digest.hexdigest(),
+    }
+
+
 MODEL_PATH = resolve_model_path()
 MODEL_TASK = "obb"
+MODEL_SIGNATURE = file_signature(MODEL_PATH)
 GPU_MODEL = os.getenv("GPU_MODEL", "unknown")
 INFERENCE_GPU_PROFILE = os.getenv("INFERENCE_GPU_PROFILE", "unknown")
 DETECTION_POLICY = active_detection_policy()
@@ -338,6 +356,7 @@ def engine_metadata_matches_current_gpu(device: str) -> bool:
         str(YOLO_ENGINE_METADATA.get("model")) == str(MODEL_PATH)
         and str(YOLO_ENGINE_METADATA.get("engine")) == str(YOLO_ENGINE_PATH)
         and str(YOLO_ENGINE_METADATA.get("task")) == MODEL_TASK
+        and YOLO_ENGINE_METADATA.get("model_signature") == MODEL_SIGNATURE
         and str(YOLO_ENGINE_METADATA.get("precision")) == YOLO_TRT_PRECISION
         and int(YOLO_ENGINE_METADATA.get("imgsz") or 0) == YOLO_IMGSZ
         and bool(YOLO_ENGINE_METADATA.get("dynamic", True))
@@ -350,6 +369,7 @@ def write_engine_metadata(batch: int, device: str) -> None:
         "model": MODEL_PATH,
         "engine": YOLO_ENGINE_PATH,
         "task": MODEL_TASK,
+        "model_signature": MODEL_SIGNATURE,
         "precision": YOLO_TRT_PRECISION,
         "imgsz": YOLO_IMGSZ,
         "batch": batch,
@@ -679,11 +699,56 @@ def detections_from_yolo_result(result, names: dict[int, str], image_size: tuple
     return detections
 
 
+def yolo_result_diagnostics(result, names: dict[int, str], detections: list[dict[str, Any]]) -> dict[str, Any]:
+    obb = getattr(result, "obb", None)
+    if obb is not None and getattr(obb, "xyxyxyxy", None) is not None:
+        classes = obb.cls.cpu().numpy() if obb.cls is not None else []
+        confidences = obb.conf.cpu().numpy() if obb.conf is not None else []
+        raw_classes = [
+            {
+                "class_id": int(cls_id),
+                "class_name": names.get(int(cls_id), f"class_{int(cls_id)}"),
+                "confidence": float(confidences[index]) if len(confidences) > index else 0.0,
+            }
+            for index, cls_id in enumerate(classes)
+        ]
+        return {
+            "result_type": "obb",
+            "raw_detections": len(raw_classes),
+            "filtered_detections": len(detections),
+            "raw_classes": raw_classes[:20],
+        }
+
+    boxes = getattr(result, "boxes", None)
+    if boxes is None:
+        return {
+            "result_type": "none",
+            "raw_detections": 0,
+            "filtered_detections": len(detections),
+            "raw_classes": [],
+        }
+    raw_classes = []
+    for box in boxes:
+        cls_id = int(box.cls[0])
+        raw_classes.append({
+            "class_id": cls_id,
+            "class_name": names.get(cls_id, f"class_{cls_id}"),
+            "confidence": float(box.conf[0]),
+        })
+    return {
+        "result_type": "boxes",
+        "raw_detections": len(raw_classes),
+        "filtered_detections": len(detections),
+        "raw_classes": raw_classes[:20],
+    }
+
+
 def yolo_response(
     start_time: float,
     detections: list[dict[str, Any]],
     entry: dict[str, Any],
     batch_size: int = 1,
+    diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "status": "success",
@@ -700,6 +765,7 @@ def yolo_response(
         "taxonomy_version": DETECTION_POLICY["taxonomy_version"],
         "threshold_profile": DETECTION_POLICY["threshold_profile"],
         "global_confidence_floor": CONFIDENCE_THRESHOLD,
+        "inference_diagnostics": diagnostics or {},
     }
 
 
@@ -787,15 +853,17 @@ def run_yolo_batch(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         raise HTTPException(status_code=500, detail=f"YOLO inference failed: {exc}") from exc
 
     names = _model_names(model)
-    return [
-        yolo_response(
+    responses = []
+    for item, result in zip(items, results):
+        detections = detections_from_yolo_result(result, names, item["image_size"])
+        responses.append(yolo_response(
             item["start_time"],
-            detections_from_yolo_result(result, names, item["image_size"]),
+            detections,
             entry,
             batch_size=len(items),
-        )
-        for item, result in zip(items, results)
-    ]
+            diagnostics=yolo_result_diagnostics(result, names, detections),
+        ))
+    return responses
 
 
 def run_inference(image: Image.Image, image_array: np.ndarray, image_size: tuple[int, int], metadata: dict | None = None):
@@ -980,6 +1048,7 @@ def torch_info() -> dict[str, Any]:
 
 @app.get("/health")
 def health():
+    model_names = _model_names(detection_models[0]["model"]) if detection_models else {}
     replicas = [
         {
             "device": entry["device"],
@@ -1004,6 +1073,9 @@ def health():
         "engine_metadata_exists": os.path.exists(YOLO_ENGINE_METADATA_PATH),
         "engine_metadata": YOLO_ENGINE_METADATA,
         "model_task": MODEL_TASK,
+        "model_signature": MODEL_SIGNATURE,
+        "model_names_count": len(model_names),
+        "model_names": model_names,
         "model_exists": os.path.exists(active_model_path) if active_model_path else False,
         "device": DEVICE,
         "devices": DEVICES,

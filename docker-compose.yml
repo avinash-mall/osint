@@ -154,7 +154,7 @@ services:
       - DEVICE=${INFERENCE_DEVICE:-auto}
       - CUDA_UNSUPPORTED_ARCH_POLICY=${CUDA_UNSUPPORTED_ARCH_POLICY:-cpu}
       - TRAINED_MODEL_PATH=/app/models/geoint_yolov8_obb.pt
-      - YOLO_RUNTIME=auto
+      - YOLO_RUNTIME=${YOLO_RUNTIME:-auto}
       - YOLO_ENGINE_PATH=/app/models/geoint_yolov8_obb.engine
       - YOLO_TRT_PRECISION=fp16
       - YOLO_IMGSZ=1024
