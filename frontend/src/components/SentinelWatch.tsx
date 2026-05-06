@@ -3,7 +3,7 @@ import axios from 'axios';
 import { AlertTriangle, CheckCircle2, Clock3, Crosshair, RadioTower, Send, Target } from 'lucide-react';
 import { useEventStream } from '../hooks/useEventStream';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8080';
+const API_URL = import.meta.env.VITE_API_URL || '';
 
 export default function SentinelWatch() {
   const [summary, setSummary] = useState<any>(null);

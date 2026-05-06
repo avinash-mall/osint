@@ -1158,7 +1158,7 @@ def fmv_public_url(hls_path: Optional[str], file_path: str) -> str:
     fmv_root = Path(os.getenv("FMV_PATH", "/data/fmv"))
     try:
         rel = Path(path).resolve().relative_to(fmv_root.resolve())
-        return f"http://localhost:8090/fmv/{rel.as_posix()}"
+        return f"/fmv/{rel.as_posix()}"
     except Exception:
         return path
 
@@ -2476,7 +2476,7 @@ def list_models():
             ORDER BY promoted DESC, created_at DESC
         """)
         models = [dict(row) for row in cursor.fetchall()]
-    return {"models": models, "inference": {"url": os.getenv("INFERENCE_URL", "http://inference:8001")}}
+    return {"models": models, "inference": {"url": "/inference/main"}}
 
 
 @app.get("/api/models/datasets")
@@ -2696,7 +2696,7 @@ def get_imagery_tiles(pass_id: int):
         if not row:
             raise HTTPException(status_code=404, detail="Satellite pass not found")
         
-        titiler_url = os.getenv("TITILER_URL", "http://localhost:8081")
+        titiler_url = os.getenv("PUBLIC_TITILER_URL", "/tiles")
         tile_url = f"{titiler_url}/cog/tiles/{{z}}/{{x}}/{{y}}?url={row['file_path']}"
         return {"pass_id": pass_id, "tile_url": tile_url, "file_path": row["file_path"]}
 

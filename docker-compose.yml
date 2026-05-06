@@ -94,7 +94,7 @@ services:
     depends_on:
       - backend
     environment:
-      - VITE_API_URL=/api
+      - VITE_API_URL=
       - VITE_TITILER_URL=/tiles
       - VITE_TILE_PROXY_URL=/tiles
       - VITE_MARTIN_URL=/maps
@@ -376,6 +376,8 @@ services:
       redis:
         condition: service_started
       inference:
+        condition: service_started
+      inference-lae-dino:
         condition: service_started
       inference-mmrotate:
         condition: service_started

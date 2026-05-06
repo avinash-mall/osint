@@ -27,7 +27,7 @@ import SentinelWatch from './components/SentinelWatch';
 import TargetWorkbench from './components/TargetWorkbench';
 import View3D from './components/View3D';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8080';
+const API_URL = import.meta.env.VITE_API_URL || '';
 
 type WorkspaceKey =
   | 'dashboard'

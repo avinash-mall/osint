@@ -62,8 +62,8 @@ import {
   type DetectionCategoryId,
 } from '../utils/detectionTaxonomy';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8080';
-const TILE_PROXY_URL = import.meta.env.VITE_TILE_PROXY_URL || 'http://127.0.0.1:8090';
+const API_URL = import.meta.env.VITE_API_URL || '';
+const TILE_PROXY_URL = import.meta.env.VITE_TILE_PROXY_URL || '/tiles';
 const DETECTION_CENTER_MARKER_LIMIT = 800;
 const CanvasGeoJSON = GeoJSON as any;
 
