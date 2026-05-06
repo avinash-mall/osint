@@ -1,9 +1,6 @@
 services:
   neo4j:
     image: neo4j:5.20.0
-    ports:
-      - "7474:7474"
-      - "7687:7687"
     environment:
       - NEO4J_AUTH=neo4j/password
       - NEO4J_PLUGINS=["apoc"]
@@ -18,8 +15,6 @@ services:
 
   postgis:
     image: postgis/postgis:16-3.4
-    ports:
-      - "5432:5432"
     environment:
       - POSTGRES_USER=gotham
       - POSTGRES_PASSWORD=gotham
@@ -42,8 +37,6 @@ services:
       nofile:
         soft: 65536
         hard: 65536
-    ports:
-      - "8080:8080"
     environment:
       - NEO4J_URI=bolt://neo4j:7687
       - NEO4J_USERNAME=neo4j
@@ -98,15 +91,13 @@ services:
   frontend:
     build: ./frontend
     image: sentinelos-frontend:latest
-    ports:
-      - "3000:3000"
     depends_on:
       - backend
     environment:
-      - VITE_API_URL=http://localhost:8080
-      - VITE_TITILER_URL=http://localhost:8081
-      - VITE_TILE_PROXY_URL=http://localhost:8090
-      - VITE_MARTIN_URL=http://localhost:3001
+      - VITE_API_URL=/api
+      - VITE_TITILER_URL=/tiles
+      - VITE_TILE_PROXY_URL=/tiles
+      - VITE_MARTIN_URL=/maps
     healthcheck:
       test: ["CMD-SHELL", "nc -z 127.0.0.1 3000 || exit 1"]
       interval: 10s
@@ -115,8 +106,6 @@ services:
 
   titiler:
     image: developmentseed/titiler:latest
-    ports:
-      - "8081:8080"
     volumes:
       - imagery_data:/data/imagery:ro
     environment:
@@ -130,8 +119,6 @@ services:
 
   martin:
     image: maplibre/martin:latest
-    ports:
-      - "3001:3000"
     restart: on-failure
     environment:
       - DATABASE_URL=postgresql://gotham:gotham@postgis:5432/gotham
@@ -155,8 +142,6 @@ services:
         INSTALL_TENSORRT: "true"
         TENSORRT_VERSION: ${TENSORRT_VERSION:-10.16.1.11}
     image: sentinelos-inference:gpu
-    ports:
-      - "8002:8001"
     gpus: all
     environment:
       - GPU_MODEL=${GPU_MODEL:-unknown}
@@ -199,8 +184,6 @@ services:
         TORCH_VERSION: ${LAE_DINO_TORCH_VERSION:-2.7.1}
         TORCHVISION_VERSION: ${LAE_DINO_TORCHVISION_VERSION:-0.22.1}
     image: sentinelos-inference-lae-dino:gpu
-    ports:
-      - "8004:8001"
     gpus: all
     environment:
       - GPU_MODEL=${GPU_MODEL:-unknown}
@@ -247,8 +230,6 @@ services:
         TORCHVISION_VERSION: ${MMROTATE_TORCHVISION_VERSION:-0.22.1}
         TORCH_CUDA_ARCH_LIST: ${MMROTATE_TORCH_CUDA_ARCH_LIST:-8.0;8.6;8.9;9.0;12.0+PTX}
     image: sentinelos-inference-mmrotate:gpu
-    ports:
-      - "8005:8001"
     gpus: all
     environment:
       GPU_MODEL: ${GPU_MODEL:-unknown}
@@ -287,8 +268,6 @@ services:
         TORCHAUDIO_VERSION: ${LSKNET_TORCHAUDIO_VERSION:-2.7.1}
         TORCH_CUDA_ARCH_LIST: ${LSKNET_TORCH_CUDA_ARCH_LIST:-8.0;8.6;8.9;9.0;12.0+PTX}
     image: sentinelos-inference-lsknet:gpu
-    ports:
-      - "8006:8001"
     gpus: all
     environment:
       GPU_MODEL: ${GPU_MODEL:-unknown}
@@ -324,8 +303,6 @@ services:
         TORCHAUDIO_VERSION: ${SAM2_TORCHAUDIO_VERSION:-2.7.1}
         TORCH_CUDA_ARCH_LIST: ${SAM2_TORCH_CUDA_ARCH_LIST:-8.0;8.6;8.9;9.0;12.0+PTX}
     image: sentinelos-inference-sam2:gpu
-    ports:
-      - "8007:8001"
     gpus: all
     environment:
       GPU_MODEL: ${GPU_MODEL:-unknown}
@@ -349,8 +326,6 @@ services:
 
   redis:
     image: redis:alpine
-    ports:
-      - "6379:6379"
     healthcheck:
       test: ["CMD-SHELL", "redis-cli ping | grep PONG || exit 1"]
       interval: 10s
@@ -422,7 +397,7 @@ services:
   nginx:
     image: nginx:alpine
     ports:
-      - "8090:80"
+      - "3000:80"
     volumes:
       - ./nginx/tile-proxy.conf:/etc/nginx/conf.d/default.conf
       - fmv_data:/data/fmv:ro
