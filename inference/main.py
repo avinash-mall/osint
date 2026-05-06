@@ -73,6 +73,24 @@ def default_engine_path(model_path: str) -> str:
     return f"{stem}.engine"
 
 
+def artifact_problem(path: str) -> str | None:
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(256)
+    except OSError as exc:
+        return f"could not read {path}: {exc}"
+    if head.startswith(b"version https://git-lfs.github.com/spec/v1"):
+        return (
+            f"{path} is a Git LFS pointer, not a model checkpoint. "
+            "Run `git lfs install && git lfs pull` on the host or copy the real .pt artifact."
+        )
+    if len(head) < 16:
+        return f"{path} is too small to be a valid model checkpoint."
+    return None
+
+
 MODEL_PATH = resolve_model_path()
 MODEL_TASK = os.getenv("MODEL_TASK") or ("obb" if "obb" in os.path.basename(MODEL_PATH).lower() else "detect")
 GPU_MODEL = os.getenv("GPU_MODEL", "unknown")
@@ -510,6 +528,11 @@ def load_model():
     if not os.path.exists(MODEL_PATH) and not os.path.exists(YOLO_ENGINE_PATH):
         print(f"[INFERENCE] WARNING: Model file does not exist: {MODEL_PATH}; engine file does not exist: {YOLO_ENGINE_PATH}")
         return
+    model_problem = artifact_problem(MODEL_PATH)
+    if model_problem:
+        print(f"[INFERENCE] WARNING: {model_problem}")
+        if not os.path.exists(YOLO_ENGINE_PATH):
+            return
 
     loaded = []
     for device in DEVICES:
