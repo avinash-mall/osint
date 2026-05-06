@@ -3285,7 +3285,7 @@ def upload_imagery(
     sensor_type: str = Form("Optical"),
     acquisition_time: Optional[str] = Form(None),
     auto_process: bool = Form(True),
-    inference_providers: str = Form("lae-dino"),
+    inference_providers: str = Form("yolo"),
 ):
     ensure_platform_tables()
     filename = safe_filename(file.filename or "upload.tif")

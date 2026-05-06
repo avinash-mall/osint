@@ -759,6 +759,7 @@ def slice_and_infer(
         step = grid["step"]
         total_windows = grid["planned_total"]
         processed_windows = 0
+        failed_windows = 0
         last_reported_percent = None
         coverage_fraction = round(total_windows / max(1, grid["source_total"]), 4)
         inference_summary = {
@@ -929,44 +930,59 @@ def slice_and_infer(
                 det["dedupe_method"] = "obb_nms"
                 detections.append(det)
 
+        def _report_inference_progress() -> None:
+            nonlocal last_reported_percent
+            if not progress_callback:
+                return
+            inferred_percent = int(processed_windows / total_windows * 100)
+            if (
+                processed_windows == 1
+                or processed_windows == total_windows
+                or last_reported_percent is None
+                or inferred_percent > last_reported_percent
+            ):
+                last_reported_percent = inferred_percent
+                progress_callback(
+                    "inference",
+                    55 + int(inferred_percent * 0.35),
+                    f"Running inference on raster chips ({processed_windows}/{total_windows}).",
+                    {
+                        "processed_chips": processed_windows,
+                        "failed_chips": failed_windows,
+                        "total_chips": total_windows,
+                        "planned_chips": total_windows,
+                        "source_total_chips": grid["source_total"],
+                        "sampling_enabled": grid["sampled"],
+                        "coverage_fraction": coverage_fraction,
+                    },
+                )
+
         def _consume_one(fut: concurrent.futures.Future) -> None:
-            nonlocal processed_windows, last_reported_percent
+            nonlocal processed_windows, failed_windows
             ctx = pending.pop(fut)
             try:
                 provider_responses = fut.result()
             except Exception as exc:
-                raise RuntimeError(
-                    f"Inference failed for chip pass={pass_id} x={ctx['x']} y={ctx['y']}: {exc}"
-                ) from exc
-            if not provider_responses:
-                raise RuntimeError(
-                    f"All providers failed for chip pass={pass_id} x={ctx['x']} y={ctx['y']}: "
-                    f"{selected_providers}"
+                failed_windows += 1
+                processed_windows += 1
+                logger.warning(
+                    "[WORKER] Inference failed for chip pass=%s x=%s y=%s: %s",
+                    pass_id, ctx["x"], ctx["y"], exc,
                 )
+                _report_inference_progress()
+                return
+            if not provider_responses:
+                failed_windows += 1
+                processed_windows += 1
+                logger.warning(
+                    "[WORKER] All providers failed for chip pass=%s x=%s y=%s: %s",
+                    pass_id, ctx["x"], ctx["y"], selected_providers,
+                )
+                _report_inference_progress()
+                return
             _apply_chip_responses(ctx, provider_responses)
             processed_windows += 1
-            if progress_callback:
-                inferred_percent = int(processed_windows / total_windows * 100)
-                if (
-                    processed_windows == 1
-                    or processed_windows == total_windows
-                    or last_reported_percent is None
-                    or inferred_percent > last_reported_percent
-                ):
-                    last_reported_percent = inferred_percent
-                    progress_callback(
-                        "inference",
-                        55 + int(inferred_percent * 0.35),
-                        f"Running inference on raster chips ({processed_windows}/{total_windows}).",
-                        {
-                            "processed_chips": processed_windows,
-                            "total_chips": total_windows,
-                            "planned_chips": total_windows,
-                            "source_total_chips": grid["source_total"],
-                            "sampling_enabled": grid["sampled"],
-                            "coverage_fraction": coverage_fraction,
-                        },
-                    )
+            _report_inference_progress()
 
         # Cap in-flight chips and spool oversized PNGs to disk so large rasters
         # cannot accumulate unbounded encoded chip buffers in memory.
@@ -1042,6 +1058,7 @@ def slice_and_infer(
         selected_provider_count=len(selected_providers),
     )
     inference_summary["processed_chips"] = processed_windows
+    inference_summary["failed_chips"] = failed_windows
     inference_summary["raw_detections"] = len(detections)
     inference_summary["deduped_detections"] = len(deduped)
     inference_summary["suppressed_detections"] = max(0, len(detections) - len(deduped))
