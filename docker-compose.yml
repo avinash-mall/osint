@@ -52,6 +52,7 @@ services:
       - IMAGERY_PATH=/data/imagery
       - FMV_PATH=/data/fmv
       - DATASET_PATH=/data/datasets
+      - PYTHONPATH=/app
       - DETECTION_THRESHOLD_PROFILE=recall_review
       - MODEL_VERSION=geoint-yolov8-obb-optical-defense
     env_file:
@@ -360,6 +361,7 @@ services:
       - IMAGERY_PATH=/data/imagery
       - FMV_PATH=/data/fmv
       - DATASET_PATH=/data/datasets
+      - PYTHONPATH=/app
       - DETECTION_THRESHOLD_PROFILE=recall_review
       - MODEL_VERSION=geoint-yolov8-obb-optical-defense
       - INFERENCE_CHIP_SIZE=1024

@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import requests
 import subprocess
@@ -8,8 +9,14 @@ import math
 import concurrent.futures
 import tempfile
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import urlparse
 from celery import Celery
+
+APP_DIR = Path(__file__).resolve().parent
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+
 from database import db, postgis_db
 import rasterio
 from rasterio.windows import Window
