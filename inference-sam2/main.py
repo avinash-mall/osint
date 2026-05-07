@@ -177,6 +177,7 @@ def load_model() -> None:
             ensure_checkpoint()
             from sam2.build_sam import build_sam2
             from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
+            from sam2.sam2_image_predictor import SAM2ImagePredictor
         except Exception as exc:
             model_error = str(exc)
             print(f"[INFERENCE-SAM2] Model prerequisites failed: {exc}")
@@ -186,7 +187,9 @@ def load_model() -> None:
             try:
                 sam2_model = build_sam2(SAM2_CONFIG, SAM2_CHECKPOINT, device=device)
                 loaded.append({
+                    "model": sam2_model,
                     "generator": SAM2AutomaticMaskGenerator(sam2_model),
+                    "predictor": SAM2ImagePredictor(sam2_model),
                     "device": device,
                     "lock": threading.Lock(),
                 })
@@ -274,6 +277,186 @@ def run_inference(image_array: np.ndarray, image_size: tuple[int, int], metadata
         "model_version": MODEL_VERSION
     }
 
+def _normalize_prompt_boxes(
+    prompt_boxes: list[dict[str, Any]],
+    img_w: int,
+    img_h: int,
+) -> tuple[np.ndarray, list[dict[str, Any]]]:
+    """Convert per-chip normalized prompt boxes to absolute XYXY pixels.
+
+    Accepts either bbox=[cx,cy,w,h] in [0,1] or obb=[x1,y1,...,x4,y4] in [0,1].
+    Returns (xyxy_array shape (N,4) float32, kept_metadata) — boxes that fall
+    outside the chip are silently dropped.
+    """
+    xyxy: list[list[float]] = []
+    kept: list[dict[str, Any]] = []
+    for entry in prompt_boxes:
+        if not isinstance(entry, dict):
+            continue
+        bbox = entry.get("bbox")
+        obb = entry.get("obb")
+        if obb and len(obb) >= 8:
+            xs = [float(obb[i]) for i in range(0, 8, 2)]
+            ys = [float(obb[i]) for i in range(1, 8, 2)]
+            x1n, y1n, x2n, y2n = min(xs), min(ys), max(xs), max(ys)
+        elif bbox and len(bbox) >= 4:
+            cx, cy, w, h = (float(v) for v in bbox[:4])
+            x1n, y1n, x2n, y2n = cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2
+        else:
+            continue
+        x1 = max(0.0, min(float(img_w), x1n * img_w))
+        y1 = max(0.0, min(float(img_h), y1n * img_h))
+        x2 = max(0.0, min(float(img_w), x2n * img_w))
+        y2 = max(0.0, min(float(img_h), y2n * img_h))
+        if x2 - x1 < 1.0 or y2 - y1 < 1.0:
+            continue
+        xyxy.append([x1, y1, x2, y2])
+        kept.append(entry)
+    if not xyxy:
+        return np.zeros((0, 4), dtype=np.float32), []
+    return np.asarray(xyxy, dtype=np.float32), kept
+
+
+def _mask_to_obb_normalized(mask: np.ndarray, img_w: int, img_h: int) -> list[float] | None:
+    """Compute a 4-corner OBB (cv2.minAreaRect) for the largest contour of mask.
+
+    Returns 8 floats in [0,1] image-normalized order [x1,y1,x2,y2,x3,y3,x4,y4]
+    or None if the mask is empty/degenerate."""
+    binary = (mask.astype(np.uint8) if mask.dtype != np.uint8 else mask)
+    if binary.ndim == 3:
+        binary = binary.squeeze()
+    if binary.max() == 0:
+        return None
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    contour = max(contours, key=cv2.contourArea)
+    if cv2.contourArea(contour) < 4:
+        return None
+    rect = cv2.minAreaRect(contour)
+    points = cv2.boxPoints(rect)  # shape (4,2) [x,y]
+    flat: list[float] = []
+    for px, py in points:
+        flat.append(max(0.0, min(1.0, float(px) / img_w)))
+        flat.append(max(0.0, min(1.0, float(py) / img_h)))
+    return flat
+
+
+def run_grounded_inference(
+    image_array: np.ndarray,
+    image_size: tuple[int, int],
+    prompt_boxes: list[dict[str, Any]],
+    metadata: dict | None = None,
+) -> dict[str, Any]:
+    entry = next_model_entry()
+    if entry is None or "predictor" not in entry:
+        raise HTTPException(
+            status_code=503,
+            detail=f"No SAM 2 image predictor loaded: {model_error or 'unknown error'}",
+        )
+
+    img_w, img_h = image_size
+    boxes_xyxy, kept_meta = _normalize_prompt_boxes(prompt_boxes, img_w, img_h)
+    start_time = time.time()
+    detections: list[dict[str, Any]] = []
+    if boxes_xyxy.shape[0] == 0:
+        return {
+            "status": "success",
+            "detections": detections,
+            "processing_time_ms": round((time.time() - start_time) * 1000, 2),
+            "model": SAM2_CHECKPOINT,
+            "config": SAM2_CONFIG,
+            "task": "grounded_segmentation",
+            "device": entry["device"],
+            "devices": DEVICES,
+            "gpu_model": GPU_MODEL,
+            "gpu_profile": SAM2_GPU_PROFILE,
+            "model_version": MODEL_VERSION,
+            "input_prompt_boxes": 0,
+            "kept_prompt_boxes": 0,
+        }
+
+    try:
+        import torch
+        with entry["lock"], torch.inference_mode():
+            predictor = entry["predictor"]
+            if entry["device"].startswith("cuda"):
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    predictor.set_image(image_array)
+                    masks, scores, _ = predictor.predict(
+                        box=boxes_xyxy,
+                        multimask_output=False,
+                    )
+            else:
+                predictor.set_image(image_array)
+                masks, scores, _ = predictor.predict(
+                    box=boxes_xyxy,
+                    multimask_output=False,
+                )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"SAM 2 grounded inference failed: {exc}") from exc
+
+    # masks shape: (N, 1, H, W) when multimask_output=False; scores shape (N, 1)
+    masks_np = np.asarray(masks)
+    scores_np = np.asarray(scores)
+    if masks_np.ndim == 3:
+        masks_np = masks_np[:, None, :, :]
+    if scores_np.ndim == 1:
+        scores_np = scores_np[:, None]
+
+    for index, prompt in enumerate(kept_meta):
+        mask = masks_np[index, 0] if index < masks_np.shape[0] else None
+        if mask is None:
+            continue
+        mask_iou = float(scores_np[index, 0]) if index < scores_np.shape[0] else 0.0
+        obb = _mask_to_obb_normalized(mask, img_w, img_h)
+        x1, y1, x2, y2 = boxes_xyxy[index].tolist()
+        cls_name = str(prompt.get("class") or prompt.get("original_class") or "segment")
+        original_class = str(prompt.get("original_class") or cls_name)
+        parent_class = str(prompt.get("parent_class") or cls_name)
+        source_provider = prompt.get("provider") or (prompt.get("providers") or [None])[0]
+        source_confidence = float(prompt.get("confidence") or 0.0)
+        # Combine the source detector's class confidence with SAM2's mask quality
+        combined_confidence = max(source_confidence, mask_iou)
+        detection: dict[str, Any] = {
+            "class": cls_name,
+            "original_class": original_class,
+            "parent_class": parent_class,
+            "bbox": [
+                max(0.0, min(1.0, ((x1 + x2) / 2.0) / img_w)),
+                max(0.0, min(1.0, ((y1 + y2) / 2.0) / img_h)),
+                max(0.0, min(1.0, (x2 - x1) / img_w)),
+                max(0.0, min(1.0, (y2 - y1) / img_h)),
+            ],
+            "confidence": combined_confidence,
+            "mask_iou": mask_iou,
+            "source_provider": source_provider,
+            "source_confidence": source_confidence,
+            "area": int(mask.sum()),
+            "task": "grounded_segmentation",
+        }
+        if obb:
+            detection["obb"] = obb
+        detections.append(detection)
+
+    return {
+        "status": "success",
+        "detections": detections,
+        "processing_time_ms": round((time.time() - start_time) * 1000, 2),
+        "model": SAM2_CHECKPOINT,
+        "config": SAM2_CONFIG,
+        "task": "grounded_segmentation",
+        "device": entry["device"],
+        "devices": DEVICES,
+        "gpu_model": GPU_MODEL,
+        "gpu_profile": SAM2_GPU_PROFILE,
+        "cuda": torch_cuda_diagnostics(),
+        "model_version": MODEL_VERSION,
+        "input_prompt_boxes": len(prompt_boxes),
+        "kept_prompt_boxes": len(kept_meta),
+    }
+
+
 @app.on_event("startup")
 def startup_event() -> None:
     # Do not load model at startup immediately to prevent memory spikes if not used
@@ -300,7 +483,14 @@ async def detect_objects(
         image_array, image_size = await run_in_threadpool(decode_image, contents)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid image file: {exc}") from exc
-    result = await run_in_threadpool(run_inference, image_array, image_size, meta)
+
+    prompt_boxes = meta.get("prompt_boxes") if isinstance(meta, dict) else None
+    if isinstance(prompt_boxes, list) and prompt_boxes:
+        result = await run_in_threadpool(
+            run_grounded_inference, image_array, image_size, prompt_boxes, meta
+        )
+    else:
+        result = await run_in_threadpool(run_inference, image_array, image_size, meta)
     result["input_metadata"] = meta
     return result
 

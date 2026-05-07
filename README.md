@@ -102,6 +102,8 @@ Detailed operating instructions and next steps are in [ProjectPlan/OPTICAL_DEFEN
 | `INFERENCE_CHIP_OVERLAP` | `512` | 50 % overlap so objects spanning chip boundaries appear fully in ≥1 chip |
 | `MAX_INFERENCE_CHIPS` | `0` | Full raster coverage; no silent chip sampling |
 
+The active policy enables 11 parent classes (`aircraft`, `ship`, `vehicle`, `military_vehicle`, `storage_tank`, `bridge`, `harbor`, `airfield`, `building`, `infrastructure`, `segment`) and disables `dam`, `recreation`, `water`, `unknown`. The `segment` class catches SAM2 mask outputs (auto-mode fallback) — when SAM2 runs in grounded mode, masks inherit the source detector's class and bypass the `segment` parent entirely.
+
 ### Environment Variables (`.env`)
 
 | Variable | Default | Description |
@@ -168,6 +170,7 @@ The `backend` and `worker` services mount `/var/run/docker.sock` so they can man
 | `inference-lae-dino` | `sentinelos-inference-lae-dino:cpu` or `:gpu` | 8004 -> 8001 | Grounding DINO open-vocabulary detection |
 | `inference-mmrotate` | `sentinelos-inference-mmrotate:cpu` or `:gpu` | 8005 -> 8001 | MMRotate DOTA Oriented R-CNN rotated detection |
 | `inference-lsknet` | `sentinelos-inference-lsknet:cpu` or `:gpu` | 8006 -> 8001 | LSKNet DOTA rotated-object detection |
+| `inference-sam2` | `sentinelos-inference-sam2:gpu` | 8007 -> 8001 | Meta SAM 2.1 Hiera; auto-mask or grounded-by-prompt segmentation |
 | `redis` | `redis:alpine` | 6379 | Task queue |
 | `nginx` | `nginx:alpine` | 8090 | Tile cache + FMV HLS |
 
@@ -263,6 +266,7 @@ http://localhost:3001/ne_countries/{z}/{x}/{y}
 - **Open vocabulary**: Grounding DINO is available at `http://localhost:8004` through the `inference-lae-dino` service and defaults to the official LAE-80C vocabulary in period-separated chunks
 - **MMRotate**: DOTA v1.0 Oriented R-CNN is available at `http://localhost:8005` through the `inference-mmrotate` service and is selectable from imagery upload.
 - **LSKNet**: Large Selective Kernel Network for DOTA is available at `http://localhost:8006` through the `inference-lsknet` service.
+- **SAM 2**: Meta SAM 2.1 Hiera (tiny / small / base+ / large) is available at `http://localhost:8007` through the `inference-sam2` service. The `/detect` endpoint operates in two modes selected automatically by the worker — see [Grounded SAM 2 (class-tagged segmentation)](#grounded-sam-2-class-tagged-segmentation) below.
 - **Stability**: Sequential PTX JIT warmups are performed on startup for MMRotate and LSKNet to prevent API timeouts during initial kernel compilation on new GPUs.
 - **Policy**: optical-defense taxonomy enriches detections with parent classes and review metadata; official LAE-80C vocabulary detections are not hard-suppressed by the distractor policy.
 - **Input**: `multipart/form-data` with `image` (PNG/JPEG, RGB) + `metadata` (JSON string)
@@ -285,6 +289,27 @@ Each detection service (YOLO, LAE Grounding DINO, MMRotate, LSKNet) supports an 
 When tiling fires the response sets `"internal_tiled": true` and includes `"inference_diagnostics": {tiles, raw_detections, after_cross_tile_nms, tile_size, tile_overlap}`.
 
 Current detection responses also include `original_class`, `parent_class`, `calibrated_confidence`, `review_status`, `policy_review_status`, `threshold_profile`, `model_version`, `taxonomy_version`, provider confirmation metadata, `prompt_profile`, and prompt chunk metadata. `GET /health` includes the active detection policy, provider model/config details, Grounding DINO model ID, processor status, Transformers version, and LAE prompt profile.
+
+### Grounded SAM 2 (class-tagged segmentation)
+
+SAM 2 has no classification head — it produces class-agnostic masks. To make its output useful as part of the detection pipeline, the worker drives SAM 2 with the boxes produced by the *other* selected providers on the same chip ("Grounded SAM" pattern, [facebookresearch/sam2 docs](https://github.com/facebookresearch/sam2)). SAM 2 then returns one tight mask per input box, tagged with that box's class.
+
+**`/detect` modes** (selected automatically by the worker — no config needed):
+
+| Trigger | Mode | Returns |
+|---|---|---|
+| `metadata.prompt_boxes` is a non-empty list | **Grounded** — single `SAM2ImagePredictor.set_image()` + batched `predict(box=...)` | One detection per input box: `class` / `original_class` / `parent_class` inherited from the prompt, `obb` traced from the predicted mask via `cv2.minAreaRect`, `confidence = max(source_confidence, mask_iou)`, plus `mask_iou`, `source_provider`, `source_confidence`, `area`, `task: "grounded_segmentation"` |
+| `prompt_boxes` is missing or empty | **Auto** — `SAM2AutomaticMaskGenerator.generate()` | Class-agnostic masks tagged `class: "segment"` (handled by the `segment` parent class in the policy) |
+
+**Two-phase chip dispatch in [backend/worker.py](backend/worker.py)** — when the upload selects SAM 2 alongside any non-grounded detector:
+
+1. Phase 1: dispatch the chip to every non-grounded provider in the selection (any combination of `yolo`, `lae-dino`, `mmrotate`, `lsknet`, plus future detectors).
+2. Phase 2: union their detections into a `prompt_boxes` payload (capped at 256 boxes/chip, sorted by source confidence) and post the chip to SAM 2 with that metadata.
+3. Fallbacks: SAM 2 selected alone → unprompted auto mode. SAM 2 selected with others but no phase-1 boxes on a chip → unprompted auto mode for that chip. Phase-1 provider failures → logged and skipped, surviving boxes still drive SAM 2.
+
+**Adding another grounded-by-prompt provider in the future** is one line: add the provider name to `GROUNDED_PROVIDERS` in [backend/worker.py](backend/worker.py). The two-phase dispatch and the consensus-exempt safety net pick it up automatically — no other code changes.
+
+**Cross-provider consensus** (`apply_confirmation_policy`): grounded SAM 2 detections inherit the source detector's `parent_class`, so they cross-confirm naturally with the originating box in `deduplicate_detections` → `confirmation_status: "confirmed"`, `confirmation_reason: "cross_provider"`. The `CONSENSUS_EXEMPT_PROVIDERS = {"sam2"}` set keeps auto-mode `segment` outputs from being dropped on chips where SAM 2 ran without prompts.
 
 ### Grounding DINO GPU Image
 

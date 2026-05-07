@@ -722,6 +722,74 @@ def classify_detection_ontologies(detections: list, progress_callback=None) -> d
     return ontology_by_class
 
 
+# Providers that produce class-agnostic outputs and can be "grounded" by being
+# fed the boxes other providers produced for the same chip. Adding a new
+# grounded-by-prompt provider in the future is just one entry here — the
+# two-phase dispatch and consensus exemption pick it up automatically.
+GROUNDED_PROVIDERS: set[str] = {"sam2"}
+
+
+def _post_one_provider(
+    session: requests.Session,
+    png_file,
+    provider_name: str,
+    chip_meta_payload: str,
+    chip_label: str,
+) -> tuple[str, dict] | None:
+    """Single-provider POST helper. Returns (name, response_json) or None on failure."""
+    try:
+        provider_url = INFERENCE_PROVIDERS[provider_name]
+    except KeyError:
+        logger.warning("[WORKER] unknown provider %s; skipping chip %s", provider_name, chip_label)
+        return None
+    try:
+        png_file.seek(0)
+        resp = session.post(
+            f"{provider_url}/detect",
+            files={"image": ("chip.png", png_file, "image/png")},
+            data={"metadata": chip_meta_payload},
+            timeout=INFERENCE_CHIP_TIMEOUT_S,
+        )
+        resp.raise_for_status()
+        return (provider_name, resp.json())
+    except Exception as exc:
+        logger.warning(
+            "[WORKER] %s inference failed on chip %s: %s",
+            provider_name, chip_label, exc,
+        )
+        return None
+
+
+def _grounded_prompt_boxes_from_responses(
+    responses: list[tuple[str, dict]],
+    max_boxes: int = 256,
+) -> list[dict]:
+    """Build a SAM2 prompt-box payload from phase-1 detector responses.
+
+    Each prompt carries the source provider's class so SAM2 returns class-tagged
+    masks. Limited to max_boxes per chip to bound the SAM2 mask-decoder pass."""
+    prompts: list[dict] = []
+    for provider_name, response in responses:
+        for det in response.get("detections", []) or []:
+            bbox = det.get("bbox")
+            obb = det.get("obb")
+            if not bbox and not obb:
+                continue
+            prompts.append({
+                "bbox": bbox,
+                "obb": obb,
+                "class": det.get("class") or det.get("original_class") or "segment",
+                "original_class": det.get("original_class") or det.get("class") or "segment",
+                "parent_class": det.get("parent_class"),
+                "confidence": det.get("confidence"),
+                "provider": provider_name,
+            })
+    if len(prompts) > max_boxes:
+        prompts.sort(key=lambda p: float(p.get("confidence") or 0.0), reverse=True)
+        prompts = prompts[:max_boxes]
+    return prompts
+
+
 def _post_chip_to_providers(
     session: requests.Session,
     png_file,
@@ -729,30 +797,55 @@ def _post_chip_to_providers(
     selected_providers: list[str],
     chip_label: str,
 ) -> list[tuple[str, dict]]:
-    """POST a single chip to every selected inference provider, sharing one HTTP
-    session for connection-pool reuse. Returns the list of (provider, response_json)
-    tuples from providers that succeeded; per-provider failures are logged and
-    skipped (matching the prior single-provider error semantics — the caller
-    raises only if every provider failed for a chip)."""
+    """POST a single chip to every selected inference provider.
+
+    Two-phase when any GROUNDED_PROVIDERS are selected alongside non-grounded
+    providers: phase 1 dispatches to non-grounded providers and collects their
+    detections; phase 2 posts the chip to each grounded provider with
+    metadata.prompt_boxes set to the union of phase-1 boxes (so SAM2 returns
+    class-tagged masks via SAM2ImagePredictor.predict(box=...)). When the
+    grounded provider is the only selection (or no phase-1 boxes were
+    produced), it falls back to its native unprompted mode."""
+    grounded_selected = [p for p in selected_providers if p in GROUNDED_PROVIDERS]
+    non_grounded_selected = [p for p in selected_providers if p not in GROUNDED_PROVIDERS]
     responses: list[tuple[str, dict]] = []
+
     try:
-        for provider_name in selected_providers:
-            provider_url = INFERENCE_PROVIDERS[provider_name]
-            try:
-                png_file.seek(0)
-                resp = session.post(
-                    f"{provider_url}/detect",
-                    files={"image": ("chip.png", png_file, "image/png")},
-                    data={"metadata": chip_meta_payload},
-                    timeout=INFERENCE_CHIP_TIMEOUT_S,
-                )
-                resp.raise_for_status()
-                responses.append((provider_name, resp.json()))
-            except Exception as exc:
-                logger.warning(
-                    "[WORKER] %s inference failed on chip %s: %s",
-                    provider_name, chip_label, exc,
-                )
+        # Phase 1 — non-grounded providers (no inter-dependency).
+        for provider_name in non_grounded_selected:
+            outcome = _post_one_provider(
+                session, png_file, provider_name, chip_meta_payload, chip_label,
+            )
+            if outcome is not None:
+                responses.append(outcome)
+
+        if not grounded_selected:
+            return responses
+
+        # Phase 2 — grounded providers. Build prompt boxes from phase-1 detections,
+        # then post each grounded provider with its own augmented metadata.
+        prompt_boxes = _grounded_prompt_boxes_from_responses(responses)
+        try:
+            base_meta = json.loads(chip_meta_payload) if chip_meta_payload else {}
+        except (TypeError, json.JSONDecodeError):
+            base_meta = {}
+        if not isinstance(base_meta, dict):
+            base_meta = {}
+
+        for provider_name in grounded_selected:
+            if prompt_boxes:
+                grounded_meta = {**base_meta, "prompt_boxes": prompt_boxes}
+                grounded_payload = json.dumps(grounded_meta)
+            else:
+                # No phase-1 boxes (e.g. grounded provider selected alone, or
+                # other providers found nothing on this chip). Fall back to
+                # unprompted mode — provider behaves as it did pre-grounding.
+                grounded_payload = chip_meta_payload
+            outcome = _post_one_provider(
+                session, png_file, provider_name, grounded_payload, chip_label,
+            )
+            if outcome is not None:
+                responses.append(outcome)
     finally:
         png_file.close()
     return responses
