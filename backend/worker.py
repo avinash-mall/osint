@@ -19,6 +19,7 @@ if str(APP_DIR) not in sys.path:
 
 from database import db, postgis_db
 import rasterio
+from rasterio.io import MemoryFile
 from rasterio.windows import Window
 from shapely.geometry import Polygon, MultiPolygon
 import numpy as np
@@ -35,12 +36,14 @@ INFERENCE_LAE_DINO_URL = os.getenv("INFERENCE_LAE_DINO_URL", "http://inference-l
 INFERENCE_MMROTATE_URL = os.getenv("INFERENCE_MMROTATE_URL", "http://inference-mmrotate:8001")
 INFERENCE_LSKNET_URL = os.getenv("INFERENCE_LSKNET_URL", "http://inference-lsknet:8001")
 INFERENCE_SAM2_URL = os.getenv("INFERENCE_SAM2_URL", "http://inference-sam2:8001")
+INFERENCE_SAM3_URL = os.getenv("INFERENCE_SAM3_URL", "http://inference-sam3:8001")
 INFERENCE_PROVIDERS = {
     "yolo": INFERENCE_URL,
     "lae-dino": INFERENCE_LAE_DINO_URL,
     "mmrotate": INFERENCE_MMROTATE_URL,
     "lsknet": INFERENCE_LSKNET_URL,
     "sam2": INFERENCE_SAM2_URL,
+    "sam3": INFERENCE_SAM3_URL,
 }
 IMAGERY_PATH = os.getenv("IMAGERY_PATH", "/data/imagery")
 
@@ -492,7 +495,7 @@ def _merge_provider_into(kept: dict, dropped: dict) -> None:
         kept["provider_confidences"] = pc
 
 
-CONSENSUS_EXEMPT_PROVIDERS = {"sam2"}
+CONSENSUS_EXEMPT_PROVIDERS = {"sam2", "sam3"}
 
 
 def apply_confirmation_policy(
@@ -726,12 +729,12 @@ def classify_detection_ontologies(detections: list, progress_callback=None) -> d
 # fed the boxes other providers produced for the same chip. Adding a new
 # grounded-by-prompt provider in the future is just one entry here — the
 # two-phase dispatch and consensus exemption pick it up automatically.
-GROUNDED_PROVIDERS: set[str] = {"sam2"}
+GROUNDED_PROVIDERS: set[str] = {"sam2", "sam3"}
 
 
 def _post_one_provider(
     session: requests.Session,
-    png_file,
+    chip_file,
     provider_name: str,
     chip_meta_payload: str,
     chip_label: str,
@@ -743,10 +746,16 @@ def _post_one_provider(
         logger.warning("[WORKER] unknown provider %s; skipping chip %s", provider_name, chip_label)
         return None
     try:
-        png_file.seek(0)
+        try:
+            meta = json.loads(chip_meta_payload) if chip_meta_payload else {}
+        except (TypeError, json.JSONDecodeError):
+            meta = {}
+        filename = meta.get("filename") or "chip.png"
+        content_type = meta.get("content_type") or "image/png"
+        chip_file.seek(0)
         resp = session.post(
             f"{provider_url}/detect",
-            files={"image": ("chip.png", png_file, "image/png")},
+            files={"image": (filename, chip_file, content_type)},
             data={"metadata": chip_meta_payload},
             timeout=INFERENCE_CHIP_TIMEOUT_S,
         )
@@ -792,7 +801,7 @@ def _grounded_prompt_boxes_from_responses(
 
 def _post_chip_to_providers(
     session: requests.Session,
-    png_file,
+    chip_file,
     chip_meta_payload: str,
     selected_providers: list[str],
     chip_label: str,
@@ -814,7 +823,7 @@ def _post_chip_to_providers(
         # Phase 1 — non-grounded providers (no inter-dependency).
         for provider_name in non_grounded_selected:
             outcome = _post_one_provider(
-                session, png_file, provider_name, chip_meta_payload, chip_label,
+                session, chip_file, provider_name, chip_meta_payload, chip_label,
             )
             if outcome is not None:
                 responses.append(outcome)
@@ -842,13 +851,99 @@ def _post_chip_to_providers(
                 # unprompted mode — provider behaves as it did pre-grounding.
                 grounded_payload = chip_meta_payload
             outcome = _post_one_provider(
-                session, png_file, provider_name, grounded_payload, chip_label,
+                session, chip_file, provider_name, grounded_payload, chip_label,
             )
             if outcome is not None:
                 responses.append(outcome)
     finally:
-        png_file.close()
+        chip_file.close()
     return responses
+
+
+def _png_file(rgb: np.ndarray):
+    chip_file = tempfile.SpooledTemporaryFile(max_size=INFERENCE_CHIP_SPOOL_MAX_BYTES)
+    Image.fromarray(rgb, mode="RGB").save(chip_file, format="PNG")
+    chip_file.seek(0)
+    return chip_file
+
+
+def _geotiff_window_file(src: rasterio.io.DatasetReader, window: Window, indexes: list[int]):
+    data = src.read(indexes=indexes, window=window).astype("float32", copy=False)
+    transform = src.window_transform(window)
+    profile = {
+        "driver": "GTiff",
+        "height": data.shape[1],
+        "width": data.shape[2],
+        "count": data.shape[0],
+        "dtype": "float32",
+        "transform": transform,
+        "crs": src.crs,
+    }
+    with MemoryFile() as memfile:
+        with memfile.open(**profile) as dst:
+            dst.write(data)
+            descriptions = src.descriptions or ()
+            for out_index, src_index in enumerate(indexes, start=1):
+                if src_index - 1 < len(descriptions) and descriptions[src_index - 1]:
+                    dst.set_band_description(out_index, descriptions[src_index - 1])
+        payload = memfile.read()
+    chip_file = tempfile.SpooledTemporaryFile(max_size=INFERENCE_CHIP_SPOOL_MAX_BYTES)
+    chip_file.write(payload)
+    chip_file.seek(0)
+    return chip_file
+
+
+def _emit_chip_payload(window: Window, src: rasterio.io.DatasetReader, providers: list[str], *, valid_mask=None):
+    """Return (fileobj, metadata) for a chip upload.
+
+    SAM3 receives GeoTIFF chips for multispectral/SAR inputs. Existing providers
+    continue to receive PNG chips because they expect 3-channel imagery.
+    """
+    window_transform = src.window_transform(window)
+    geo_meta = {
+        "source_crs": src.crs.to_string() if src.crs else None,
+        "chip_transform": list(window_transform.to_gdal()),
+        "chip_transform_order": "gdal",
+        "source_window": [int(window.col_off), int(window.row_off), int(window.width), int(window.height)],
+        "source_bounds": list(src.window_bounds(window)),
+    }
+    sam3_only = providers == ["sam3"]
+    descriptions = tuple((desc or "").strip().lower() for desc in (src.descriptions or ()))
+    has_vv_vh = {"vv", "vh"}.issubset(set(descriptions))
+
+    if sam3_only and src.count == 2 and has_vv_vh:
+        return _geotiff_window_file(src, window, [1, 2]), {
+            "modality": "sar",
+            "filename": "chip.tif",
+            "content_type": "image/tiff",
+            "geo": geo_meta,
+            "sar_polarizations": ["VV", "VH"],
+        }
+
+    if sam3_only and src.count >= 6:
+        hls_timesteps = 3 if src.count >= 18 else None
+        meta = {
+            "modality": "multispectral",
+            "filename": "chip.tif",
+            "content_type": "image/tiff",
+            "geo": geo_meta,
+        }
+        if hls_timesteps:
+            meta["hls_timesteps"] = hls_timesteps
+        indexes = list(range(1, 19 if hls_timesteps else 7))
+        return _geotiff_window_file(src, window, indexes), meta
+
+    chip = src.read(window=window)
+    chip_rgb = chip_to_uint8_rgb(chip)
+    if valid_mask is not None:
+        chip_rgb = chip_rgb.copy()
+        chip_rgb[~valid_mask] = 0
+    return _png_file(chip_rgb), {
+        "modality": "rgb",
+        "filename": "chip.png",
+        "content_type": "image/png",
+        "geo": geo_meta,
+    }
 
 
 def slice_and_infer(
@@ -1019,9 +1114,10 @@ def slice_and_infer(
                 decision = detection_decision(original_class, confidence, DETECTION_POLICY)
                 official_lae = is_official_lae_detection(det)
                 policy_review_status = decision["review_status"]
-                if official_lae and decision["review_status"] in {"disabled_distractor", "below_class_threshold"}:
-                    decision = {**decision, "review_status": "review_candidate"}
-                elif not decision["class_enabled"] or decision["review_status"] == "below_class_threshold":
+                # Open-vocab policy: drop only when the operator explicitly raised
+                # GLOBAL_CONFIDENCE_FLOOR / PER_CLASS_CONFIDENCE_OVERRIDES above
+                # this detection's confidence. Otherwise everything passes through.
+                if not official_lae and decision["review_status"] == "below_class_threshold":
                     continue
 
                 det["class"] = decision["original_class"] if official_lae else decision["parent_class"]
@@ -1119,7 +1215,6 @@ def slice_and_infer(
                     win_height = min(chip_size, height - y)
                     window = Window(x, y, win_width, win_height)
 
-                    chip = src.read(window=window)
                     valid_mask = valid_data_mask(src, window)
                     valid_fraction = (
                         float(np.count_nonzero(valid_mask)) / max(1, valid_mask.size)
@@ -1128,28 +1223,29 @@ def slice_and_infer(
                     )
                     if valid_fraction < INFERENCE_MIN_VALID_CHIP_FRACTION:
                         continue
+                    chip = src.read(window=window)
                     if np.all(chip == 0) or (src.nodata is not None and np.all(chip == src.nodata)):
                         continue
 
-                    chip_rgb = chip_to_uint8_rgb(chip)
-                    if valid_mask is not None:
-                        chip_rgb = chip_rgb.copy()
-                        chip_rgb[~valid_mask] = 0
-                    png_file = tempfile.SpooledTemporaryFile(max_size=INFERENCE_CHIP_SPOOL_MAX_BYTES)
-                    Image.fromarray(chip_rgb, mode="RGB").save(png_file, format="PNG")
-                    png_file.seek(0)
+                    chip_file, chip_meta = _emit_chip_payload(
+                        window,
+                        src,
+                        selected_providers,
+                        valid_mask=valid_mask,
+                    )
                     chip_meta_payload = json.dumps({
                         "pass_id": pass_id,
                         "window": [x, y, win_width, win_height],
+                        **chip_meta,
                     })
                     chip_label = f"pass={pass_id} x={x} y={y}"
 
                     future = executor.submit(
                         _post_chip_to_providers,
-                        session, png_file, chip_meta_payload,
+                        session, chip_file, chip_meta_payload,
                         selected_providers, chip_label,
                     )
-                    del chip, chip_rgb
+                    del chip
                     pending[future] = {
                         "x": x, "y": y, "win_width": win_width, "win_height": win_height,
                         "valid_mask": valid_mask,
@@ -1337,6 +1433,75 @@ def clear_existing_detections(pass_id: int) -> None:
                 WHERE d.postgis_id IN $det_ids
                 DETACH DELETE d
             """, {"det_ids": det_ids})
+
+
+def _xyxy_to_normalized_cxcywh(box: list[float], width: float | None = None, height: float | None = None) -> list[float]:
+    x1, y1, x2, y2 = [float(v) for v in box[:4]]
+    if width and height and width > 0 and height > 0:
+        return [
+            max(0.0, min(1.0, ((x1 + x2) / 2.0) / width)),
+            max(0.0, min(1.0, ((y1 + y2) / 2.0) / height)),
+            max(0.0, min(1.0, (x2 - x1) / width)),
+            max(0.0, min(1.0, (y2 - y1) / height)),
+        ]
+    return [x1, y1, max(0.0, x2 - x1), max(0.0, y2 - y1)]
+
+
+@celery_app.task(name="worker.process_fmv", queue="imagery")
+def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = None, frame_stride: int = 1, max_frames: int | None = None) -> int:
+    """Run SAM3 FMV tracking and persist one row per frame/track detection."""
+    provider_lifecycle.ensure_running(["sam3"])
+    payload = json.dumps({
+        "video_path": video_path,
+        "text_prompts": text_prompts or None,
+        "frame_stride": frame_stride,
+        "max_frames": max_frames,
+        "modality": "fmv",
+    })
+    session = requests.Session()
+    try:
+        resp = session.post(
+            f"{INFERENCE_PROVIDERS['sam3']}/detect_video",
+            data={"metadata": payload},
+            stream=True,
+            timeout=INFERENCE_CHIP_TIMEOUT_S * 60,
+        )
+        resp.raise_for_status()
+        inserted = 0
+        with postgis_db.get_cursor(commit=True) as cur:
+            for line in resp.iter_lines(decode_unicode=True):
+                if not line:
+                    continue
+                entry = json.loads(line)
+                cur.execute(
+                    """
+                    INSERT INTO fmv_detections (clip_id, frame_index, class, confidence, bbox, metadata)
+                    VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb)
+                    """,
+                    (
+                        clip_id,
+                        int(entry["frame_index"]),
+                        entry.get("original_class") or entry.get("class") or "track",
+                        float(entry.get("score") or 0.0),
+                        json.dumps(_xyxy_to_normalized_cxcywh(entry.get("bbox_xyxy") or [0, 0, 0, 0])),
+                        json.dumps({
+                            "track_id": entry.get("track_id"),
+                            "mask_rle": entry.get("mask_rle"),
+                            "obb": entry.get("obb"),
+                            "obb_format": entry.get("obb_format"),
+                            "obb_source": entry.get("obb_source"),
+                            "obb_angle_deg": entry.get("obb_angle_deg"),
+                            "edge_truncated": entry.get("edge_truncated"),
+                            "embedding": entry.get("embedding"),
+                            "provider": "sam3",
+                        }),
+                    ),
+                )
+                inserted += 1
+        provider_lifecycle.mark_active(["sam3"])
+        return inserted
+    finally:
+        session.close()
 
 
 def target_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:

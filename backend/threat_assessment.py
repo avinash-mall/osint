@@ -1,3 +1,30 @@
+"""Object-class assessment helpers (open-vocabulary, neutral framing).
+
+This module previously implemented a defence-oriented threat assessor that
+flagged tanks/missiles/warships at HIGH/CRITICAL severity. The project is now
+open-vocabulary across civilian, commercial, and natural object classes —
+threat scoring is no longer the right framing.
+
+The module preserves its public API (``assess_detection_threat``,
+``conservative_detection_ontology``, ``category_for_class``,
+``clean_detection_class``) so existing callers in ``backend/worker.py``,
+``backend/main.py`` and ``backend/tracker.py`` keep working without edits.
+
+What the functions return now:
+
+* ``category_for_class`` — coarse semantic bucket (``air``, ``maritime``,
+  ``ground``, ``infrastructure``, ``person``, ``animal``, ``vegetation``,
+  ``water``, ``object``). No "combat" bucket.
+* ``assess_detection_threat`` — always returns ``threat_level="unrated"``
+  and ``threat_confidence=0.0``. The ``evidence`` array still records the
+  cleaned label and confidence so audit trails stay intact.
+* ``conservative_detection_ontology`` — returns the same shape as before
+  with a neutral ``description``.
+
+If a downstream operator genuinely needs a defence-oriented severity score
+they can re-implement that as a separate, opt-in policy outside this module.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
@@ -6,58 +33,19 @@ from typing import Any
 from detection_policy import parent_class_for_label
 
 
-THREAT_LEVELS = {"low", "medium", "high", "critical"}
+THREAT_LEVELS = {"unrated", "low", "medium", "high", "critical"}
 
-CRITICAL_TERMS = (
-    "tank",
-    "artillery",
-    "missile",
-    "launcher",
-    "rocket",
-    "sam",
-    "air defense",
-    "air-defence",
-    "air defence",
-    "destroyer",
-    "battleship",
-    "warship",
-    "frigate",
-    "corvette",
-)
 
-HIGH_TERMS = (
-    "fighter",
-    "bomber",
-    "military aircraft",
-    "helicopter",
-    "submarine",
-    "aircraft carrier",
-    "naval vessel",
-    "runway",
-    "airstrip",
-    "airfield",
-    "military",
-    "radar",
-)
-
-MEDIUM_TERMS = (
-    "convoy",
-    "armored",
-    "armoured",
-    "command",
-    "depot",
-    "hangar",
-    "bunker",
-    "checkpoint",
-    "storage tank",
-    "oil facility",
-    "border",
-)
-
-MARITIME_TERMS = ("ship", "vessel", "harbor", "harbour", "port", "dry dock", "maritime")
-AIR_TERMS = ("aircraft", "plane", "helicopter", "fighter", "airport", "runway", "airstrip", "airfield")
-GROUND_TERMS = ("vehicle", "truck", "car", "van", "bus", "convoy", "armored", "armoured")
-INFRA_TERMS = ("facility", "building", "storage", "depot", "plant", "hangar", "bridge", "checkpoint")
+# ── Coarse semantic buckets used by category_for_class ─────────────────────
+_AIR_PARENTS         = {"aircraft", "airfield"}
+_MARITIME_PARENTS    = {"vessel", "harbor"}
+_GROUND_PARENTS      = {"vehicle", "train"}
+_INFRA_PARENTS       = {
+    "storage_tank", "building", "bridge", "infrastructure",
+}
+_NATURE_PARENTS = {"vegetation", "water", "plant"}
+_PEOPLE_PARENTS = {"person"}
+_ANIMAL_PARENTS = {"animal"}
 
 
 @dataclass(frozen=True)
@@ -70,42 +58,32 @@ class ThreatAssessment:
 
 
 def clean_detection_class(det_class: str) -> str:
-    label = (det_class or "Unknown").replace("_", " ").replace("-", " ").strip()
-    prefixes = ("xview ", "dota ", "fair1m ", "fmow ", "rareplanes ", "dior ", "sodaa ", "hrsc ")
+    label = (det_class or "Object").replace("_", " ").replace("-", " ").strip()
+    prefixes = (
+        "xview ", "dota ", "fair1m ", "fmow ", "rareplanes ",
+        "dior ", "sodaa ", "hrsc ", "lvis ", "coco ", "objects365 ",
+    )
     lower = label.lower()
     for prefix in prefixes:
         if lower.startswith(prefix):
             label = label[len(prefix):]
             break
-    return " ".join(part.capitalize() for part in label.split()) or "Unknown"
-
-
-def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
-    return any(term in text for term in terms)
+    return " ".join(part.capitalize() for part in label.split()) or "Object"
 
 
 def category_for_class(det_class: str) -> str:
-    parent_class = parent_class_for_label(det_class)
-    if parent_class == "aircraft":
-        return "air"
-    if parent_class in {"ship", "harbor"}:
-        return "maritime"
-    if parent_class in {"vehicle", "military_vehicle"}:
-        return "combat" if parent_class == "military_vehicle" else "ground"
-    if parent_class in {"storage_tank", "building", "bridge", "airfield", "infrastructure"}:
-        return "infrastructure"
-    text = clean_detection_class(det_class).lower()
-    if _contains_any(text, CRITICAL_TERMS):
-        return "combat"
-    if _contains_any(text, AIR_TERMS):
-        return "air"
-    if _contains_any(text, MARITIME_TERMS):
-        return "maritime"
-    if _contains_any(text, GROUND_TERMS):
-        return "ground"
-    if _contains_any(text, INFRA_TERMS):
-        return "infrastructure"
-    return "unknown"
+    """Map a detection class to a coarse semantic bucket — no military bucket."""
+    parent = parent_class_for_label(det_class)
+    if parent in _AIR_PARENTS:      return "air"
+    if parent in _MARITIME_PARENTS: return "maritime"
+    if parent in _GROUND_PARENTS:   return "ground"
+    if parent in _INFRA_PARENTS:    return "infrastructure"
+    if parent in _NATURE_PARENTS:   return "nature"
+    if parent in _PEOPLE_PARENTS:   return "person"
+    if parent in _ANIMAL_PARENTS:   return "animal"
+    if parent == "recreation":      return "recreation"
+    if parent in {"segment", "track"}: return parent
+    return "object"
 
 
 def assess_detection_threat(
@@ -114,72 +92,31 @@ def assess_detection_threat(
     allegiance: str | None = None,
     recurrence_count: int = 1,
 ) -> dict[str, Any]:
-    """Conservative deterministic threat assessment for defence workflows.
+    """Open-vocab assessment: every detection is ``unrated``.
 
-    This intentionally treats generic classes as low until stronger evidence is
-    available. LLM-generated fields must not override this result.
+    The function preserves the legacy return shape so callers that read
+    ``threat_level`` / ``threat_confidence`` / ``evidence`` / ``category``
+    still work. ``allegiance`` and ``recurrence_count`` are recorded in the
+    evidence trail for audit but no longer raise the level.
     """
     label = clean_detection_class(det_class)
-    text = label.lower()
     try:
         conf = max(0.0, min(1.0, float(confidence or 0)))
     except (TypeError, ValueError):
         conf = 0.0
 
-    category = category_for_class(det_class)
     evidence = [f"class={label}", f"confidence={conf:.2f}"]
-    status = "rule_assessed" if conf >= 0.35 else "unconfirmed"
-    level = "low"
-    score = 0.2 if conf >= 0.35 else 0.1
-
-    hostile_tag = str(allegiance or "").lower() == "hostile"
-    if hostile_tag:
-        evidence.append("analyst_tag=hostile")
-
-    if _contains_any(text, CRITICAL_TERMS):
-        evidence.append("critical_defence_class")
-        if conf >= 0.65:
-            level, score = "critical", 0.9
-        elif conf >= 0.35:
-            level, score = "medium", 0.55
-            evidence.append("low_confidence_combat_downgrade")
-        else:
-            evidence.append("insufficient_confidence")
-    elif _contains_any(text, HIGH_TERMS):
-        evidence.append("high_interest_defence_class")
-        if conf >= 0.7:
-            level, score = "high", 0.75
-        elif conf >= 0.45:
-            level, score = "medium", 0.5
-        else:
-            evidence.append("insufficient_confidence")
-    elif _contains_any(text, MEDIUM_TERMS):
-        evidence.append("medium_interest_context")
-        if conf >= 0.6:
-            level, score = "medium", 0.48
-        else:
-            evidence.append("insufficient_confidence")
-    else:
-        evidence.append("generic_or_uncorroborated_class")
-
-    if hostile_tag and conf >= 0.7:
-        if level == "critical":
-            score = max(score, 0.95)
-        elif _contains_any(text, CRITICAL_TERMS + HIGH_TERMS):
-            level, score = "high", max(score, 0.8)
-        else:
-            level, score = "medium", max(score, 0.6)
-
-    if recurrence_count >= 3 and conf >= 0.55 and level == "low":
-        level, score = "medium", max(score, 0.5)
-        evidence.append(f"recurrence_count={recurrence_count}")
+    if allegiance:
+        evidence.append(f"allegiance={str(allegiance).lower()}")
+    if recurrence_count and recurrence_count > 1:
+        evidence.append(f"recurrence_count={int(recurrence_count)}")
 
     assessment = ThreatAssessment(
-        threat_level=level,
-        threat_confidence=round(score, 3),
-        assessment_status=status,
+        threat_level="unrated",
+        threat_confidence=0.0,
+        assessment_status="unrated",
         evidence=evidence[:8],
-        category=category,
+        category=category_for_class(det_class),
     )
     return asdict(assessment)
 
@@ -190,6 +127,7 @@ def conservative_detection_ontology(
     allegiance: str | None = None,
     description: str | None = None,
 ) -> dict[str, Any]:
+    """Compatibility shim — returns the previous shape with neutral defaults."""
     label = clean_detection_class(det_class)
     assessment = assess_detection_threat(det_class, confidence=confidence, allegiance=allegiance)
     return {
@@ -200,8 +138,8 @@ def conservative_detection_ontology(
         "threat_confidence": assessment["threat_confidence"],
         "assessment_status": assessment["assessment_status"],
         "evidence": assessment["evidence"],
-        "description": description or "Deterministic defence threat assessment; LLM text is advisory only.",
+        "description": description or "Open-vocabulary detection; threat scoring is unrated.",
         "recommended_filter": label,
-        "generated_by": "deterministic-threat-rules",
-        "status": "rule_assessed",
+        "generated_by": "open-vocab-rules",
+        "status": "unrated",
     }

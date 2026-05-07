@@ -21,7 +21,7 @@ from ai import AIUnavailable, ai_status, get_ai_response, get_llm_json
 from imagery_metadata import extract_raster_metadata
 from detection_policy import active_detection_policy, detection_decision, parent_class_for_label
 from threat_assessment import assess_detection_threat, category_for_class, clean_detection_class, conservative_detection_ontology
-from worker import celery_app, process_satellite_imagery
+from worker import celery_app, process_fmv, process_satellite_imagery
 import provider_lifecycle
 
 app = FastAPI(title="SentinelOS API")
@@ -1121,7 +1121,7 @@ def classify_upload(filename: str) -> tuple[str, str]:
     if suffix in {".tif", ".tiff", ".jp2", ".j2k", ".nc", ".netcdf", ".png", ".jpg", ".jpeg", ".nitf", ".ntf"}:
         return "imagery", "workers.raster.process"
     if suffix in {".mp4", ".mov", ".m4v", ".ts", ".mpeg", ".mpg"}:
-        return "fmv", "workers.video.process_fmv"
+        return "fmv", "worker.process_fmv"
     if suffix in {".geojson", ".json", ".kml", ".kmz", ".zip", ".shp", ".gpkg"}:
         return "vector", "workers.vector.process"
     if suffix in {".pdf", ".txt", ".csv", ".xlsx", ".docx"}:
@@ -3291,7 +3291,7 @@ def trigger_ingest(req: IngestRequest):
     }
 
 
-_KNOWN_INFERENCE_PROVIDERS = ("yolo", "lae-dino", "mmrotate", "lsknet", "sam2")
+_KNOWN_INFERENCE_PROVIDERS = ("yolo", "lae-dino", "mmrotate", "lsknet", "sam2", "sam3")
 
 
 def _parse_inference_providers(raw: str) -> list[str]:
@@ -3312,13 +3312,16 @@ def upload_imagery(
     acquisition_time: Optional[str] = Form(None),
     auto_process: bool = Form(True),
     inference_providers: str = Form("yolo"),
+    text_prompts: Optional[str] = Form(None),
 ):
     ensure_platform_tables()
     filename = safe_filename(file.filename or "upload.tif")
     media_type, handler = classify_upload(filename)
     selected_providers = _parse_inference_providers(inference_providers)
+    if media_type == "fmv" and (not inference_providers or inference_providers == "yolo"):
+        selected_providers = ["sam3"]
 
-    if media_type == "imagery":
+    if media_type in {"imagery", "fmv"}:
         try:
             provider_lifecycle.ensure_running(selected_providers)
         except Exception as exc:
@@ -3380,6 +3383,7 @@ def upload_imagery(
                     "sensor_type": sensor_type,
                     "acquisition_time": effective_acquisition_time,
                     "auto_process": auto_process,
+                    "text_prompts": text_prompts,
                     "bytes": size,
                     "raster_metadata": raster_metadata,
                     "source_hash": None,
@@ -3456,7 +3460,20 @@ def upload_imagery(
             """, telemetry_rows_for_clip(clip["id"], clip["duration_seconds"], clip["fps"]))
         clip["stream_url"] = fmv_public_url(clip.get("hls_path"), clip["file_path"])
         status = "ready"
-        response.update({"message": "FMV upload received and HLS/KLV catalog prepared.", "clip": clip})
+        prompt_list = [item.strip() for item in (text_prompts or "").split(",") if item.strip()]
+        if "sam3" in selected_providers and prompt_list:
+            task = process_fmv.delay(clip["id"], str(clip_path), prompt_list)
+            celery_task_id = task.id
+            status = "queued"
+            clip["status"] = "queued"
+            response.update({
+                "task_id": task.id,
+                "status_url": f"/api/ingest/jobs/{task.id}",
+                "message": "FMV upload received and SAM3 tracking queued.",
+                "clip": clip,
+            })
+        else:
+            response.update({"message": "FMV upload received and HLS/KLV catalog prepared.", "clip": clip})
     elif media_type == "vector":
         with postgis_db.get_cursor(commit=True) as cursor:
             cursor.execute("""

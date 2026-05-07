@@ -22,7 +22,7 @@ An open-source GEOINT exploitation platform inspired by Palantir Gotham. Ingests
 └──────────┴───────────────┴──────────┴──────────┴─────────────┘
 ```
 
-**13 services** — all containerised, including YOLO OBB, Grounding DINO, MMRotate, and LSKNet inference services.
+**14 services** — all containerised, including YOLO OBB, Grounding DINO, MMRotate, LSKNet, SAM2, and SAM3 inference services.
 
 ---
 
@@ -36,7 +36,7 @@ An open-source GEOINT exploitation platform inspired by Palantir Gotham. Ingests
 | Task queue | Celery + Redis alpine (queues: `imagery`, `default`) |
 | Tile server | TiTiler — Cloud-Optimised GeoTIFF on-the-fly |
 | Vector tiles | Martin — PostGIS → Mapbox Vector Tiles |
-| AI inference | YOLOv8 OBB + Grounding DINO + MMRotate (Oriented R-CNN) + LSKNet |
+| AI inference | YOLOv8 OBB · Grounding DINO · MMRotate (Oriented R-CNN) · LSKNet · SAM 2.1 · SAM 3 / 3.1 (open-vocab text + image-exemplar) · DINOv3 ViT-L (SAT-493M satellite + LVD-1689M general) embedder · Prithvi-EO-2.0 (flood / burn-scar / multi-temporal-crop heads) · TerraMind v1 large (S1↔S2 any-to-any generative EO) |
 | Frontend | React 19 · TypeScript · Vite 8 · Tailwind CSS v4 |
 | Map | react-leaflet (2D) · react-globe.gl (3D globe) · CesiumJS 1.124 (3D terrain) |
 | GPU | NVIDIA RTX 50-series (Blackwell `sm_120`) supported via CUDA 12.8 |
@@ -83,26 +83,27 @@ docker compose up -d --build
 > **LLM (Ava):** point `.env` → `OPENAI_API_BASE` at a local vLLM / Ollama instance.
 > Without it the Ava chat tab returns a graceful error — all other tabs work offline.
 
-### Optical-Defense Detection Workflow
+### Open-Vocabulary Detection Workflow
 
-The detector is now configured as an optical-only, OBB-first analyst-review workflow. Source labels are normalized into defense parent classes, known distractors such as dams and sports courts are disabled by default, and low-confidence detections are surfaced as review candidates rather than confirmed targets.
-
-Detailed operating instructions and next steps are in [ProjectPlan/OPTICAL_DEFENSE_DETECTION.md](ProjectPlan/OPTICAL_DEFENSE_DETECTION.md).
+The detector is configured as an OBB-first, **open-vocabulary** analyst-review workflow. Every label a model emits — whether from YOLO, Grounding DINO / LAE-DINO, MMRotate, LSKNet, SAM2 (class-agnostic masks), or SAM3 (text-prompted segmentation) — is accepted as a first-class object class. There is no closed taxonomy, no per-class threshold, and no distractor suppression: detections are kept unless the operator explicitly raises `GLOBAL_CONFIDENCE_FLOOR` or `PER_CLASS_CONFIDENCE_OVERRIDES`.
 
 | Setting | Default | Purpose |
 |---|---|---|
-| `DETECTION_THRESHOLD_PROFILE` | `recall_review` | Recall-first review mode |
-| `CONFIDENCE_THRESHOLD` | `0.08` for YOLO, `0.10` for Grounding DINO | Service inference floor (policy gate is applied downstream) |
-| `NMS_IOU_THRESHOLD` | `0.70` | YOLO OBB NMS — higher value preserves tightly-packed objects (e.g. parking lots) |
-| `GROUNDING_DINO_BOX_THRESHOLD` / `_TEXT_THRESHOLD` | `0.15` | Open-vocabulary box / text confidence floor |
-| `MMROTATE_CONFIDENCE_THRESHOLD` | `0.05` | MMRotate service floor before taxonomy thresholds |
-| `LSKNET_CONFIDENCE_THRESHOLD` | `0.05` | LSKNet service floor before taxonomy thresholds |
-| `MAX_DETECTIONS_PER_CHIP` | `1000` | Per-chip detection cap (raised from 300 for dense scenes) |
+| `DETECTION_THRESHOLD_PROFILE` | `open` | Informational profile name stored on each detection |
+| `GLOBAL_CONFIDENCE_FLOOR` | `0.0` | Single floor applied to every class. `0.0` means "accept everything" |
+| `HIGH_CONFIDENCE_THRESHOLD` | `0.5` | Tag threshold for `high_confidence` review status |
+| `PER_CLASS_CONFIDENCE_OVERRIDES` | `{}` | Optional JSON map of class-specific floors |
+| `CONFIDENCE_THRESHOLD` | `0.08` for YOLO, `0.10` for Grounding DINO | Per-service inference floor at the model level |
+| `NMS_IOU_THRESHOLD` | `0.70` | YOLO OBB NMS — higher preserves tightly packed objects |
+| `GROUNDING_DINO_BOX_THRESHOLD` / `_TEXT_THRESHOLD` | `0.15` | Open-vocabulary box / text floor |
+| `MMROTATE_CONFIDENCE_THRESHOLD` | `0.05` | MMRotate service floor |
+| `LSKNET_CONFIDENCE_THRESHOLD` | `0.05` | LSKNet service floor |
+| `MAX_DETECTIONS_PER_CHIP` | `1000` | Per-chip detection cap |
 | `INFERENCE_CHIP_SIZE` | `1024` | Better small-object recall than 640 px chips |
-| `INFERENCE_CHIP_OVERLAP` | `512` | 50 % overlap so objects spanning chip boundaries appear fully in ≥1 chip |
+| `INFERENCE_CHIP_OVERLAP` | `512` | 50 % overlap so objects on chip boundaries appear fully in ≥1 chip |
 | `MAX_INFERENCE_CHIPS` | `0` | Full raster coverage; no silent chip sampling |
 
-The active policy enables 11 parent classes (`aircraft`, `ship`, `vehicle`, `military_vehicle`, `storage_tank`, `bridge`, `harbor`, `airfield`, `building`, `infrastructure`, `segment`) and disables `dam`, `recreation`, `water`, `unknown`. The `segment` class catches SAM2 mask outputs (auto-mode fallback) — when SAM2 runs in grounded mode, masks inherit the source detector's class and bypass the `segment` parent entirely.
+`parent_class_for_label` clusters detections into broad open buckets (aircraft, vessel, vehicle, train, building, infrastructure, storage_tank, bridge, harbor, airfield, recreation, vegetation, water, person, animal, food, furniture, household, electronic, tool, clothing, plant, sport, segment, track) and falls back to the **normalized label itself** when no cluster matches — true open vocabulary. The `segment` parent catches SAM2 auto-mode masks; the `track` parent catches SAM3 video tracks. Cross-provider consensus is still applied in multi-provider runs.
 
 ### Environment Variables (`.env`)
 
@@ -120,15 +121,14 @@ The active policy enables 11 parent classes (`aircraft`, `ship`, `vehicle`, `mil
 | `INFERENCE_LAE_DINO_URL` | `http://inference-lae-dino:8001` | Internal Grounding DINO open-vocabulary inference service |
 | `INFERENCE_MMROTATE_URL` | `http://inference-mmrotate:8001` | Internal MMRotate rotated-object inference service |
 | `INFERENCE_LSKNET_URL` | `http://inference-lsknet:8001` | Internal LSKNet large selective kernel inference service |
+| `INFERENCE_SAM3_URL` | `http://inference-sam3:8001` | Internal SAM3 open-vocabulary segmentation/tracking service |
 | `IMAGERY_PATH` | `/data/imagery` | Shared volume mount |
 | `OPENAI_API_BASE` | *(unset)* | Local LLM endpoint |
 | `OPENAI_API_KEY` | `dummy` | |
 | `OPENAI_MODEL` | `google/gemma-4-31B-it` | |
-| `DETECTION_THRESHOLD_PROFILE` | `recall_review` | Detection policy profile: `recall_review`, `balanced`, or `high_precision` |
-| `GLOBAL_CONFIDENCE_FLOOR` | profile default | Optional inference confidence floor override |
-| `HIGH_CONFIDENCE_THRESHOLD` | profile default | Confidence required for `high_confidence` review status |
-| `ENABLED_PARENT_CLASSES` | defense parent classes | Comma-separated enabled parent classes |
-| `DISABLED_PARENT_CLASSES` | `dam,recreation,water,unknown` | Comma-separated distractor classes suppressed by policy |
+| `DETECTION_THRESHOLD_PROFILE` | `open` | Informational profile label stored with each detection |
+| `GLOBAL_CONFIDENCE_FLOOR` | `0.0` | Single confidence floor; 0.0 means "accept everything" |
+| `HIGH_CONFIDENCE_THRESHOLD` | `0.5` | Threshold at which a detection is tagged `high_confidence` |
 | `INFERENCE_CHIP_CONCURRENCY` | `16` | Chip dispatch concurrency to inference providers |
 | `INFERENCE_MAX_PENDING_CHIPS` | `32` | Maximum encoded raster chips queued while inference requests run |
 | `INFERENCE_CHIP_SPOOL_MAX_BYTES` | `4194304` | Encoded chip PNGs larger than this spill to a temp file |
@@ -144,9 +144,9 @@ The active policy enables 11 parent classes (`aircraft`, `ship`, `vehicle`, `mil
 
 ## Dynamic Inference Lifecycle
 
-Each inference service is gated by a docker-compose `profile` (`yolo`, `lae-dino`, `mmrotate`, `lsknet`, `sam2`, plus the meta-profile `all`). Default `docker compose up` brings up zero inference containers — the `backend` and `worker` services own their lifecycle:
+Each inference service is gated by a docker-compose `profile` (`yolo`, `lae-dino`, `mmrotate`, `lsknet`, `sam2`, `sam3`, plus the meta-profile `all`). Default `docker compose up` brings up zero inference containers — the `backend` and `worker` services own their lifecycle:
 
-1. **One-time provisioning** — `COMPOSE_PROFILES=all docker compose create` builds & registers all five inference containers in stopped state.
+1. **One-time provisioning** — `COMPOSE_PROFILES=all docker compose create` builds & registers all inference containers in stopped state.
 2. **On upload** — `POST /api/ingest/upload` reads `inference_providers=...` and calls `provider_lifecycle.ensure_running(...)` ([backend/provider_lifecycle.py](backend/provider_lifecycle.py)) to start the requested containers via the Docker Engine API and wait for `/health` (≤ `PROVIDER_START_TIMEOUT_S`). Failures bubble up as HTTP 503.
 3. **During processing** — the celery worker calls `mark_active(...)` to record a Redis last-used timestamp.
 4. **Idle reaping** — celery-beat (`--beat` is now part of the worker command) runs `stop_idle_providers` every `PROVIDER_IDLE_CHECK_INTERVAL_S`. Any provider whose last-used timestamp is older than `PROVIDER_IDLE_COOLDOWN_S` is `docker stop`-ed.
@@ -171,6 +171,7 @@ The `backend` and `worker` services mount `/var/run/docker.sock` so they can man
 | `inference-mmrotate` | `sentinelos-inference-mmrotate:cpu` or `:gpu` | 8005 -> 8001 | MMRotate DOTA Oriented R-CNN rotated detection |
 | `inference-lsknet` | `sentinelos-inference-lsknet:cpu` or `:gpu` | 8006 -> 8001 | LSKNet DOTA rotated-object detection |
 | `inference-sam2` | `sentinelos-inference-sam2:gpu` | 8007 -> 8001 | Meta SAM 2.1 Hiera; auto-mask or grounded-by-prompt segmentation |
+| `inference-sam3` | `sentinelos-inference-sam3:gpu` | internal 8001 | Meta SAM 3 / 3.1 — open-vocabulary `/detect` (RGB · multispectral · SAR-via-RGB-proxy) and `/detect_video` (Object Multiplex FMV tracking). Returns mask RLE + normalized HBB + minAreaRect OBB + DINOv3 embedding; optional Prithvi flood/burn/crop overlays and TerraMind SAR features behind loader flags. See [SAM 3 — Open-Vocabulary RGB / Multispectral / SAR / FMV](#sam-3--open-vocabulary-rgb--multispectral--sar--fmv) below. |
 | `redis` | `redis:alpine` | 6379 | Task queue |
 | `nginx` | `nginx:alpine` | 8090 | Tile cache + FMV HLS |
 
@@ -194,7 +195,7 @@ The dashboard is a single-page application with a sidebar of 7 tabs.
 
 ## Imagery Pipeline
 
-Current optical-defense inference uses overlapping 1024x1024 RGB chips by default, OBB-aware cross-chip dedupe, and full-raster coverage unless `MAX_INFERENCE_CHIPS` is explicitly capped. Stored detections include parent class, original class, calibrated confidence, review status, threshold profile, provider confirmation, chip provenance, model/taxonomy version, and coverage metadata. When multiple providers are selected, detections are confirmed only when more than one provider overlaps the same object (cross-provider consensus). Detections without cross-provider agreement are discarded to reduce false positives in high-precision workflows.
+Open-vocabulary inference uses overlapping 1024x1024 RGB chips by default, OBB-aware cross-chip dedupe, and full-raster coverage unless `MAX_INFERENCE_CHIPS` is explicitly capped. Stored detections include parent class, original (open-vocab) class, calibrated confidence, review status, threshold profile, provider confirmation, chip provenance, model/taxonomy version, and coverage metadata. When multiple providers are selected, detections are confirmed only when more than one provider overlaps the same object (cross-provider consensus). Detections without cross-provider agreement are discarded to reduce false positives.
 
 ### Ingest a GeoTIFF
 
@@ -267,8 +268,9 @@ http://localhost:3001/ne_countries/{z}/{x}/{y}
 - **MMRotate**: DOTA v1.0 Oriented R-CNN is available at `http://localhost:8005` through the `inference-mmrotate` service and is selectable from imagery upload.
 - **LSKNet**: Large Selective Kernel Network for DOTA is available at `http://localhost:8006` through the `inference-lsknet` service.
 - **SAM 2**: Meta SAM 2.1 Hiera (tiny / small / base+ / large) is available at `http://localhost:8007` through the `inference-sam2` service. The `/detect` endpoint operates in two modes selected automatically by the worker — see [Grounded SAM 2 (class-tagged segmentation)](#grounded-sam-2-class-tagged-segmentation) below.
+- **SAM 3**: `inference-sam3` adds text-prompted open-vocabulary segmentation for RGB chips, 6+ band multispectral GeoTIFF chips, VV/VH SAR chips via a TerraMind RGB proxy, and `/detect_video` for SAM3.1 Object Multiplex FMV tracking. It returns normalized HBBs, mask-derived normalized OBBs, COCO RLE masks, `original_class`, coarse `parent_class`, and optional DINOv3/Prithvi/TerraMind metadata.
 - **Stability**: Sequential PTX JIT warmups are performed on startup for MMRotate and LSKNet to prevent API timeouts during initial kernel compilation on new GPUs.
-- **Policy**: optical-defense taxonomy enriches detections with parent classes and review metadata; official LAE-80C vocabulary detections are not hard-suppressed by the distractor policy.
+- **Policy**: open-vocabulary — every label a model emits is preserved as `original_class`, with a coarse `parent_class` cluster for UI grouping. No per-class threshold and no distractor suppression by default.
 - **Input**: `multipart/form-data` with `image` (PNG/JPEG, RGB) + `metadata` (JSON string)
 - **Output**: `{"status": "success", "detections": [{class, bbox, confidence}], "processing_time_ms": ...}`
 - **Health**: `GET /health` returns active runtime, engine path, engine availability, batcher stats, warmup result, torch/CUDA info, model availability, SAHI availability, and device
@@ -290,9 +292,9 @@ When tiling fires the response sets `"internal_tiled": true` and includes `"infe
 
 Current detection responses also include `original_class`, `parent_class`, `calibrated_confidence`, `review_status`, `policy_review_status`, `threshold_profile`, `model_version`, `taxonomy_version`, provider confirmation metadata, `prompt_profile`, and prompt chunk metadata. `GET /health` includes the active detection policy, provider model/config details, Grounding DINO model ID, processor status, Transformers version, and LAE prompt profile.
 
-### Grounded SAM 2 (class-tagged segmentation)
+### Grounded SAM Family (class-tagged segmentation)
 
-SAM 2 has no classification head — it produces class-agnostic masks. To make its output useful as part of the detection pipeline, the worker drives SAM 2 with the boxes produced by the *other* selected providers on the same chip ("Grounded SAM" pattern, [facebookresearch/sam2 docs](https://github.com/facebookresearch/sam2)). SAM 2 then returns one tight mask per input box, tagged with that box's class.
+SAM 2 has no classification head, and SAM3 can also refine boxes into class-tagged masks. To make their output useful as part of the detection pipeline, the worker drives grounded SAM providers with the boxes produced by the *other* selected providers on the same chip. SAM then returns one tight mask per input box, tagged with that box's class.
 
 **`/detect` modes** (selected automatically by the worker — no config needed):
 
@@ -307,9 +309,223 @@ SAM 2 has no classification head — it produces class-agnostic masks. To make i
 2. Phase 2: union their detections into a `prompt_boxes` payload (capped at 256 boxes/chip, sorted by source confidence) and post the chip to SAM 2 with that metadata.
 3. Fallbacks: SAM 2 selected alone → unprompted auto mode. SAM 2 selected with others but no phase-1 boxes on a chip → unprompted auto mode for that chip. Phase-1 provider failures → logged and skipped, surviving boxes still drive SAM 2.
 
-**Adding another grounded-by-prompt provider in the future** is one line: add the provider name to `GROUNDED_PROVIDERS` in [backend/worker.py](backend/worker.py). The two-phase dispatch and the consensus-exempt safety net pick it up automatically — no other code changes.
+**Adding another grounded-by-prompt provider in the future** is one line: add the provider name to `GROUNDED_PROVIDERS` in [backend/worker.py](backend/worker.py). `sam3` is already included alongside `sam2`; the two-phase dispatch and the consensus-exempt safety net pick it up automatically.
 
-**Cross-provider consensus** (`apply_confirmation_policy`): grounded SAM 2 detections inherit the source detector's `parent_class`, so they cross-confirm naturally with the originating box in `deduplicate_detections` → `confirmation_status: "confirmed"`, `confirmation_reason: "cross_provider"`. The `CONSENSUS_EXEMPT_PROVIDERS = {"sam2"}` set keeps auto-mode `segment` outputs from being dropped on chips where SAM 2 ran without prompts.
+**Cross-provider consensus** (`apply_confirmation_policy`): grounded SAM detections inherit the source detector's `parent_class`, so they cross-confirm naturally with the originating box in `deduplicate_detections` → `confirmation_status: "confirmed"`, `confirmation_reason: "cross_provider"`. The `CONSENSUS_EXEMPT_PROVIDERS = {"sam2", "sam3"}` set keeps auto-mode/open-vocabulary SAM outputs from being dropped when they run without corroborating detectors.
+
+### SAM 3 — Open-Vocabulary RGB / Multispectral / SAR / FMV
+
+`inference-sam3` is a single FastAPI service that bundles five pretrained models — **no training, no fine-tuning, weights-only**:
+
+| Component | Model ID | Size (FP16) | Role |
+|---|---|---|---|
+| **SAM 3 image** | `facebook/sam3.1` (or `facebook/sam3`) | ~1.5 GB | Promptable concept segmentation — text + image-exemplar prompts, returns `{masks, boxes, scores}` for every matching instance ([HF docs](https://huggingface.co/docs/transformers/main/en/model_doc/sam3)) |
+| **SAM 3.1 video** | `build_sam3_multiplex_video_predictor()` | ~1.5 GB | Object Multiplex multi-object tracker — joint propagation in shared memory, ~7× faster than per-object tracking at 128 objects on H100 ([release notes](https://github.com/facebookresearch/sam3/blob/main/RELEASE_SAM3p1.md)) |
+| **DINOv3-SAT-L** | `facebook/dinov3-vitl16-pretrain-sat493m` | ~600 MB | Frozen embedder — 1024-d CLS tokens trained on 493 M Maxar 0.6 m chips ([HF card](https://huggingface.co/facebook/dinov3-vitl16-pretrain-sat493m)) |
+| **DINOv3-LVD-L** *(opt-in)* | `facebook/dinov3-vitl16-pretrain-lvd1689m` | ~600 MB | Frozen embedder for FMV / oblique imagery ([HF card](https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m)) |
+| **Prithvi-EO-2.0 heads** *(opt-in)* | `Prithvi-EO-2.0-300M-TL-Sen1Floods11` · `Prithvi-EO-2.0-300M-BurnScars` · `Prithvi-EO-1.0-100M-multi-temporal-crop-classification` | ~3 GB total | Multispectral overlays — flood / water (3-class), burn scar (binary), 13 CDL crop classes (3-timestep) |
+| **TerraMind-1.0-large** *(opt-in)* | `ibm-esa-geospatial/TerraMind-1.0-large` | ~6 GB | SAR backbone (S1GRD VV/VH 2-band) + S1→S2L2A any-to-any generation for the SAM3 RGB proxy |
+
+#### Endpoints
+
+| Method | Path | Use |
+|---|---|---|
+| `GET`  | `/health` | Lazy-load status; lists every loaded model and its model id |
+| `POST` | `/detect` | Per-chip image segmentation — RGB, multispectral, or SAR (multipart `image` + JSON `metadata`) |
+| `POST` | `/detect_video` | FMV tracking — multipart `video` (or `metadata.video_path`); streams `application/x-ndjson`, one record per frame×track |
+
+#### Per-modality contract (image)
+
+The worker auto-selects modality from the raster; callers can override via `metadata.modality`.
+
+| Modality | `metadata.modality` | Chip format | Pipeline |
+|---|---|---|---|
+| **Optical RGB satellite / aerial** | `rgb` *(default)* | uint8 PNG (1024×1024 from the worker's `chip_to_uint8_rgb`) | SAM3 text or box prompts → mask + bbox + OBB + DINOv3-SAT embedding |
+| **Multispectral (HLS-6 / S2-L2A)** | `multispectral` | float32 6-band GeoTIFF — Blue, Green, Red, Narrow-NIR, SWIR-1, SWIR-2 (Prithvi `constant_scale=0.0001`) | Resize to 224 → Prithvi flood + burn → SAM3 on the RGB preview → optional 3-timestep crop classifier when `metadata.hls_timesteps == 3` |
+| **SAR (Sentinel-1 GRD)** | `sar` | float32 2-band GeoTIFF (VV, VH; dB clipped to [-30, 0] then linear-stretched to [0, 1]) | TerraMind S1→S2L2A → bands 3,2,1 RGB preview → SAM3 prompts on the synthetic preview, `confidence` capped at `SAM3_SAR_CONF_CAP=0.85`, `sar_proxy: true` and `review_status: review_candidate` always set |
+| **FMV (video)** | sent via `/detect_video` | MP4 / MOV / TS / AVI / MPEG-TS | SAM 3.1 Object Multiplex session — `start_session → add_prompt(text) → handle_stream_request(propagate_in_video) → close_session`. One DINOv3-LVD embedding per track on its first frame. |
+
+#### Output schema (per detection)
+
+```json
+{
+  "class": "building",
+  "original_class": "a building",
+  "parent_class": "building",
+  "bbox": [cx_norm, cy_norm, w_norm, h_norm],
+  "obb": [x1, y1, ..., x4, y4],          // 8-elem normalized xyxyxyxy
+  "obb_format": "yolo_obb_normalized_xyxyxyxy",
+  "obb_source": "mask_min_area_rect",     // or "hbb_fallback"
+  "obb_angle_deg": -59.5,
+  "obb_area_px": 1861.5,
+  "edge_truncated": false,
+  "confidence": 0.887,
+  "mask_rle": {"size":[H,W],"counts":"<base64 COCO RLE>"},
+  "area": 1938,                            // mask area in pixels
+  "modality": "rgb",
+  "task": "sam3_open_vocab_object_detection",
+  "embedding": {
+    "model": "facebook/dinov3-vitl16-pretrain-sat493m",
+    "dim": 1024,
+    "fp16_b64": "<base64 fp16 vector>"
+  },
+  "prithvi_labels": ["water", "crop:corn"],     // multispectral path only
+  "sar_proxy": false,                            // true on SAR (synthetic RGB)
+  "terramind_embedding": null                    // 768-d on SAR when TerraMind loaded
+}
+```
+
+The video endpoint streams one JSON object per frame×track with the same shape plus `frame_index` and `track_id`.
+
+#### Open vocabulary — every text phrase is a label
+
+The platform is open-vocab by construction: SAM 3 was trained on **~4 M unique noun-phrase concepts** from the SA-Co dataset, so the prompt *is* the label. Defaults are auto-selected per modality:
+
+| Profile | Auto-applied to | Source vocabularies | Count |
+|---|---|---|---|
+| `satellite_v1` | `rgb` · `multispectral` · `sar` | xView · DOTA v2.0 · DIOR · fMoW · FAIR1M · HRSC2016 ship-types · RarePlanes attributes (deduped) | **214 prompts** ([prompts/satellite_v1.json](inference-sam3/prompts/satellite_v1.json)) |
+| `ground_v1` | `fmv` | COCO 2017 · Objects365 v2 + LVIS v1 curated extension | **576 prompts** ([prompts/ground_v1.json](inference-sam3/prompts/ground_v1.json)) |
+
+Override priority (each step skips the rest):
+
+1. `metadata.text_prompts: ["..."]` — arbitrary list.
+2. `metadata.prompt_profile: "satellite_v1"|"ground_v1"|"<custom>"` — pick a shipped profile or a custom `<custom>.json` next to it.
+3. `SAM3_LABEL_FILE=/app/prompts/custom.json` — env-pinned override.
+4. **Auto-select** by `metadata.modality` (FMV → `ground_v1`, everything else → `satellite_v1`).
+
+All prompts pass through trim → lowercase → dedupe-preserve-order → cap at `SAM3_MAX_PROMPTS_PER_REQUEST` (default 1024). Empty resolved list → HTTP 400. To regenerate the JSONs from the source taxonomies, run `python prompts/_build_satellite_v1.py` or `python prompts/_build_ground_v1.py` inside `inference-sam3/`.
+
+#### Backend integration — already wired
+
+| Hook | Behavior |
+|---|---|
+| `INFERENCE_PROVIDERS["sam3"]` in [backend/worker.py:46](backend/worker.py#L46) | Provider key registered with the URL `INFERENCE_SAM3_URL` |
+| `GROUNDED_PROVIDERS = {"sam2", "sam3"}` in [backend/worker.py:732](backend/worker.py#L732) | SAM3 also receives `prompt_boxes` from phase-1 detectors when run alongside YOLO/LAE-DINO/MMRotate/LSKNet |
+| `CONSENSUS_EXEMPT_PROVIDERS = {"sam2", "sam3"}` in [backend/worker.py:498](backend/worker.py#L498) | Open-vocab masks survive single-provider runs |
+| `_emit_chip_payload` in [backend/worker.py:896](backend/worker.py#L896) | Emits 2-band SAR / 6-band MSI GeoTIFFs for SAM3-only chips, RGB PNG otherwise |
+| `process_fmv` Celery task in [backend/worker.py:1450](backend/worker.py#L1450) | Streams NDJSON detections from `/detect_video` into the `fmv_detections` table |
+| `_KNOWN_INFERENCE_PROVIDERS` in [backend/main.py:3294](backend/main.py#L3294) | `sam3` accepted in `inference_providers` form fields |
+| `PROVIDER_TO_SERVICE["sam3"]` in [backend/provider_lifecycle.py:30](backend/provider_lifecycle.py#L30) | Lifecycle manager starts/stops the container on demand |
+
+#### Bringing it up
+
+```bash
+# 1. Detect host + populate SAM3_* build args (CUDA / Torch / TorchVision / arch list).
+python scripts/configure_host.py            # writes the SENTINELOS GENERATED GPU CONFIG block
+
+# 2. Make sure HF_TOKEN is in .env with approved gating for facebook/sam3.1 +
+#    facebook/dinov3-vitl16-pretrain-{sat493m,lvd1689m}.
+grep -E "^HF_TOKEN=" .env
+
+# 3. Build the image (~5–10 min depending on bandwidth + Torch wheel cache).
+COMPOSE_PROFILES=sam3 docker compose build inference-sam3
+
+# 4. Materialize all stopped containers once so the lifecycle manager can start them.
+COMPOSE_PROFILES=all docker compose create
+
+# 5. Start the service. First /detect downloads the gated weights into the
+#    sam3_models named volume (writes to /models/hf/hub).
+COMPOSE_PROFILES=sam3 docker compose up -d inference-sam3
+docker exec osint-inference-sam3-1 curl -sS http://127.0.0.1:8001/health | jq .
+
+# 6. Probe an RGB chip end-to-end.
+docker cp inference-sam3/probes/probe_chip.png osint-inference-sam3-1:/tmp/
+docker exec osint-inference-sam3-1 \
+  curl -s -F image=@/tmp/probe_chip.png \
+       -F 'metadata={"text_prompts":["a building","a road"],"modality":"rgb"}' \
+       http://127.0.0.1:8001/detect | jq '.detections | length'
+```
+
+Once weights are in the volume you can flip the runtime to fully offline:
+
+```env
+SAM3_HF_HUB_OFFLINE=1
+SAM3_TRANSFORMERS_OFFLINE=1
+```
+
+#### VRAM budget — per-component loader flags
+
+The image always loads SAM 3 image + SAM 3.1 video. Auxiliaries are env-flagged so a 16 GB GPU can run a useful subset:
+
+| Flag | Default in compose | Adds (≈ FP16) | Enables |
+|---|---|---|---|
+| `SAM3_LOAD_DINOV3_SAT` | `1` | ~0.6 GB | `embedding` field on satellite/aerial detections |
+| `SAM3_LOAD_DINOV3_LVD` | `0` | ~0.6 GB | `embedding` field on FMV tracks |
+| `SAM3_LOAD_PRITHVI` | `0` | ~3 GB | `prithvi_labels: ["water","burn_scar","crop:<class>"]` on multispectral chips |
+| `SAM3_LOAD_TERRAMIND` | `0` | ~6 GB | SAR S1→S2 generation + `terramind_embedding` (else SAM3 falls back to a deterministic SAR-as-RGB stretch) |
+| `SAM3_LOAD_OPTIONAL_MODELS` | `0` | — | Master switch — when `0`, the four flags above default off; set to `1` to flip them all on at once |
+
+Approximate steady-state VRAM observed on the smoke run (RTX 5070 Ti, 16 GB): SAM 3 + SAM 3.1 video + DINOv3-SAT-L = **~11 GB used**. Loading Prithvi + TerraMind on top pushes close to 22 GB — use a 24 GB+ GPU for the full configuration.
+
+#### `inference-sam3` service env (compose)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SAM3_DEVICE` | `auto` | Reuses the inference-sam2 device-resolution logic; set to `cuda:0` / `cpu` to override |
+| `SAM3_IMAGE_MODEL_ID` | `facebook/sam3.1` | Image checkpoint; `facebook/sam3` also valid |
+| `SAM3_USE_MULTIPLEX` | `1` | `1` = SAM 3.1 `build_sam3_multiplex_video_predictor`, `0` = plain SAM 3 |
+| `SAM3_BACKEND` | `auto` | `auto` tries `transformers.Sam3Model` then falls back to the native repo API; force with `transformers` or `native` |
+| `SAM3_TEXT_THRESHOLD` | `0.30` | Minimum SAM3 score for text-prompt detections |
+| `SAM3_BOX_THRESHOLD` | `0.25` | Minimum SAM3 score for box-prompt detections |
+| `SAM3_PRITHVI_OVERLAY_THRESHOLD` | `0.30` | Mask × Prithvi-overlay IoU at which the overlay label is appended |
+| `SAM3_SAR_CONF_CAP` | `0.85` | Hard cap on confidence for SAR detections (synthetic RGB proxy) |
+| `SAM3_OBB_OPENING_KERNEL_PCT` | `0.01` | Morphological opening kernel as a fraction of the smaller mask extent before `cv2.minAreaRect` |
+| `SAM3_OBB_MIN_AREA_PX` | `4` | Minimum contour area before falling back to HBB |
+| `SAM3_MAX_PROMPTS_PER_REQUEST` | `1024` | Cap on resolved prompts after dedupe |
+| `SAM3_DEFAULT_PROMPT_PROFILE` | *(empty → modality auto)* | Force a profile (`satellite_v1` / `ground_v1` / custom) regardless of modality |
+| `SAM3_LABEL_FILE` | *(unset)* | Optional path to a JSON file with a `prompts` array — overrides the modality-auto path |
+| `SAM3_HF_HUB_OFFLINE` / `SAM3_TRANSFORMERS_OFFLINE` | `0` | Flip to `1` once the `sam3_models` volume is populated |
+| `HF_TOKEN` | from host `.env` | Required at first run to fetch gated `facebook/sam3*` and `facebook/dinov3-vitl16-pretrain-*` checkpoints |
+
+Build-time args (`SAM3_CUDA_VERSION`, `SAM3_TORCH_INDEX_URL`, `SAM3_TORCH_VERSION`, `SAM3_TORCHVISION_VERSION`, `SAM3_TORCH_CUDA_ARCH_LIST`, `SAM3_GPU_PROFILE`) are written by `scripts/configure_host.py`.
+
+#### Sample `/detect` invocations
+
+```bash
+# A. Open-vocab RGB satellite chip (default modality=rgb)
+curl -F image=@chip.png \
+     -F 'metadata={"text_prompts":["airplane","ship","oil tanker","helipad"]}' \
+     http://inference-sam3:8001/detect | jq '.detections[] | {original_class, confidence}'
+
+# B. Multispectral 6-band HLS GeoTIFF — adds Prithvi flood + burn overlays
+#    (Prithvi loader flag must be 1)
+curl -F image=@hls6.tif \
+     -F 'metadata={"modality":"multispectral"}' \
+     http://inference-sam3:8001/detect | jq '.detections[].prithvi_labels'
+
+# C. SAR (Sentinel-1 GRD VV/VH) — TerraMind generates the optical proxy
+#    (TerraMind loader flag must be 1; otherwise the deterministic SAR-RGB
+#    stretch is used and detections are still labelled `sar_proxy: true`)
+curl -F image=@s1grd.tif \
+     -F 'metadata={"modality":"sar","text_prompts":["a ship"]}' \
+     http://inference-sam3:8001/detect | jq '.detections[] | {original_class, sar_proxy, confidence}'
+
+# D. FMV — streaming NDJSON, one record per frame × track
+curl -F video=@clip.mp4 \
+     -F 'metadata={"text_prompts":["a person","a car"],"frame_stride":2}' \
+     http://inference-sam3:8001/detect_video > tracks.ndjson
+wc -l tracks.ndjson
+```
+
+#### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Build fails with `error: externally-managed-environment` (PEP 668) | Ubuntu 24.04 base | Already fixed — Dockerfile sets `PIP_BREAK_SYSTEM_PACKAGES=1` (matches the other inference services) |
+| `/detect` 503 with `cannot import name 'Sam3Model' from 'transformers'` | `transformers` ≤ 4.57 doesn't ship SAM3 yet | The runner falls back to the native `sam3` repo API automatically. Force with `SAM3_BACKEND=native`; flip back to `transformers` after upgrading to a release that includes SAM3 |
+| `RuntimeError: mat1 and mat2 must have the same dtype, but got BFloat16 and Float` | Native model is fp32 but autocast was previously off | Already fixed — native path now wraps inference in `torch.autocast(device_type="cuda", dtype=torch.bfloat16)` |
+| `HF 401/403` during first `/detect` | `HF_TOKEN` missing or no approved gating | Apply for access at the model card pages; ensure `HF_TOKEN` is in `.env` and that compose passes it through (it does by default) |
+| `OutOfMemoryError` at startup | Loaded too many auxiliaries for the GPU | Set `SAM3_LOAD_PRITHVI=0` / `SAM3_LOAD_TERRAMIND=0` / `SAM3_LOAD_DINOV3_LVD=0`; restart the container |
+| `400 No labels supplied for SAM3` | Prompt resolver couldn't find anything | Check `metadata.text_prompts` is a non-empty list, or that the auto-select profile JSON exists at `inference-sam3/prompts/<name>.json` |
+
+#### Licenses
+
+| Component | License | Gating |
+|---|---|---|
+| SAM 3 / SAM 3.1 code + weights | [Meta SAM License](https://github.com/facebookresearch/sam3/blob/main/LICENSE) — read before commercial use | **Gated** |
+| DINOv3 weights | [Meta DINOv3 License](https://ai.meta.com/resources/models-and-libraries/dinov3-license/) | **Gated** |
+| Prithvi-EO-2.0 weights | Apache 2.0 | Open |
+| TerraMind v1 weights | Apache 2.0 | Open |
 
 ### Grounding DINO GPU Image
 
@@ -416,7 +632,7 @@ training_dataset/raw/
 
 #### Prepare
 
-The default preparation mode is now `--taxonomy optical-defense`. It collapses source-specific labels into defense parent classes, preserves original labels in `manifest.jsonl`, and keeps distractor-only tiles as hard negatives unless `--include-distractors` is set.
+The default preparation mode is `--taxonomy optical-defense` (legacy training script). It collapses source-specific labels into broad parent classes and preserves the original labels in `manifest.jsonl`. The runtime detection policy is open-vocabulary regardless of which taxonomy a checkpoint was trained against — the original label is what gets stored.
 
 ```bash
 # Verify each parser independently first — catches malformed/missing archives early.
@@ -485,7 +701,7 @@ With ~120 classes and ~1.6M labels, `yolov8n-obb.pt` (the default base) is under
 
 ### Current Promotion Policy
 
-Training promotion is blocked unless final validation recall is at least `0.525`, the current copied-run baseline. Use `--promote-anyway` only after reviewing class-wise metrics and the failure benchmark. With the defense taxonomy, `yolov8s-obb.pt` or `yolov8m-obb.pt` should be the first baselines.
+Training promotion is blocked unless final validation recall is at least `0.525`, the current copied-run baseline. Use `--promote-anyway` only after reviewing class-wise metrics and the failure benchmark. `yolov8s-obb.pt` or `yolov8m-obb.pt` are reasonable first baselines.
 
 Audit a copied run without the original dataset:
 

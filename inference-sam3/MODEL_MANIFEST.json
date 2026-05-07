@@ -1,0 +1,4 @@
+{
+  "service": "inference-sam3",
+  "note": "Populate this manifest with pinned source commits and checkpoint SHA256 values during the connected/offline packaging step."
+}

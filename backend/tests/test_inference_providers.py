@@ -29,10 +29,11 @@ def load_worker_helpers():
 def test_parse_inference_providers_accepts_mmrotate_and_dedupes():
     helpers = load_backend_main_helpers()
 
-    assert helpers["_parse_inference_providers"]("yolo,mmrotate,lae-dino,mmrotate") == [
+    assert helpers["_parse_inference_providers"]("yolo,mmrotate,lae-dino,sam3,mmrotate") == [
         "yolo",
         "mmrotate",
         "lae-dino",
+        "sam3",
     ]
 
 
@@ -61,6 +62,17 @@ def test_single_provider_high_confidence_is_discarded_in_multi_provider_run():
     result = helpers["apply_confirmation_policy"]([det], selected_provider_count=2)
 
     assert len(result) == 0
+
+
+def test_sam3_is_consensus_exempt_in_multi_provider_run():
+    helpers = load_worker_helpers()
+    det = {"providers": ["sam3"], "confidence": 0.2}
+
+    result = helpers["apply_confirmation_policy"]([det], selected_provider_count=2)
+
+    assert result == [det]
+    assert det["confirmation_status"] == "single_provider"
+    assert det["confirmation_reason"] == "consensus_exempt"
 
 
 def test_single_provider_low_confidence_is_discarded_in_multi_provider_run():

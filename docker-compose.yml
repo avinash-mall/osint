@@ -50,12 +50,15 @@ services:
       - INFERENCE_MMROTATE_URL=http://inference-mmrotate:8001
       - INFERENCE_LSKNET_URL=http://inference-lsknet:8001
       - INFERENCE_SAM2_URL=http://inference-sam2:8001
+      - INFERENCE_SAM3_URL=http://inference-sam3:8001
       - IMAGERY_PATH=/data/imagery
       - FMV_PATH=/data/fmv
       - DATASET_PATH=/data/datasets
       - PYTHONPATH=/app
       - DETECTION_THRESHOLD_PROFILE=recall_review
-      - MODEL_VERSION=geoint-yolov8-obb-optical-defense
+      - GLOBAL_CONFIDENCE_FLOOR=0.0
+      - HIGH_CONFIDENCE_THRESHOLD=0.8
+      - MODEL_VERSION=geoint-yolov8-obb-open-world
     env_file:
       - .env
     depends_on:
@@ -173,7 +176,7 @@ services:
       - CONFIDENCE_THRESHOLD=0.08
       - NMS_IOU_THRESHOLD=0.70
       - MAX_DETECTIONS_PER_CHIP=1000
-      - MODEL_VERSION=geoint-yolov8-obb-optical-defense
+      - MODEL_VERSION=geoint-yolov8-obb-open-world
     volumes:
       - ./inference:/app
       - imagery_data:/data/imagery:ro
@@ -348,6 +351,74 @@ services:
       retries: 5
       start_period: 15s
 
+  inference-sam3:
+    profiles: ["sam3", "all"]
+    build:
+      context: ./inference-sam3
+      dockerfile: Dockerfile.gpu
+      args:
+        CUDA_VERSION: ${SAM3_CUDA_VERSION:?Run python scripts/configure_host.py first}
+        TORCH_INDEX_URL: ${SAM3_TORCH_INDEX_URL:?Run python scripts/configure_host.py first}
+        TORCH_VERSION: ${SAM3_TORCH_VERSION:?Run python scripts/configure_host.py first}
+        TORCHVISION_VERSION: ${SAM3_TORCHVISION_VERSION:?Run python scripts/configure_host.py first}
+        TORCH_CUDA_ARCH_LIST: ${SAM3_TORCH_CUDA_ARCH_LIST:?Run python scripts/configure_host.py first}
+        HF_TOKEN: ${HF_TOKEN:-}
+    image: sentinelos-inference-sam3:gpu
+    gpus: all
+    environment:
+      GPU_MODEL: ${GPU_MODEL:?Run python scripts/configure_host.py first}
+      SAM3_GPU_PROFILE: ${SAM3_GPU_PROFILE:?Run python scripts/configure_host.py first}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
+      DEVICE: ${SAM3_DEVICE:-auto}
+      CUDA_UNSUPPORTED_ARCH_POLICY: ${CUDA_UNSUPPORTED_ARCH_POLICY:-cpu}
+      CPU_THREADS: auto
+      WEB_CONCURRENCY: "1"
+      SAM3_IMAGE_MODEL_ID: ${SAM3_IMAGE_MODEL_ID:-facebook/sam3.1}
+      SAM3_USE_MULTIPLEX: ${SAM3_USE_MULTIPLEX:-1}
+      DINOV3_SAT_MODEL_ID: ${DINOV3_SAT_MODEL_ID:-facebook/dinov3-vitl16-pretrain-sat493m}
+      DINOV3_LVD_MODEL_ID: ${DINOV3_LVD_MODEL_ID:-facebook/dinov3-vitl16-pretrain-lvd1689m}
+      PRITHVI_BACKBONE_ID: ${PRITHVI_BACKBONE_ID:-ibm-nasa-geospatial/Prithvi-EO-2.0-600M-TL}
+      TERRAMIND_MODEL_ID: ${TERRAMIND_MODEL_ID:-terramind_v1_large}
+      SAM3_TEXT_THRESHOLD: "0.30"
+      SAM3_BOX_THRESHOLD: "0.25"
+      SAM3_PRITHVI_OVERLAY_THRESHOLD: "0.30"
+      SAM3_SAR_CONF_CAP: "0.85"
+      SAM3_OBB_OPENING_KERNEL_PCT: "0.01"
+      SAM3_OBB_MIN_AREA_PX: "4"
+      SAM3_MAX_PROMPTS_PER_REQUEST: "1024"
+      # Per-component runtime loader flags. Defaults below match a 16 GB GPU
+      # (RTX 5070 Ti / 4060 Ti / similar): SAM3 + DINOv3-SAT for satellite chips,
+      # everything else opt-in via env. Flip to 1 on 24 GB+ GPUs.
+      SAM3_LOAD_OPTIONAL_MODELS: ${SAM3_LOAD_OPTIONAL_MODELS:-0}
+      SAM3_LOAD_DINOV3_SAT: ${SAM3_LOAD_DINOV3_SAT:-1}
+      SAM3_LOAD_DINOV3_LVD: ${SAM3_LOAD_DINOV3_LVD:-0}
+      SAM3_LOAD_PRITHVI:    ${SAM3_LOAD_PRITHVI:-0}
+      SAM3_LOAD_TERRAMIND:  ${SAM3_LOAD_TERRAMIND:-0}
+      MODEL_VERSION: sam3.1-image+video+dinov3-sat-l+prithvi+terramind
+      HF_HOME: /models/hf
+      HUGGINGFACE_HUB_CACHE: /models/hf/hub
+      TORCH_HOME: /models/torch
+      XDG_CACHE_HOME: /models/cache
+      # First-run: allow online HF downloads into /models (sam3_models volume).
+      # Flip both to "1" once the volume is populated to enforce offline.
+      HF_HUB_OFFLINE: ${SAM3_HF_HUB_OFFLINE:-0}
+      TRANSFORMERS_OFFLINE: ${SAM3_TRANSFORMERS_OFFLINE:-0}
+      HF_TOKEN: ${HF_TOKEN:?HF_TOKEN required for gated facebook/sam3.1 + DINOv3 weights}
+    volumes:
+      - ./inference-sam3:/app
+      - ./backend/detection_policy.py:/app/detection_policy.py:ro
+      - sam3_models:/models
+      - imagery_data:/data/imagery:ro
+      - fmv_data:/data/fmv:ro
+    working_dir: /app
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import socket; s = socket.socket(); s.settimeout(2); exit(0 if s.connect_ex((\"127.0.0.1\", 8001)) == 0 else 1)' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
   redis:
     image: redis:alpine
     healthcheck:
@@ -380,12 +451,15 @@ services:
       - INFERENCE_MMROTATE_URL=http://inference-mmrotate:8001
       - INFERENCE_LSKNET_URL=http://inference-lsknet:8001
       - INFERENCE_SAM2_URL=http://inference-sam2:8001
+      - INFERENCE_SAM3_URL=http://inference-sam3:8001
       - IMAGERY_PATH=/data/imagery
       - FMV_PATH=/data/fmv
       - DATASET_PATH=/data/datasets
       - PYTHONPATH=/app
       - DETECTION_THRESHOLD_PROFILE=recall_review
-      - MODEL_VERSION=geoint-yolov8-obb-optical-defense
+      - GLOBAL_CONFIDENCE_FLOOR=0.0
+      - HIGH_CONFIDENCE_THRESHOLD=0.8
+      - MODEL_VERSION=geoint-yolov8-obb-open-world
       - INFERENCE_CHIP_SIZE=1024
       - INFERENCE_CHIP_OVERLAP=512
       - MAX_INFERENCE_CHIPS=0
@@ -446,3 +520,4 @@ volumes:
   mmrotate_models:
   lsknet_models:
   sam2_models:
+  sam3_models:

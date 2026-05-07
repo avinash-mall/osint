@@ -16,12 +16,16 @@ from pathlib import Path
 from typing import Any
 
 from detection_policy import (
-    DEFENSE_PARENT_CLASSES,
-    DISTRACTOR_PARENT_CLASSES,
+    PARENT_CLASSES as DEFENSE_PARENT_CLASSES,   # legacy alias — open-vocab clusters
     TAXONOMY_VERSION,
     active_detection_policy,
     parent_class_for_label,
 )
+
+# Open-vocabulary policy no longer has a fixed distractor list. Kept as an
+# empty tuple so legacy training-side checks in this script remain syntactically
+# valid; nothing is suppressed at runtime.
+DISTRACTOR_PARENT_CLASSES: tuple[str, ...] = ()
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

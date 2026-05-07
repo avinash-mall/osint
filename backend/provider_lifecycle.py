@@ -27,6 +27,7 @@ PROVIDER_TO_SERVICE = {
     "mmrotate": "inference-mmrotate",
     "lsknet": "inference-lsknet",
     "sam2": "inference-sam2",
+    "sam3": "inference-sam3",
 }
 
 PROVIDER_HEALTH_URLS = {
@@ -35,6 +36,7 @@ PROVIDER_HEALTH_URLS = {
     "mmrotate": os.getenv("INFERENCE_MMROTATE_URL", "http://inference-mmrotate:8001"),
     "lsknet": os.getenv("INFERENCE_LSKNET_URL", "http://inference-lsknet:8001"),
     "sam2": os.getenv("INFERENCE_SAM2_URL", "http://inference-sam2:8001"),
+    "sam3": os.getenv("INFERENCE_SAM3_URL", "http://inference-sam3:8001"),
 }
 
 LIFECYCLE_ENABLED = os.getenv("PROVIDER_LIFECYCLE_ENABLED", "true").strip().lower() in {

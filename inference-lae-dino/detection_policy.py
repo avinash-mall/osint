@@ -1,3 +1,27 @@
+"""Open-vocabulary detection policy.
+
+This module replaces the previous defense-only taxonomy with an open-vocabulary
+policy: every label a model emits is accepted as a first-class object class.
+There is **no per-class confidence threshold, no enabled/disabled distinction,
+and no distractor suppression** — the only filter is the optional
+``GLOBAL_CONFIDENCE_FLOOR`` env var (default ``0.0``: accept everything).
+
+The public surface (function names + return-shapes) is unchanged so existing
+callers in ``backend/worker.py``, ``backend/main.py``, ``backend/tracker.py``
+and the four ``inference-*`` services continue to work without edits.
+
+What changed conceptually:
+
+* ``DEFENSE_PARENT_CLASSES`` / ``DISTRACTOR_PARENT_CLASSES`` are gone.
+* ``parent_class_for_label`` returns a broad-but-open category (aircraft,
+  vessel, vehicle, building, …, **or the normalized label itself** when no
+  cluster matches). Nothing is collapsed to ``"unknown"`` any more.
+* ``detection_decision`` always returns ``class_enabled=True`` and a
+  ``review_status`` of either ``"high_confidence"`` (≥ ``HIGH_CONFIDENCE_THRESHOLD``)
+  or ``"review_candidate"`` — never ``"below_class_threshold"`` /
+  ``"disabled_distractor"`` unless the operator explicitly raises the floor.
+"""
+
 from __future__ import annotations
 
 import json
@@ -7,123 +31,42 @@ from functools import lru_cache
 from typing import Any
 
 
-TAXONOMY_VERSION = os.getenv("DETECTION_TAXONOMY_VERSION", "optical-defense-v1")
-DEFAULT_MODEL_VERSION = os.getenv("MODEL_VERSION", "geoint-yolov8-obb-optical-defense")
+TAXONOMY_VERSION = os.getenv("DETECTION_TAXONOMY_VERSION", "open-world-v1")
+DEFAULT_MODEL_VERSION = os.getenv("MODEL_VERSION", "open-vocab-multi-model")
 
-DEFENSE_PARENT_CLASSES = (
-    "aircraft",
-    "ship",
-    "vehicle",
-    "military_vehicle",
-    "storage_tank",
-    "bridge",
-    "harbor",
-    "airfield",
-    "building",
-    "infrastructure",
+
+# ---------------------------------------------------------------------------
+# Coarse open-vocabulary categories.
+#
+# These are *clusters* used only for UI grouping / dedupe / threat-routing —
+# they are NOT a closed taxonomy. ``parent_class_for_label`` falls back to
+# returning the normalized label itself when no cluster matches.
+# ---------------------------------------------------------------------------
+PARENT_CLASSES: tuple[str, ...] = (
+    # Geospatial
+    "aircraft", "vessel", "vehicle", "train",
+    "building", "infrastructure", "storage_tank",
+    "bridge", "harbor", "airfield",
+    "recreation", "vegetation", "water",
+    # Ground / FMV
+    "person", "animal", "food", "furniture", "household",
+    "electronic", "tool", "clothing", "plant", "sport",
+    # Generic fall-throughs
+    "segment", "object",
 )
 
-DISTRACTOR_PARENT_CLASSES = ("dam", "recreation", "water", "unknown")
-ALL_PARENT_CLASSES = DEFENSE_PARENT_CLASSES + DISTRACTOR_PARENT_CLASSES
 
 SOURCE_PREFIXES = (
-    "xview",
-    "dota",
-    "fair1m",
-    "fmow",
-    "rareplanes",
-    "dior",
-    "sodaa",
-    "hrsc",
-    "hrsc2016",
-    "local",
+    "xview", "dota", "fair1m", "fmow", "rareplanes", "dior",
+    "sodaa", "hrsc", "hrsc2016", "lvis", "coco", "objects365", "local",
 )
-
-RECREATION_TERMS = (
-    "baseball",
-    "basketball",
-    "tennis",
-    "soccer",
-    "football",
-    "golf",
-    "stadium",
-    "swimming_pool",
-    "swimming",
-    "ground_track",
-    "groundtrack",
-    "groundtrackfield",
-    "baseballfield",
-    "basketballcourt",
-    "tenniscourt",
-    "golffield",
-    "soccer_ball_field",
-    "amusement",
-    "park",
-    "zoo",
-    "race_track",
-)
-
-
-THRESHOLD_PROFILES: dict[str, dict[str, Any]] = {
-    "recall_review": {
-        "global_confidence_floor": 0.10,
-        "high_confidence_threshold": 0.55,
-        "enabled_parent_classes": DEFENSE_PARENT_CLASSES,
-        "class_thresholds": {
-            "aircraft": 0.12,
-            "ship": 0.12,
-            "vehicle": 0.10,
-            "military_vehicle": 0.10,
-            "storage_tank": 0.15,
-            "bridge": 0.18,
-            "harbor": 0.18,
-            "airfield": 0.20,
-            "building": 0.25,
-            "infrastructure": 0.25,
-        },
-    },
-    "balanced": {
-        "global_confidence_floor": 0.18,
-        "high_confidence_threshold": 0.65,
-        "enabled_parent_classes": DEFENSE_PARENT_CLASSES,
-        "class_thresholds": {
-            "aircraft": 0.22,
-            "ship": 0.22,
-            "vehicle": 0.20,
-            "military_vehicle": 0.18,
-            "storage_tank": 0.25,
-            "bridge": 0.28,
-            "harbor": 0.30,
-            "airfield": 0.30,
-            "building": 0.35,
-            "infrastructure": 0.35,
-        },
-    },
-    "high_precision": {
-        "global_confidence_floor": 0.35,
-        "high_confidence_threshold": 0.75,
-        "enabled_parent_classes": DEFENSE_PARENT_CLASSES,
-        "class_thresholds": {
-            "aircraft": 0.45,
-            "ship": 0.45,
-            "vehicle": 0.42,
-            "military_vehicle": 0.38,
-            "storage_tank": 0.48,
-            "bridge": 0.50,
-            "harbor": 0.52,
-            "airfield": 0.52,
-            "building": 0.60,
-            "infrastructure": 0.60,
-        },
-    },
-}
 
 
 def normalize_label(value: Any) -> str:
-    text = str(value or "unknown").strip().lower()
-    text = re.sub(r"[^a-z0-9]+", "_", text)
+    text = str(value or "object").strip().lower()
+    text = re.sub(r"[^a-z0-9:]+", "_", text)        # keep ":" so "crop:corn" survives
     text = re.sub(r"_+", "_", text).strip("_")
-    return text or "unknown"
+    return text or "object"
 
 
 def strip_source_prefix(label: str) -> str:
@@ -139,52 +82,109 @@ def _has_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term in text for term in terms)
 
 
+# Cluster signatures. Order matters — first match wins.
+_CLUSTER_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("aircraft", (
+        "aircraft", "airplane", "plane", "helicopter", "fixed_wing",
+        "boeing", "airbus", "a220", "a321", "a330", "a350", "arj21",
+        "c919", "drone", "uav", "glider", "biplane", "jet",
+    )),
+    ("vessel", (
+        "ship", "boat", "vessel", "tanker", "barge", "tug", "ferry",
+        "yacht", "hovercraft", "cargo_ship", "fishing_boat",
+        "motorboat", "sailboat", "engineering_ship",
+    )),
+    ("airfield", ("airport", "runway", "airstrip", "airfield", "helipad", "hangar")),
+    ("harbor",   ("harbor", "harbour", "port", "shipyard", "dry_dock", "container_crane")),
+    ("bridge",   ("bridge", "overpass", "viaduct", "aqueduct")),
+    ("storage_tank", ("storage_tank", "storagetank", "oil_tank", "fuel_tank")),
+    ("train", (
+        "locomotive", "trainstation", "railway", "passenger_car",
+        "cargo_car", "flat_car", "train",
+    )),
+    ("vehicle", (
+        "vehicle", "truck", "car", "bus", "van", "trailer", "tractor",
+        "excavator", "grader", "bulldozer", "loader", "mixer",
+        "stacker", "carrier", "mobile_crane", "haul_truck",
+        "pickup_truck", "utility_truck", "small_car", "passenger_car",
+        "minivan", "motorcycle", "bicycle",
+    )),
+    ("building", (
+        "building", "facility", "depot", "shed", "hut", "tent",
+        "terminal", "warehouse", "house", "residential", "factory",
+        "school", "hospital", "office",
+    )),
+    ("infrastructure", (
+        "container", "crane", "chimney", "windmill", "tower", "pylon",
+        "substation", "powerplant", "plant", "construction", "roundabout",
+        "intersection", "expressway", "pipeline", "antenna", "dish",
+        "solar", "transmission",
+    )),
+    ("recreation", (
+        "baseball", "basketball", "tennis", "soccer", "football",
+        "golf", "stadium", "swimming_pool", "swimming", "ground_track",
+        "groundtrack", "groundtrackfield", "amusement", "park", "zoo",
+        "race_track", "court", "field", "playground",
+    )),
+    ("vegetation", ("forest", "tree", "grassland", "vegetation", "wetlands", "shrub", "hedge")),
+    ("water", ("lake", "pond", "river", "stream", "canal", "reservoir", "flood", "water")),
+    ("person", ("person", "people", "pedestrian", "rider", "child", "man", "woman")),
+    ("animal", (
+        "dog", "cat", "horse", "cow", "sheep", "elephant", "bear",
+        "zebra", "giraffe", "bird", "animal",
+    )),
+    ("food", (
+        "banana", "apple", "sandwich", "orange", "broccoli", "carrot",
+        "hot_dog", "pizza", "donut", "cake", "food", "fruit",
+    )),
+    ("furniture", (
+        "chair", "couch", "potted_plant", "bed", "dining_table",
+        "toilet", "tv", "table", "desk", "bench",
+    )),
+    ("electronic", (
+        "laptop", "mouse", "remote", "keyboard", "cell_phone",
+        "tablet", "monitor", "printer",
+    )),
+    ("tool", ("microwave", "oven", "toaster", "sink", "refrigerator", "tool", "scissors")),
+    ("clothing", ("hat", "shirt", "jacket", "shoe", "dress", "pants", "tie", "backpack", "umbrella")),
+    ("sport", ("ball", "bat", "racket", "skateboard", "surfboard", "skis", "snowboard", "kite", "frisbee")),
+)
+
+
 def parent_class_for_label(label: Any) -> str:
+    """Return a coarse cluster for ``label`` or the normalized label itself.
+
+    Open-vocabulary: any prompt SAM3 (or another open-vocab model) emits is
+    valid. We never collapse to ``"unknown"``.
+    """
     raw = normalize_label(label)
     text = strip_source_prefix(raw)
-    if raw in ALL_PARENT_CLASSES:
+
+    if raw in PARENT_CLASSES:
         return raw
-
-    if raw.startswith("hrsc") or _has_any(text, ("warship", "warcraft", "destroyer", "frigate", "cruiser", "submarine")):
-        return "ship"
-    if text == "dam" or text.startswith("dam_") or text.endswith("_dam"):
-        return "dam"
-    if _has_any(text, RECREATION_TERMS):
-        return "recreation"
-    if _has_any(text, ("lake", "pond", "water_treatment", "flooded")):
+    if raw in {"mask", "region", "sam2_segment"}:
+        return "segment"
+    if raw == "track":
+        return "track"
+    if raw.startswith("crop:"):
+        return "vegetation"
+    if raw in {"flood", "water"}:
         return "water"
-    if _has_any(text, ("missile", "launcher", "artillery", "sam", "armored", "armoured")):
-        return "military_vehicle"
-    if text == "tank" or text.endswith("_tank") and "storage" not in text and "oil" not in text and "tank_car" not in text:
-        return "military_vehicle"
-    if _has_any(text, ("storage_tank", "storagetank")):
-        return "storage_tank"
-    if _has_any(text, ("shipping_container", "container_lot", "container_crane")):
-        return "infrastructure"
-    if (
-        _has_any(text, ("aircraft_carrier", "vessel", "boat", "tanker", "barge", "tug", "ferry", "yacht", "hovercraft", "warship", "cargo_ship", "engineering_ship", "fishing_boat", "motorboat", "sailboat"))
-        or text == "ship"
-        or text.startswith("ship_")
-        or text.endswith("_ship")
-    ):
-        return "ship"
-    if _has_any(text, ("aircraft", "airplane", "plane", "helicopter", "fixed_wing", "boeing", "airbus", "a220", "a321", "a330", "a350", "arj21", "c919")):
-        return "aircraft"
-    if _has_any(text, ("airport", "runway", "airstrip", "airfield", "helipad", "hangar")):
-        return "airfield"
-    if _has_any(text, ("harbor", "harbour", "port", "shipyard", "dry_dock")):
-        return "harbor"
-    if _has_any(text, ("bridge", "overpass")):
-        return "bridge"
-    if _has_any(text, ("vehicle", "truck", "car", "bus", "van", "trailer", "tractor", "locomotive", "railway", "excavator", "grader", "bulldozer", "loader", "mixer", "stacker", "carrier", "mobile_crane")):
-        return "vehicle"
-    if _has_any(text, ("building", "facility", "depot", "bunker", "shed", "hut", "tent", "terminal")):
-        return "building"
-    if _has_any(text, ("container", "crane", "chimney", "windmill", "tower", "pylon", "substation", "powerplant", "factory", "plant", "construction", "roundabout", "intersection", "trainstation", "expressway")):
-        return "infrastructure"
-    return "unknown"
+    if raw == "burn_scar":
+        return "vegetation"
+
+    for parent, terms in _CLUSTER_RULES:
+        if text in terms or _has_any(text, terms):
+            return parent
+
+    # Open-vocab default: keep the label itself as the class. This is the
+    # whole point of "all possible labels".
+    return raw
 
 
+# ---------------------------------------------------------------------------
+# Threshold policy — single global floor, no per-class shaping.
+# ---------------------------------------------------------------------------
 def _parse_csv_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     raw = os.getenv(name)
     if not raw:
@@ -194,6 +194,10 @@ def _parse_csv_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
 
 
 def _load_json_thresholds(name: str) -> dict[str, float]:
+    """Optional per-class overrides for callers that *want* a custom floor.
+
+    The default is empty — i.e. no per-class thresholds.
+    """
     raw = os.getenv(name, "").strip()
     if not raw:
         return {}
@@ -203,44 +207,54 @@ def _load_json_thresholds(name: str) -> dict[str, float]:
         return {}
     if not isinstance(parsed, dict):
         return {}
-    result: dict[str, float] = {}
+    out: dict[str, float] = {}
     for key, value in parsed.items():
         try:
-            result[normalize_label(key)] = float(value)
+            out[normalize_label(key)] = float(value)
         except (TypeError, ValueError):
             continue
-    return result
+    return out
 
 
 @lru_cache(maxsize=1)
 def active_detection_policy() -> dict[str, Any]:
-    profile_name = os.getenv("DETECTION_THRESHOLD_PROFILE", "recall_review").strip() or "recall_review"
-    profile = THRESHOLD_PROFILES.get(profile_name, THRESHOLD_PROFILES["recall_review"])
-    enabled = set(_parse_csv_env("ENABLED_PARENT_CLASSES", tuple(profile["enabled_parent_classes"])))
-    disabled = set(_parse_csv_env("DISABLED_PARENT_CLASSES", DISTRACTOR_PARENT_CLASSES))
-    thresholds = {normalize_label(k): float(v) for k, v in profile.get("class_thresholds", {}).items()}
-    thresholds.update(_load_json_thresholds("PER_CLASS_CONFIDENCE_OVERRIDES"))
-    global_floor = float(os.getenv("GLOBAL_CONFIDENCE_FLOOR", profile["global_confidence_floor"]))
-    high_threshold = float(os.getenv("HIGH_CONFIDENCE_THRESHOLD", profile["high_confidence_threshold"]))
+    """Open-vocab policy: single global floor, no enabled/disabled lists."""
+    profile_name = os.getenv("DETECTION_THRESHOLD_PROFILE", "open").strip() or "open"
+    global_floor = float(os.getenv("GLOBAL_CONFIDENCE_FLOOR", "0.0"))
+    high_threshold = float(os.getenv("HIGH_CONFIDENCE_THRESHOLD", "0.5"))
     return {
         "taxonomy_version": TAXONOMY_VERSION,
         "model_version": DEFAULT_MODEL_VERSION,
         "threshold_profile": profile_name,
         "global_confidence_floor": global_floor,
         "high_confidence_threshold": high_threshold,
-        "enabled_parent_classes": sorted(enabled),
-        "disabled_parent_classes": sorted(disabled),
-        "class_thresholds": thresholds,
+        "enabled_parent_classes": list(PARENT_CLASSES),  # purely informational
+        "disabled_parent_classes": [],
+        "class_thresholds": _load_json_thresholds("PER_CLASS_CONFIDENCE_OVERRIDES"),
     }
 
 
 def threshold_for_parent(parent_class: str, policy: dict[str, Any] | None = None) -> float:
     policy = policy or active_detection_policy()
     parent = normalize_label(parent_class)
-    return float(policy.get("class_thresholds", {}).get(parent, policy.get("global_confidence_floor", 0.1)))
+    return float(
+        policy.get("class_thresholds", {}).get(parent, policy.get("global_confidence_floor", 0.0))
+    )
 
 
-def detection_decision(label: Any, confidence: float | int | None, policy: dict[str, Any] | None = None) -> dict[str, Any]:
+def detection_decision(
+    label: Any,
+    confidence: float | int | None,
+    policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Evaluate ``label`` at ``confidence`` against the open-vocab policy.
+
+    Returns a record compatible with the previous closed-taxonomy contract,
+    but ``class_enabled`` is always ``True`` and ``review_status`` is never
+    ``"below_class_threshold"`` / ``"disabled_distractor"`` unless the operator
+    explicitly raised ``GLOBAL_CONFIDENCE_FLOOR`` or set
+    ``PER_CLASS_CONFIDENCE_OVERRIDES``.
+    """
     policy = policy or active_detection_policy()
     original_class = normalize_label(label)
     parent_class = parent_class_for_label(original_class)
@@ -249,11 +263,8 @@ def detection_decision(label: Any, confidence: float | int | None, policy: dict[
     except (TypeError, ValueError):
         conf = 0.0
 
-    enabled = parent_class in set(policy["enabled_parent_classes"]) and parent_class not in set(policy["disabled_parent_classes"])
     threshold = threshold_for_parent(parent_class, policy)
-    if not enabled:
-        review_status = "disabled_distractor"
-    elif conf < threshold:
+    if conf < threshold:
         review_status = "below_class_threshold"
     elif conf >= float(policy["high_confidence_threshold"]):
         review_status = "high_confidence"
@@ -265,7 +276,7 @@ def detection_decision(label: Any, confidence: float | int | None, policy: dict[
         "parent_class": parent_class,
         "calibrated_confidence": conf,
         "class_threshold": threshold,
-        "class_enabled": enabled,
+        "class_enabled": True,                  # open-vocab → always enabled
         "review_status": review_status,
         "threshold_profile": policy["threshold_profile"],
         "taxonomy_version": policy["taxonomy_version"],
@@ -273,6 +284,9 @@ def detection_decision(label: Any, confidence: float | int | None, policy: dict[
     }
 
 
-def should_emit_detection(label: Any, confidence: float | int | None, policy: dict[str, Any] | None = None) -> bool:
+def should_emit_detection(
+    label: Any, confidence: float | int | None, policy: dict[str, Any] | None = None
+) -> bool:
+    """Open-vocab: emit unless the operator explicitly raised the floor."""
     decision = detection_decision(label, confidence, policy)
-    return decision["class_enabled"] and decision["review_status"] != "below_class_threshold"
+    return decision["review_status"] != "below_class_threshold"
