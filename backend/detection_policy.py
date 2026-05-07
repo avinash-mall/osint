@@ -21,6 +21,7 @@ DEFENSE_PARENT_CLASSES = (
     "airfield",
     "building",
     "infrastructure",
+    "segment",
 )
 
 DISTRACTOR_PARENT_CLASSES = ("dam", "recreation", "water", "unknown")
@@ -80,6 +81,7 @@ THRESHOLD_PROFILES: dict[str, dict[str, Any]] = {
             "airfield": 0.20,
             "building": 0.25,
             "infrastructure": 0.25,
+            "segment": 0.50,
         },
     },
     "balanced": {
@@ -97,6 +99,7 @@ THRESHOLD_PROFILES: dict[str, dict[str, Any]] = {
             "airfield": 0.30,
             "building": 0.35,
             "infrastructure": 0.35,
+            "segment": 0.65,
         },
     },
     "high_precision": {
@@ -114,6 +117,7 @@ THRESHOLD_PROFILES: dict[str, dict[str, Any]] = {
             "airfield": 0.52,
             "building": 0.60,
             "infrastructure": 0.60,
+            "segment": 0.80,
         },
     },
 }
@@ -145,6 +149,8 @@ def parent_class_for_label(label: Any) -> str:
     if raw in ALL_PARENT_CLASSES:
         return raw
 
+    if raw in {"mask", "region", "sam2_segment"}:
+        return "segment"
     if raw.startswith("hrsc") or _has_any(text, ("warship", "warcraft", "destroyer", "frigate", "cruiser", "submarine")):
         return "ship"
     if text == "dam" or text.startswith("dam_") or text.endswith("_dam"):

@@ -492,6 +492,9 @@ def _merge_provider_into(kept: dict, dropped: dict) -> None:
         kept["provider_confidences"] = pc
 
 
+CONSENSUS_EXEMPT_PROVIDERS = {"sam2"}
+
+
 def apply_confirmation_policy(
     detections: list[dict],
     selected_provider_count: int,
@@ -501,7 +504,9 @@ def apply_confirmation_policy(
 
     Single-provider ingest keeps its historical behavior. For multi-provider
     ingest, a detection is confirmed when another provider overlaps the same
-    object. Detections without cross-provider agreement are discarded.
+    object. Detections without cross-provider agreement are discarded — except
+    for class-agnostic providers in CONSENSUS_EXEMPT_PROVIDERS (e.g. SAM2),
+    whose outputs are masks/segments that no object-detector can corroborate.
     """
     if selected_provider_count <= 1:
         return detections
@@ -510,14 +515,19 @@ def apply_confirmation_policy(
     for det in detections:
         providers = _provider_set(det)
         cross_confirmed = len(set(providers)) > 1
-        
-        if not cross_confirmed:
+        exempt = bool(set(providers) & CONSENSUS_EXEMPT_PROVIDERS)
+
+        if not cross_confirmed and not exempt:
             continue
-            
+
         confidence = float(det.get("confidence") or 0.0)
-        
-        confirmation_status = "confirmed"
-        confirmation_reason = "cross_provider"
+
+        if cross_confirmed:
+            confirmation_status = "confirmed"
+            confirmation_reason = "cross_provider"
+        else:
+            confirmation_status = "single_provider"
+            confirmation_reason = "consensus_exempt"
 
         provider_confidences = dict(det.get("provider_confidences") or {})
         for provider in providers:
@@ -526,9 +536,9 @@ def apply_confirmation_policy(
         det["confirmation_status"] = confirmation_status
         det["confirmation_reason"] = confirmation_reason
         det["provider_confidences"] = provider_confidences
-        
+
         filtered_detections.append(det)
-        
+
     return filtered_detections
 
 
