@@ -16,8 +16,9 @@ ARG LAE_DINO_SHA=44726020759dd5e72fd05d5e5c1059619ead2284
 ARG LAE_DINO_CHECKPOINT=lae_dino_swint_lae1m-28ca3a15.pth
 # Compute caps for mmcv source build. Includes sm_120 + PTX for forward compat.
 ARG TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6;8.9;9.0;12.0+PTX"
+ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 
-RUN sed -i 's/archive.ubuntu.com/azure.archive.ubuntu.com/g' /etc/apt/sources.list && \
+RUN sed -i "s|http://archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g; s|http://azure.archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" /etc/apt/sources.list && \
     apt-get update -o Acquire::Retries=10 && \
     apt-get install -y --no-install-recommends --fix-missing \
         git \

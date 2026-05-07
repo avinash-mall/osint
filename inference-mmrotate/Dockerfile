@@ -17,8 +17,9 @@ ARG TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;12.0+PTX"
 ARG MMENGINE_VERSION=0.10.5
 ARG MMDET_VERSION=3.1.0
 ARG MMROTATE_REF=dev-1.x
+ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 
-RUN sed -i 's/archive.ubuntu.com/azure.archive.ubuntu.com/g' /etc/apt/sources.list && \
+RUN sed -i "s|http://archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g; s|http://azure.archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" /etc/apt/sources.list && \
     apt-get update -o Acquire::Retries=10 && \
     apt-get install -y --no-install-recommends --fix-missing \
     python3 \

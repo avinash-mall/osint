@@ -71,6 +71,8 @@ services:
       - imagery_data:/data/imagery
       - fmv_data:/data/fmv
       - dataset_data:/data/datasets
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
     healthcheck:
       test: ["CMD-SHELL", "python3 -c 'import socket; s = socket.socket(); s.settimeout(2); exit(0 if s.connect_ex((\"127.0.0.1\", 8080)) == 0 else 1)' || exit 1"]
       interval: 10s
@@ -135,6 +137,7 @@ services:
       retries: 5
 
   inference:
+    profiles: ["yolo", "all"]
     build:
       context: ./inference
       args:
@@ -164,8 +167,9 @@ services:
       - YOLO_TRT_EXPORT_BATCHES=${YOLO_TRT_EXPORT_BATCHES:-1}
       - YOLO_TRT_WORKSPACE=${YOLO_TRT_WORKSPACE:-2}
       - DETECTION_THRESHOLD_PROFILE=recall_review
-      - CONFIDENCE_THRESHOLD=0.12
-      - NMS_IOU_THRESHOLD=0.55
+      - CONFIDENCE_THRESHOLD=0.08
+      - NMS_IOU_THRESHOLD=0.70
+      - MAX_DETECTIONS_PER_CHIP=1000
       - MODEL_VERSION=geoint-yolov8-obb-optical-defense
     volumes:
       - ./inference:/app
@@ -180,6 +184,7 @@ services:
       start_period: 15s
 
   inference-lae-dino:
+    profiles: ["lae-dino", "all"]
     build:
       context: ./inference-lae-dino
       dockerfile: Dockerfile.gpu
@@ -202,14 +207,14 @@ services:
       - LAE_PROMPT_PROFILE=official_lae80c
       - LAE_PROMPT_CHUNK_SIZE=20
       - DETECTION_THRESHOLD_PROFILE=recall_review
-      - CONFIDENCE_THRESHOLD=0.25
-      - MAX_DETECTIONS_PER_CHIP=300
+      - CONFIDENCE_THRESHOLD=0.10
+      - MAX_DETECTIONS_PER_CHIP=1000
       - LAE_BATCH_MAX_SIZE=1
       - LAE_BATCH_TIMEOUT_MS=0
       - MODEL_VERSION=grounding-dino-base
       - GROUNDING_DINO_MODEL_ID=/opt/grounding-dino
-      - GROUNDING_DINO_BOX_THRESHOLD=0.25
-      - GROUNDING_DINO_TEXT_THRESHOLD=0.25
+      - GROUNDING_DINO_BOX_THRESHOLD=0.15
+      - GROUNDING_DINO_TEXT_THRESHOLD=0.15
       - TRANSFORMERS_OFFLINE=1
       - HF_HUB_OFFLINE=1
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -228,6 +233,7 @@ services:
       start_period: 15s
 
   inference-mmrotate:
+    profiles: ["mmrotate", "all"]
     build:
       context: ./inference-mmrotate
       args:
@@ -248,8 +254,8 @@ services:
       CPU_THREADS: auto
       WEB_CONCURRENCY: "1"
       DETECTION_THRESHOLD_PROFILE: recall_review
-      MMROTATE_CONFIDENCE_THRESHOLD: "0.10"
-      MAX_DETECTIONS_PER_CHIP: "300"
+      MMROTATE_CONFIDENCE_THRESHOLD: "0.05"
+      MAX_DETECTIONS_PER_CHIP: "1000"
       MODEL_VERSION: mmrotate-oriented-rcnn-dota
       MMROTATE_CONFIG: /opt/mmrotate/configs/oriented_rcnn/oriented-rcnn-le90_r50_fpn_1x_dota.py
       MMROTATE_MODEL_DIR: /models
@@ -267,6 +273,7 @@ services:
       start_period: 15s
 
   inference-lsknet:
+    profiles: ["lsknet", "all"]
     build:
       context: ./inference-lsknet
       args:
@@ -288,8 +295,8 @@ services:
       CPU_THREADS: auto
       WEB_CONCURRENCY: "1"
       DETECTION_THRESHOLD_PROFILE: recall_review
-      LSKNET_CONFIDENCE_THRESHOLD: "0.10"
-      MAX_DETECTIONS_PER_CHIP: "300"
+      LSKNET_CONFIDENCE_THRESHOLD: "0.05"
+      MAX_DETECTIONS_PER_CHIP: "1000"
       MODEL_VERSION: lsknet-s-dota
     volumes:
       - ./inference-lsknet:/app
@@ -304,6 +311,7 @@ services:
       start_period: 15s
 
   inference-sam2:
+    profiles: ["sam2", "all"]
     build:
       context: ./inference-sam2
       args:
@@ -354,7 +362,7 @@ services:
       nofile:
         soft: 65536
         hard: 65536
-    command: celery -A worker.celery_app worker --loglevel=info -Q imagery,default
+    command: celery -A worker.celery_app worker --beat --loglevel=info -Q imagery,default
     env_file:
       - .env
     environment:
@@ -375,7 +383,7 @@ services:
       - DETECTION_THRESHOLD_PROFILE=recall_review
       - MODEL_VERSION=geoint-yolov8-obb-optical-defense
       - INFERENCE_CHIP_SIZE=1024
-      - INFERENCE_CHIP_OVERLAP=256
+      - INFERENCE_CHIP_OVERLAP=512
       - MAX_INFERENCE_CHIPS=0
       # Chip dispatch concurrency to inference providers. The Grounding DINO
       # container batches concurrent requests internally; without backend-side
@@ -389,21 +397,13 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
-      inference:
-        condition: service_started
-      inference-lae-dino:
-        condition: service_started
-      inference-mmrotate:
-        condition: service_started
-      inference-lsknet:
-        condition: service_started
-      inference-sam2:
-        condition: service_started
     volumes:
       - ./backend:/app
       - imagery_data:/data/imagery
       - fmv_data:/data/fmv
       - dataset_data:/data/datasets
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f celery || exit 1"]
       interval: 30s
@@ -422,11 +422,6 @@ services:
       - backend
       - titiler
       - martin
-      - inference
-      - inference-lae-dino
-      - inference-mmrotate
-      - inference-lsknet
-      - inference-sam2
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1/ || exit 1"]
       interval: 10s

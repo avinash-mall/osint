@@ -52,6 +52,10 @@ MMROTATE_CHECKPOINT = os.getenv("MMROTATE_CHECKPOINT", DEFAULT_CHECKPOINT)
 MMROTATE_CHECKPOINT_URL = os.getenv("MMROTATE_CHECKPOINT_URL", DEFAULT_CHECKPOINT_URL)
 MMROTATE_CONFIDENCE_THRESHOLD = float(os.getenv("MMROTATE_CONFIDENCE_THRESHOLD", "0.10"))
 MAX_DETECTIONS_PER_CHIP = int(os.getenv("MAX_DETECTIONS_PER_CHIP", "300"))
+INFERENCE_INTERNAL_TILING = os.getenv("INFERENCE_INTERNAL_TILING", "off").strip().lower()
+INFERENCE_TILE_SIZE = int(os.getenv("INFERENCE_TILE_SIZE", "1024"))
+INFERENCE_TILE_OVERLAP = int(os.getenv("INFERENCE_TILE_OVERLAP", "512"))
+INFERENCE_TILE_NMS_IOU = float(os.getenv("INFERENCE_TILE_NMS_IOU", "0.5"))
 MODEL_VERSION = os.getenv("MODEL_VERSION", "mmrotate-oriented-rcnn-dota")
 GPU_MODEL = os.getenv("GPU_MODEL", "unknown")
 MMROTATE_GPU_PROFILE = os.getenv("MMROTATE_GPU_PROFILE", "unknown")
@@ -324,6 +328,152 @@ def detections_from_mmrotate_result(result: Any, image_size: tuple[int, int]) ->
     return detections
 
 
+def _aabb_iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    ix1 = max(a[0], b[0]); iy1 = max(a[1], b[1])
+    ix2 = min(a[2], b[2]); iy2 = min(a[3], b[3])
+    iw = max(0.0, ix2 - ix1); ih = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    area_a = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
+    area_b = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _cross_tile_nms(detections: list[dict[str, Any]], iou_threshold: float) -> list[dict[str, Any]]:
+    if not detections:
+        return []
+    boxes: list[tuple[float, float, float, float]] = []
+    for det in detections:
+        if det.get("obb") and len(det["obb"]) == 8:
+            xs = det["obb"][0::2]; ys = det["obb"][1::2]
+            boxes.append((min(xs), min(ys), max(xs), max(ys)))
+        else:
+            cx, cy, w, h = det["bbox"][:4]
+            boxes.append((cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2))
+    order = sorted(range(len(detections)), key=lambda i: float(detections[i].get("confidence", 0.0)), reverse=True)
+    keep: list[int] = []
+    while order:
+        i = order.pop(0)
+        keep.append(i)
+        order = [
+            j for j in order
+            if detections[i].get("class") != detections[j].get("class")
+            or _aabb_iou(boxes[i], boxes[j]) < iou_threshold
+        ]
+    return [detections[i] for i in keep]
+
+
+def _plan_tiles(width: int, height: int, tile: int, overlap: int) -> list[tuple[int, int, int, int]]:
+    step = max(1, tile - overlap)
+    xs: list[int] = []
+    x = 0
+    while x + tile < width:
+        xs.append(x); x += step
+    xs.append(max(0, width - tile))
+    ys: list[int] = []
+    y = 0
+    while y + tile < height:
+        ys.append(y); y += step
+    ys.append(max(0, height - tile))
+    xs = sorted(set(xs)); ys = sorted(set(ys))
+    plan: list[tuple[int, int, int, int]] = []
+    for y in ys:
+        for x in xs:
+            tw = min(tile, width - x)
+            th = min(tile, height - y)
+            if tw <= 0 or th <= 0:
+                continue
+            plan.append((x, y, tw, th))
+    return plan
+
+
+def _should_internally_tile(image_size: tuple[int, int]) -> bool:
+    if INFERENCE_INTERNAL_TILING == "off":
+        return False
+    img_w, img_h = image_size
+    if INFERENCE_INTERNAL_TILING == "on":
+        return True
+    return max(img_w, img_h) > 2 * INFERENCE_TILE_SIZE
+
+
+def _remap_detection(det: dict[str, Any], x: int, y: int, tw: int, th: int, full_w: int, full_h: int) -> dict[str, Any]:
+    cx, cy, w, h = det["bbox"][:4]
+    det["bbox"] = [
+        max(0.0, min(1.0, (x + cx * tw) / full_w)),
+        max(0.0, min(1.0, (y + cy * th) / full_h)),
+        max(0.0, min(1.0, (w * tw) / full_w)),
+        max(0.0, min(1.0, (h * th) / full_h)),
+    ]
+    if det.get("obb") and len(det["obb"]) == 8:
+        det["obb"] = [
+            max(0.0, min(1.0, (x + det["obb"][i] * tw) / full_w)) if i % 2 == 0
+            else max(0.0, min(1.0, (y + det["obb"][i] * th) / full_h))
+            for i in range(8)
+        ]
+    return det
+
+
+def run_inference_tiled(image_array: np.ndarray, image_size: tuple[int, int], metadata: dict | None = None) -> dict[str, Any]:
+    entry = next_model_entry()
+    if entry is None:
+        raise HTTPException(status_code=503, detail=f"No MMRotate model loaded: {model_error or 'unknown error'}")
+    full_w, full_h = image_size
+    plan = _plan_tiles(full_w, full_h, INFERENCE_TILE_SIZE, INFERENCE_TILE_OVERLAP)
+    start_time = time.time()
+    merged: list[dict[str, Any]] = []
+    try:
+        import torch
+        from mmdet.apis import inference_detector
+
+        device = entry["device"]
+        on_cuda = device.startswith("cuda")
+        with entry["lock"], torch.inference_mode():
+            for (x, y, tw, th) in plan:
+                crop = image_array[y:y + th, x:x + tw]
+                if on_cuda:
+                    with torch.autocast(device_type="cuda", dtype=torch.float16):
+                        raw = inference_detector(entry["model"], crop)
+                else:
+                    raw = inference_detector(entry["model"], crop)
+                tile_dets = detections_from_mmrotate_result(raw, (tw, th))
+                for det in tile_dets:
+                    merged.append(_remap_detection(det, x, y, tw, th, full_w, full_h))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"MMRotate tiled inference failed: {exc}") from exc
+    deduped = _cross_tile_nms(merged, INFERENCE_TILE_NMS_IOU)
+    deduped.sort(key=lambda item: float(item.get("confidence") or 0.0), reverse=True)
+    if MAX_DETECTIONS_PER_CHIP > 0:
+        deduped = deduped[:MAX_DETECTIONS_PER_CHIP]
+    return {
+        "status": "success",
+        "detections": deduped,
+        "processing_time_ms": round((time.time() - start_time) * 1000, 2),
+        "model": MMROTATE_CHECKPOINT,
+        "config": MMROTATE_CONFIG,
+        "task": "rotated_detect",
+        "device": entry["device"],
+        "devices": DEVICES,
+        "gpu_model": GPU_MODEL,
+        "gpu_profile": MMROTATE_GPU_PROFILE,
+        "cuda": torch_cuda_diagnostics(),
+        "model_version": MODEL_VERSION,
+        "taxonomy_version": DETECTION_POLICY["taxonomy_version"],
+        "threshold_profile": DETECTION_POLICY["threshold_profile"],
+        "global_confidence_floor": DETECTION_POLICY["global_confidence_floor"],
+        "confidence_threshold": MMROTATE_CONFIDENCE_THRESHOLD,
+        "internal_tiled": True,
+        "inference_diagnostics": {
+            "tiles": len(plan),
+            "raw_detections": len(merged),
+            "after_cross_tile_nms": len(deduped),
+            "tile_size": INFERENCE_TILE_SIZE,
+            "tile_overlap": INFERENCE_TILE_OVERLAP,
+        },
+    }
+
+
 def run_inference(image_array: np.ndarray, image_size: tuple[int, int], metadata: dict | None = None) -> dict[str, Any]:
     entry = next_model_entry()
     if entry is None:
@@ -391,7 +541,10 @@ async def detect_objects(
         image_array, image_size = await run_in_threadpool(decode_image, contents)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid image file: {exc}") from exc
-    result = await run_in_threadpool(run_inference, image_array, image_size, meta)
+    if _should_internally_tile(image_size):
+        result = await run_in_threadpool(run_inference_tiled, image_array, image_size, meta)
+    else:
+        result = await run_in_threadpool(run_inference, image_array, image_size, meta)
     result["input_metadata"] = meta
     return result
 

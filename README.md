@@ -50,21 +50,28 @@ An open-source GEOINT exploitation platform inspired by Palantir Gotham. Ingests
 # 1. Detect this host's GPU/driver and write build settings to .env
 python scripts/configure_host.py
 
-# 2. Build all images
-docker compose build
+# 2. Build all images (use --profile all so inference Dockerfiles are built too)
+COMPOSE_PROFILES=all docker compose build
 
-# 3. Start the full stack
+# 3. Materialize all inference containers in a stopped state (one-time).
+#    Inference services are profile-gated and start on demand per upload —
+#    see "Dynamic Inference Lifecycle" below.
+COMPOSE_PROFILES=all docker compose create
+
+# 4. Start the platform (no inference containers come up by default)
 docker compose up -d
 
-# 4. Wait for databases to be healthy (~30 s), then seed
+# 5. Wait for databases to be healthy (~30 s), then seed
 docker exec -it osint-backend-1 python seed.py         # Neo4j ontology
 docker exec -it osint-backend-1 python seed_postgis.py # PostGIS passes + detections
 docker exec -it osint-backend-1 python add_targets.py  # HPTL targets
 docker exec -it osint-backend-1 python add_constellation.py  # Satellite constellation
 
-# 5. Open the dashboard
+# 6. Open the dashboard
 open http://localhost:3000
 ```
+
+> **Legacy / dev mode** — to keep all inference services running 24/7 (pre-lifecycle behavior), bring them up with `COMPOSE_PROFILES=all docker compose up -d` or set `PROVIDER_LIFECYCLE_ENABLED=false` in `.env`.
 
 The host preflight reads `nvidia-smi`, resolves the matching CUDA/PyTorch profile, and updates only the generated GPU block in `.env`. Run it once per host, and rerun it after changing GPUs or NVIDIA drivers.
 
@@ -85,10 +92,14 @@ Detailed operating instructions and next steps are in [ProjectPlan/OPTICAL_DEFEN
 | Setting | Default | Purpose |
 |---|---|---|
 | `DETECTION_THRESHOLD_PROFILE` | `recall_review` | Recall-first review mode |
-| `CONFIDENCE_THRESHOLD` | `0.12` for YOLO, `0.25` for Grounding DINO | Global inference floor |
-| `MMROTATE_CONFIDENCE_THRESHOLD` | `0.10` | MMRotate service floor before taxonomy thresholds |
+| `CONFIDENCE_THRESHOLD` | `0.08` for YOLO, `0.10` for Grounding DINO | Service inference floor (policy gate is applied downstream) |
+| `NMS_IOU_THRESHOLD` | `0.70` | YOLO OBB NMS — higher value preserves tightly-packed objects (e.g. parking lots) |
+| `GROUNDING_DINO_BOX_THRESHOLD` / `_TEXT_THRESHOLD` | `0.15` | Open-vocabulary box / text confidence floor |
+| `MMROTATE_CONFIDENCE_THRESHOLD` | `0.05` | MMRotate service floor before taxonomy thresholds |
+| `LSKNET_CONFIDENCE_THRESHOLD` | `0.05` | LSKNet service floor before taxonomy thresholds |
+| `MAX_DETECTIONS_PER_CHIP` | `1000` | Per-chip detection cap (raised from 300 for dense scenes) |
 | `INFERENCE_CHIP_SIZE` | `1024` | Better small-object recall than 640 px chips |
-| `INFERENCE_CHIP_OVERLAP` | `256` | Reduces chip-boundary misses |
+| `INFERENCE_CHIP_OVERLAP` | `512` | 50 % overlap so objects spanning chip boundaries appear fully in ≥1 chip |
 | `MAX_INFERENCE_CHIPS` | `0` | Full raster coverage; no silent chip sampling |
 
 ### Environment Variables (`.env`)
@@ -121,6 +132,24 @@ Detailed operating instructions and next steps are in [ProjectPlan/OPTICAL_DEFEN
 | `INFERENCE_CHIP_SPOOL_MAX_BYTES` | `4194304` | Encoded chip PNGs larger than this spill to a temp file |
 | `INFERENCE_CHIP_TIMEOUT_S` | `120` | Timeout for inference requests |
 | `PER_CLASS_CONFIDENCE_OVERRIDES` | `{}` | JSON map of parent/original class thresholds |
+| `PROVIDER_LIFECYCLE_ENABLED` | `true` | Toggle dynamic start/stop of inference containers per upload |
+| `PROVIDER_START_TIMEOUT_S` | `120` | Per-provider healthcheck deadline when starting |
+| `PROVIDER_HEALTH_POLL_INTERVAL_S` | `2` | `/health` poll cadence while waiting for a provider |
+| `PROVIDER_IDLE_COOLDOWN_S` | `600` | Idle window before a provider container is auto-stopped |
+| `PROVIDER_IDLE_CHECK_INTERVAL_S` | `60` | Cadence of the celery-beat `stop_idle_providers` sweep |
+
+---
+
+## Dynamic Inference Lifecycle
+
+Each inference service is gated by a docker-compose `profile` (`yolo`, `lae-dino`, `mmrotate`, `lsknet`, `sam2`, plus the meta-profile `all`). Default `docker compose up` brings up zero inference containers — the `backend` and `worker` services own their lifecycle:
+
+1. **One-time provisioning** — `COMPOSE_PROFILES=all docker compose create` builds & registers all five inference containers in stopped state.
+2. **On upload** — `POST /api/ingest/upload` reads `inference_providers=...` and calls `provider_lifecycle.ensure_running(...)` ([backend/provider_lifecycle.py](backend/provider_lifecycle.py)) to start the requested containers via the Docker Engine API and wait for `/health` (≤ `PROVIDER_START_TIMEOUT_S`). Failures bubble up as HTTP 503.
+3. **During processing** — the celery worker calls `mark_active(...)` to record a Redis last-used timestamp.
+4. **Idle reaping** — celery-beat (`--beat` is now part of the worker command) runs `stop_idle_providers` every `PROVIDER_IDLE_CHECK_INTERVAL_S`. Any provider whose last-used timestamp is older than `PROVIDER_IDLE_COOLDOWN_S` is `docker stop`-ed.
+
+The `backend` and `worker` services mount `/var/run/docker.sock` so they can manage sibling containers. To disable the dynamic behavior (e.g. for local dev or CI) set `PROVIDER_LIFECYCLE_ENABLED=false` and bring containers up manually with `COMPOSE_PROFILES=all docker compose up -d`.
 
 ---
 
@@ -239,6 +268,21 @@ http://localhost:3001/ne_countries/{z}/{x}/{y}
 - **Input**: `multipart/form-data` with `image` (PNG/JPEG, RGB) + `metadata` (JSON string)
 - **Output**: `{"status": "success", "detections": [{class, bbox, confidence}], "processing_time_ms": ...}`
 - **Health**: `GET /health` returns active runtime, engine path, engine availability, batcher stats, warmup result, torch/CUDA info, model availability, SAHI availability, and device
+
+> **Note** — `/detect` is a *single-chip worker*. The production code path is `POST /api/ingest/upload`, where the celery worker (`backend/worker.py:slice_and_infer`) tiles the raster into 1024 × 1024 chips with 50 % overlap and fans them out to the providers selected on upload. Calling `/detect` directly with a full multi-thousand-pixel raster will under-detect because the model downsamples internally. Use the orchestrator path for benchmarking, or enable Internal Tiling (below) for ad-hoc QA.
+
+### Internal Tiling for direct `/detect`
+
+Each detection service (YOLO, LAE Grounding DINO, MMRotate, LSKNet) supports an opt-in tile-and-merge fallback so direct `/detect` calls on full rasters return dense detections without the orchestrator. Default is **off** to preserve the chip-worker contract used by the celery worker.
+
+| Variable | Default | Description |
+|---|---|---|
+| `INFERENCE_INTERNAL_TILING` | `off` | `off` \| `on` (always tile) \| `auto` (tile when `max(W,H) > 2 × tile`) |
+| `INFERENCE_TILE_SIZE` | `1024` | Tile dimension; YOLO uses `YOLO_IMGSZ` |
+| `INFERENCE_TILE_OVERLAP` | `512` | 50 % overlap so objects spanning boundaries appear fully in ≥1 tile |
+| `INFERENCE_TILE_NMS_IOU` | `0.5` | Cross-tile per-class greedy NMS IoU on axis-aligned bounding rects of the OBBs |
+
+When tiling fires the response sets `"internal_tiled": true` and includes `"inference_diagnostics": {tiles, raw_detections, after_cross_tile_nms, tile_size, tile_overlap}`.
 
 Current detection responses also include `original_class`, `parent_class`, `calibrated_confidence`, `review_status`, `policy_review_status`, `threshold_profile`, `model_version`, `taxonomy_version`, provider confirmation metadata, `prompt_profile`, and prompt chunk metadata. `GET /health` includes the active detection policy, provider model/config details, Grounding DINO model ID, processor status, Transformers version, and LAE prompt profile.
 

@@ -22,6 +22,7 @@ from imagery_metadata import extract_raster_metadata
 from detection_policy import active_detection_policy, detection_decision, parent_class_for_label
 from threat_assessment import assess_detection_threat, category_for_class, clean_detection_class, conservative_detection_ontology
 from worker import celery_app, process_satellite_imagery
+import provider_lifecycle
 
 app = FastAPI(title="SentinelOS API")
 logger = logging.getLogger(__name__)
@@ -3291,6 +3292,16 @@ def upload_imagery(
     filename = safe_filename(file.filename or "upload.tif")
     media_type, handler = classify_upload(filename)
     selected_providers = _parse_inference_providers(inference_providers)
+
+    if media_type == "imagery":
+        try:
+            provider_lifecycle.ensure_running(selected_providers)
+        except Exception as exc:
+            logger.warning("[UPLOAD] provider_lifecycle.ensure_running failed: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail=f"Failed to start inference providers {selected_providers}: {exc}",
+            )
 
     if media_type == "fmv":
         upload_dir = Path(os.getenv("FMV_PATH", "/data/fmv")) / "incoming"

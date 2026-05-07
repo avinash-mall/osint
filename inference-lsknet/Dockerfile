@@ -25,7 +25,9 @@ ENV OPENBLAS_NUM_THREADS=1
 ENV VECLIB_MAXIMUM_THREADS=1
 ENV NUMEXPR_NUM_THREADS=1
 
-RUN sed -i 's/archive.ubuntu.com/azure.archive.ubuntu.com/g' /etc/apt/sources.list && \
+ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
+
+RUN sed -i "s|http://archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g; s|http://azure.archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" /etc/apt/sources.list && \
     apt-get update -o Acquire::Retries=10 && \
     apt-get install -y --no-install-recommends --fix-missing \
     python3 \

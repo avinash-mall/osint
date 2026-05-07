@@ -124,6 +124,9 @@ YOLO_TRT_PRECISION = os.getenv("YOLO_TRT_PRECISION", "fp16").strip().lower() or 
 YOLO_IMGSZ = env_int("YOLO_IMGSZ", 1024)
 YOLO_BATCH_MAX_SIZE = max(1, env_int("YOLO_BATCH_MAX_SIZE", 8))
 YOLO_BATCH_TIMEOUT_MS = max(0.0, env_float("YOLO_BATCH_TIMEOUT_MS", 10.0))
+INFERENCE_INTERNAL_TILING = os.getenv("INFERENCE_INTERNAL_TILING", "off").strip().lower()
+INFERENCE_TILE_OVERLAP = max(0, env_int("INFERENCE_TILE_OVERLAP", YOLO_IMGSZ // 2))
+INFERENCE_TILE_NMS_IOU = env_float("INFERENCE_TILE_NMS_IOU", 0.5)
 YOLO_WARMUP = env_bool("YOLO_WARMUP", True)
 YOLO_ENGINE_METADATA_PATH = f"{YOLO_ENGINE_PATH}.json"
 YOLO_TRT_AUTO_EXPORT = env_bool("YOLO_TRT_AUTO_EXPORT", True)
@@ -831,6 +834,131 @@ def run_sahi_inference(image: Image.Image, entry: dict[str, Any]) -> dict[str, A
     return yolo_response(start_time, detections, entry)
 
 
+def _aabb_iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1 = max(ax1, bx1); iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2); iy2 = min(ay2, by2)
+    iw = max(0.0, ix2 - ix1); ih = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _cross_tile_nms(detections: list[dict[str, Any]], iou_threshold: float) -> list[dict[str, Any]]:
+    if not detections:
+        return []
+    boxes: list[tuple[float, float, float, float]] = []
+    for det in detections:
+        if det.get("obb") and len(det["obb"]) == 8:
+            xs = det["obb"][0::2]; ys = det["obb"][1::2]
+            boxes.append((min(xs), min(ys), max(xs), max(ys)))
+        else:
+            cx, cy, w, h = det["bbox"][:4]
+            boxes.append((cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2))
+    order = sorted(range(len(detections)), key=lambda i: float(detections[i].get("confidence", 0.0)), reverse=True)
+    keep: list[int] = []
+    while order:
+        i = order.pop(0)
+        keep.append(i)
+        order = [
+            j for j in order
+            if detections[i].get("class") != detections[j].get("class")
+            or _aabb_iou(boxes[i], boxes[j]) < iou_threshold
+        ]
+    return [detections[i] for i in keep]
+
+
+def _plan_tiles(width: int, height: int, tile: int, overlap: int) -> list[tuple[int, int, int, int]]:
+    step = max(1, tile - overlap)
+    xs: list[int] = []
+    x = 0
+    while x + tile < width:
+        xs.append(x); x += step
+    xs.append(max(0, width - tile))
+    ys: list[int] = []
+    y = 0
+    while y + tile < height:
+        ys.append(y); y += step
+    ys.append(max(0, height - tile))
+    xs = sorted(set(xs)); ys = sorted(set(ys))
+    plan: list[tuple[int, int, int, int]] = []
+    for y in ys:
+        for x in xs:
+            tw = min(tile, width - x)
+            th = min(tile, height - y)
+            if tw <= 0 or th <= 0:
+                continue
+            plan.append((x, y, tw, th))
+    return plan
+
+
+def run_internal_tiled_yolo(
+    image_array: np.ndarray,
+    image_size: tuple[int, int],
+    tile: int = YOLO_IMGSZ,
+    overlap: int | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    overlap = INFERENCE_TILE_OVERLAP if overlap is None else overlap
+    full_w, full_h = image_size
+    plan = _plan_tiles(full_w, full_h, tile, overlap)
+    if not plan:
+        return [], {"tiles": 0}
+    entry = next_model_entry()
+    if entry is None or entry["kind"] != "yolo":
+        return [], {"tiles": 0, "error": "no_yolo_model"}
+
+    crops = [image_array[y:y + th, x:x + tw] for (x, y, tw, th) in plan]
+    with entry["lock"]:
+        raw_results = entry["model"](
+            crops,
+            **yolo_predict_kwargs(entry["device"], len(crops)),
+        )
+    results = _coerce_yolo_results(raw_results, len(crops))
+    names = _model_names(entry["model"])
+    merged: list[dict[str, Any]] = []
+    for (x, y, tw, th), result in zip(plan, results):
+        tile_dets = detections_from_yolo_result(result, names, (tw, th))
+        for det in tile_dets:
+            cx, cy, w, h = det["bbox"][:4]
+            abs_cx = (x + cx * tw) / full_w
+            abs_cy = (y + cy * th) / full_h
+            abs_w = (w * tw) / full_w
+            abs_h = (h * th) / full_h
+            det["bbox"] = [abs_cx, abs_cy, abs_w, abs_h]
+            if det.get("obb") and len(det["obb"]) == 8:
+                det["obb"] = [
+                    (x + det["obb"][i] * tw) / full_w if i % 2 == 0
+                    else (y + det["obb"][i] * th) / full_h
+                    for i in range(8)
+                ]
+            merged.append(det)
+    deduped = _cross_tile_nms(merged, INFERENCE_TILE_NMS_IOU)
+    diagnostics = {
+        "tiles": len(plan),
+        "raw_detections": len(merged),
+        "after_cross_tile_nms": len(deduped),
+        "tile_size": tile,
+        "tile_overlap": overlap,
+    }
+    return deduped, diagnostics
+
+
+def _should_internally_tile(image_size: tuple[int, int]) -> bool:
+    if INFERENCE_INTERNAL_TILING == "off":
+        return False
+    if MODEL_TASK != "obb":
+        return False
+    img_w, img_h = image_size
+    if INFERENCE_INTERNAL_TILING == "on":
+        return True
+    return max(img_w, img_h) > 2 * YOLO_IMGSZ
+
+
 def _coerce_yolo_results(raw_results, expected_count: int) -> list[Any]:
     if expected_count == 1 and not isinstance(raw_results, list):
         return [raw_results]
@@ -1031,6 +1159,17 @@ async def detect_objects(
         pil_image, image_array, image_size = await run_in_threadpool(decode_image, contents)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid image file: {exc}")
+
+    if _should_internally_tile(image_size):
+        start_time = time.time()
+        detections, tiling_diag = await run_in_threadpool(
+            run_internal_tiled_yolo, image_array, image_size
+        )
+        entry = next_model_entry() or {"device": "cpu", "model_path": MODEL_PATH, "runtime": "unknown"}
+        result = yolo_response(start_time, detections, entry, batch_size=tiling_diag.get("tiles", 1), diagnostics=tiling_diag)
+        result["internal_tiled"] = True
+        result["input_metadata"] = meta
+        return result
 
     if YOLO_BATCH_MAX_SIZE > 1 and MODEL_TASK == "obb":
         result = await yolo_batcher.submit(pil_image, image_array, image_size, meta)

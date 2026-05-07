@@ -55,14 +55,17 @@ Threshold profiles:
 - `balanced`: stricter default analyst workflow.
 - `high_precision`: suppresses weak detections for high-confidence views.
 
-Default compose profile:
+Default compose profile (tuned for dense-scene recall — see [docker-compose.yml](../docker-compose.yml)):
 
 ```yaml
 DETECTION_THRESHOLD_PROFILE=recall_review
-CONFIDENCE_THRESHOLD=0.12
-NMS_IOU_THRESHOLD=0.55
+CONFIDENCE_THRESHOLD=0.08
+NMS_IOU_THRESHOLD=0.70           # high IoU preserves tightly-packed objects (e.g. parked vehicles)
+MAX_DETECTIONS_PER_CHIP=1000     # raised from 300 so dense parking lots aren't truncated
 MODEL_VERSION=geoint-yolov8-obb-optical-defense
 ```
+
+Per-service floors are also lowered: Grounding DINO `BOX/TEXT_THRESHOLD=0.15`, MMRotate / LSKNet `*_CONFIDENCE_THRESHOLD=0.05`. The downstream `recall_review` policy gate (vehicle floor `0.06`) does the precision filtering.
 
 ### Inference Output
 
@@ -93,7 +96,7 @@ The worker now defaults to:
 
 ```text
 INFERENCE_CHIP_SIZE=1024
-INFERENCE_CHIP_OVERLAP=256
+INFERENCE_CHIP_OVERLAP=512   # 50% overlap so objects spanning chip edges appear fully in ≥1 chip
 MAX_INFERENCE_CHIPS=0
 ```
 
@@ -316,13 +319,15 @@ PER_CLASS_CONFIDENCE_OVERRIDES={"vehicle":0.12,"ship":0.14}
 
 ### 7. Run End-To-End Ingest Validation
 
-After restarting compose:
+After restarting compose (use the `all` profile so inference services come up immediately for the smoke check):
 
 ```bash
-docker compose up -d --build
-curl http://localhost:8002/health
+COMPOSE_PROFILES=all docker compose up -d --build
+curl http://localhost:3000/inference/main/health
 curl http://localhost:8080/api/health
 ```
+
+> Under the dynamic lifecycle (default), inference containers stay stopped until an upload selects them — see [README.md → Dynamic Inference Lifecycle](../README.md#dynamic-inference-lifecycle).
 
 Then ingest a known optical raster and verify:
 

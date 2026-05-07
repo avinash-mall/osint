@@ -27,6 +27,7 @@ from ai import AIUnavailable, ai_status, get_llm_json
 from imagery_metadata import extract_raster_metadata
 from detection_policy import active_detection_policy, detection_decision, parent_class_for_label
 from threat_assessment import assess_detection_threat, clean_detection_class, conservative_detection_ontology
+import provider_lifecycle
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 INFERENCE_URL = os.getenv("INFERENCE_URL", "http://localhost:8001")
@@ -88,6 +89,24 @@ INFERENCE_CHIP_SPOOL_MAX_BYTES = max(
 logger = logging.getLogger(__name__)
 
 celery_app = Celery("sentinelos_worker", broker=REDIS_URL, backend=REDIS_URL)
+celery_app.conf.beat_schedule = {
+    "stop-idle-inference-providers": {
+        "task": "worker.stop_idle_providers",
+        "schedule": float(env_int("PROVIDER_IDLE_CHECK_INTERVAL_S", 60)),
+    },
+}
+
+
+@celery_app.task(name="worker.stop_idle_providers", queue="default")
+def stop_idle_providers():
+    try:
+        stopped = provider_lifecycle.stop_idle()
+        if stopped:
+            logger.info("[WORKER] stopped idle inference providers: %s", stopped)
+        return stopped
+    except Exception as exc:
+        logger.warning("[WORKER] stop_idle_providers failed: %s", exc)
+        return []
 
 
 def ensure_worker_imagery_schema() -> None:
@@ -1483,6 +1502,11 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
         if not selected_providers:
             selected_providers = ["yolo"]
         logger.info("[WORKER] upload %s using inference providers: %s", upload_id, selected_providers)
+        try:
+            provider_lifecycle.ensure_running(selected_providers)
+            provider_lifecycle.mark_active(selected_providers)
+        except Exception as exc:
+            logger.warning("[WORKER] provider_lifecycle.ensure_running failed: %s", exc)
         report_progress(self, upload_id, input_path, "metadata", 8, "Reading raster metadata and computing file hash.")
         raster_metadata = extract_raster_metadata(input_path)
         source_hash = raster_metadata.get("source_hash")
@@ -1642,6 +1666,10 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
         )
         detections = inference_result["detections"]
         inference_summary = inference_result["summary"]
+        try:
+            provider_lifecycle.mark_active(selected_providers)
+        except Exception as exc:
+            logger.warning("[WORKER] provider_lifecycle.mark_active(post-infer) failed: %s", exc)
         logger.info("[WORKER] Total detections after dedupe: %s", len(detections))
         report_progress(
             self,

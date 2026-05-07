@@ -12,9 +12,10 @@ ARG TORCH_VERSION=2.7.1
 ARG TORCHVISION_VERSION=0.22.1
 ARG INSTALL_TENSORRT=false
 ARG TENSORRT_VERSION=10.16.1.11
+ARG UBUNTU_MIRROR=http://archive.ubuntu.com/ubuntu
 
 # Install system dependencies for OpenCV and image processing
-RUN sed -i 's/archive.ubuntu.com/azure.archive.ubuntu.com/g' /etc/apt/sources.list && \
+RUN sed -i "s|http://archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g; s|http://azure.archive.ubuntu.com/ubuntu|${UBUNTU_MIRROR}|g" /etc/apt/sources.list && \
     apt-get update -o Acquire::Retries=10 && apt-get install -y --no-install-recommends --fix-missing \
     ca-certificates \
     python3 \

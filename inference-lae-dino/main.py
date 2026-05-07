@@ -60,6 +60,10 @@ LAE_PROBE_IMAGE_PATH = os.getenv("LAE_PROBE_IMAGE_PATH", "/app/probes/probe_chip
 LAE_MIN_PROBE_DETECTIONS = int(os.getenv("LAE_MIN_PROBE_DETECTIONS", "0"))
 LAE_BATCH_MAX_SIZE = max(1, int(os.getenv("LAE_BATCH_MAX_SIZE", "4")))
 LAE_BATCH_TIMEOUT_MS = max(0.0, float(os.getenv("LAE_BATCH_TIMEOUT_MS", "25")))
+INFERENCE_INTERNAL_TILING = os.getenv("INFERENCE_INTERNAL_TILING", "off").strip().lower()
+INFERENCE_TILE_SIZE = int(os.getenv("INFERENCE_TILE_SIZE", "1024"))
+INFERENCE_TILE_OVERLAP = int(os.getenv("INFERENCE_TILE_OVERLAP", "512"))
+INFERENCE_TILE_NMS_IOU = float(os.getenv("INFERENCE_TILE_NMS_IOU", "0.5"))
 
 
 def available_cpu_count() -> int:
@@ -943,6 +947,124 @@ def decode_image(contents: bytes) -> tuple[np.ndarray, tuple[int, int]]:
     return image_array, pil_image.size
 
 
+def _plan_tiles_lae(width: int, height: int, tile: int, overlap: int) -> list[tuple[int, int, int, int]]:
+    step = max(1, tile - overlap)
+    xs: list[int] = []
+    x = 0
+    while x + tile < width:
+        xs.append(x); x += step
+    xs.append(max(0, width - tile))
+    ys: list[int] = []
+    y = 0
+    while y + tile < height:
+        ys.append(y); y += step
+    ys.append(max(0, height - tile))
+    xs = sorted(set(xs)); ys = sorted(set(ys))
+    plan: list[tuple[int, int, int, int]] = []
+    for y in ys:
+        for x in xs:
+            tw = min(tile, width - x)
+            th = min(tile, height - y)
+            if tw <= 0 or th <= 0:
+                continue
+            plan.append((x, y, tw, th))
+    return plan
+
+
+def _should_internally_tile_lae(image_size: tuple[int, int]) -> bool:
+    if INFERENCE_INTERNAL_TILING == "off":
+        return False
+    img_w, img_h = image_size
+    if INFERENCE_INTERNAL_TILING == "on":
+        return True
+    return max(img_w, img_h) > 2 * INFERENCE_TILE_SIZE
+
+
+def _cross_tile_nms_lae(detections: list[dict], iou_threshold: float) -> list[dict]:
+    if not detections:
+        return []
+    order = sorted(range(len(detections)), key=lambda i: float(detections[i].get("confidence", 0.0)), reverse=True)
+    keep: list[int] = []
+    while order:
+        i = order.pop(0)
+        keep.append(i)
+        order = [
+            j for j in order
+            if detections[i].get("class") != detections[j].get("class")
+            or _bbox_iou(detections[i].get("bbox", []), detections[j].get("bbox", [])) < iou_threshold
+        ]
+    return [detections[i] for i in keep]
+
+
+async def run_tiled_inference_lae(
+    image_array: np.ndarray,
+    image_size: tuple[int, int],
+    metadata: Optional[dict],
+) -> dict:
+    full_w, full_h = image_size
+    plan = _plan_tiles_lae(full_w, full_h, INFERENCE_TILE_SIZE, INFERENCE_TILE_OVERLAP)
+    if not plan:
+        return await run_in_threadpool(run_inference, image_array, image_size, metadata)
+    start_time = time.time()
+
+    async def _run_tile(x: int, y: int, tw: int, th: int) -> tuple[int, int, int, int, dict]:
+        crop = image_array[y:y + th, x:x + tw]
+        if LAE_BATCH_MAX_SIZE > 1:
+            resp = await lae_batcher.submit(crop, (tw, th), metadata)
+        else:
+            resp = await run_in_threadpool(run_inference, crop, (tw, th), metadata)
+        return (x, y, tw, th, resp)
+
+    tile_results = await asyncio.gather(*(_run_tile(*p) for p in plan))
+
+    merged: list[dict] = []
+    for (x, y, tw, th, resp) in tile_results:
+        for det in resp.get("detections", []):
+            cx, cy, w, h = det.get("bbox", [0.0, 0.0, 0.0, 0.0])[:4]
+            det = dict(det)
+            det["bbox"] = [
+                max(0.0, min(1.0, (x + cx * tw) / full_w)),
+                max(0.0, min(1.0, (y + cy * th) / full_h)),
+                max(0.0, min(1.0, (w * tw) / full_w)),
+                max(0.0, min(1.0, (h * th) / full_h)),
+            ]
+            merged.append(det)
+
+    deduped = _cross_tile_nms_lae(merged, INFERENCE_TILE_NMS_IOU)
+    deduped.sort(key=lambda item: float(item.get("confidence") or 0.0), reverse=True)
+    if MAX_DETECTIONS_PER_CHIP > 0:
+        deduped = deduped[:MAX_DETECTIONS_PER_CHIP]
+
+    template = tile_results[0][4] if tile_results else {}
+    return {
+        "status": "success",
+        "detections": deduped,
+        "processing_time_ms": round((time.time() - start_time) * 1000, 2),
+        "model": template.get("model", GROUNDING_DINO_MODEL_ID),
+        "task": template.get("task", "open_vocab_detect"),
+        "device": template.get("device"),
+        "model_version": template.get("model_version", MODEL_VERSION),
+        "taxonomy_version": DETECTION_POLICY["taxonomy_version"],
+        "threshold_profile": DETECTION_POLICY["threshold_profile"],
+        "global_confidence_floor": template.get("global_confidence_floor", CONFIDENCE_THRESHOLD),
+        "confidence_threshold": template.get("confidence_threshold", CONFIDENCE_THRESHOLD),
+        "text_prompt": template.get("text_prompt"),
+        "prompt_profile": template.get("prompt_profile"),
+        "raw_candidate_count": sum(int(r[4].get("raw_candidate_count", 0)) for r in tile_results),
+        "threshold_candidate_count": sum(int(r[4].get("threshold_candidate_count", 0)) for r in tile_results),
+        "emitted_count": len(deduped),
+        "policy_suppressed_count": sum(int(r[4].get("policy_suppressed_count", 0)) for r in tile_results),
+        "internal_tiled": True,
+        "inference_diagnostics": {
+            "tiles": len(plan),
+            "raw_detections": len(merged),
+            "after_cross_tile_nms": len(deduped),
+            "tile_size": INFERENCE_TILE_SIZE,
+            "tile_overlap": INFERENCE_TILE_OVERLAP,
+        },
+    }
+
+
 @app.post("/detect")
 async def detect_objects(
     image: UploadFile = File(...),
@@ -959,7 +1081,9 @@ async def detect_objects(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid image file: {exc}")
 
-    if LAE_BATCH_MAX_SIZE > 1:
+    if _should_internally_tile_lae(image_size):
+        result = await run_tiled_inference_lae(image_array, image_size, meta)
+    elif LAE_BATCH_MAX_SIZE > 1:
         result = await lae_batcher.submit(image_array, image_size, meta)
     else:
         result = await run_in_threadpool(run_inference, image_array, image_size, meta)

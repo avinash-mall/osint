@@ -72,7 +72,7 @@ THRESHOLD_PROFILES: dict[str, dict[str, Any]] = {
         "class_thresholds": {
             "aircraft": 0.12,
             "ship": 0.12,
-            "vehicle": 0.10,
+            "vehicle": 0.06,
             "military_vehicle": 0.10,
             "storage_tank": 0.15,
             "bridge": 0.18,
