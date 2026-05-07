@@ -31,6 +31,7 @@ services:
   backend:
     build: ./backend
     image: sentinelos-backend:latest
+    restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ulimits:
@@ -96,8 +97,10 @@ services:
   frontend:
     build: ./frontend
     image: sentinelos-frontend:latest
+    restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     environment:
       - VITE_API_URL=
       - VITE_TITILER_URL=/tiles
@@ -356,6 +359,7 @@ services:
   worker:
     build: ./backend
     image: sentinelos-backend:latest
+    restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ulimits:
@@ -412,16 +416,21 @@ services:
 
   nginx:
     image: nginx:alpine
+    restart: unless-stopped
     ports:
       - "3000:80"
     volumes:
       - ./nginx/tile-proxy.conf:/etc/nginx/conf.d/default.conf
       - fmv_data:/data/fmv:ro
     depends_on:
-      - frontend
-      - backend
-      - titiler
-      - martin
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+      titiler:
+        condition: service_healthy
+      martin:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1/ || exit 1"]
       interval: 10s
