@@ -1788,20 +1788,45 @@ def get_graph_neighborhood(req: GraphActionRequest):
 @app.get("/api/geotime/features")
 def get_geotime_features():
     with db.get_session() as session:
+        schema_labels = set(session.run("""
+            SHOW LABELS
+            YIELD name
+            RETURN collect(name) AS labels
+        """).single()["labels"] or [])
+
+        static_features = []
+        static_labels = sorted(schema_labels.intersection({"Base", "LaunchPoint"}))
+        if static_labels:
+            result_static = session.run("""
+                MATCH (n)
+                WHERE any(label IN labels(n) WHERE label IN $static_labels)
+                  AND n.latitude IS NOT NULL
+                RETURN n
+            """, {"static_labels": static_labels})
+            static_features = [{"id": r["n"].element_id, "label": list(r["n"].labels)[0], "properties": dict(r["n"])} for r in result_static]
+
+        tracks = []
+        if not {"Asset", "Observation"}.issubset(schema_labels):
+            return {"static": static_features, "tracks": tracks}
+
         result_static = session.run("""
-            MATCH (n)
-            WHERE (n:Base OR n:LaunchPoint) AND n.latitude IS NOT NULL
-            RETURN n
+            SHOW RELATIONSHIP TYPES
+            YIELD name
+            RETURN collect(name) AS relationship_types
         """)
-        static_features = [{"id": r["n"].element_id, "label": list(r["n"].labels)[0], "properties": dict(r["n"])} for r in result_static]
+        relationship_types = set(result_static.single()["relationship_types"] or [])
+        if "OBSERVED_AT" not in relationship_types:
+            return {"static": static_features, "tracks": tracks}
 
         result_tracks = session.run("""
-            MATCH (a:Asset)-[:OBSERVED_AT]->(o:Observation)
+            MATCH (a)-[rel]->(o)
+            WHERE 'Asset' IN labels(a)
+              AND type(rel) = 'OBSERVED_AT'
+              AND 'Observation' IN labels(o)
             WITH a, o ORDER BY o.timestamp DESC
             WITH a, collect(o) as obs
             RETURN a, obs[0] as latest, obs
         """)
-        tracks = []
         for r in result_tracks:
             asset = r["a"]
             latest = r["latest"]
