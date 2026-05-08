@@ -1,9 +1,0 @@
-fastapi
-uvicorn[standard]
-python-multipart
-pydantic
-pillow
-numpy
-transformers>=4.42,<5
-huggingface_hub>=0.24
-accelerate>=0.30

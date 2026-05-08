@@ -30,7 +30,7 @@ from prompts.loader import resolve_prompts
 
 cv2.setNumThreads(0)
 
-app = FastAPI(title="SentinelOS AIP Node - SAM3 Inference")
+app = FastAPI(title="Sentinel SAM3 Inference")
 logger = logging.getLogger("inference-sam3")
 
 MODEL_VERSION = os.getenv("MODEL_VERSION", "sam3-image+sam3.1-video+dinov3-sat-l+prithvi+terramind")

@@ -13,10 +13,10 @@ from gpu_profiles import GpuBuildProfile, resolve_gpu_profile
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ENV_PATH = ROOT / ".env"
 
-BEGIN_MARKER = "# BEGIN SENTINELOS GENERATED GPU CONFIG"
-END_MARKER = "# END SENTINELOS GENERATED GPU CONFIG"
+BEGIN_MARKER = "# BEGIN SENTINEL GENERATED GPU CONFIG"
+END_MARKER = "# END SENTINEL GENERATED GPU CONFIG"
 
-SERVICE_PREFIXES = ("INFERENCE_", "LAE_DINO_", "MMROTATE_", "LSKNET_", "SAM2_", "SAM3_")
+SERVICE_PREFIXES = ("SAM3_",)
 SAM3_CU126_ENV = {
     "SAM3_UBUNTU_VERSION": "22.04",
     "SAM3_TORCH_INDEX_URL": "https://download.pytorch.org/whl/cu126",
@@ -197,7 +197,7 @@ def configure_env_file(env_path: Path, info: HostGpuInfo) -> dict[str, str]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Detect host GPU/driver and write SentinelOS Docker build settings to .env.")
+    parser = argparse.ArgumentParser(description="Detect host GPU/driver and write Sentinel Docker build settings to .env.")
     parser.add_argument("--env-file", type=Path, default=DEFAULT_ENV_PATH, help="Path to .env to update.")
     parser.add_argument("--dry-run", action="store_true", help="Print generated settings without writing .env.")
     return parser.parse_args()
@@ -216,7 +216,7 @@ def main() -> int:
     args.env_file.write_text(replace_generated_block(existing, block), encoding="utf-8")
     print(
         f"Wrote GPU config for {values['GPU_MODEL']} "
-        f"({values['INFERENCE_GPU_PROFILE']}, driver {values['GPU_DRIVER_VERSION']}) to {args.env_file}"
+        f"({values['SAM3_GPU_PROFILE']}, driver {values['GPU_DRIVER_VERSION']}) to {args.env_file}"
     )
     return 0
 

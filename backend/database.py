@@ -17,7 +17,7 @@ NEO4J_AUTH = (
 )
 
 # PostGIS Configuration
-POSTGIS_URI = os.getenv("POSTGIS_URI", "postgresql://gotham:gotham@172.18.0.11:5432/gotham")
+POSTGIS_URI = os.getenv("POSTGIS_URI", "postgresql://sentinel:sentinel@172.18.0.11:5432/sentinel")
 ASYNC_POSTGIS_URI = POSTGIS_URI.replace("postgresql://", "postgresql+asyncpg://", 1)
 
 

@@ -38,7 +38,7 @@ def test_emit_chip_payload_multispectral_for_sam3(tmp_path):
     path = tmp_path / "hls.tif"
     _write_tif(path, np.ones((6, 8, 8), dtype=np.float32))
     with rasterio.open(path) as src:
-        chip_file, meta = worker._emit_chip_payload(Window(0, 0, 8, 8), src, ["sam3"], valid_mask=None)
+        chip_file, meta = worker._emit_chip_payload(Window(0, 0, 8, 8), src, valid_mask=None)
 
     assert meta["content_type"] == "image/tiff"
     assert meta["modality"] == "multispectral"
@@ -52,7 +52,7 @@ def test_emit_chip_payload_sar_for_sam3(tmp_path):
     path = tmp_path / "sar.tif"
     _write_tif(path, np.ones((2, 8, 8), dtype=np.float32), ("VV", "VH"))
     with rasterio.open(path) as src:
-        chip_file, meta = worker._emit_chip_payload(Window(0, 0, 8, 8), src, ["sam3"], valid_mask=None)
+        chip_file, meta = worker._emit_chip_payload(Window(0, 0, 8, 8), src, valid_mask=None)
 
     assert meta["content_type"] == "image/tiff"
     assert meta["modality"] == "sar"
@@ -60,14 +60,3 @@ def test_emit_chip_payload_sar_for_sam3(tmp_path):
     chip_file.close()
 
 
-def test_emit_chip_payload_png_when_other_providers_need_rgb(tmp_path):
-    import worker
-
-    path = tmp_path / "hls.tif"
-    _write_tif(path, np.ones((6, 8, 8), dtype=np.float32))
-    with rasterio.open(path) as src:
-        chip_file, meta = worker._emit_chip_payload(Window(0, 0, 8, 8), src, ["yolo", "sam3"], valid_mask=None)
-
-    assert meta["content_type"] == "image/png"
-    assert meta["modality"] == "rgb"
-    chip_file.close()

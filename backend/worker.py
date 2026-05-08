@@ -25,27 +25,14 @@ from rasterio.windows import Window
 from shapely.geometry import Polygon, MultiPolygon
 import numpy as np
 from PIL import Image
-from ai import AIUnavailable, ai_status, get_llm_json
+from ai import ai_status, get_llm_json
 from imagery_metadata import extract_raster_metadata
 from detection_policy import active_detection_policy, detection_decision, parent_class_for_label
 from threat_assessment import assess_detection_threat, clean_detection_class, conservative_detection_ontology
 import provider_lifecycle
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-INFERENCE_URL = os.getenv("INFERENCE_URL", "http://localhost:8001")
-INFERENCE_LAE_DINO_URL = os.getenv("INFERENCE_LAE_DINO_URL", "http://inference-lae-dino:8001")
-INFERENCE_MMROTATE_URL = os.getenv("INFERENCE_MMROTATE_URL", "http://inference-mmrotate:8001")
-INFERENCE_LSKNET_URL = os.getenv("INFERENCE_LSKNET_URL", "http://inference-lsknet:8001")
-INFERENCE_SAM2_URL = os.getenv("INFERENCE_SAM2_URL", "http://inference-sam2:8001")
 INFERENCE_SAM3_URL = os.getenv("INFERENCE_SAM3_URL", "http://inference-sam3:8001")
-INFERENCE_PROVIDERS = {
-    "yolo": INFERENCE_URL,
-    "lae-dino": INFERENCE_LAE_DINO_URL,
-    "mmrotate": INFERENCE_MMROTATE_URL,
-    "lsknet": INFERENCE_LSKNET_URL,
-    "sam2": INFERENCE_SAM2_URL,
-    "sam3": INFERENCE_SAM3_URL,
-}
 IMAGERY_PATH = os.getenv("IMAGERY_PATH", "/data/imagery")
 
 
@@ -92,30 +79,12 @@ INFERENCE_CHIP_SPOOL_MAX_BYTES = max(
 
 logger = logging.getLogger(__name__)
 
-celery_app = Celery("sentinelos_worker", broker=REDIS_URL, backend=REDIS_URL)
-celery_app.conf.beat_schedule = {
-    "stop-idle-inference-providers": {
-        "task": "worker.stop_idle_providers",
-        "schedule": float(env_int("PROVIDER_IDLE_CHECK_INTERVAL_S", 60)),
-    },
-}
-
-
-@celery_app.task(name="worker.stop_idle_providers", queue="default")
-def stop_idle_providers():
-    try:
-        stopped = provider_lifecycle.stop_idle()
-        if stopped:
-            logger.info("[WORKER] stopped idle inference providers: %s", stopped)
-        return stopped
-    except Exception as exc:
-        logger.warning("[WORKER] stop_idle_providers failed: %s", exc)
-        return []
+celery_app = Celery("sentinel_worker", broker=REDIS_URL, backend=REDIS_URL)
 
 
 def ensure_worker_imagery_schema() -> None:
     with postgis_db.get_cursor(commit=True) as cursor:
-        cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("sentinelos_platform_schema",))
+        cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("sentinel_platform_schema",))
         cursor.execute("ALTER TABLE satellite_passes ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}'")
         cursor.execute("ALTER TABLE satellite_passes ADD COLUMN IF NOT EXISTS source_hash VARCHAR(64)")
         cursor.execute("ALTER TABLE satellite_passes ADD COLUMN IF NOT EXISTS source_filename VARCHAR(255)")
@@ -469,90 +438,6 @@ def clamp_float(value: float, low: float, high: float) -> float:
     return max(low, min(high, float(value)))
 
 
-def _provider_set(det: dict) -> list[str]:
-    explicit = det.get("providers")
-    if isinstance(explicit, (list, tuple)) and explicit:
-        return [str(p) for p in explicit if p]
-    single = det.get("provider")
-    return [str(single)] if single else []
-
-
-def _merge_provider_into(kept: dict, dropped: dict) -> None:
-    """Fold a dropped duplicate's provider attribution into the surviving (higher-confidence)
-    detection. The kept detection's bbox/obb/confidence are preserved unchanged; only the
-    provider list and per-provider confidences are extended. Used to mark a hit as
-    cross-confirmed when multiple providers find the same object."""
-    merged = set(_provider_set(kept))
-    merged.update(_provider_set(dropped))
-    kept["providers"] = sorted(p for p in merged if p)
-    pc = dict(kept.get("provider_confidences") or {})
-    dropped_conf = float(dropped.get("confidence") or 0.0)
-    for p in _provider_set(dropped):
-        pc[p] = max(pc.get(p, 0.0), dropped_conf)
-    kept_conf = float(kept.get("confidence") or 0.0)
-    for p in _provider_set(kept):
-        pc.setdefault(p, kept_conf)
-    if pc:
-        kept["provider_confidences"] = pc
-
-
-CONSENSUS_EXEMPT_PROVIDERS = {"sam2", "sam3"}
-
-
-def apply_confirmation_policy(
-    detections: list[dict],
-    selected_provider_count: int,
-    policy: dict | None = None,
-) -> list[dict]:
-    """Annotate multi-provider detections with confirmation status.
-
-    Single-provider ingest keeps its historical behavior. For multi-provider
-    ingest, a detection is confirmed when another provider overlaps the same
-    object. Detections without cross-provider agreement are discarded — except
-    for class-agnostic providers in CONSENSUS_EXEMPT_PROVIDERS (e.g. SAM2),
-    whose outputs are masks/segments that no object-detector can corroborate.
-    """
-    if selected_provider_count <= 1:
-        return detections
-
-    filtered_detections = []
-    for det in detections:
-        providers = _provider_set(det)
-        cross_confirmed = len(set(providers)) > 1
-        exempt = bool(set(providers) & CONSENSUS_EXEMPT_PROVIDERS)
-
-        if not cross_confirmed and not exempt:
-            continue
-
-        confidence = float(det.get("confidence") or 0.0)
-
-        if cross_confirmed:
-            confirmation_status = "confirmed"
-            confirmation_reason = "cross_provider"
-        else:
-            confirmation_status = "single_provider"
-            confirmation_reason = "consensus_exempt"
-
-        provider_confidences = dict(det.get("provider_confidences") or {})
-        for provider in providers:
-            provider_confidences.setdefault(provider, confidence)
-        det["cross_confirmed"] = cross_confirmed
-        det["confirmation_status"] = confirmation_status
-        det["confirmation_reason"] = confirmation_reason
-        det["provider_confidences"] = provider_confidences
-
-        filtered_detections.append(det)
-
-    return filtered_detections
-
-
-def is_official_lae_detection(det: dict) -> bool:
-    return (
-        det.get("provider") == "lae-dino"
-        and det.get("prompt_profile") in {"official_lae80c", "lae1m_file"}
-    )
-
-
 def deduplicate_detections(
     detections: list,
     iou_threshold: float = 0.45,
@@ -584,9 +469,7 @@ def deduplicate_detections(
              if detection_overlap(det, existing) >= iou_threshold),
             None,
         )
-        if overlap_kept is not None:
-            _merge_provider_into(overlap_kept, det)
-        else:
+        if overlap_kept is None:
             det.setdefault("dedupe_method", "obb_nms")
             kept.append(det)
             buckets.setdefault((det_class, cx, cy), []).append(det)
@@ -633,17 +516,6 @@ def plan_inference_grid(width: int, height: int, chip_size: int, overlap: int, m
         "sampled": sampled,
         "max_chips": max_chips,
     }
-
-
-def clean_detection_class(det_class: str) -> str:
-    label = (det_class or "Unknown").replace("_", " ").replace("-", " ").strip()
-    prefixes = ("xview ", "dota ", "fair1m ", "fmow ", "rareplanes ", "dior ", "sodaa ", "hrsc ")
-    lower = label.lower()
-    for prefix in prefixes:
-        if lower.startswith(prefix):
-            label = label[len(prefix):]
-            break
-    return " ".join(part.capitalize() for part in label.split()) or "Unknown"
 
 
 def detection_ontology(det_class: str) -> dict:
@@ -726,26 +598,13 @@ def classify_detection_ontologies(detections: list, progress_callback=None) -> d
     return ontology_by_class
 
 
-# Providers that produce class-agnostic outputs and can be "grounded" by being
-# fed the boxes other providers produced for the same chip. Adding a new
-# grounded-by-prompt provider in the future is just one entry here — the
-# two-phase dispatch and consensus exemption pick it up automatically.
-GROUNDED_PROVIDERS: set[str] = {"sam2", "sam3"}
-
-
-def _post_one_provider(
+def _post_chip_to_sam3(
     session: requests.Session,
     chip_file,
-    provider_name: str,
     chip_meta_payload: str,
     chip_label: str,
-) -> tuple[str, dict] | None:
-    """Single-provider POST helper. Returns (name, response_json) or None on failure."""
-    try:
-        provider_url = INFERENCE_PROVIDERS[provider_name]
-    except KeyError:
-        logger.warning("[WORKER] unknown provider %s; skipping chip %s", provider_name, chip_label)
-        return None
+) -> dict | None:
+    """POST a single chip to SAM3 /detect. Returns response JSON or None on failure."""
     try:
         try:
             meta = json.loads(chip_meta_payload) if chip_meta_payload else {}
@@ -755,110 +614,18 @@ def _post_one_provider(
         content_type = meta.get("content_type") or "image/png"
         chip_file.seek(0)
         resp = session.post(
-            f"{provider_url}/detect",
+            f"{INFERENCE_SAM3_URL}/detect",
             files={"image": (filename, chip_file, content_type)},
             data={"metadata": chip_meta_payload},
             timeout=INFERENCE_CHIP_TIMEOUT_S,
         )
         resp.raise_for_status()
-        return (provider_name, resp.json())
+        return resp.json()
     except Exception as exc:
-        logger.warning(
-            "[WORKER] %s inference failed on chip %s: %s",
-            provider_name, chip_label, exc,
-        )
+        logger.warning("[WORKER] sam3 inference failed on chip %s: %s", chip_label, exc)
         return None
-
-
-def _grounded_prompt_boxes_from_responses(
-    responses: list[tuple[str, dict]],
-    max_boxes: int = 256,
-) -> list[dict]:
-    """Build a SAM2 prompt-box payload from phase-1 detector responses.
-
-    Each prompt carries the source provider's class so SAM2 returns class-tagged
-    masks. Limited to max_boxes per chip to bound the SAM2 mask-decoder pass."""
-    prompts: list[dict] = []
-    for provider_name, response in responses:
-        for det in response.get("detections", []) or []:
-            bbox = det.get("bbox")
-            obb = det.get("obb")
-            if not bbox and not obb:
-                continue
-            prompts.append({
-                "bbox": bbox,
-                "obb": obb,
-                "class": det.get("class") or det.get("original_class") or "segment",
-                "original_class": det.get("original_class") or det.get("class") or "segment",
-                "parent_class": det.get("parent_class"),
-                "confidence": det.get("confidence"),
-                "provider": provider_name,
-            })
-    if len(prompts) > max_boxes:
-        prompts.sort(key=lambda p: float(p.get("confidence") or 0.0), reverse=True)
-        prompts = prompts[:max_boxes]
-    return prompts
-
-
-def _post_chip_to_providers(
-    session: requests.Session,
-    chip_file,
-    chip_meta_payload: str,
-    selected_providers: list[str],
-    chip_label: str,
-) -> list[tuple[str, dict]]:
-    """POST a single chip to every selected inference provider.
-
-    Two-phase when any GROUNDED_PROVIDERS are selected alongside non-grounded
-    providers: phase 1 dispatches to non-grounded providers and collects their
-    detections; phase 2 posts the chip to each grounded provider with
-    metadata.prompt_boxes set to the union of phase-1 boxes (so SAM2 returns
-    class-tagged masks via SAM2ImagePredictor.predict(box=...)). When the
-    grounded provider is the only selection (or no phase-1 boxes were
-    produced), it falls back to its native unprompted mode."""
-    grounded_selected = [p for p in selected_providers if p in GROUNDED_PROVIDERS]
-    non_grounded_selected = [p for p in selected_providers if p not in GROUNDED_PROVIDERS]
-    responses: list[tuple[str, dict]] = []
-
-    try:
-        # Phase 1 — non-grounded providers (no inter-dependency).
-        for provider_name in non_grounded_selected:
-            outcome = _post_one_provider(
-                session, chip_file, provider_name, chip_meta_payload, chip_label,
-            )
-            if outcome is not None:
-                responses.append(outcome)
-
-        if not grounded_selected:
-            return responses
-
-        # Phase 2 — grounded providers. Build prompt boxes from phase-1 detections,
-        # then post each grounded provider with its own augmented metadata.
-        prompt_boxes = _grounded_prompt_boxes_from_responses(responses)
-        try:
-            base_meta = json.loads(chip_meta_payload) if chip_meta_payload else {}
-        except (TypeError, json.JSONDecodeError):
-            base_meta = {}
-        if not isinstance(base_meta, dict):
-            base_meta = {}
-
-        for provider_name in grounded_selected:
-            if prompt_boxes:
-                grounded_meta = {**base_meta, "prompt_boxes": prompt_boxes}
-                grounded_payload = json.dumps(grounded_meta)
-            else:
-                # No phase-1 boxes (e.g. grounded provider selected alone, or
-                # other providers found nothing on this chip). Fall back to
-                # unprompted mode — provider behaves as it did pre-grounding.
-                grounded_payload = chip_meta_payload
-            outcome = _post_one_provider(
-                session, chip_file, provider_name, grounded_payload, chip_label,
-            )
-            if outcome is not None:
-                responses.append(outcome)
     finally:
         chip_file.close()
-    return responses
 
 
 def _png_file(rgb: np.ndarray):
@@ -905,11 +672,11 @@ def _encode_bool_mask(mask: np.ndarray) -> dict:
     }
 
 
-def _emit_chip_payload(window: Window, src: rasterio.io.DatasetReader, providers: list[str], *, valid_mask=None):
-    """Return (fileobj, metadata) for a chip upload.
+def _emit_chip_payload(window: Window, src: rasterio.io.DatasetReader, *, valid_mask=None):
+    """Return (fileobj, metadata) for a SAM3 chip upload.
 
-    SAM3 receives GeoTIFF chips for multispectral/SAR inputs. Existing providers
-    continue to receive PNG chips because they expect 3-channel imagery.
+    Multispectral (≥6-band) and SAR (2-band VV/VH) rasters go out as GeoTIFFs;
+    everything else is encoded to a uint8 RGB PNG.
     """
     window_transform = src.window_transform(window)
     geo_meta = {
@@ -920,11 +687,10 @@ def _emit_chip_payload(window: Window, src: rasterio.io.DatasetReader, providers
         "source_bounds": list(src.window_bounds(window)),
     }
     valid_mask_meta = _encode_bool_mask(valid_mask) if valid_mask is not None else None
-    sam3_only = providers == ["sam3"]
     descriptions = tuple((desc or "").strip().lower() for desc in (src.descriptions or ()))
     has_vv_vh = {"vv", "vh"}.issubset(set(descriptions))
 
-    if sam3_only and src.count == 2 and has_vv_vh:
+    if src.count == 2 and has_vv_vh:
         meta = {
             "modality": "sar",
             "filename": "chip.tif",
@@ -936,7 +702,7 @@ def _emit_chip_payload(window: Window, src: rasterio.io.DatasetReader, providers
             meta["valid_mask"] = valid_mask_meta
         return _geotiff_window_file(src, window, [1, 2]), meta
 
-    if sam3_only and src.count >= 6:
+    if src.count >= 6:
         hls_timesteps = 3 if src.count >= 18 else None
         meta = {
             "modality": "multispectral",
@@ -994,18 +760,9 @@ def slice_and_infer(
     overlap: int = DEFAULT_INFERENCE_OVERLAP,
     max_chips: int = MAX_INFERENCE_CHIPS,
     progress_callback=None,
-    providers: list[str] = None,
     inference_metadata: dict | None = None,
 ):
-    """
-    Slice COG into chips, send to inference service(s), and store results in PostGIS + Neo4j.
-    `providers` is a list of provider names (keys of INFERENCE_PROVIDERS). When more than one
-    provider is supplied, each chip is sent to all of them and detections are merged later
-    by deduplicate_detections.
-    """
-    selected_providers = [p for p in (providers or ["yolo"]) if p in INFERENCE_PROVIDERS]
-    if not selected_providers:
-        selected_providers = ["yolo"]
+    """Slice COG into chips, send each to SAM3 /detect, dedupe and return detections."""
     inference_metadata = inference_metadata or {}
     with rasterio.open(cog_path) as src:
         width = src.width
@@ -1071,32 +828,29 @@ def slice_and_infer(
         )
         pending: dict[concurrent.futures.Future, dict] = {}
 
-        def _apply_chip_responses(ctx: dict, provider_responses: list[tuple[str, dict]]) -> None:
+        def _apply_chip_response(ctx: dict, inference_response: dict) -> None:
             x = ctx["x"]; y = ctx["y"]
             win_width = ctx["win_width"]; win_height = ctx["win_height"]
             valid_mask = ctx.get("valid_mask")
             chip_detections = []
-            for provider_name, inference_response in provider_responses:
-                for det in inference_response.get("detections", []):
-                    det["provider"] = provider_name
-                    det["providers"] = [provider_name]
-                    det["model_version"] = (
-                        inference_response.get("model_version")
-                        or det.get("model_version")
-                    )
-                    det["taxonomy_version"] = (
-                        inference_response.get("taxonomy_version")
-                        or det.get("taxonomy_version")
-                    )
-                    det["model_versions"] = (
-                        inference_response.get("model_versions")
-                        or det.get("model_versions")
-                    )
-                    det["threshold_profile"] = (
-                        inference_response.get("threshold_profile")
-                        or det.get("threshold_profile")
-                    )
-                    chip_detections.append(det)
+            for det in inference_response.get("detections", []):
+                det["model_version"] = (
+                    inference_response.get("model_version")
+                    or det.get("model_version")
+                )
+                det["taxonomy_version"] = (
+                    inference_response.get("taxonomy_version")
+                    or det.get("taxonomy_version")
+                )
+                det["model_versions"] = (
+                    inference_response.get("model_versions")
+                    or det.get("model_versions")
+                )
+                det["threshold_profile"] = (
+                    inference_response.get("threshold_profile")
+                    or det.get("threshold_profile")
+                )
+                chip_detections.append(det)
 
             for det in chip_detections:
                 try:
@@ -1159,17 +913,14 @@ def slice_and_infer(
                 original_class = det.get("original_class") or det.get("class", "unknown")
                 confidence = float(det.get("confidence") or det.get("calibrated_confidence") or 0.0)
                 decision = detection_decision(original_class, confidence, DETECTION_POLICY)
-                official_lae = is_official_lae_detection(det)
                 policy_review_status = decision["review_status"]
                 # Open-vocab policy: drop only when the operator explicitly raised
                 # GLOBAL_CONFIDENCE_FLOOR / PER_CLASS_CONFIDENCE_OVERRIDES above
                 # this detection's confidence. Otherwise everything passes through.
-                if not official_lae and decision["review_status"] == "below_class_threshold":
+                if decision["review_status"] == "below_class_threshold":
                     continue
 
-                det["class"] = decision["original_class"] if official_lae else decision["parent_class"]
-                provider_name = det.get("provider")
-                provider_list = det.get("providers") or ([provider_name] if provider_name else [])
+                det["class"] = decision["parent_class"]
                 det_model_version = det.get("model_version") or decision["model_version"]
                 det_taxonomy_version = det.get("taxonomy_version") or decision["taxonomy_version"]
                 det_threshold_profile = det.get("threshold_profile") or decision["threshold_profile"]
@@ -1177,8 +928,6 @@ def slice_and_infer(
                     "model_version": det_model_version,
                     "taxonomy_version": det_taxonomy_version,
                     "threshold_profile": det_threshold_profile,
-                    "provider": provider_name,
-                    "providers": provider_list,
                     "policy_review_status": det.get("policy_review_status") or policy_review_status,
                 }})
                 det["pixel_bbox"] = [abs_px_x1, abs_px_y1, abs_px_x2, abs_px_y2]
@@ -1226,7 +975,7 @@ def slice_and_infer(
             nonlocal processed_windows, failed_windows
             ctx = pending.pop(fut)
             try:
-                provider_responses = fut.result()
+                response = fut.result()
             except Exception as exc:
                 failed_windows += 1
                 processed_windows += 1
@@ -1236,16 +985,16 @@ def slice_and_infer(
                 )
                 _report_inference_progress()
                 return
-            if not provider_responses:
+            if not response:
                 failed_windows += 1
                 processed_windows += 1
                 logger.warning(
-                    "[WORKER] All providers failed for chip pass=%s x=%s y=%s: %s",
-                    pass_id, ctx["x"], ctx["y"], selected_providers,
+                    "[WORKER] sam3 inference returned no response for chip pass=%s x=%s y=%s",
+                    pass_id, ctx["x"], ctx["y"],
                 )
                 _report_inference_progress()
                 return
-            _apply_chip_responses(ctx, provider_responses)
+            _apply_chip_response(ctx, response)
             processed_windows += 1
             _report_inference_progress()
 
@@ -1277,7 +1026,6 @@ def slice_and_infer(
                     chip_file, chip_meta = _emit_chip_payload(
                         window,
                         src,
-                        selected_providers,
                         valid_mask=valid_mask,
                     )
                     chip_meta_payload = json.dumps({
@@ -1289,9 +1037,8 @@ def slice_and_infer(
                     chip_label = f"pass={pass_id} x={x} y={y}"
 
                     future = executor.submit(
-                        _post_chip_to_providers,
-                        session, chip_file, chip_meta_payload,
-                        selected_providers, chip_label,
+                        _post_chip_to_sam3,
+                        session, chip_file, chip_meta_payload, chip_label,
                     )
                     del chip
                     pending[future] = {
@@ -1319,16 +1066,12 @@ def slice_and_infer(
             executor.shutdown(wait=False, cancel_futures=True)
             session.close()
     
-    deduped = apply_confirmation_policy(
-        deduplicate_detections(detections),
-        selected_provider_count=len(selected_providers),
-    )
+    deduped = deduplicate_detections(detections)
     inference_summary["processed_chips"] = processed_windows
     inference_summary["failed_chips"] = failed_windows
     inference_summary["raw_detections"] = len(detections)
     inference_summary["deduped_detections"] = len(deduped)
     inference_summary["suppressed_detections"] = max(0, len(detections) - len(deduped))
-    inference_summary["confirmation_policy"] = "multi_provider_or_high_confidence" if len(selected_providers) > 1 else "single_provider"
     return {"detections": deduped, "summary": inference_summary}
 
 
@@ -1406,12 +1149,6 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
                     "assessment_status": assessment["assessment_status"],
                     "evidence": assessment["evidence"],
                     "allegiance": det.get("allegiance", "unknown"),
-                    "provider": det.get("provider"),
-                    "providers": _provider_set(det),
-                    "provider_confidences": det.get("provider_confidences") or {},
-                    "cross_confirmed": bool(det.get("cross_confirmed", False)),
-                    "confirmation_status": det.get("confirmation_status"),
-                    "confirmation_reason": det.get("confirmation_reason"),
                     "prompt_profile": det.get("prompt_profile"),
                     "prompt_chunk_index": det.get("prompt_chunk_index"),
                     "prompt_total_chunks": det.get("prompt_total_chunks"),
@@ -1515,7 +1252,7 @@ def _xyxy_to_normalized_cxcywh(box: list[float], width: float | None = None, hei
 @celery_app.task(name="worker.process_fmv", queue="imagery")
 def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = None, frame_stride: int = 1, max_frames: int | None = None) -> int:
     """Run SAM3 FMV tracking and persist one row per frame/track detection."""
-    provider_lifecycle.ensure_running(["sam3"])
+    provider_lifecycle.ensure_running()
     payload = json.dumps({
         "video_path": video_path,
         "text_prompts": text_prompts or None,
@@ -1526,7 +1263,7 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
     session = requests.Session()
     try:
         resp = session.post(
-            f"{INFERENCE_PROVIDERS['sam3']}/detect_video",
+            f"{INFERENCE_SAM3_URL}/detect_video",
             data={"metadata": payload},
             stream=True,
             timeout=INFERENCE_CHIP_TIMEOUT_S * 60,
@@ -1563,7 +1300,7 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
                     ),
                 )
                 inserted += 1
-        provider_lifecycle.mark_active(["sam3"])
+        provider_lifecycle.mark_active()
         return inserted
     finally:
         session.close()
@@ -1830,14 +1567,9 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
                 upload_meta = json.loads(upload_meta)
             except (TypeError, ValueError):
                 upload_meta = {}
-        selected_providers = upload_meta.get("inference_providers") or ["yolo"]
-        selected_providers = [p for p in selected_providers if p in INFERENCE_PROVIDERS]
-        if not selected_providers:
-            selected_providers = ["yolo"]
-        logger.info("[WORKER] upload %s using inference providers: %s", upload_id, selected_providers)
         try:
-            provider_lifecycle.ensure_running(selected_providers)
-            provider_lifecycle.mark_active(selected_providers)
+            provider_lifecycle.ensure_running()
+            provider_lifecycle.mark_active()
         except Exception as exc:
             logger.warning("[WORKER] provider_lifecycle.ensure_running failed: %s", exc)
         report_progress(self, upload_id, input_path, "metadata", 8, "Reading raster metadata and computing file hash.")
@@ -1990,7 +1722,6 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
         inference_result = slice_and_infer(
             cog_path,
             pass_id,
-            providers=selected_providers,
             inference_metadata=inference_metadata,
             progress_callback=lambda stage, progress, message, extra=None: report_progress(
                 self,
@@ -2005,7 +1736,7 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
         detections = inference_result["detections"]
         inference_summary = inference_result["summary"]
         try:
-            provider_lifecycle.mark_active(selected_providers)
+            provider_lifecycle.mark_active()
         except Exception as exc:
             logger.warning("[WORKER] provider_lifecycle.mark_active(post-infer) failed: %s", exc)
         logger.info("[WORKER] Total detections after dedupe: %s", len(detections))

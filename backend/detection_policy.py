@@ -162,7 +162,7 @@ def parent_class_for_label(label: Any) -> str:
 
     if raw in PARENT_CLASSES:
         return raw
-    if raw in {"mask", "region", "sam2_segment"}:
+    if raw in {"mask", "region"}:
         return "segment"
     if raw == "track":
         return "track"

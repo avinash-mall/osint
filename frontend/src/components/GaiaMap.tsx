@@ -980,7 +980,6 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
     const category = detectionCategoryForFeature(feature);
     const categoryMeta = DETECTION_CATEGORIES[category];
     const reviewStatus = props.review_status || props.metadata?.review_status || 'review_candidate';
-    const confirmationStatus = props.confirmation_status || props.metadata?.confirmation_status || 'unconfirmed';
     const originalClass = props.original_class || props.metadata?.original_class || props.class;
     const parentClass = props.parent_class || props.metadata?.parent_class || props.class;
     const hoverLabel = originalClass && originalClass !== props.class ? detectionClassLabel(originalClass) : props.label || props.class || 'Detection';
@@ -996,7 +995,6 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
           <div>Original: <span style="color:#e8ebee">${originalClass}</span></div>
           <div>Confidence: <span style="color:#e8ebee">${(Number(props.confidence || 0) * 100).toFixed(1)}%</span></div>
           <div>Review: <span style="color:#e8ebee">${reviewStatus}</span></div>
-          <div>Confirm: <span style="color:#e8ebee">${confirmationStatus}</span></div>
           <div>Threat: <span style="color:#e8ebee">${props.threat_level || 'unknown'}</span></div>
           <div>Tag: <span style="color:#e8ebee">${props.allegiance || 'unknown'}</span></div>
         </div>
@@ -1248,7 +1246,7 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
                     />
                   )}
                   <Marker position={[loc.properties.latitude, loc.properties.longitude]} icon={isLaunchPoint ? redIcon : emeraldIcon}>
-                    <Popup className="gotham-popup">
+                    <Popup className="sentinel-popup">
                       <div className="border border-sentinel-line bg-sentinel-panel p-2 text-slate-200">
                         <div className="mb-2 border-b border-sentinel-line pb-1 text-xs font-bold uppercase tracking-wider">{loc.properties.name}</div>
                         <div className="font-mono text-[11px] text-sentinel-muted">
@@ -1275,7 +1273,7 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
                   icon={detectionIcon(feature)}
                   eventHandlers={{ click: () => setSelectedDetection(feature) }}
                 >
-                  <Popup className="gotham-popup">
+                  <Popup className="sentinel-popup">
                     <div className="border border-sentinel-line bg-sentinel-panel p-2 text-slate-200">
                       <div className="mb-2 flex items-center gap-2 border-b border-sentinel-line pb-1 text-xs font-bold uppercase tracking-wider">
                         <span style={{ color: categoryMeta.color }}><DetectionSubclassIcon label={props.original_class || props.class || props.label} category={category} /></span>
@@ -1313,7 +1311,7 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
                   }}
                   eventHandlers={{ click: () => setSelectedDetection(feature) }}
                 >
-                  <Popup className="gotham-popup">
+                  <Popup className="sentinel-popup">
                     <div className="border border-sentinel-line bg-sentinel-panel p-2 text-slate-200">
                       <div className="mb-2 flex items-center gap-2 border-b border-sentinel-line pb-1 text-xs font-bold uppercase tracking-wider">
                         <span style={{ color: categoryMeta.color }}><DetectionSubclassIcon label={props.original_class || props.class || props.label} category={category} /></span>
@@ -1354,7 +1352,7 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
                   <Polyline positions={positions} pathOptions={{ color: '#4ea1ff', weight: 2, opacity: 0.55, dashArray: '4, 6' }} />
                   {latest && (
                     <Marker position={[latest.latitude, latest.longitude]} icon={blueIcon}>
-                      <Popup className="gotham-popup">
+                      <Popup className="sentinel-popup">
                         <div className="border border-sentinel-line bg-sentinel-panel p-2 text-slate-200">
                           <div className="mb-2 border-b border-sentinel-line pb-1 text-xs font-bold uppercase tracking-wider">{track.properties.callsign || track.asset_id}</div>
                           <div className="font-mono text-[11px] text-sentinel-muted">
@@ -1420,7 +1418,7 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
                         icon={createIcon(color)}
                         eventHandlers={{ click: () => setSelectedDetectionTrack(track) }}
                       >
-                        <Popup className="gotham-popup">
+                        <Popup className="sentinel-popup">
                           <div className="border border-sentinel-line bg-sentinel-panel p-2 text-slate-200">
                             <div className="mb-2 border-b border-sentinel-line pb-1 text-xs font-bold uppercase tracking-wider">
                               DT-{track.track_uid.slice(-6)} {track.pinned ? '· PINNED' : ''}
@@ -1569,7 +1567,6 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
                   <span className="sentinel-tag">{selectedDetection.properties?.allegiance || 'unknown'}</span>
                   <span className="sentinel-tag info">{Math.round(Number(selectedDetection.properties?.confidence || 0) * 100)}% CONF</span>
                   <span className="sentinel-tag acc">{selectedDetection.properties?.review_status || selectedDetection.properties?.metadata?.review_status || 'review'}</span>
-                  <span className="sentinel-tag info">{selectedDetection.properties?.confirmation_status || selectedDetection.properties?.metadata?.confirmation_status || 'unconfirmed'}</span>
                 </div>
               </div>
               <div className="border-b border-sentinel-line p-3 text-xs leading-relaxed text-sentinel-muted">
@@ -1578,7 +1575,6 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
                   <span>ASSESS</span><span>{selectedDetection.properties?.assessment_status || selectedDetection.properties?.ontology?.assessment_status || 'unconfirmed'}</span>
                   <span>ORIGINAL</span><span>{selectedDetection.properties?.original_class || selectedDetection.properties?.metadata?.original_class || selectedDetection.properties?.class || 'unknown'}</span>
                   <span>PROFILE</span><span>{selectedDetection.properties?.threshold_profile || selectedDetection.properties?.metadata?.threshold_profile || 'n/a'}</span>
-                  <span>CONFIRM</span><span>{selectedDetection.properties?.confirmation_reason || selectedDetection.properties?.metadata?.confirmation_reason || 'n/a'}</span>
                   <span>COVERAGE</span><span>{selectedDetection.properties?.coverage_fraction ? `${Math.round(Number(selectedDetection.properties.coverage_fraction) * 100)}%` : 'n/a'}</span>
                   <span>THREAT SCORE</span><span>{Number(selectedDetection.properties?.threat_confidence || selectedDetection.properties?.ontology?.threat_confidence || 0).toFixed(2)}</span>
                   <span>EVIDENCE</span><span>{(selectedDetection.properties?.evidence || selectedDetection.properties?.ontology?.evidence || []).join(' / ') || 'none'}</span>

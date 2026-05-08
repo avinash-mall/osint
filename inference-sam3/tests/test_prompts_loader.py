@@ -15,4 +15,4 @@ def test_text_prompts_override_dedupe_and_cap():
 
 def test_profile_resolution():
     prompts = resolve_prompts({"modality": "sar"}, max_prompts=3)
-    assert prompts == ["fixed-wing aircraft", "small aircraft", "cargo plane"]
+    assert prompts == ["airplane", "helicopter", "ship"]

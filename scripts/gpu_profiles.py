@@ -21,7 +21,7 @@ class GpuBuildProfile:
     compute_capability: str
     min_driver_version: str
 
-    def build_env(self, prefix: str = "MMROTATE_") -> dict[str, str]:
+    def build_env(self, prefix: str = "SAM3_") -> dict[str, str]:
         return {
             f"{prefix}CUDA_VERSION": self.cuda_version,
             f"{prefix}TORCH_INDEX_URL": self.torch_index_url,
@@ -199,7 +199,7 @@ def resolve_gpu_profile(gpu_model: str) -> GpuBuildProfile:
     if normalized in UNSUPPORTED_GPU_MODELS:
         arch = UNSUPPORTED_GPU_MODELS[normalized]
         raise UnsupportedGpuError(
-            f"{gpu_model!r} ({arch}) is below the supported MMRotate GPU build floor. "
+            f"{gpu_model!r} ({arch}) is below the supported SAM3 GPU build floor. "
             "Use a Turing/sm_75 or newer NVIDIA GPU."
         )
     profile_name = GPU_MODELS.get(normalized)

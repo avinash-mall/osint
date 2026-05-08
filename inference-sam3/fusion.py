@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import base64
+import importlib.util
 import os
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -12,11 +12,14 @@ from pycocotools import mask as coco_mask
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1] / "backend"
-if BACKEND_DIR.exists() and str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
 
 try:
-    from detection_policy import parent_class_for_label
+    spec = importlib.util.spec_from_file_location("backend_detection_policy", BACKEND_DIR / "detection_policy.py")
+    if spec is None or spec.loader is None:
+        raise ImportError("backend detection policy unavailable")
+    backend_detection_policy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(backend_detection_policy)
+    parent_class_for_label = backend_detection_policy.parent_class_for_label
 except Exception:
     def parent_class_for_label(label: Any) -> str:
         return str(label or "object").strip().lower().replace(" ", "_") or "object"

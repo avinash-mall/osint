@@ -16,21 +16,21 @@ services:
   postgis:
     image: postgis/postgis:16-3.4
     environment:
-      - POSTGRES_USER=gotham
-      - POSTGRES_PASSWORD=gotham
-      - POSTGRES_DB=gotham
+      - POSTGRES_USER=sentinel
+      - POSTGRES_PASSWORD=sentinel
+      - POSTGRES_DB=sentinel
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./backend/init_postgis.sql:/docker-entrypoint-initdb.d/init_postgis.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U gotham -d gotham"]
+      test: ["CMD-SHELL", "pg_isready -U sentinel -d sentinel"]
       interval: 10s
       timeout: 5s
       retries: 5
 
   backend:
     build: ./backend
-    image: sentinelos-backend:latest
+    image: sentinel-backend:latest
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -43,13 +43,8 @@ services:
       - NEO4J_USERNAME=neo4j
       - NEO4J_PASSWORD=password
       - REDIS_URL=redis://redis:6379/0
-      - POSTGIS_URI=postgresql://gotham:gotham@postgis:5432/gotham
+      - POSTGIS_URI=postgresql://sentinel:sentinel@postgis:5432/sentinel
       - TITILER_URL=http://titiler:8080
-      - INFERENCE_URL=http://inference:8001
-      - INFERENCE_LAE_DINO_URL=http://inference-lae-dino:8001
-      - INFERENCE_MMROTATE_URL=http://inference-mmrotate:8001
-      - INFERENCE_LSKNET_URL=http://inference-lsknet:8001
-      - INFERENCE_SAM2_URL=http://inference-sam2:8001
       - INFERENCE_SAM3_URL=http://inference-sam3:8001
       - IMAGERY_PATH=/data/imagery
       - FMV_PATH=/data/fmv
@@ -58,7 +53,7 @@ services:
       - DETECTION_THRESHOLD_PROFILE=recall_review
       - GLOBAL_CONFIDENCE_FLOOR=0.0
       - HIGH_CONFIDENCE_THRESHOLD=0.8
-      - MODEL_VERSION=geoint-yolov8-obb-open-world
+      - MODEL_VERSION=sam3-open-vocab
     env_file:
       - .env
     depends_on:
@@ -75,8 +70,6 @@ services:
       - imagery_data:/data/imagery
       - fmv_data:/data/fmv
       - dataset_data:/data/datasets
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./docker-compose.yml:/app/docker-compose.yml:ro
     healthcheck:
       test: ["CMD-SHELL", "python3 -c 'import socket; s = socket.socket(); s.settimeout(2); exit(0 if s.connect_ex((\"127.0.0.1\", 8080)) == 0 else 1)' || exit 1"]
       interval: 10s
@@ -99,7 +92,7 @@ services:
 
   frontend:
     build: ./frontend
-    image: sentinelos-frontend:latest
+    image: sentinel-frontend:latest
     restart: unless-stopped
     depends_on:
       backend:
@@ -132,7 +125,7 @@ services:
     image: maplibre/martin:latest
     restart: on-failure
     environment:
-      - DATABASE_URL=postgresql://gotham:gotham@postgis:5432/gotham
+      - DATABASE_URL=postgresql://sentinel:sentinel@postgis:5432/sentinel
     depends_on:
       postgis:
         condition: service_healthy
@@ -142,217 +135,7 @@ services:
       timeout: 5s
       retries: 5
 
-  inference:
-    profiles: ["yolo", "all"]
-    build:
-      context: ./inference
-      args:
-        CUDA_VERSION: ${INFERENCE_CUDA_VERSION:?Run python scripts/configure_host.py first}
-        TORCH_INDEX_URL: ${INFERENCE_TORCH_INDEX_URL:?Run python scripts/configure_host.py first}
-        TORCH_VERSION: ${INFERENCE_TORCH_VERSION:?Run python scripts/configure_host.py first}
-        TORCHVISION_VERSION: ${INFERENCE_TORCHVISION_VERSION:?Run python scripts/configure_host.py first}
-        INSTALL_TENSORRT: "true"
-        TENSORRT_VERSION: ${TENSORRT_VERSION:-10.16.1.11}
-    image: sentinelos-inference:gpu
-    gpus: all
-    environment:
-      - GPU_MODEL=${GPU_MODEL:?Run python scripts/configure_host.py first}
-      - INFERENCE_GPU_PROFILE=${INFERENCE_GPU_PROFILE:?Run python scripts/configure_host.py first}
-      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
-      - NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
-      - DEVICE=${INFERENCE_DEVICE:-auto}
-      - CUDA_UNSUPPORTED_ARCH_POLICY=${CUDA_UNSUPPORTED_ARCH_POLICY:-cpu}
-      - TRAINED_MODEL_PATH=/app/models/geoint_yolov8_obb.pt
-      - YOLO_RUNTIME=${YOLO_RUNTIME:-auto}
-      - YOLO_ENGINE_PATH=/app/models/geoint_yolov8_obb.engine
-      - YOLO_TRT_PRECISION=fp16
-      - YOLO_IMGSZ=1024
-      - YOLO_BATCH_MAX_SIZE=8
-      - YOLO_BATCH_TIMEOUT_MS=10
-      - YOLO_TRT_AUTO_EXPORT=${YOLO_TRT_AUTO_EXPORT:-0}
-      - YOLO_TRT_EXPORT_BATCHES=${YOLO_TRT_EXPORT_BATCHES:-1}
-      - YOLO_TRT_WORKSPACE=${YOLO_TRT_WORKSPACE:-2}
-      - DETECTION_THRESHOLD_PROFILE=recall_review
-      - CONFIDENCE_THRESHOLD=0.08
-      - NMS_IOU_THRESHOLD=0.70
-      - MAX_DETECTIONS_PER_CHIP=1000
-      - MODEL_VERSION=geoint-yolov8-obb-open-world
-    volumes:
-      - ./inference:/app
-      - imagery_data:/data/imagery:ro
-      - ./training_dataset:/training_dataset
-    working_dir: /app
-    healthcheck:
-      test: ["CMD-SHELL", "python3 -c 'import socket; s = socket.socket(); s.settimeout(2); exit(0 if s.connect_ex((\"127.0.0.1\", 8001)) == 0 else 1)' || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
-
-  inference-lae-dino:
-    profiles: ["lae-dino", "all"]
-    build:
-      context: ./inference-lae-dino
-      dockerfile: Dockerfile.gpu
-      args:
-        CUDA_VERSION: ${LAE_DINO_CUDA_VERSION:?Run python scripts/configure_host.py first}
-        TORCH_INDEX_URL: ${LAE_DINO_TORCH_INDEX_URL:?Run python scripts/configure_host.py first}
-        TORCH_VERSION: ${LAE_DINO_TORCH_VERSION:?Run python scripts/configure_host.py first}
-        TORCHVISION_VERSION: ${LAE_DINO_TORCHVISION_VERSION:?Run python scripts/configure_host.py first}
-    image: sentinelos-inference-lae-dino:gpu
-    gpus: all
-    environment:
-      - GPU_MODEL=${GPU_MODEL:?Run python scripts/configure_host.py first}
-      - LAE_DINO_GPU_PROFILE=${LAE_DINO_GPU_PROFILE:?Run python scripts/configure_host.py first}
-      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
-      - NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
-      - DEVICE=${LAE_DINO_DEVICE:-auto}
-      - CUDA_UNSUPPORTED_ARCH_POLICY=${CUDA_UNSUPPORTED_ARCH_POLICY:-cpu}
-      - CPU_THREADS=auto
-      - WEB_CONCURRENCY=1
-      - LAE_PROMPT_PROFILE=official_lae80c
-      - LAE_PROMPT_CHUNK_SIZE=20
-      - DETECTION_THRESHOLD_PROFILE=recall_review
-      - CONFIDENCE_THRESHOLD=0.10
-      - MAX_DETECTIONS_PER_CHIP=1000
-      - LAE_BATCH_MAX_SIZE=1
-      - LAE_BATCH_TIMEOUT_MS=0
-      - MODEL_VERSION=grounding-dino-base
-      - GROUNDING_DINO_MODEL_ID=/opt/grounding-dino
-      - GROUNDING_DINO_BOX_THRESHOLD=0.15
-      - GROUNDING_DINO_TEXT_THRESHOLD=0.15
-      - TRANSFORMERS_OFFLINE=1
-      - HF_HUB_OFFLINE=1
-      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-      - LAE_AUTOCAST_DTYPE=auto
-      - LAE_PROBE_IMAGE_PATH=/app/probes/probe_chip.png
-      - LAE_MIN_PROBE_DETECTIONS=0
-    volumes:
-      - ./inference-lae-dino:/app
-      - imagery_data:/data/imagery:ro
-    working_dir: /app
-    healthcheck:
-      test: ["CMD-SHELL", "python3 -c 'import socket; s = socket.socket(); s.settimeout(2); exit(0 if s.connect_ex((\"127.0.0.1\", 8001)) == 0 else 1)' || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
-
-  inference-mmrotate:
-    profiles: ["mmrotate", "all"]
-    build:
-      context: ./inference-mmrotate
-      args:
-        CUDA_VERSION: ${MMROTATE_CUDA_VERSION:?Run python scripts/configure_host.py first}
-        TORCH_INDEX_URL: ${MMROTATE_TORCH_INDEX_URL:?Run python scripts/configure_host.py first}
-        TORCH_VERSION: ${MMROTATE_TORCH_VERSION:?Run python scripts/configure_host.py first}
-        TORCHVISION_VERSION: ${MMROTATE_TORCHVISION_VERSION:?Run python scripts/configure_host.py first}
-        TORCH_CUDA_ARCH_LIST: ${MMROTATE_TORCH_CUDA_ARCH_LIST:?Run python scripts/configure_host.py first}
-    image: sentinelos-inference-mmrotate:gpu
-    gpus: all
-    environment:
-      GPU_MODEL: ${GPU_MODEL:?Run python scripts/configure_host.py first}
-      MMROTATE_GPU_PROFILE: ${MMROTATE_GPU_PROFILE:?Run python scripts/configure_host.py first}
-      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
-      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
-      DEVICE: ${MMROTATE_DEVICE:-auto}
-      CUDA_UNSUPPORTED_ARCH_POLICY: ${CUDA_UNSUPPORTED_ARCH_POLICY:-cpu}
-      CPU_THREADS: auto
-      WEB_CONCURRENCY: "1"
-      DETECTION_THRESHOLD_PROFILE: recall_review
-      MMROTATE_CONFIDENCE_THRESHOLD: "0.05"
-      MAX_DETECTIONS_PER_CHIP: "1000"
-      MODEL_VERSION: mmrotate-oriented-rcnn-dota
-      MMROTATE_CONFIG: /opt/mmrotate/configs/oriented_rcnn/oriented-rcnn-le90_r50_fpn_1x_dota.py
-      MMROTATE_MODEL_DIR: /models
-      MMROTATE_CHECKPOINT: /models/oriented_rcnn_r50_fpn_1x_dota_le90-6d2b2ce0.pth
-    volumes:
-      - ./inference-mmrotate:/app
-      - mmrotate_models:/models
-      - imagery_data:/data/imagery:ro
-    working_dir: /app
-    healthcheck:
-      test: ["CMD-SHELL", "python3 -c 'import socket; s = socket.socket(); s.settimeout(2); exit(0 if s.connect_ex((\"127.0.0.1\", 8001)) == 0 else 1)' || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
-
-  inference-lsknet:
-    profiles: ["lsknet", "all"]
-    build:
-      context: ./inference-lsknet
-      args:
-        CUDA_VERSION: ${LSKNET_CUDA_VERSION:?Run python scripts/configure_host.py first}
-        TORCH_INDEX_URL: ${LSKNET_TORCH_INDEX_URL:?Run python scripts/configure_host.py first}
-        TORCH_VERSION: ${LSKNET_TORCH_VERSION:?Run python scripts/configure_host.py first}
-        TORCHVISION_VERSION: ${LSKNET_TORCHVISION_VERSION:?Run python scripts/configure_host.py first}
-        TORCHAUDIO_VERSION: ${LSKNET_TORCHAUDIO_VERSION:?Run python scripts/configure_host.py first}
-        TORCH_CUDA_ARCH_LIST: ${LSKNET_TORCH_CUDA_ARCH_LIST:?Run python scripts/configure_host.py first}
-    image: sentinelos-inference-lsknet:gpu
-    gpus: all
-    environment:
-      GPU_MODEL: ${GPU_MODEL:?Run python scripts/configure_host.py first}
-      LSKNET_GPU_PROFILE: ${LSKNET_GPU_PROFILE:?Run python scripts/configure_host.py first}
-      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
-      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
-      DEVICE: ${LSKNET_DEVICE:-auto}
-      CUDA_UNSUPPORTED_ARCH_POLICY: ${CUDA_UNSUPPORTED_ARCH_POLICY:-cpu}
-      CPU_THREADS: auto
-      WEB_CONCURRENCY: "1"
-      DETECTION_THRESHOLD_PROFILE: recall_review
-      LSKNET_CONFIDENCE_THRESHOLD: "0.05"
-      MAX_DETECTIONS_PER_CHIP: "1000"
-      MODEL_VERSION: lsknet-s-dota
-    volumes:
-      - ./inference-lsknet:/app
-      - lsknet_models:/models
-      - imagery_data:/data/imagery:ro
-    working_dir: /app
-    healthcheck:
-      test: ["CMD-SHELL", "python3 -c 'import socket; s = socket.socket(); s.settimeout(2); exit(0 if s.connect_ex((\"127.0.0.1\", 8001)) == 0 else 1)' || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
-
-  inference-sam2:
-    profiles: ["sam2", "all"]
-    build:
-      context: ./inference-sam2
-      args:
-        CUDA_VERSION: ${SAM2_CUDA_VERSION:?Run python scripts/configure_host.py first}
-        TORCH_INDEX_URL: ${SAM2_TORCH_INDEX_URL:?Run python scripts/configure_host.py first}
-        TORCH_VERSION: ${SAM2_TORCH_VERSION:?Run python scripts/configure_host.py first}
-        TORCHVISION_VERSION: ${SAM2_TORCHVISION_VERSION:?Run python scripts/configure_host.py first}
-        TORCHAUDIO_VERSION: ${SAM2_TORCHAUDIO_VERSION:?Run python scripts/configure_host.py first}
-        TORCH_CUDA_ARCH_LIST: ${SAM2_TORCH_CUDA_ARCH_LIST:?Run python scripts/configure_host.py first}
-    image: sentinelos-inference-sam2:gpu
-    gpus: all
-    environment:
-      GPU_MODEL: ${GPU_MODEL:?Run python scripts/configure_host.py first}
-      SAM2_GPU_PROFILE: ${SAM2_GPU_PROFILE:?Run python scripts/configure_host.py first}
-      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
-      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
-      DEVICE: ${SAM2_DEVICE:-auto}
-      CUDA_UNSUPPORTED_ARCH_POLICY: ${CUDA_UNSUPPORTED_ARCH_POLICY:-cpu}
-      CPU_THREADS: auto
-      WEB_CONCURRENCY: "1"
-      SAM2_MODEL_SIZE: "large"
-    volumes:
-      - ./inference-sam2:/app
-      - sam2_models:/models
-      - imagery_data:/data/imagery:ro
-    working_dir: /app
-    healthcheck:
-      test: ["CMD-SHELL", "python3 -c 'import socket; s = socket.socket(); s.settimeout(2); exit(0 if s.connect_ex((\"127.0.0.1\", 8001)) == 0 else 1)' || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
-
   inference-sam3:
-    profiles: ["sam3", "all"]
     build:
       context: ./inference-sam3
       dockerfile: Dockerfile.gpu
@@ -364,7 +147,7 @@ services:
         TORCHVISION_VERSION: ${SAM3_TORCHVISION_VERSION:?Run python scripts/configure_host.py first}
         TORCH_CUDA_ARCH_LIST: ${SAM3_TORCH_CUDA_ARCH_LIST:?Run python scripts/configure_host.py first}
         HF_TOKEN: ${HF_TOKEN:-}
-    image: sentinelos-inference-sam3:gpu
+    image: sentinel-inference-sam3:gpu
     gpus: all
     environment:
       GPU_MODEL: ${GPU_MODEL:?Run python scripts/configure_host.py first}
@@ -414,7 +197,7 @@ services:
       - fmv_data:/data/fmv:ro
     working_dir: /app
     healthcheck:
-      test: ["CMD-SHELL", "python3 -c 'import socket; s = socket.socket(); s.settimeout(2); exit(0 if s.connect_ex((\"127.0.0.1\", 8001)) == 0 else 1)' || exit 1"]
+      test: ["CMD-SHELL", "python -c 'import socket; s = socket.socket(); s.settimeout(2); exit(0 if s.connect_ex((\"127.0.0.1\", 8001)) == 0 else 1)' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -429,8 +212,7 @@ services:
       retries: 5
 
   worker:
-    build: ./backend
-    image: sentinelos-backend:latest
+    image: sentinel-backend:latest
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -438,7 +220,7 @@ services:
       nofile:
         soft: 65536
         hard: 65536
-    command: celery -A worker.celery_app worker --beat --loglevel=info -Q imagery,default
+    command: celery -A worker.celery_app worker --loglevel=info -Q imagery,default
     env_file:
       - .env
     environment:
@@ -446,12 +228,7 @@ services:
       - NEO4J_USERNAME=neo4j
       - NEO4J_PASSWORD=password
       - REDIS_URL=redis://redis:6379/0
-      - POSTGIS_URI=postgresql://gotham:gotham@postgis:5432/gotham
-      - INFERENCE_URL=http://inference:8001
-      - INFERENCE_LAE_DINO_URL=http://inference-lae-dino:8001
-      - INFERENCE_MMROTATE_URL=http://inference-mmrotate:8001
-      - INFERENCE_LSKNET_URL=http://inference-lsknet:8001
-      - INFERENCE_SAM2_URL=http://inference-sam2:8001
+      - POSTGIS_URI=postgresql://sentinel:sentinel@postgis:5432/sentinel
       - INFERENCE_SAM3_URL=http://inference-sam3:8001
       - IMAGERY_PATH=/data/imagery
       - FMV_PATH=/data/fmv
@@ -460,13 +237,10 @@ services:
       - DETECTION_THRESHOLD_PROFILE=recall_review
       - GLOBAL_CONFIDENCE_FLOOR=0.0
       - HIGH_CONFIDENCE_THRESHOLD=0.8
-      - MODEL_VERSION=geoint-yolov8-obb-open-world
+      - MODEL_VERSION=sam3-open-vocab
       - INFERENCE_CHIP_SIZE=1024
       - INFERENCE_CHIP_OVERLAP=512
       - MAX_INFERENCE_CHIPS=0
-      # Chip dispatch concurrency to inference providers. The Grounding DINO
-      # container batches concurrent requests internally; without backend-side
-      # parallelism the batcher never gets multiple items to batch.
       - INFERENCE_CHIP_CONCURRENCY=${INFERENCE_CHIP_CONCURRENCY:-4}
       - INFERENCE_CHIP_TIMEOUT_S=${INFERENCE_CHIP_TIMEOUT_S:-600}
     depends_on:
@@ -481,8 +255,6 @@ services:
       - imagery_data:/data/imagery
       - fmv_data:/data/fmv
       - dataset_data:/data/datasets
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ./docker-compose.yml:/app/docker-compose.yml:ro
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f celery || exit 1"]
       interval: 30s
@@ -518,7 +290,4 @@ volumes:
   imagery_data:
   fmv_data:
   dataset_data:
-  mmrotate_models:
-  lsknet_models:
-  sam2_models:
   sam3_models:

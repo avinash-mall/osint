@@ -24,7 +24,7 @@ from threat_assessment import assess_detection_threat, category_for_class, clean
 from worker import celery_app, process_fmv, process_satellite_imagery
 import provider_lifecycle
 
-app = FastAPI(title="SentinelOS API")
+app = FastAPI(title="Sentinel API")
 logger = logging.getLogger(__name__)
 
 _platform_schema_lock = threading.Lock()
@@ -210,7 +210,7 @@ def save_upload_file(file: UploadFile, local_path: Path, chunk_size: int = 1024 
     return size
 
 
-def acquire_schema_xact_lock(cursor, lock_name: str = "sentinelos_platform_schema") -> None:
+def acquire_schema_xact_lock(cursor, lock_name: str = "sentinel_platform_schema") -> None:
     cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (lock_name,))
 
 
@@ -718,17 +718,6 @@ def record_observation(
         logger.warning("Failed to record observation type=%s domain=%s", event_type, domain, exc_info=True)
 
 
-def clean_detection_class(det_class: str) -> str:
-    label = (det_class or "Unknown").replace("_", " ").replace("-", " ").strip()
-    prefixes = ("xview ", "dota ", "fair1m ", "fmow ", "rareplanes ", "dior ", "sodaa ", "hrsc ")
-    lower = label.lower()
-    for prefix in prefixes:
-        if lower.startswith(prefix):
-            label = label[len(prefix):]
-            break
-    return " ".join(part.capitalize() for part in label.split()) or "Unknown"
-
-
 def detection_ontology(det_class: str) -> dict:
     return conservative_detection_ontology(det_class)
 
@@ -815,11 +804,6 @@ def enriched_detection_metadata(det_class: str, metadata: Optional[dict]) -> dic
     enriched["ontology"]["assessment_status"] = assessment["assessment_status"]
     enriched["ontology"]["evidence"] = assessment["evidence"]
     enriched.setdefault("allegiance", "unknown")
-    enriched.setdefault("providers", [])
-    enriched.setdefault("provider_confidences", {})
-    enriched.setdefault("cross_confirmed", False)
-    enriched.setdefault("confirmation_status", "unconfirmed")
-    enriched.setdefault("confirmation_reason", "single_provider")
     return enriched
 
 
@@ -1509,7 +1493,7 @@ def dashboard_summary():
         models = [dict(row) for row in cursor.fetchall()]
 
     summary = {
-        "app": "SentinelOS",
+        "app": "Sentinel",
         "counts": {**counts, "targets": len(targets), "high_priority_targets": len([t for t in targets if (t.get("properties", {}).get("priority") == "High")])},
         "priority_targets": targets[:6],
         "observations_by_domain": observations_by_domain,
@@ -2486,25 +2470,6 @@ def export_report(report_id: int, format: str = "json"):
     raise HTTPException(status_code=400, detail="Unsupported report export format")
 
 
-@app.get("/api/models")
-def list_models():
-    ensure_platform_tables()
-    model_path = os.getenv("MODEL_PATH", "/app/yolov8n.pt")
-    with postgis_db.get_cursor(commit=True) as cursor:
-        cursor.execute("""
-            INSERT INTO models (name, version, model_path, status, promoted)
-            SELECT 'YOLOv8 Local', 'local', %s, 'available', TRUE
-            WHERE NOT EXISTS (SELECT 1 FROM models)
-        """, (model_path,))
-        cursor.execute("""
-            SELECT id, name, version, model_path, status, metrics, promoted, created_at
-            FROM models
-            ORDER BY promoted DESC, created_at DESC
-        """)
-        models = [dict(row) for row in cursor.fetchall()]
-    return {"models": models, "inference": {"url": "/inference/main"}}
-
-
 @app.get("/api/models/datasets")
 def list_model_datasets():
     ensure_platform_tables()
@@ -2993,11 +2958,6 @@ def get_detections_geojson(
                     "taxonomy_version": metadata.get("taxonomy_version"),
                     "chip_id": metadata.get("chip_id"),
                     "coverage_fraction": metadata.get("coverage_fraction"),
-                    "providers": metadata.get("providers", []),
-                    "provider_confidences": metadata.get("provider_confidences", {}),
-                    "cross_confirmed": metadata.get("cross_confirmed", False),
-                    "confirmation_status": metadata.get("confirmation_status"),
-                    "confirmation_reason": metadata.get("confirmation_reason"),
                     "pass_id": row["pass_id"],
                     "pass_name": row["pass_name"],
                     "acquisition_time": row["acquisition_time"],
@@ -3291,44 +3251,26 @@ def trigger_ingest(req: IngestRequest):
     }
 
 
-_KNOWN_INFERENCE_PROVIDERS = ("yolo", "lae-dino", "mmrotate", "lsknet", "sam2", "sam3")
-
-
-def _parse_inference_providers(raw: str) -> list[str]:
-    requested = [p.strip().lower() for p in (raw or "").split(",") if p.strip()]
-    seen: set[str] = set()
-    providers: list[str] = []
-    for p in requested:
-        if p in _KNOWN_INFERENCE_PROVIDERS and p not in seen:
-            providers.append(p)
-            seen.add(p)
-    return providers or ["sam3"]
-
-
 @app.post("/api/ingest/upload")
 def upload_imagery(
     file: UploadFile = File(...),
     sensor_type: str = Form("Optical"),
     acquisition_time: Optional[str] = Form(None),
     auto_process: bool = Form(True),
-    inference_providers: str = Form("sam3"),
     text_prompts: Optional[str] = Form(None),
 ):
     ensure_platform_tables()
     filename = safe_filename(file.filename or "upload.tif")
     media_type, handler = classify_upload(filename)
-    selected_providers = _parse_inference_providers(inference_providers)
-    if media_type == "fmv" and (not inference_providers or inference_providers == "yolo"):
-        selected_providers = ["sam3"]
 
     if media_type in {"imagery", "fmv"}:
         try:
-            provider_lifecycle.ensure_running(selected_providers)
+            provider_lifecycle.ensure_running()
         except Exception as exc:
             logger.warning("[UPLOAD] provider_lifecycle.ensure_running failed: %s", exc)
             raise HTTPException(
                 status_code=503,
-                detail=f"Failed to start inference providers {selected_providers}: {exc}",
+                detail=f"Failed to start sam3 inference container: {exc}",
             )
 
     if media_type == "fmv":
@@ -3360,7 +3302,6 @@ def upload_imagery(
         "media_type": media_type,
         "handler": handler,
         "metadata": raster_metadata,
-        "inference_providers": selected_providers,
     }
     domain = domain_for_media(media_type, sensor_type)
     celery_task_id = None
@@ -3391,7 +3332,6 @@ def upload_imagery(
                     "stage": "stored",
                     "progress": 0,
                     "message": "Upload stored.",
-                    "inference_providers": selected_providers,
                 }),
             ))
         upload_job_recorded = True
@@ -3461,7 +3401,7 @@ def upload_imagery(
         clip["stream_url"] = fmv_public_url(clip.get("hls_path"), clip["file_path"])
         status = "ready"
         prompt_list = [item.strip() for item in (text_prompts or "").split(",") if item.strip()]
-        if "sam3" in selected_providers and prompt_list:
+        if prompt_list:
             task = process_fmv.delay(clip["id"], str(clip_path), prompt_list)
             celery_task_id = task.id
             status = "queued"

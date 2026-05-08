@@ -25,12 +25,6 @@ export default function IngestConnect() {
   const [file, setFile] = useState<File | null>(null);
   const [sensorType, setSensorType] = useState('Optical');
   const [autoProcess, setAutoProcess] = useState(true);
-  const [useYolo, setUseYolo] = useState(false);
-  const [useLaeDino, setUseLaeDino] = useState(false);
-  const [useMmrotate, setUseMmrotate] = useState(false);
-  const [useLsknet, setUseLsknet] = useState(false);
-  const [useSam2, setUseSam2] = useState(false);
-  const [useSam3, setUseSam3] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState('');
   const [uploadTransferProgress, setUploadTransferProgress] = useState(0);
@@ -100,11 +94,6 @@ export default function IngestConnect() {
 
   const uploadImage = async () => {
     if (!file || uploading) return;
-    const providers = [useYolo && 'yolo', useLaeDino && 'lae-dino', useMmrotate && 'mmrotate', useLsknet && 'lsknet', useSam2 && 'sam2', useSam3 && 'sam3'].filter(Boolean) as string[];
-    if (providers.length === 0) {
-      setUploadStatus('Select at least one inference provider.');
-      return;
-    }
     setUploading(true);
     setUploadTransferProgress(0);
     setUploadStatus('');
@@ -113,7 +102,6 @@ export default function IngestConnect() {
       form.append('file', file);
       form.append('sensor_type', sensorType);
       form.append('auto_process', String(autoProcess));
-      form.append('inference_providers', providers.join(','));
       const response = await axios.post(`${API_URL}/api/ingest/upload`, form, {
         headers: { 'Content-Type': 'multipart/form-data' },
         onUploadProgress: (event) => {
@@ -174,78 +162,6 @@ export default function IngestConnect() {
             />
           </label>
 
-          <div className="border border-slate-700 bg-slate-900 rounded px-4 py-3 flex flex-col gap-2">
-            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-mono">
-              Inference Providers
-            </div>
-            <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={useYolo}
-                  onChange={(event) => setUseYolo(event.target.checked)}
-                />
-                <span className="text-slate-200">YOLOv8 OBB</span>
-                <span className="text-[10px] text-slate-500 font-mono">geoint-yolov8-obb</span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={useLaeDino}
-                  onChange={(event) => setUseLaeDino(event.target.checked)}
-                />
-                <span className="text-slate-200">LAE-DINO</span>
-                <span className="text-[10px] text-slate-500 font-mono">open-vocab Swin-T</span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={useMmrotate}
-                  onChange={(event) => setUseMmrotate(event.target.checked)}
-                />
-                <span className="text-slate-200">MMRotate</span>
-                <span className="text-[10px] text-slate-500 font-mono">DOTA Oriented R-CNN</span>
-              </label>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={useLsknet}
-                  onChange={(event) => setUseLsknet(event.target.checked)}
-                />
-                <span className="text-slate-200">LSKNet</span>
-                <span className="text-[10px] text-slate-500 font-mono">Large Selective Kernel</span>
-              </label>
-               <label className="flex items-center gap-2 cursor-pointer">
-                 <input
-                   type="checkbox"
-                   checked={useSam2}
-                   onChange={(event) => setUseSam2(event.target.checked)}
-                 />
-                 <span className="text-slate-200">SAM 2</span>
-                 <span className="text-[10px] text-slate-500 font-mono">Segment Anything Model 2</span>
-               </label>
-               <label className="flex items-center gap-2 cursor-pointer">
-                 <input
-                   type="checkbox"
-                   checked={useSam3}
-                   onChange={(event) => setUseSam3(event.target.checked)}
-                 />
-                 <span className="text-slate-200">SAM 3</span>
-                 <span className="text-[10px] text-slate-500 font-mono">Segment Anything Model 3</span>
-               </label>
-            </div>
-             {!useYolo && !useLaeDino && !useMmrotate && !useLsknet && !useSam2 && !useSam3 && (
-               <div className="text-[10px] font-mono text-rose-400">
-                 select at least one provider
-               </div>
-             )}
-             {[useYolo, useLaeDino, useMmrotate, useLsknet, useSam2, useSam3].filter(Boolean).length > 1 && (
-               <div className="text-[10px] font-mono text-emerald-400/80">
-                 results will be merged; detections confirm when cross-confirmed or high confidence
-               </div>
-             )}
-          </div>
-
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <select
               value={sensorType}
@@ -268,7 +184,7 @@ export default function IngestConnect() {
             </label>
              <button
                onClick={uploadImage}
-               disabled={!file || uploading || (!useYolo && !useLaeDino && !useMmrotate && !useLsknet && !useSam2 && !useSam3)}
+               disabled={!file || uploading}
                className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed rounded px-4 py-3 text-sm font-bold uppercase tracking-wider flex items-center justify-center gap-2"
              >
               <DatabaseZap className="w-4 h-4" /> Upload

@@ -13,7 +13,6 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from math import atan2, degrees, radians, sin, cos, sqrt
-from typing import Any
 
 import numpy as np
 from pyproj import Geod
