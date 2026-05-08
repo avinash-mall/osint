@@ -43,7 +43,8 @@ ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST} \
 
 RUN git clone --depth 1 https://github.com/facebookresearch/sam3.git /opt/sam3 \
     && cd /opt/sam3 && python -m pip install --no-cache-dir . \
-    && python -m pip install --no-cache-dir --upgrade --ignore-installed "setuptools<82"
+    && python -m pip install --no-cache-dir --upgrade --ignore-installed "setuptools<82" \
+    && python -c "import pkgutil; pkgutil.ImpImporter = type('ImpImporter', (), {}); pkgutil.ImpLoader = type('ImpLoader', (), {}); from sam3.model_builder import build_sam3_image_model; print(build_sam3_image_model.__name__)"
 
 WORKDIR /app
 COPY requirements.txt /tmp/requirements.txt

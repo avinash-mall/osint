@@ -13,6 +13,23 @@ SAM3_USE_MULTIPLEX = os.getenv("SAM3_USE_MULTIPLEX", "1").strip().lower() in {"1
 PROMPT_TEMPLATE = os.getenv("SAM3_PROMPT_TEMPLATE", "{label}")
 
 
+def _patch_pkg_resources_py312() -> None:
+    """Keep old pkg_resources importable under Python 3.12.
+
+    Upstream SAM3 imports pkg_resources. Some CUDA/Ubuntu image combinations
+    still expose an apt-era pkg_resources on sys.path; that version references
+    pkgutil.ImpImporter, which Python 3.12 removed. The finder is only used for
+    legacy import hooks, so a placeholder class is enough to let pkg_resources
+    finish importing.
+    """
+    import pkgutil
+
+    if not hasattr(pkgutil, "ImpImporter"):
+        pkgutil.ImpImporter = type("ImpImporter", (), {})  # type: ignore[attr-defined]
+    if not hasattr(pkgutil, "ImpLoader"):
+        pkgutil.ImpLoader = type("ImpLoader", (), {})  # type: ignore[attr-defined]
+
+
 def _cuda_unsupported_arch_policy() -> str:
     policy = os.getenv("CUDA_UNSUPPORTED_ARCH_POLICY", "cpu").strip().lower()
     return policy if policy in {"cpu", "cuda"} else "cpu"
@@ -101,6 +118,7 @@ def build_image(device: str) -> dict[str, Any]:
             print(f"[sam3_runner] transformers SAM3 not available ({exc}); falling back to native repo API")
 
     # Native repo fallback. Always works when the SAM3 source clone is installed.
+    _patch_pkg_resources_py312()
     from sam3.model_builder import build_sam3_image_model
     from sam3.model.sam3_image_processor import Sam3Processor as NativeProcessor
 
@@ -109,6 +127,7 @@ def build_image(device: str) -> dict[str, Any]:
 
 
 def build_video(device: str):
+    _patch_pkg_resources_py312()
     from sam3.model_builder import build_sam3_multiplex_video_predictor, build_sam3_video_predictor
 
     return build_sam3_multiplex_video_predictor() if SAM3_USE_MULTIPLEX else build_sam3_video_predictor()
