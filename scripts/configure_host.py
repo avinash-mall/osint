@@ -18,6 +18,7 @@ END_MARKER = "# END SENTINELOS GENERATED GPU CONFIG"
 
 SERVICE_PREFIXES = ("INFERENCE_", "LAE_DINO_", "MMROTATE_", "LSKNET_", "SAM2_", "SAM3_")
 SAM3_CU126_ENV = {
+    "SAM3_UBUNTU_VERSION": "22.04",
     "SAM3_TORCH_INDEX_URL": "https://download.pytorch.org/whl/cu126",
     "SAM3_TORCH_VERSION": "2.7.1",
     "SAM3_TORCHVISION_VERSION": "0.22.1",
@@ -117,7 +118,10 @@ def validate_driver(profile: GpuBuildProfile, driver_version: str) -> None:
 
 def sam3_build_env(profile: GpuBuildProfile, driver_version: str) -> dict[str, str]:
     if profile.torch_index_url.endswith("/cu128"):
-        return profile.build_env("SAM3_")
+        return {
+            **profile.build_env("SAM3_"),
+            "SAM3_UBUNTU_VERSION": "24.04",
+        }
     return {
         **SAM3_CU126_ENV,
         "SAM3_CUDA_VERSION": profile.cuda_version,

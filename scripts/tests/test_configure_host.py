@@ -52,6 +52,7 @@ def test_a100_driver_550_generates_cu124_base_and_sam3_cu126_torch_values():
     assert values["LAE_DINO_TORCH_INDEX_URL"].endswith("/cu124")
     assert values["LAE_DINO_TORCH_VERSION"] == "2.6.0+cu124"
     assert values["SAM3_CUDA_VERSION"] == "12.4.1"
+    assert values["SAM3_UBUNTU_VERSION"] == "22.04"
     assert values["SAM3_TORCH_INDEX_URL"].endswith("/cu126")
     assert values["SAM3_TORCH_VERSION"] == "2.7.1"
     assert values["SAM3_TORCHVISION_VERSION"] == "0.22.1"
@@ -71,6 +72,7 @@ def test_blackwell_compatible_driver_generates_cu128_values():
     assert values["INFERENCE_TORCH_INDEX_URL"].endswith("/cu128")
     assert values["INFERENCE_TORCH_VERSION"] == "2.7.1+cu128"
     assert values["SAM3_CUDA_VERSION"] == "12.8.1"
+    assert values["SAM3_UBUNTU_VERSION"] == "24.04"
     assert values["SAM3_TORCH_INDEX_URL"].endswith("/cu128")
 
 

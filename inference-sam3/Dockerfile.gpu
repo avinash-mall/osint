@@ -1,19 +1,29 @@
 ARG CUDA_VERSION=12.6.3
-FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu24.04
+ARG UBUNTU_VERSION=24.04
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION}
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_BREAK_SYSTEM_PACKAGES=1
+ARG UBUNTU_VERSION=24.04
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates git wget curl ffmpeg \
-        libgl1 libglib2.0-0 libgomp1 libsm6 libxext6 \
-        python3.12 python3.12-dev python3.12-venv python3-pip \
+        libgl1 libglib2.0-0 libgomp1 libsm6 libxext6 software-properties-common \
+    && if [ "${UBUNTU_VERSION}" = "22.04" ]; then \
+        add-apt-repository -y ppa:deadsnakes/ppa; \
+    fi \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        python3.12 python3.12-dev python3.12-venv \
     && ln -sf /usr/bin/python3.12 /usr/bin/python \
+    && apt-get purge -y --auto-remove software-properties-common python3-pkg-resources || true \
     && rm -rf /var/lib/apt/lists/*
 
 # Ubuntu 24.04 enforces PEP 668; PIP_BREAK_SYSTEM_PACKAGES=1 above lets the
 # image install Python deps directly without a virtualenv (matches the pattern
 # used by the other inference services in this repo).
-RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
+RUN curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py \
+    && python /tmp/get-pip.py --break-system-packages \
+    && rm /tmp/get-pip.py \
+    && python -m pip install --no-cache-dir --upgrade --ignore-installed pip setuptools wheel \
     && python -c "import pkg_resources; print(pkg_resources.__file__)"
 
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu126

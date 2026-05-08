@@ -358,6 +358,7 @@ services:
       dockerfile: Dockerfile.gpu
       args:
         CUDA_VERSION: ${SAM3_CUDA_VERSION:?Run python scripts/configure_host.py first}
+        UBUNTU_VERSION: ${SAM3_UBUNTU_VERSION:?Run python scripts/configure_host.py first}
         TORCH_INDEX_URL: ${SAM3_TORCH_INDEX_URL:?Run python scripts/configure_host.py first}
         TORCH_VERSION: ${SAM3_TORCH_VERSION:?Run python scripts/configure_host.py first}
         TORCHVISION_VERSION: ${SAM3_TORCHVISION_VERSION:?Run python scripts/configure_host.py first}
