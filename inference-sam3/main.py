@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import tempfile
 import threading
@@ -30,6 +31,7 @@ from prompts.loader import resolve_prompts
 cv2.setNumThreads(0)
 
 app = FastAPI(title="SentinelOS AIP Node - SAM3 Inference")
+logger = logging.getLogger("inference-sam3")
 
 MODEL_VERSION = os.getenv("MODEL_VERSION", "sam3-image+sam3.1-video+dinov3-sat-l+prithvi+terramind")
 GPU_MODEL = os.getenv("GPU_MODEL", "unknown")
@@ -72,7 +74,7 @@ def _load_pool() -> None:
                     "device": device,
                     "lock": threading.Lock(),
                     "sam3_image": sam3_runner.build_image(device),
-                    "sam3_video": sam3_runner.build_video(device),
+                    "sam3_video": None,
                     "dinov3_sat": None,
                     "dinov3_lvd": None,
                     "prithvi": None,
@@ -89,6 +91,7 @@ def _load_pool() -> None:
                 _pool.append(bundle)
         except Exception as exc:
             _model_error = str(exc)
+            logger.exception("Failed to load SAM3 model pool")
 
 
 def _next_bundle() -> dict[str, Any]:
@@ -101,6 +104,18 @@ def _next_bundle() -> dict[str, Any]:
         bundle = _pool[_pool_idx % len(_pool)]
         _pool_idx += 1
     return bundle
+
+
+def _ensure_video_model(bundle: dict[str, Any]) -> None:
+    if bundle.get("sam3_video") is not None:
+        return
+    with bundle["lock"]:
+        if bundle.get("sam3_video") is None:
+            try:
+                bundle["sam3_video"] = sam3_runner.build_video(bundle["device"])
+            except Exception as exc:
+                logger.exception("Failed to load SAM3 video model")
+                raise HTTPException(status_code=503, detail=f"Video model not loaded: {exc}") from exc
 
 
 @app.get("/health")
@@ -206,6 +221,7 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid metadata JSON: {exc}") from exc
     bundle = _next_bundle()
+    _ensure_video_model(bundle)
     cleanup_path: Path | None = None
     if video is not None:
         suffix = Path(video.filename or "clip.mp4").suffix or ".mp4"
