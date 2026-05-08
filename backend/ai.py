@@ -10,7 +10,7 @@ load_dotenv()
 
 OPENAI_API_BASE = os.getenv("OPENAI_API_BASE")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "google/gemma-4-31B-it")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "google/gemma-4-31b-it")
 
 
 class AIUnavailable(RuntimeError):

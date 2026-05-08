@@ -95,7 +95,7 @@ Every label SAM 3 emits — text-prompted from the active prompt profile or from
 | `IMAGERY_PATH` | `/data/imagery` | Shared volume mount |
 | `OPENAI_API_BASE` | *(unset)* | Local LLM endpoint |
 | `OPENAI_API_KEY` | `dummy` | |
-| `OPENAI_MODEL` | `google/gemma-4-31B-it` | |
+| `OPENAI_MODEL` | `google/gemma-4-31b-it` | |
 | `DETECTION_THRESHOLD_PROFILE` | `open` | Informational profile label stored with each detection |
 | `GLOBAL_CONFIDENCE_FLOOR` | `0.0` | Single confidence floor; 0.0 means "accept everything" |
 | `HIGH_CONFIDENCE_THRESHOLD` | `0.5` | Threshold at which a detection is tagged `high_confidence` |
