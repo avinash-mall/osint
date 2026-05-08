@@ -87,43 +87,20 @@ def resolve_devices(value: str) -> list[str]:
 
 
 def build_image(device: str) -> dict[str, Any]:
-    """Load the SAM3 image model.
+    """Load the SAM3 image model via the native upstream API.
 
-    Two implementations are supported:
-
-    * **transformers route** (preferred): ``Sam3Model.from_pretrained`` +
-      ``Sam3Processor.from_pretrained`` exposes ``get_vision_features`` for
-      vision-feature caching across prompts. This requires SAM3 support to
-      have landed in a transformers release. As of 4.57 it is still on
-      ``main`` only — set ``SAM3_BACKEND=transformers`` to force it.
-    * **native route** (default fallback): the ``sam3.model_builder.build_sam3_image_model``
-      + ``sam3.model.sam3_image_processor.Sam3Processor`` API installed from
-      the upstream source clone in the Dockerfile. Vision features are cached
-      inside the per-image ``state`` so the multi-prompt loop is still O(1)
-      per chip on the encoder side.
+    SAM 3.1 ships only as a multiplex video checkpoint
+    (``facebook/sam3.1`` → ``sam3.1_multiplex.pt``), so the standalone image
+    model stays on ``facebook/sam3``. Image grounding goes through the native
+    ``sam3.model.sam3_image_processor.Sam3Processor`` whose state caches
+    backbone features so per-prompt cost is encoder-free after the first call.
     """
-    backend = os.getenv("SAM3_BACKEND", "auto").strip().lower()
-
-    if backend in {"auto", "transformers"}:
-        try:
-            import torch
-            from transformers import Sam3Model, Sam3Processor  # type: ignore[attr-defined]
-
-            model = Sam3Model.from_pretrained(SAM3_IMAGE_MODEL_ID, torch_dtype=torch.float16).to(device).eval()
-            processor = Sam3Processor.from_pretrained(SAM3_IMAGE_MODEL_ID)
-            return {"backend": "transformers", "model": model, "processor": processor}
-        except (ImportError, AttributeError) as exc:
-            if backend == "transformers":
-                raise
-            print(f"[sam3_runner] transformers SAM3 not available ({exc}); falling back to native repo API")
-
-    # Native repo fallback. Always works when the SAM3 source clone is installed.
     _patch_pkg_resources_py312()
     from sam3.model_builder import build_sam3_image_model
-    from sam3.model.sam3_image_processor import Sam3Processor as NativeProcessor
+    from sam3.model.sam3_image_processor import Sam3Processor
 
     model = build_sam3_image_model().to(device).eval()
-    return {"backend": "native", "model": model, "processor": NativeProcessor(model)}
+    return {"model": model, "processor": Sam3Processor(model, device=device)}
 
 
 def build_video(device: str):
@@ -147,152 +124,58 @@ def versions() -> dict[str, str]:
     }
 
 
-def run_text_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompts: Iterable[str], score_threshold: float):
-    image_bundle = bundle["sam3_image"]
-    if image_bundle.get("backend") == "transformers":
-        return _run_text_prompts_transformers(bundle, image_rgb_uint8, prompts, score_threshold)
-    return _run_text_prompts_native(bundle, image_rgb_uint8, prompts, score_threshold)
-
-
-def _run_text_prompts_transformers(bundle, image_rgb_uint8, prompts, score_threshold):
+def _autocast_ctx(device: str):
     import torch
 
-    model = bundle["sam3_image"]["model"]
-    processor = bundle["sam3_image"]["processor"]
-    pil_image = Image.fromarray(image_rgb_uint8)
-    candidates = []
-    with bundle["lock"], torch.inference_mode():
-        img_inputs = processor(images=pil_image, return_tensors="pt").to(model.device)
-        vision_embeds = model.get_vision_features(pixel_values=img_inputs.pixel_values)
-        target_sizes = img_inputs.get("original_sizes").tolist()
-        for label in prompts:
-            phrase = PROMPT_TEMPLATE.format(label=label)
-            text_inputs = processor(text=phrase, return_tensors="pt").to(model.device)
-            outputs = model(vision_embeds=vision_embeds, **text_inputs)
-            result = processor.post_process_instance_segmentation(
-                outputs,
-                threshold=score_threshold,
-                mask_threshold=0.5,
-                target_sizes=target_sizes,
-            )[0]
-            for mask, box_xyxy, score in zip(result["masks"], result["boxes"], result["scores"]):
-                candidates.append((
-                    mask.cpu().numpy().astype(bool),
-                    [float(v) for v in box_xyxy.cpu().numpy()],
-                    float(score),
-                    label,
-                ))
-    return candidates
+    if device.startswith("cuda"):
+        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+    return torch.autocast(device_type="cpu", enabled=False)
 
 
-def _run_text_prompts_native(bundle, image_rgb_uint8, prompts, score_threshold):
+def run_text_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompts: Iterable[str], score_threshold: float):
     """Native facebookresearch/sam3 API.
 
     ``processor.set_image`` returns an inference state that caches vision
     features; ``set_text_prompt`` reuses the state for each prompt.
     """
-    import torch
-
     processor = bundle["sam3_image"]["processor"]
     device = bundle.get("device", "cpu")
     pil_image = Image.fromarray(image_rgb_uint8)
-    candidates = []
+    candidates: list[tuple[np.ndarray, list[float], float, str]] = []
 
-    if device.startswith("cuda"):
-        autocast_ctx = torch.autocast(device_type="cuda", dtype=torch.bfloat16)
-    else:
-        autocast_ctx = torch.autocast(device_type="cpu", enabled=False)
-
-    with bundle["lock"], torch.inference_mode(), autocast_ctx:
+    with bundle["lock"], _inference_mode(), _autocast_ctx(device):
         state = processor.set_image(pil_image)
         for label in prompts:
             phrase = PROMPT_TEMPLATE.format(label=label)
             output = processor.set_text_prompt(state=state, prompt=phrase)
-            masks = _to_list(output.get("masks"))
-            boxes = _to_list(output.get("boxes"))
-            scores = _to_list(output.get("scores"))
-            for mask, box_xyxy, score in zip(masks, boxes, scores):
-                score_f = float(score)
-                if score_f < score_threshold:
-                    continue
-                candidates.append((
-                    np.asarray(_to_numpy(mask), dtype=bool).squeeze(),
-                    [float(v) for v in _to_numpy(box_xyxy).reshape(-1)[:4]],
-                    score_f,
-                    label,
-                ))
+            candidates.extend(_collect_candidates(output, score_threshold, label))
     return candidates
 
 
-def _to_list(obj):
-    if obj is None:
-        return []
-    if hasattr(obj, "cpu"):
-        return list(obj.cpu())
-    return list(obj)
-
-
-def _to_numpy(obj):
-    if hasattr(obj, "cpu"):
-        return obj.cpu().numpy()
-    return np.asarray(obj)
-
-
-def _to_xyxy_pixels(entry: dict[str, Any], width: int, height: int) -> list[float] | None:
-    bbox = entry.get("bbox")
-    obb = entry.get("obb")
-    if obb and len(obb) >= 8:
-        xs = [float(obb[i]) for i in range(0, 8, 2)]
-        ys = [float(obb[i]) for i in range(1, 8, 2)]
-        x1n, y1n, x2n, y2n = min(xs), min(ys), max(xs), max(ys)
-    elif bbox and len(bbox) >= 4:
-        cx, cy, w, h = (float(v) for v in bbox[:4])
-        x1n, y1n, x2n, y2n = cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0
-    else:
-        return None
-    x1 = max(0.0, min(float(width), x1n * width))
-    y1 = max(0.0, min(float(height), y1n * height))
-    x2 = max(0.0, min(float(width), x2n * width))
-    y2 = max(0.0, min(float(height), y2n * height))
-    return [x1, y1, x2, y2] if x2 - x1 >= 1.0 and y2 - y1 >= 1.0 else None
-
-
 def run_box_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompt_boxes: list[dict[str, Any]], score_threshold: float):
-    image_bundle = bundle["sam3_image"]
-    if image_bundle.get("backend") != "transformers":
-        # Native repo API does not expose box-prompt segmentation in a stable
-        # public form; fall back to text prompting on the caller's labels.
-        labels = [str(entry.get("class") or entry.get("original_class") or "object") for entry in prompt_boxes]
-        return run_text_prompts(bundle, image_rgb_uint8, labels, score_threshold)
+    """Run the native sam3 box-prompt path.
 
-    import torch
-
-    model = bundle["sam3_image"]["model"]
+    Each entry is fed to ``Sam3Processor.add_geometric_prompt`` as a
+    normalized cxcywh box. The processor's per-image ``state`` caches backbone
+    features so each prompt only costs the grounding head + decoder.
+    Prompts are evaluated independently (state is reset between entries) so
+    that returned masks/boxes correspond 1:1 to the input list.
+    """
     processor = bundle["sam3_image"]["processor"]
+    device = bundle.get("device", "cpu")
     pil_image = Image.fromarray(image_rgb_uint8)
-    height, width = image_rgb_uint8.shape[:2]
-    candidates = []
-    with bundle["lock"], torch.inference_mode():
+    candidates: list[tuple[np.ndarray, list[float], float, str]] = []
+
+    with bundle["lock"], _inference_mode(), _autocast_ctx(device):
+        state = processor.set_image(pil_image)
         for entry in prompt_boxes:
-            box_xyxy = _to_xyxy_pixels(entry, width, height)
-            if box_xyxy is None:
+            cxcywh = _entry_to_norm_cxcywh(entry)
+            if cxcywh is None:
                 continue
-            label = entry.get("class") or entry.get("original_class") or "segment"
-            inputs = processor(
-                images=pil_image,
-                input_boxes=[[box_xyxy]],
-                input_boxes_labels=[[1]],
-                return_tensors="pt",
-            ).to(model.device)
-            outputs = model(**inputs)
-            result = processor.post_process_instance_segmentation(
-                outputs,
-                threshold=score_threshold,
-                mask_threshold=0.5,
-                target_sizes=inputs.get("original_sizes").tolist(),
-            )[0]
-            for mask, box, score in zip(result["masks"], result["boxes"], result["scores"]):
-                candidates.append((mask.cpu().numpy().astype(bool), [float(v) for v in box.cpu().numpy()], float(score), label))
+            label = str(entry.get("class") or entry.get("original_class") or "segment")
+            processor.reset_all_prompts(state)
+            output = processor.add_geometric_prompt(box=cxcywh, label=True, state=state)
+            candidates.extend(_collect_candidates(output, score_threshold, label))
     return candidates
 
 
@@ -344,6 +227,79 @@ def run_video(bundle, video_path, prompts, *, frame_stride, start_frame, end_fra
                 yield json.dumps(entry, separators=(",", ":"))
     finally:
         predictor.handle_request(request={"type": "close_session", "session_id": session_id})
+
+
+def _inference_mode():
+    import torch
+
+    return torch.inference_mode()
+
+
+def _collect_candidates(output: dict[str, Any], score_threshold: float, label: str):
+    masks = _to_list(output.get("masks"))
+    boxes = _to_list(output.get("boxes"))
+    scores = _to_list(output.get("scores"))
+    out: list[tuple[np.ndarray, list[float], float, str]] = []
+    for mask, box_xyxy, score in zip(masks, boxes, scores):
+        score_f = float(score)
+        if score_f < score_threshold:
+            continue
+        out.append((
+            np.asarray(_to_numpy(mask), dtype=bool).squeeze(),
+            [float(v) for v in _to_numpy(box_xyxy).reshape(-1)[:4]],
+            score_f,
+            label,
+        ))
+    return out
+
+
+def _to_list(obj):
+    if obj is None:
+        return []
+    if hasattr(obj, "cpu"):
+        return list(obj.cpu())
+    return list(obj)
+
+
+def _to_numpy(obj):
+    if hasattr(obj, "cpu"):
+        return obj.cpu().numpy()
+    return np.asarray(obj)
+
+
+def _entry_to_norm_cxcywh(entry: dict[str, Any]) -> list[float] | None:
+    """Resolve a prompt_boxes entry to normalized [cx, cy, w, h] in [0, 1].
+
+    Prefer ``bbox`` if present (already cxcywh-normalized in the upstream
+    detection schema). Fallback to ``obb`` (8-point xyxyxyxy normalized) by
+    taking its axis-aligned bounding box.
+    """
+    bbox = entry.get("bbox")
+    if bbox and len(bbox) >= 4:
+        cx, cy, w, h = (float(v) for v in bbox[:4])
+        if w > 0 and h > 0:
+            return [_clamp01(cx), _clamp01(cy), _clamp01(w), _clamp01(h)]
+
+    obb = entry.get("obb")
+    if obb and len(obb) >= 8:
+        xs = [float(obb[i]) for i in range(0, 8, 2)]
+        ys = [float(obb[i]) for i in range(1, 8, 2)]
+        x1n, y1n, x2n, y2n = min(xs), min(ys), max(xs), max(ys)
+        w = x2n - x1n
+        h = y2n - y1n
+        if w <= 0 or h <= 0:
+            return None
+        return [_clamp01((x1n + x2n) / 2.0), _clamp01((y1n + y2n) / 2.0), _clamp01(w), _clamp01(h)]
+
+    return None
+
+
+def _clamp01(value: float) -> float:
+    if value < 0.0:
+        return 0.0
+    if value > 1.0:
+        return 1.0
+    return value
 
 
 def _iter_sam3_video_tracks(outputs):

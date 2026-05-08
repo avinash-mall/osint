@@ -38,7 +38,8 @@
       "Bash(python3 -)",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('backend/worker.py'\\).read\\(\\)\\); print\\('worker.py OK'\\)\")",
       "Bash(python3 -c \"import yaml; yaml.safe_load\\(open\\('docker-compose.yml'\\)\\); yaml.safe_load\\(open\\('docker-compose.gpu.yml'\\)\\); print\\('compose OK'\\)\")",
-      "Bash(python -m rasterio info sample/chicago16.tif)"
+      "Bash(python -m rasterio info sample/chicago16.tif)",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ]
   }
 }

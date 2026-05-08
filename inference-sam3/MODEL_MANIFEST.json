@@ -1,4 +1,33 @@
 {
   "service": "inference-sam3",
-  "note": "Populate this manifest with pinned source commits and checkpoint SHA256 values during the connected/offline packaging step."
+  "note": "SHA256 of LFS binaries (sam3.pt, sam3.1_multiplex.pt) is recorded during the offline packaging step that runs `huggingface-cli download` with HF_TOKEN. Until then, integrity is anchored on the HF revision SHA below.",
+  "sources": {
+    "facebookresearch/sam3": {
+      "url": "https://github.com/facebookresearch/sam3",
+      "commit": "ea46ebca5ee9c4edf0b7c7d44de069d4241a03d5",
+      "ref": "main",
+      "resolved_at": "2026-05-08"
+    }
+  },
+  "checkpoints": {
+    "facebook/sam3": {
+      "role": "image_grounding",
+      "revision": "3c879f39826c281e95690f02c7821c4de09afae7",
+      "gated": true,
+      "files": [
+        {"path": "sam3.pt", "lfs": true, "sha256": null},
+        {"path": "config.json", "oid": "3e600e765b0f1b4c52680aed9ad242c9a90f7ed1"},
+        {"path": "processor_config.json", "oid": "9d3bd6df8a54852cd56087a3ae019cce051de2b2"},
+        {"path": "tokenizer.json", "oid": "bd1e367764006ad6a2249b1dcc0b20879c7c211f"}
+      ]
+    },
+    "facebook/sam3.1": {
+      "role": "video_predictor_multiplex",
+      "revision": "daa63191845a41281374e725f4c9e51c7a824460",
+      "gated": true,
+      "files": [
+        {"path": "sam3.1_multiplex.pt", "lfs": true, "sha256": null}
+      ]
+    }
+  }
 }

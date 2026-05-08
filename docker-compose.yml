@@ -179,7 +179,7 @@ services:
       SAM3_LOAD_DINOV3_LVD: ${SAM3_LOAD_DINOV3_LVD:-0}
       SAM3_LOAD_PRITHVI:    ${SAM3_LOAD_PRITHVI:-0}
       SAM3_LOAD_TERRAMIND:  ${SAM3_LOAD_TERRAMIND:-0}
-      MODEL_VERSION: sam3.1-image+video+dinov3-sat-l+prithvi+terramind
+      MODEL_VERSION: sam3-image+sam3.1-video+dinov3-sat-l+prithvi+terramind
       HF_HOME: /models/hf
       HUGGINGFACE_HUB_CACHE: /models/hf/hub
       TORCH_HOME: /models/torch

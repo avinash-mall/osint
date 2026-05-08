@@ -223,8 +223,8 @@ http://localhost:3001/ne_countries/{z}/{x}/{y}
 
 | Component | Model ID | Size (FP16) | Role |
 |---|---|---|---|
-| **SAM 3 image** | `facebook/sam3` | ~1.5 GB | Promptable concept segmentation — text + image-exemplar prompts, returns `{masks, boxes, scores}` for every matching instance ([HF docs](https://huggingface.co/docs/transformers/main/en/model_doc/sam3)) |
-| **SAM 3.1 video** | `build_sam3_multiplex_video_predictor()` | ~1.5 GB | Object Multiplex multi-object tracker — joint propagation in shared memory, ~7× faster than per-object tracking at 128 objects on H100 ([release notes](https://github.com/facebookresearch/sam3/blob/main/RELEASE_SAM3p1.md)) |
+| **SAM 3 image** | `facebook/sam3` | ~1.5 GB | Promptable concept segmentation via the native `Sam3Processor` API (`set_image` → `set_text_prompt` / `add_geometric_prompt`). Returns `{masks, boxes, scores}` for every matching instance. Per-image state caches backbone features so per-prompt cost is encoder-free ([upstream repo](https://github.com/facebookresearch/sam3)) |
+| **SAM 3.1 video** | `build_sam3_multiplex_video_predictor()` (`facebook/sam3.1`, `sam3.1_multiplex.pt`) | ~3.5 GB | Object Multiplex multi-object tracker — joint propagation in shared memory, ~7× faster than per-object tracking at 128 objects on H100. Note: `facebook/sam3.1` ships **only** the video multiplex checkpoint; image inference stays on `facebook/sam3` ([release notes](https://github.com/facebookresearch/sam3/blob/main/RELEASE_SAM3p1.md)) |
 | **DINOv3-SAT-L** | `facebook/dinov3-vitl16-pretrain-sat493m` | ~600 MB | Frozen embedder — 1024-d CLS tokens trained on 493 M Maxar 0.6 m chips ([HF card](https://huggingface.co/facebook/dinov3-vitl16-pretrain-sat493m)) |
 | **DINOv3-LVD-L** *(opt-in)* | `facebook/dinov3-vitl16-pretrain-lvd1689m` | ~600 MB | Frozen embedder for FMV / oblique imagery ([HF card](https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m)) |
 | **Prithvi-EO-2.0 heads** *(opt-in)* | `Prithvi-EO-2.0-300M-TL-Sen1Floods11` · `Prithvi-EO-2.0-300M-BurnScars` · `Prithvi-EO-1.0-100M-multi-temporal-crop-classification` | ~3 GB total | Multispectral overlays — flood / water (3-class), burn scar (binary), 13 CDL crop classes (3-timestep) |
@@ -244,7 +244,7 @@ The worker auto-selects modality from the raster; callers can override via `meta
 
 | Modality | `metadata.modality` | Chip format | Pipeline |
 |---|---|---|---|
-| **Optical RGB satellite / aerial** | `rgb` *(default)* | uint8 PNG (1024×1024 from the worker's `chip_to_uint8_rgb`) | SAM3 text or box prompts → mask + bbox + OBB + DINOv3-SAT embedding |
+| **Optical RGB satellite / aerial** | `rgb` *(default)* | uint8 PNG (1024×1024 from the worker's `chip_to_uint8_rgb`) | SAM3 text prompts (via `metadata.text_prompts` / profile) or box prompts (via `metadata.prompt_boxes`, normalized cxcywh `bbox` and/or 8-pt `obb`) → mask + bbox + OBB + DINOv3-SAT embedding |
 | **Multispectral (HLS-6 / S2-L2A)** | `multispectral` | float32 6-band GeoTIFF — Blue, Green, Red, Narrow-NIR, SWIR-1, SWIR-2 (Prithvi `constant_scale=0.0001`) | Resize to 224 → Prithvi flood + burn → SAM3 on the RGB preview → optional 3-timestep crop classifier when `metadata.hls_timesteps == 3` |
 | **SAR (Sentinel-1 GRD)** | `sar` | float32 2-band GeoTIFF (VV, VH; dB clipped to [-30, 0] then linear-stretched to [0, 1]) | TerraMind S1→S2L2A → bands 3,2,1 RGB preview → SAM3 prompts on the synthetic preview, `confidence` capped at `SAM3_SAR_CONF_CAP=0.85`, `sar_proxy: true` and `review_status: review_candidate` always set |
 | **FMV (video)** | sent via `/detect_video` | MP4 / MOV / TS / AVI / MPEG-TS | SAM 3.1 Object Multiplex session — `start_session → add_prompt(text) → handle_stream_request(propagate_in_video) → close_session`. One DINOv3-LVD embedding per track on its first frame. |
@@ -292,7 +292,7 @@ The platform is open-vocab by construction: SAM 3 was trained on **~4 M unique n
 | `ground_v1` *(default)* | `fmv` | COCO 2017 80 categories | **80 prompts** ([prompts/ground_v1.json](inference-sam3/prompts/ground_v1.json)) | ~4–6 s |
 | `ground_v1_full` *(opt-in)* | — | COCO 2017 + Objects365 v2 + LVIS v1 curated extension (deduped) | **576 prompts** ([prompts/ground_v1_full.json](inference-sam3/prompts/ground_v1_full.json)) | ~30 s |
 
-**Why two tiers?** SAM 3 native inference loops one forward per prompt; the 214-prompt union takes ~16 s per 1024 px chip on the smoke-test GPU, and with `INFERENCE_CHIP_CONCURRENCY=4` chips pipelined to a single-GPU service that's 64 s of head-of-line latency before the worker's `INFERENCE_CHIP_TIMEOUT_S=600` even starts to bite. The 25/80-prompt fast defaults keep the round-trip comfortable on commodity GPUs; opt into `*_full` when you need the long tail.
+**Why two tiers?** SAM 3 inference loops one grounding-head forward per prompt over a single cached backbone pass; the 214-prompt union takes ~16 s per 1024 px chip on the smoke-test GPU, and with `INFERENCE_CHIP_CONCURRENCY=4` chips pipelined to a single-GPU service that's 64 s of head-of-line latency before the worker's `INFERENCE_CHIP_TIMEOUT_S=600` even starts to bite. The 25/80-prompt fast defaults keep the round-trip comfortable on commodity GPUs; opt into `*_full` when you need the long tail.
 
 Override priority (each step skips the rest):
 
@@ -366,9 +366,8 @@ Approximate steady-state VRAM observed on the smoke run (RTX 5070 Ti, 16 GB): SA
 | Variable | Default | Purpose |
 |---|---|---|
 | `SAM3_DEVICE` | `auto` | Set to `cuda:0` / `cpu` to override auto-selection |
-| `SAM3_IMAGE_MODEL_ID` | `facebook/sam3` | Image checkpoint; SAM3.1 remains reserved for Object Multiplex video tracking |
+| `SAM3_IMAGE_MODEL_ID` | `facebook/sam3` | Image checkpoint label exposed in `/health`. The native `build_sam3_image_model()` always loads `facebook/sam3` (upstream's only image artifact); `facebook/sam3.1` ships only the multiplex video checkpoint |
 | `SAM3_USE_MULTIPLEX` | `1` | `1` = SAM 3.1 `build_sam3_multiplex_video_predictor`, `0` = plain SAM 3 |
-| `SAM3_BACKEND` | `auto` | `auto` tries `transformers.Sam3Model` then falls back to the native repo API; force with `transformers` or `native` |
 | `SAM3_TEXT_THRESHOLD` | `0.30` | Minimum SAM3 score for text-prompt detections |
 | `SAM3_BOX_THRESHOLD` | `0.25` | Minimum SAM3 score for box-prompt detections |
 | `SAM3_PRITHVI_OVERLAY_THRESHOLD` | `0.30` | Mask × Prithvi-overlay IoU at which the overlay label is appended |
@@ -390,6 +389,13 @@ Build-time args (`SAM3_CUDA_VERSION`, `SAM3_TORCH_INDEX_URL`, `SAM3_TORCH_VERSIO
 curl -F image=@chip.png \
      -F 'metadata={"text_prompts":["airplane","ship","oil tanker","helipad"]}' \
      http://inference-sam3:8001/detect | jq '.detections[] | {original_class, confidence}'
+
+# A2. Box-prompted segmentation — refine an upstream detector's ROI into a
+#     tight SAM3 mask + OBB. `bbox` is normalized cxcywh in [0,1]; `obb` is
+#     accepted as an 8-pt xyxyxyxy fallback. `class` is propagated to output.
+curl -F image=@chip.png \
+     -F 'metadata={"prompt_boxes":[{"bbox":[0.5,0.5,0.4,0.4],"class":"vessel"}]}' \
+     http://inference-sam3:8001/detect | jq '.detections[] | {class, confidence}'
 
 # B. Multispectral 6-band HLS GeoTIFF — adds Prithvi flood + burn overlays
 #    (Prithvi loader flag must be 1)
@@ -416,8 +422,7 @@ wc -l tracks.ndjson
 | Symptom | Cause | Fix |
 |---|---|---|
 | Build fails with `error: externally-managed-environment` (PEP 668) | Ubuntu 24.04 base | Already fixed — Dockerfile sets `PIP_BREAK_SYSTEM_PACKAGES=1` |
-| `/detect` 503 with `cannot import name 'Sam3Model' from 'transformers'` | `transformers` ≤ 4.57 doesn't ship SAM3 yet | The runner falls back to the native `sam3` repo API automatically. Force with `SAM3_BACKEND=native`; flip back to `transformers` after upgrading to a release that includes SAM3 |
-| `RuntimeError: mat1 and mat2 must have the same dtype, but got BFloat16 and Float` | Native model is fp32 but autocast was previously off | Already fixed — native path now wraps inference in `torch.autocast(device_type="cuda", dtype=torch.bfloat16)` |
+| `RuntimeError: mat1 and mat2 must have the same dtype, but got BFloat16 and Float` | Native model is fp32 but autocast was previously off | Already fixed — inference is wrapped in `torch.autocast(device_type="cuda", dtype=torch.bfloat16)` |
 | `HF 401/403` during first `/detect` | `HF_TOKEN` missing or no approved gating | Apply for access at the model card pages; ensure `HF_TOKEN` is in `.env` and that compose passes it through (it does by default) |
 | `OutOfMemoryError` at startup | Loaded too many auxiliaries for the GPU | Set `SAM3_LOAD_PRITHVI=0` / `SAM3_LOAD_TERRAMIND=0` / `SAM3_LOAD_DINOV3_LVD=0`; restart the container |
 | `400 No labels supplied for SAM3` | Prompt resolver couldn't find anything | Check `metadata.text_prompts` is a non-empty list, or that the auto-select profile JSON exists at `inference-sam3/prompts/<name>.json` |
@@ -474,7 +479,7 @@ cd frontend && npm run build
 | Backend | Python / FastAPI | 3.11 |
 | Tile server | TiTiler | latest |
 | Vector tiles | Martin | latest |
-| AI inference | SAM 3 / 3.1 | facebook/sam3 + transformers / native |
+| AI inference | SAM 3 / 3.1 | facebook/sam3 (image) + facebook/sam3.1 (multiplex video) — native API |
 | Worker queue | Celery + Redis | redis:alpine |
 | Reverse proxy | Nginx | alpine |
 | Frontend | React | 19 |

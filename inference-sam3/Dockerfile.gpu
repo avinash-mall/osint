@@ -41,7 +41,9 @@ ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST} \
     TORCH_HOME=/models/torch \
     XDG_CACHE_HOME=/models/cache
 
-RUN git clone --depth 1 https://github.com/facebookresearch/sam3.git /opt/sam3 \
+ARG SAM3_REPO_COMMIT=ea46ebca5ee9c4edf0b7c7d44de069d4241a03d5
+RUN git clone https://github.com/facebookresearch/sam3.git /opt/sam3 \
+    && git -C /opt/sam3 checkout ${SAM3_REPO_COMMIT} \
     && cd /opt/sam3 && python -m pip install --no-cache-dir einops pycocotools psutil . \
     && python -m pip install --no-cache-dir --upgrade --ignore-installed "setuptools<82"
 

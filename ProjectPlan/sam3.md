@@ -38,10 +38,8 @@
 | Promptable Concept Segmentation: text + image-exemplar prompts. Returns `{"masks","boxes","scores"}`. | [GitHub README](https://github.com/facebookresearch/sam3/blob/main/README.md) |
 | Trained on SA-Co dataset: **~4 M unique noun-phrase concepts** (38 M synthetic). The model is open-vocabulary — the prompt *is* the label. | [arXiv 2511.16719](https://arxiv.org/html/2511.16719v1) |
 | README image results report LVIS mask AP 48.5 and COCO box AP 56.4 / SA-Co Gold mask cgF1 54.1. | [GitHub README](https://github.com/facebookresearch/sam3#image-results) |
-| **Image API (`transformers` ≥ 4.46, recommended):** `Sam3Model.from_pretrained("facebook/sam3.1")` + `Sam3Processor.from_pretrained(...)`. Single call: `processor(images=, text=, input_boxes=, input_boxes_labels=, return_tensors="pt")` → `model(**inputs)` → `processor.post_process_instance_segmentation(outputs, threshold=, mask_threshold=, target_sizes=)` → `{masks, boxes (xyxy abs px), scores}`. | [transformers SAM3 docs](https://huggingface.co/docs/transformers/main/en/model_doc/sam3) |
-| **Image API (native repo `facebookresearch/sam3`):** `from sam3.model_builder import build_sam3_image_model; from sam3.model.sam3_image_processor import Sam3Processor` → `state = processor.set_image(image); out = processor.set_text_prompt(state=state, prompt="...")` → `out["masks"], out["boxes"], out["scores"]`. Native API is documented for **text prompts only**; box/exemplar prompts go through the transformers route above. | [SAM3 GitHub README](https://github.com/facebookresearch/sam3/blob/main/README.md) |
-| **Vision-feature caching:** transformers exposes `model.get_vision_features(pixel_values=...)` once per chip; subsequent calls re-use `vision_embeds=` per text prompt. ~3–4× speedup vs naively re-encoding the image per prompt. | [transformers SAM3 docs §"Efficient Multi-Prompt Inference"](https://huggingface.co/docs/transformers/main/en/model_doc/sam3) |
-| **Prompt-label conventions** (box prompts): `1` = positive, `0` = negative, `-10` = padding. Input boxes are `[x1,y1,x2,y2]` xyxy in pixel coords; output boxes (post-processed) are also xyxy in **absolute pixel coords**. | [transformers SAM3 docs §"Prompt Label Conventions"](https://huggingface.co/docs/transformers/main/en/model_doc/sam3) |
+| **Image API (native repo `facebookresearch/sam3`):** `from sam3.model_builder import build_sam3_image_model; from sam3.model.sam3_image_processor import Sam3Processor` → `state = processor.set_image(image)`. Text: `out = processor.set_text_prompt(prompt="...", state=state)`. Box: `out = processor.add_geometric_prompt(box=[cx,cy,w,h normalized], label=True, state=state)`. Both return state with `out["masks"]` (bool), `out["boxes"]` (pixel xyxy), `out["scores"]`. The state caches backbone features so per-prompt cost is encoder-free after the first call. | [SAM3 GitHub README](https://github.com/facebookresearch/sam3/blob/main/README.md) |
+| **Prompt conventions** (native box prompts): `label=True` for a positive box, `label=False` for a negative box. Input boxes are normalized `[center_x, center_y, width, height]` in `[0, 1]`; output boxes are absolute pixel `xyxy`. | [native `Sam3Processor.add_geometric_prompt` docstring](https://github.com/facebookresearch/sam3/blob/main/sam3/model/sam3_image_processor.py) |
 | **Video API:** plain SAM 3 → `build_sam3_video_predictor()`; SAM 3.1 Object Multiplex → `build_sam3_multiplex_video_predictor()`. **Both take no model_id / checkpoint_path arguments** — the HF checkpoint is fetched internally. Session API: `predictor.handle_request({"type":"start_session"\|"reset_session"\|"add_prompt"\|"remove_object"\|"close_session", ...})`; propagation is **streaming**: `for resp in predictor.handle_stream_request({"type":"propagate_in_video","session_id":...}): resp["frame_index"], resp["outputs"]`. | [`sam3.1_video_predictor_example.ipynb`](https://github.com/facebookresearch/sam3/blob/main/examples/sam3.1_video_predictor_example.ipynb) |
 | HF/Transformers docs state SAM3 is meant for **1008 px** inference; output boxes are `xyxy`, and post-processed boxes are absolute pixel coordinates. | [Transformers SAM3 docs](https://huggingface.co/docs/transformers/en/model_doc/sam3) |
 | **Image inference does NOT benefit from Object Multiplex.** Multiplex is a video-tracking optimization. For images, the throughput optimization is vision-feature caching (above). | [RELEASE_SAM3p1.md](https://github.com/facebookresearch/sam3/blob/main/RELEASE_SAM3p1.md) |
@@ -152,7 +150,7 @@
   SAM3 image+video         DINOv3 (frozen)      Prithvi heads (optical MS)                       TerraMind (SAR / fusion)
   image: facebook/sam3     • SAT-493M ViT-L       • Sen1Floods11 (water/flood)                   ibm-esa-geospatial/
   video: facebook/sam3.1
-  • transformers Sam3Model • LVD-1689M ViT-L       • BurnScars (burn_scar)                       TerraMind-1.0-large
+  • native Sam3Processor   • LVD-1689M ViT-L       • BurnScars (burn_scar)                       TerraMind-1.0-large
   • multiplex_video_pred.  • opt-in 7B            • crop head only with 3-timestep HLS             • S1GRD backbone
                            • cls/pooler vec       (optical only)                                  • S1GRD→S2L2A→RGB preview
 ```
@@ -220,7 +218,7 @@ GeoTIFF remains the safest interchange format. Cloud Optimized GeoTIFFs are acce
 
 | Source | Label space | How |
 |---|---|---|
-| **SAM3 text prompts** | **Open vocabulary** — the prompt *is* the label. Defaults below. Caller can override per request. | Encode chip once via `model.get_vision_features(...)`, loop prompts → `processor(text=…)` + `model(vision_embeds=…, **text_inputs)` → `processor.post_process_instance_segmentation(...)` → `{masks, boxes, scores}`. |
+| **SAM3 text prompts** | **Open vocabulary** — the prompt *is* the label. Defaults below. Caller can override per request. | Encode chip once via `state = processor.set_image(image)`, loop prompts → `processor.set_text_prompt(prompt=…, state=state)` → `state["masks"], state["boxes"], state["scores"]`. The state caches backbone features so per-prompt cost is encoder-free. |
 | **Prithvi-Sen1Floods11** | `water` (source model class is water/flood) | 6-band MS chip → 2 learned classes plus ignored no-data/cloud label; intersect water/flood mask with SAM3 boxes. |
 | **Prithvi-BurnScars** | `burn_scar` | 6-band MS chip → binary segmentation; intersect with SAM3 boxes. |
 | **Prithvi-multi-temporal-crop** | 13 crop/landcover classes (`crop:natural_vegetation`, `crop:forest`, `crop:corn`, `crop:soybeans`, `crop:wetlands`, `crop:developed_barren`, `crop:open_water`, `crop:winter_wheat`, `crop:alfalfa`, `crop:fallow_idle_cropland`, `crop:cotton`, `crop:sorghum`, `crop:other`) | Only when an 18-band, 3-timestep HLS stack is present → per-pixel argmax; majority class inside SAM3 box → `crop:<class>`. |
@@ -415,12 +413,12 @@ Validation:
 
 ### 4.5 Latency footprint
 
-SAM3 image inference loops over prompts. The transformers route exposes a vision-feature cache via `model.get_vision_features(pixel_values=...)` which encodes the chip once and re-uses the result across every prompt — see §1.1 and §6.2. **Object Multiplex helps video mode only.** Treat the following as capacity-planning estimates to validate on the deployment GPU, not sourced SLAs:
+SAM3 image inference loops over prompts. The native `Sam3Processor.set_image()` returns a state that caches backbone features so subsequent `set_text_prompt`/`add_geometric_prompt` calls reuse them — encoder-free per prompt on the same chip. **Object Multiplex helps video mode only.** Treat the following as capacity-planning estimates to validate on the deployment GPU, not sourced SLAs:
 
 | Profile | Prompts (post-dedupe, capped at `SAM3_MAX_PROMPTS_PER_REQUEST`) | Per-chip latency |
 |---|---|---|
-| `satellite_v1` | low hundreds | benchmark locally; vision-feature cache eliminates the per-prompt vision encoder cost |
-| `ground_v1` | capped at 1 024 | benchmark locally; same cache |
+| `satellite_v1` | low hundreds | benchmark locally; native `set_image` state caches backbone features so per-prompt cost is encoder-free |
+| `ground_v1` | capped at 1 024 | benchmark locally; same state cache |
 | `text_prompts` (caller-tuned) | 1 – 50 | benchmark locally |
 
 Operators who need lower per-chip latency should pass a tuned `text_prompts` list (anywhere from a single phrase up to a few dozen) rather than relying on the bulk profiles.
@@ -692,47 +690,41 @@ async def detect_video(
 ```python
 """SAM3 image + video model loaders and inference helpers.
 
-Image: transformers Sam3Model + Sam3Processor (well-documented, supports text + box prompts;
-       enables vision-feature caching across many text prompts on the same chip).
-Video: facebookresearch/sam3.model_builder.build_sam3_multiplex_video_predictor() —
-       SAM 3.1 Object Multiplex tracker (the only published builder for the multiplex variant).
-       The plain SAM 3 path uses build_sam3_video_predictor() instead.
-
-Both video builders take NO model_id parameter — they download the canonical
-HF checkpoint internally. See examples/sam3.1_video_predictor_example.ipynb.
+Image: native facebookresearch/sam3 — build_sam3_image_model() + Sam3Processor.
+       Text prompts via processor.set_text_prompt(); box prompts via
+       processor.add_geometric_prompt(box=[cx,cy,w,h normalized], label=True).
+       The per-image state caches backbone features so per-prompt cost is
+       encoder-free. SAM 3.1 has no standalone image checkpoint — the image
+       branch stays on facebook/sam3.
+Video: build_sam3_multiplex_video_predictor() — SAM 3.1 Object Multiplex
+       tracker. Plain SAM 3 path uses build_sam3_video_predictor().
+       Both video builders take NO model_id parameter — the HF checkpoint
+       is downloaded internally.
 """
 
-import os, json, time
+import os, json
 import numpy as np
 import torch
 from PIL import Image
-from transformers import Sam3Model, Sam3Processor
 from sam3.model_builder import (
+    build_sam3_image_model,
     build_sam3_video_predictor,
     build_sam3_multiplex_video_predictor,
 )
+from sam3.model.sam3_image_processor import Sam3Processor
 
-SAM3_IMAGE_MODEL_ID = os.getenv("SAM3_IMAGE_MODEL_ID", "facebook/sam3.1")  # `facebook/sam3` also valid
-SAM3_USE_MULTIPLEX  = os.getenv("SAM3_USE_MULTIPLEX", "1") == "1"          # SAM 3.1 Object Multiplex for video
-SAM3_IMAGE_SIZE     = int(os.getenv("SAM3_IMAGE_SIZE", "1008"))           # SAM3 native resolution
-PROMPT_TEMPLATE     = os.getenv("SAM3_PROMPT_TEMPLATE", "{label}")        # upstream uses short noun phrases
+SAM3_IMAGE_MODEL_ID = os.getenv("SAM3_IMAGE_MODEL_ID", "facebook/sam3")  # informational; native loader uses upstream defaults
+SAM3_USE_MULTIPLEX  = os.getenv("SAM3_USE_MULTIPLEX", "1") == "1"        # SAM 3.1 Object Multiplex for video
+PROMPT_TEMPLATE     = os.getenv("SAM3_PROMPT_TEMPLATE", "{label}")       # upstream uses short noun phrases
 
 def resolve_devices(value: str) -> list[str]:
     """Verbatim from inference-sam2/main.py:67-122 — unchanged."""
     ...
 
 def build_image(device: str):
-    """Load SAM3 image model + processor via transformers.
-
-    The transformers route is preferred over the native repo `Sam3Processor`
-    because it (a) exposes both text and box prompts cleanly through
-    `processor(images=, text=, input_boxes=, input_boxes_labels=)`, and
-    (b) supports vision-feature caching via `model.get_vision_features()` for
-    fast multi-prompt inference on the same chip.
-    """
-    model = Sam3Model.from_pretrained(SAM3_IMAGE_MODEL_ID, dtype=torch.float16).to(device).eval()
-    processor = Sam3Processor.from_pretrained(SAM3_IMAGE_MODEL_ID)
-    return {"model": model, "processor": processor}
+    """Load SAM3 image model + processor via the native upstream API."""
+    model = build_sam3_image_model().to(device).eval()
+    return {"model": model, "processor": Sam3Processor(model, device=device)}
 
 def build_video(device: str):
     """Load the SAM3 video predictor.
@@ -761,35 +753,23 @@ def versions() -> dict[str, str]:
 def run_text_prompts(bundle, image_rgb_uint8, prompts, score_threshold):
     """Mode A — loop text prompts → SAM3 → (mask, xyxy, score, label) candidates.
 
-    Uses the transformers `get_vision_features` cache so the chip is encoded
-    once and re-used across every prompt. Matches the pattern in
-    https://huggingface.co/docs/transformers/main/en/model_doc/sam3
-    §"Efficient Multi-Prompt Inference on Single Image".
+    Uses the native `Sam3Processor` state cache so the chip is encoded once
+    and re-used across every prompt.
     """
-    model     = bundle["sam3_image"]["model"]
     processor = bundle["sam3_image"]["processor"]
     pil_image = Image.fromarray(image_rgb_uint8)
     candidates = []
 
     with bundle["lock"], torch.inference_mode():
-        # Encode the chip once.
-        img_inputs = processor(images=pil_image, return_tensors="pt").to(model.device)
-        vision_embeds = model.get_vision_features(pixel_values=img_inputs.pixel_values)
-        target_sizes = img_inputs.get("original_sizes").tolist()
-
+        state = processor.set_image(pil_image)             # caches backbone features
         for label in prompts:
             phrase = PROMPT_TEMPLATE.format(label=label)
-            text_inputs = processor(text=phrase, return_tensors="pt").to(model.device)
-            outputs = model(vision_embeds=vision_embeds, **text_inputs)
-            results = processor.post_process_instance_segmentation(
-                outputs,
-                threshold=score_threshold,                # filter on score at post-process
-                mask_threshold=0.5,
-                target_sizes=target_sizes,
-            )[0]
-            for mask, box_xyxy, score in zip(results["masks"], results["boxes"], results["scores"]):
+            out = processor.set_text_prompt(prompt=phrase, state=state)
+            for mask, box_xyxy, score in zip(out["masks"], out["boxes"], out["scores"]):
+                if float(score) < score_threshold:
+                    continue
                 mask_np   = mask.cpu().numpy().astype(np.bool_)
-                bbox_xyxy = [float(v) for v in box_xyxy.cpu().numpy()]   # already absolute pixel xyxy
+                bbox_xyxy = [float(v) for v in box_xyxy.cpu().numpy()]   # absolute pixel xyxy
                 candidates.append((mask_np, bbox_xyxy, float(score), label))
     return candidates
 
