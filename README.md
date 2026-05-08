@@ -319,7 +319,7 @@ SAM 2 has no classification head, and SAM3 can also refine boxes into class-tagg
 
 | Component | Model ID | Size (FP16) | Role |
 |---|---|---|---|
-| **SAM 3 image** | `facebook/sam3.1` (or `facebook/sam3`) | ~1.5 GB | Promptable concept segmentation — text + image-exemplar prompts, returns `{masks, boxes, scores}` for every matching instance ([HF docs](https://huggingface.co/docs/transformers/main/en/model_doc/sam3)) |
+| **SAM 3 image** | `facebook/sam3` | ~1.5 GB | Promptable concept segmentation — text + image-exemplar prompts, returns `{masks, boxes, scores}` for every matching instance ([HF docs](https://huggingface.co/docs/transformers/main/en/model_doc/sam3)) |
 | **SAM 3.1 video** | `build_sam3_multiplex_video_predictor()` | ~1.5 GB | Object Multiplex multi-object tracker — joint propagation in shared memory, ~7× faster than per-object tracking at 128 objects on H100 ([release notes](https://github.com/facebookresearch/sam3/blob/main/RELEASE_SAM3p1.md)) |
 | **DINOv3-SAT-L** | `facebook/dinov3-vitl16-pretrain-sat493m` | ~600 MB | Frozen embedder — 1024-d CLS tokens trained on 493 M Maxar 0.6 m chips ([HF card](https://huggingface.co/facebook/dinov3-vitl16-pretrain-sat493m)) |
 | **DINOv3-LVD-L** *(opt-in)* | `facebook/dinov3-vitl16-pretrain-lvd1689m` | ~600 MB | Frozen embedder for FMV / oblique imagery ([HF card](https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m)) |
@@ -413,7 +413,7 @@ All prompts pass through trim → lowercase → dedupe-preserve-order → cap at
 # 1. Detect host + populate SAM3_* build args (CUDA / Torch / TorchVision / arch list).
 python scripts/configure_host.py            # writes the SENTINELOS GENERATED GPU CONFIG block
 
-# 2. Make sure HF_TOKEN is in .env with approved gating for facebook/sam3.1 +
+# 2. Make sure HF_TOKEN is in .env with approved gating for facebook/sam3* +
 #    facebook/dinov3-vitl16-pretrain-{sat493m,lvd1689m}.
 grep -E "^HF_TOKEN=" .env
 
@@ -462,7 +462,7 @@ Approximate steady-state VRAM observed on the smoke run (RTX 5070 Ti, 16 GB): SA
 | Variable | Default | Purpose |
 |---|---|---|
 | `SAM3_DEVICE` | `auto` | Reuses the inference-sam2 device-resolution logic; set to `cuda:0` / `cpu` to override |
-| `SAM3_IMAGE_MODEL_ID` | `facebook/sam3.1` | Image checkpoint; `facebook/sam3` also valid |
+| `SAM3_IMAGE_MODEL_ID` | `facebook/sam3` | Image checkpoint; SAM3.1 remains reserved for Object Multiplex video tracking |
 | `SAM3_USE_MULTIPLEX` | `1` | `1` = SAM 3.1 `build_sam3_multiplex_video_predictor`, `0` = plain SAM 3 |
 | `SAM3_BACKEND` | `auto` | `auto` tries `transformers.Sam3Model` then falls back to the native repo API; force with `transformers` or `native` |
 | `SAM3_TEXT_THRESHOLD` | `0.30` | Minimum SAM3 score for text-prompt detections |

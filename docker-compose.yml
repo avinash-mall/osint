@@ -374,7 +374,7 @@ services:
       CUDA_UNSUPPORTED_ARCH_POLICY: ${CUDA_UNSUPPORTED_ARCH_POLICY:-cpu}
       CPU_THREADS: auto
       WEB_CONCURRENCY: "1"
-      SAM3_IMAGE_MODEL_ID: ${SAM3_IMAGE_MODEL_ID:-facebook/sam3.1}
+      SAM3_IMAGE_MODEL_ID: ${SAM3_IMAGE_MODEL_ID:-facebook/sam3}
       SAM3_USE_MULTIPLEX: ${SAM3_USE_MULTIPLEX:-1}
       DINOV3_SAT_MODEL_ID: ${DINOV3_SAT_MODEL_ID:-facebook/dinov3-vitl16-pretrain-sat493m}
       DINOV3_LVD_MODEL_ID: ${DINOV3_LVD_MODEL_ID:-facebook/dinov3-vitl16-pretrain-lvd1689m}
@@ -404,7 +404,7 @@ services:
       # Flip both to "1" once the volume is populated to enforce offline.
       HF_HUB_OFFLINE: ${SAM3_HF_HUB_OFFLINE:-0}
       TRANSFORMERS_OFFLINE: ${SAM3_TRANSFORMERS_OFFLINE:-0}
-      HF_TOKEN: ${HF_TOKEN:?HF_TOKEN required for gated facebook/sam3.1 + DINOv3 weights}
+      HF_TOKEN: ${HF_TOKEN:?HF_TOKEN required for gated facebook/sam3* + DINOv3 weights}
     volumes:
       - ./inference-sam3:/app
       - ./backend/detection_policy.py:/app/detection_policy.py:ro
@@ -466,8 +466,8 @@ services:
       # Chip dispatch concurrency to inference providers. The Grounding DINO
       # container batches concurrent requests internally; without backend-side
       # parallelism the batcher never gets multiple items to batch.
-      - INFERENCE_CHIP_CONCURRENCY=16
-      - INFERENCE_CHIP_TIMEOUT_S=120
+      - INFERENCE_CHIP_CONCURRENCY=${INFERENCE_CHIP_CONCURRENCY:-4}
+      - INFERENCE_CHIP_TIMEOUT_S=${INFERENCE_CHIP_TIMEOUT_S:-600}
     depends_on:
       neo4j:
         condition: service_healthy

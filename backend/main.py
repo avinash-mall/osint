@@ -3302,7 +3302,7 @@ def _parse_inference_providers(raw: str) -> list[str]:
         if p in _KNOWN_INFERENCE_PROVIDERS and p not in seen:
             providers.append(p)
             seen.add(p)
-    return providers or ["yolo"]
+    return providers or ["sam3"]
 
 
 @app.post("/api/ingest/upload")
@@ -3311,7 +3311,7 @@ def upload_imagery(
     sensor_type: str = Form("Optical"),
     acquisition_time: Optional[str] = Form(None),
     auto_process: bool = Form(True),
-    inference_providers: str = Form("yolo"),
+    inference_providers: str = Form("sam3"),
     text_prompts: Optional[str] = Form(None),
 ):
     ensure_platform_tables()

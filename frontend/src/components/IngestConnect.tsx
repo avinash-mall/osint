@@ -25,12 +25,12 @@ export default function IngestConnect() {
   const [file, setFile] = useState<File | null>(null);
   const [sensorType, setSensorType] = useState('Optical');
   const [autoProcess, setAutoProcess] = useState(true);
-  const [useYolo, setUseYolo] = useState(true);
+  const [useYolo, setUseYolo] = useState(false);
   const [useLaeDino, setUseLaeDino] = useState(false);
   const [useMmrotate, setUseMmrotate] = useState(false);
   const [useLsknet, setUseLsknet] = useState(false);
   const [useSam2, setUseSam2] = useState(false);
-  const [useSam3, setUseSam3] = useState(false);
+  const [useSam3, setUseSam3] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState('');
   const [uploadTransferProgress, setUploadTransferProgress] = useState(0);

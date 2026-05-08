@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import numpy as np
 
 
 PRITHVI_FLOOD_ID = "ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL-Sen1Floods11"
 PRITHVI_BURN_ID = "ibm-nasa-geospatial/Prithvi-EO-2.0-300M-BurnScars"
 PRITHVI_CROP_ID = "ibm-nasa-geospatial/Prithvi-EO-1.0-100M-multi-temporal-crop-classification"
+PRITHVI_WINDOW_SIZE = 512
 CROP_CLASS_NAMES = [
     "natural_vegetation",
     "forest",
@@ -24,45 +28,145 @@ CROP_CLASS_NAMES = [
 
 
 def load_all(device: str):
-    from terratorch.registry import BACKBONE_REGISTRY
-
     return {
-        "flood": BACKBONE_REGISTRY.build(PRITHVI_FLOOD_ID).to(device).eval(),
-        "burn": BACKBONE_REGISTRY.build(PRITHVI_BURN_ID).to(device).eval(),
-        "crop": BACKBONE_REGISTRY.build(PRITHVI_CROP_ID).to(device).eval(),
+        "flood": _load_task_model(PRITHVI_FLOOD_ID, device, "PRITHVI_FLOOD"),
+        "burn": _load_task_model(PRITHVI_BURN_ID, device, "PRITHVI_BURN"),
+        "crop": _load_task_model(PRITHVI_CROP_ID, device, "PRITHVI_CROP"),
         "device": device,
     }
+
+
+def _load_task_model(repo_id: str, device: str, env_prefix: str):
+    """Load a packaged Prithvi downstream head from config + checkpoint.
+
+    The released Prithvi task repositories ship inference assets rather than a
+    bare backbone. Operators may pin exact files with
+    ``<PREFIX>_CONFIG``/``<PREFIX>_CHECKPOINT``; otherwise we inspect the HF
+    snapshot and pick the first config/checkpoint pair. The registry fallback is
+    retained for local TerraTorch installations that expose a direct model key.
+    """
+    config = os.getenv(f"{env_prefix}_CONFIG")
+    checkpoint = os.getenv(f"{env_prefix}_CHECKPOINT")
+    if not (config and checkpoint):
+        try:
+            from huggingface_hub import snapshot_download
+
+            root = Path(snapshot_download(repo_id))
+            config = config or _first_existing(root, ("*.yaml", "*.yml"))
+            checkpoint = checkpoint or _first_existing(root, ("*.ckpt", "*.pth", "*.pt"))
+        except Exception:
+            config = config or None
+            checkpoint = checkpoint or None
+
+    if config and checkpoint:
+        try:
+            from terratorch.cli_tools import LightningInferenceModel
+
+            model = LightningInferenceModel.from_config(config, checkpoint)
+            return _to_eval_device(model, device)
+        except Exception as exc:
+            print(f"[prithvi_heads] LightningInferenceModel load failed for {repo_id}: {exc}; trying registry fallback")
+
+    from terratorch.registry import BACKBONE_REGISTRY
+
+    return _to_eval_device(BACKBONE_REGISTRY.build(repo_id), device)
+
+
+def _first_existing(root: Path, patterns: tuple[str, ...]) -> str | None:
+    for pattern in patterns:
+        matches = sorted(path for path in root.rglob(pattern) if path.is_file())
+        if matches:
+            return str(matches[0])
+    return None
+
+
+def _to_eval_device(model, device: str):
+    if hasattr(model, "to"):
+        model = model.to(device)
+    if hasattr(model, "eval"):
+        model = model.eval()
+    return model
 
 
 def run_all(prithvi_bundle, chip6_full: np.ndarray, target_hw: tuple[int, int], chip6_temporal_3: np.ndarray | None = None) -> dict[str, np.ndarray]:
     if prithvi_bundle is None:
         return {}
+
+    h, w = target_hw
+    overlays: dict[str, np.ndarray] = {}
+    overlays["water"] = _run_binary_windowed(prithvi_bundle, "flood", chip6_full, (h, w))
+    overlays["burn_scar"] = _run_binary_windowed(prithvi_bundle, "burn", chip6_full, (h, w))
+    if chip6_temporal_3 is not None:
+        overlays["crop"] = _run_crop_windowed(prithvi_bundle, chip6_temporal_3, (h, w))
+    return overlays
+
+
+def _run_binary_windowed(prithvi_bundle, model_key: str, chip6_full: np.ndarray, target_hw: tuple[int, int]) -> np.ndarray:
+    h, w = target_hw
+    class_map = _run_windowed(prithvi_bundle, model_key, chip6_full, (h, w))
+    return class_map == 1
+
+
+def _run_crop_windowed(prithvi_bundle, chip6_temporal_3: np.ndarray, target_hw: tuple[int, int]) -> np.ndarray:
+    h, w = target_hw
+    stitched = np.zeros((h, w), dtype=np.int16)
+    for y1, y2, x1, x2 in _windows(h, w):
+        window = chip6_temporal_3[:, :, y1:y2, x1:x2]
+        stitched[y1:y2, x1:x2] = _predict_crop_window(prithvi_bundle, window, (y2 - y1, x2 - x1))
+    return stitched
+
+
+def _run_windowed(prithvi_bundle, model_key: str, chip6_full: np.ndarray, target_hw: tuple[int, int]) -> np.ndarray:
+    h, w = target_hw
+    stitched = np.zeros((h, w), dtype=np.int16)
+    for y1, y2, x1, x2 in _windows(h, w):
+        window = chip6_full[:, y1:y2, x1:x2]
+        stitched[y1:y2, x1:x2] = _predict_single_window(prithvi_bundle, model_key, window, (y2 - y1, x2 - x1))
+    return stitched
+
+
+def _windows(height: int, width: int):
+    for y1 in range(0, height, PRITHVI_WINDOW_SIZE):
+        for x1 in range(0, width, PRITHVI_WINDOW_SIZE):
+            yield y1, min(height, y1 + PRITHVI_WINDOW_SIZE), x1, min(width, x1 + PRITHVI_WINDOW_SIZE)
+
+
+def _predict_single_window(prithvi_bundle, model_key: str, window: np.ndarray, output_hw: tuple[int, int]) -> np.ndarray:
     import cv2
     import torch
     import multispectral
 
-    h, w = target_hw
-    overlays: dict[str, np.ndarray] = {}
-    x = torch.from_numpy(multispectral.resize_to_prithvi(chip6_full)).unsqueeze(0).to(prithvi_bundle["device"])
+    x = torch.from_numpy(multispectral.resize_to_prithvi(window)).unsqueeze(0).to(prithvi_bundle["device"])
     with torch.inference_mode():
-        flood_logits = prithvi_bundle["flood"](x)
-        flood_mask = flood_logits.argmax(1)[0].cpu().numpy() == 1
-        overlays["water"] = cv2.resize(flood_mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+        logits = _extract_logits(prithvi_bundle[model_key](x))
+    pred = logits.argmax(1)[0].detach().cpu().numpy().astype(np.int16)
+    return cv2.resize(pred, (output_hw[1], output_hw[0]), interpolation=cv2.INTER_NEAREST)
 
-        burn_logits = prithvi_bundle["burn"](x)
-        burn_mask = burn_logits.argmax(1)[0].cpu().numpy() == 1
-        overlays["burn_scar"] = cv2.resize(burn_mask.astype(np.uint8), (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
 
-        if chip6_temporal_3 is not None:
-            stacked = np.stack(
-                [multispectral.resize_to_prithvi(chip6_temporal_3[:, t]) for t in range(3)],
-                axis=1,
-            )
-            xt = torch.from_numpy(stacked).unsqueeze(0).to(prithvi_bundle["device"])
-            crop_logits = prithvi_bundle["crop"](xt)
-            crop_map = crop_logits.argmax(1)[0].cpu().numpy().astype(np.int16)
-            overlays["crop"] = cv2.resize(crop_map, (w, h), interpolation=cv2.INTER_NEAREST)
-    return overlays
+def _predict_crop_window(prithvi_bundle, window: np.ndarray, output_hw: tuple[int, int]) -> np.ndarray:
+    import cv2
+    import torch
+    import multispectral
+
+    stacked = np.stack(
+        [multispectral.resize_to_prithvi(window[:, t]) for t in range(3)],
+        axis=1,
+    )
+    x = torch.from_numpy(stacked).unsqueeze(0).to(prithvi_bundle["device"])
+    with torch.inference_mode():
+        logits = _extract_logits(prithvi_bundle["crop"](x))
+    pred = logits.argmax(1)[0].detach().cpu().numpy().astype(np.int16)
+    return cv2.resize(pred, (output_hw[1], output_hw[0]), interpolation=cv2.INTER_NEAREST)
+
+
+def _extract_logits(output):
+    if isinstance(output, dict):
+        for key in ("logits", "prediction", "pred"):
+            if key in output:
+                return output[key]
+    if isinstance(output, (tuple, list)):
+        return output[0]
+    return output
 
 
 def crop_class_name(label_map: np.ndarray, bbox_xyxy: list[float]) -> str:

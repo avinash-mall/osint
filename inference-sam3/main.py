@@ -6,6 +6,7 @@ import os
 import tempfile
 import threading
 import time
+import base64
 from pathlib import Path
 from typing import Any
 
@@ -150,6 +151,7 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
         raise HTTPException(status_code=400, detail=f"Unable to decode {modality} chip: {exc}") from exc
 
     height, width = chip3.shape[:2]
+    valid_mask = _decode_valid_mask(meta.get("valid_mask"), (height, width))
     prompt_boxes = meta.get("prompt_boxes")
     if isinstance(prompt_boxes, list) and prompt_boxes:
         candidates = await run_in_threadpool(sam3_runner.run_box_prompts, bundle, chip3, prompt_boxes, SAM3_BOX_THR)
@@ -166,7 +168,15 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
 
     detections = []
     for mask, bbox_xyxy, score, label in candidates:
-        det = fusion.candidate_to_detection(mask, bbox_xyxy, score, label, image_size=(width, height), modality=modality)
+        det = fusion.candidate_to_detection(
+            mask,
+            bbox_xyxy,
+            score,
+            label,
+            image_size=(width, height),
+            modality=modality,
+            valid_mask=valid_mask,
+        )
         if meta.get("geo"):
             det["geo"] = {**meta["geo"], "obb_map_crs": None, "obb_map_geojson": None}
         det["embedding"] = embedding.embed_crop(bundle.get("dinov3_sat"), chip3, bbox_xyxy)
@@ -243,3 +253,18 @@ def _decode_rgb(raw: bytes) -> np.ndarray:
     if img.mode != "RGB":
         img = img.convert("RGB")
     return np.array(img)
+
+
+def _decode_valid_mask(payload: Any, expected_hw: tuple[int, int]) -> np.ndarray | None:
+    if not isinstance(payload, dict):
+        return None
+    shape = payload.get("shape")
+    data_b64 = payload.get("data_b64")
+    if not isinstance(shape, list) or len(shape) != 2 or not data_b64:
+        return None
+    height, width = int(shape[0]), int(shape[1])
+    if (height, width) != expected_hw:
+        return None
+    raw = base64.b64decode(str(data_b64))
+    bits = np.unpackbits(np.frombuffer(raw, dtype=np.uint8), bitorder=payload.get("bitorder", "little"))
+    return bits[: height * width].reshape(height, width).astype(bool)

@@ -8,6 +8,7 @@ import logging
 import math
 import concurrent.futures
 import tempfile
+import base64
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -893,6 +894,17 @@ def _geotiff_window_file(src: rasterio.io.DatasetReader, window: Window, indexes
     return chip_file
 
 
+def _encode_bool_mask(mask: np.ndarray) -> dict:
+    """Compact bool mask transport for inference services that need chip validity."""
+    mask_bool = np.asarray(mask, dtype=bool)
+    packed = np.packbits(mask_bool.reshape(-1).astype(np.uint8), bitorder="little")
+    return {
+        "shape": [int(mask_bool.shape[0]), int(mask_bool.shape[1])],
+        "bitorder": "little",
+        "data_b64": base64.b64encode(packed.tobytes()).decode("ascii"),
+    }
+
+
 def _emit_chip_payload(window: Window, src: rasterio.io.DatasetReader, providers: list[str], *, valid_mask=None):
     """Return (fileobj, metadata) for a chip upload.
 
@@ -907,18 +919,22 @@ def _emit_chip_payload(window: Window, src: rasterio.io.DatasetReader, providers
         "source_window": [int(window.col_off), int(window.row_off), int(window.width), int(window.height)],
         "source_bounds": list(src.window_bounds(window)),
     }
+    valid_mask_meta = _encode_bool_mask(valid_mask) if valid_mask is not None else None
     sam3_only = providers == ["sam3"]
     descriptions = tuple((desc or "").strip().lower() for desc in (src.descriptions or ()))
     has_vv_vh = {"vv", "vh"}.issubset(set(descriptions))
 
     if sam3_only and src.count == 2 and has_vv_vh:
-        return _geotiff_window_file(src, window, [1, 2]), {
+        meta = {
             "modality": "sar",
             "filename": "chip.tif",
             "content_type": "image/tiff",
             "geo": geo_meta,
             "sar_polarizations": ["VV", "VH"],
         }
+        if valid_mask_meta:
+            meta["valid_mask"] = valid_mask_meta
+        return _geotiff_window_file(src, window, [1, 2]), meta
 
     if sam3_only and src.count >= 6:
         hls_timesteps = 3 if src.count >= 18 else None
@@ -930,6 +946,8 @@ def _emit_chip_payload(window: Window, src: rasterio.io.DatasetReader, providers
         }
         if hls_timesteps:
             meta["hls_timesteps"] = hls_timesteps
+        if valid_mask_meta:
+            meta["valid_mask"] = valid_mask_meta
         indexes = list(range(1, 19 if hls_timesteps else 7))
         return _geotiff_window_file(src, window, indexes), meta
 
@@ -938,12 +956,35 @@ def _emit_chip_payload(window: Window, src: rasterio.io.DatasetReader, providers
     if valid_mask is not None:
         chip_rgb = chip_rgb.copy()
         chip_rgb[~valid_mask] = 0
-    return _png_file(chip_rgb), {
+    meta = {
         "modality": "rgb",
         "filename": "chip.png",
         "content_type": "image/png",
         "geo": geo_meta,
     }
+    if valid_mask_meta:
+        meta["valid_mask"] = valid_mask_meta
+    return _png_file(chip_rgb), meta
+
+
+def _parse_prompt_override(raw: object) -> list[str] | None:
+    if raw is None:
+        return None
+    if isinstance(raw, list):
+        prompts = [str(item).strip() for item in raw if str(item).strip()]
+        return prompts or None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        payload = None
+    if isinstance(payload, list):
+        prompts = [str(item).strip() for item in payload if str(item).strip()]
+    else:
+        prompts = [item.strip() for item in text.split(",") if item.strip()]
+    return prompts or None
 
 
 def slice_and_infer(
@@ -954,6 +995,7 @@ def slice_and_infer(
     max_chips: int = MAX_INFERENCE_CHIPS,
     progress_callback=None,
     providers: list[str] = None,
+    inference_metadata: dict | None = None,
 ):
     """
     Slice COG into chips, send to inference service(s), and store results in PostGIS + Neo4j.
@@ -964,6 +1006,7 @@ def slice_and_infer(
     selected_providers = [p for p in (providers or ["yolo"]) if p in INFERENCE_PROVIDERS]
     if not selected_providers:
         selected_providers = ["yolo"]
+    inference_metadata = inference_metadata or {}
     with rasterio.open(cog_path) as src:
         width = src.width
         height = src.height
@@ -1044,6 +1087,10 @@ def slice_and_infer(
                     det["taxonomy_version"] = (
                         inference_response.get("taxonomy_version")
                         or det.get("taxonomy_version")
+                    )
+                    det["model_versions"] = (
+                        inference_response.get("model_versions")
+                        or det.get("model_versions")
                     )
                     det["threshold_profile"] = (
                         inference_response.get("threshold_profile")
@@ -1236,6 +1283,7 @@ def slice_and_infer(
                     chip_meta_payload = json.dumps({
                         "pass_id": pass_id,
                         "window": [x, y, win_width, win_height],
+                        **inference_metadata,
                         **chip_meta,
                     })
                     chip_label = f"pass={pass_id} x={x} y={y}"
@@ -1368,6 +1416,23 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
                     "prompt_chunk_index": det.get("prompt_chunk_index"),
                     "prompt_total_chunks": det.get("prompt_total_chunks"),
                     "prompt_text": det.get("prompt_text"),
+                    "mask_rle": det.get("mask_rle"),
+                    "obb": det.get("obb"),
+                    "pixel_obb": det.get("pixel_obb"),
+                    "obb_format": det.get("obb_format"),
+                    "obb_source": det.get("obb_source"),
+                    "obb_angle_deg": det.get("obb_angle_deg"),
+                    "obb_area_px": det.get("obb_area_px"),
+                    "edge_truncated": det.get("edge_truncated"),
+                    "embedding": det.get("embedding"),
+                    "prithvi_labels": det.get("prithvi_labels"),
+                    "sar_proxy": det.get("sar_proxy"),
+                    "terramind_embedding": det.get("terramind_embedding"),
+                    "modality": det.get("modality"),
+                    "task": det.get("task"),
+                    "geo": det.get("geo"),
+                    "area": det.get("area"),
+                    "model_versions": det.get("model_versions"),
                 })
             ))
             
@@ -1918,10 +1983,15 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
         report_progress(self, upload_id, input_path, "inference", 55, "Starting chip inference.", {"pass_id": pass_id})
         clear_existing_detections(pass_id)
         logger.info("[WORKER] Starting tiling inference...")
+        inference_metadata = {}
+        prompt_override = _parse_prompt_override(upload_meta.get("text_prompts"))
+        if prompt_override:
+            inference_metadata["text_prompts"] = prompt_override
         inference_result = slice_and_infer(
             cog_path,
             pass_id,
             providers=selected_providers,
+            inference_metadata=inference_metadata,
             progress_callback=lambda stage, progress, message, extra=None: report_progress(
                 self,
                 upload_id,

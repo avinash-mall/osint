@@ -44,12 +44,16 @@ def resolve_prompts(meta: dict[str, Any] | None, *, max_prompts: int) -> list[st
     meta = meta or {}
     if isinstance(meta.get("text_prompts"), list) and meta["text_prompts"]:
         prompts = [str(item) for item in meta["text_prompts"]]
-    elif EXTRA_FILE and Path(EXTRA_FILE).exists():
-        prompts = _load_extra_file(EXTRA_FILE)
     else:
         modality = str(meta.get("modality") or "rgb").lower()
-        profile = str(meta.get("prompt_profile") or FORCED_PROFILE or select_default_profile(modality))
-        prompts = _load_profile(profile)
+        prompt_profile = meta.get("prompt_profile")
+        if prompt_profile:
+            prompts = _load_profile(str(prompt_profile))
+        elif EXTRA_FILE and Path(EXTRA_FILE).exists():
+            prompts = _load_extra_file(EXTRA_FILE)
+        else:
+            profile = str(FORCED_PROFILE or select_default_profile(modality))
+            prompts = _load_profile(profile)
 
     seen: set[str] = set()
     out: list[str] = []
