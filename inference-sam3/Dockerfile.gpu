@@ -32,7 +32,7 @@ ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST} \
     XDG_CACHE_HOME=/models/cache
 
 RUN git clone --depth 1 https://github.com/facebookresearch/sam3.git /opt/sam3 \
-    && cd /opt/sam3 && pip install --no-cache-dir -e .
+    && cd /opt/sam3 && pip install --no-cache-dir .
 
 WORKDIR /app
 COPY requirements.txt /tmp/requirements.txt
