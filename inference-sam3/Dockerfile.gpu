@@ -4,21 +4,24 @@ FROM nvidia/cuda:${CUDA_VERSION}-cudnn-devel-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_BREAK_SYSTEM_PACKAGES=1
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates git wget curl ffmpeg \
+        ca-certificates git wget curl ffmpeg software-properties-common \
         libgl1 libglib2.0-0 libgomp1 libsm6 libxext6 \
-        python3.10 python3.10-dev python3-pip \
-    && ln -sf /usr/bin/python3.10 /usr/bin/python \
-    && ln -sf /usr/bin/python3.10 /usr/bin/python3 \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        python3.12 python3.12-dev python3.12-venv python3-pip \
+    && ln -sf /usr/bin/python3.12 /usr/bin/python \
+    && ln -sf /usr/bin/python3.12 /usr/bin/python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Ubuntu 24.04 enforces PEP 668; PIP_BREAK_SYSTEM_PACKAGES=1 above lets the
 # image install Python deps directly without a virtualenv (matches the pattern
 # used by the other inference services in this repo).
+RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
 
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu126
 ARG TORCH_VERSION=2.7.1
 ARG TORCHVISION_VERSION=0.22.1
-RUN pip install --no-cache-dir \
+RUN python -m pip install --no-cache-dir \
         "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}" \
         --index-url ${TORCH_INDEX_URL} --extra-index-url https://pypi.org/simple
 
@@ -32,11 +35,11 @@ ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST} \
     XDG_CACHE_HOME=/models/cache
 
 RUN git clone --depth 1 https://github.com/facebookresearch/sam3.git /opt/sam3 \
-    && cd /opt/sam3 && pip install --no-cache-dir .
+    && cd /opt/sam3 && python -m pip install --no-cache-dir .
 
 WORKDIR /app
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt
+RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt
 COPY . /app
 
 ENV PORT=8001 \
