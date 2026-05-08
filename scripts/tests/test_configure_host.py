@@ -34,7 +34,7 @@ def test_parse_gpu_query_extracts_gpu_rows():
     assert gpus[0].memory_free_mb == 12345
 
 
-def test_a100_driver_550_generates_cu124_values():
+def test_a100_driver_550_generates_cu124_base_and_sam3_cu126_torch_values():
     info = HostGpuInfo(
         driver_version="550.163.01",
         cuda_version="12.4",
@@ -51,6 +51,10 @@ def test_a100_driver_550_generates_cu124_values():
     assert values["LAE_DINO_CUDA_VERSION"] == "12.4.1"
     assert values["LAE_DINO_TORCH_INDEX_URL"].endswith("/cu124")
     assert values["LAE_DINO_TORCH_VERSION"] == "2.6.0+cu124"
+    assert values["SAM3_CUDA_VERSION"] == "12.4.1"
+    assert values["SAM3_TORCH_INDEX_URL"].endswith("/cu126")
+    assert values["SAM3_TORCH_VERSION"] == "2.7.1"
+    assert values["SAM3_TORCHVISION_VERSION"] == "0.22.1"
 
 
 def test_blackwell_compatible_driver_generates_cu128_values():
@@ -66,6 +70,8 @@ def test_blackwell_compatible_driver_generates_cu128_values():
     assert values["INFERENCE_CUDA_VERSION"] == "12.8.1"
     assert values["INFERENCE_TORCH_INDEX_URL"].endswith("/cu128")
     assert values["INFERENCE_TORCH_VERSION"] == "2.7.1+cu128"
+    assert values["SAM3_CUDA_VERSION"] == "12.8.1"
+    assert values["SAM3_TORCH_INDEX_URL"].endswith("/cu128")
 
 
 def test_blackwell_incompatible_driver_fails_fast():

@@ -17,6 +17,12 @@ BEGIN_MARKER = "# BEGIN SENTINELOS GENERATED GPU CONFIG"
 END_MARKER = "# END SENTINELOS GENERATED GPU CONFIG"
 
 SERVICE_PREFIXES = ("INFERENCE_", "LAE_DINO_", "MMROTATE_", "LSKNET_", "SAM2_", "SAM3_")
+SAM3_CU126_ENV = {
+    "SAM3_TORCH_INDEX_URL": "https://download.pytorch.org/whl/cu126",
+    "SAM3_TORCH_VERSION": "2.7.1",
+    "SAM3_TORCHVISION_VERSION": "0.22.1",
+    "SAM3_TORCHAUDIO_VERSION": "2.7.1",
+}
 
 
 @dataclass(frozen=True)
@@ -109,6 +115,16 @@ def validate_driver(profile: GpuBuildProfile, driver_version: str) -> None:
         )
 
 
+def sam3_build_env(profile: GpuBuildProfile, driver_version: str) -> dict[str, str]:
+    if profile.torch_index_url.endswith("/cu128"):
+        return profile.build_env("SAM3_")
+    return {
+        **SAM3_CU126_ENV,
+        "SAM3_CUDA_VERSION": profile.cuda_version,
+        "SAM3_TORCH_CUDA_ARCH_LIST": profile.torch_cuda_arch_list,
+    }
+
+
 def generated_env_values(info: HostGpuInfo) -> dict[str, str]:
     primary_gpu = info.gpus[0]
     profile = resolve_gpu_profile(primary_gpu.name)
@@ -128,6 +144,7 @@ def generated_env_values(info: HostGpuInfo) -> dict[str, str]:
     for prefix in SERVICE_PREFIXES:
         values.update(profile.build_env(prefix))
         values[f"{prefix}GPU_PROFILE"] = profile.name
+    values.update(sam3_build_env(profile, info.driver_version))
 
     return values
 
