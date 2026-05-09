@@ -301,7 +301,7 @@ Override priority (each step skips the rest):
 3. `SAM3_LABEL_FILE=/app/prompts/custom.json` — env-pinned override.
 4. **Auto-select** by `metadata.modality` (FMV → `ground_v1`, everything else → `satellite_v1`).
 
-All prompts pass through trim → lowercase → dedupe-preserve-order → cap at `SAM3_MAX_PROMPTS_PER_REQUEST` (default 1024). Empty resolved list → HTTP 400. To regenerate the JSONs from the source taxonomies, run `python prompts/_build_satellite_v1.py` or `python prompts/_build_ground_v1.py` inside `inference-sam3/`.
+All prompts pass through trim → lowercase → dedupe-preserve-order → cap at `SAM3_MAX_PROMPTS_PER_REQUEST` (default 128). Empty resolved list → HTTP 400. To regenerate the JSONs from the source taxonomies, run `python prompts/_build_satellite_v1.py` or `python prompts/_build_ground_v1.py` inside `inference-sam3/`.
 
 ### Backend integration
 
@@ -374,7 +374,7 @@ Approximate steady-state VRAM observed on the smoke run (RTX 5070 Ti, 16 GB): SA
 | `SAM3_SAR_CONF_CAP` | `0.85` | Hard cap on confidence for SAR detections (synthetic RGB proxy) |
 | `SAM3_OBB_OPENING_KERNEL_PCT` | `0.01` | Morphological opening kernel as a fraction of the smaller mask extent before `cv2.minAreaRect` |
 | `SAM3_OBB_MIN_AREA_PX` | `4` | Minimum contour area before falling back to HBB |
-| `SAM3_MAX_PROMPTS_PER_REQUEST` | `1024` | Cap on resolved prompts after dedupe |
+| `SAM3_MAX_PROMPTS_PER_REQUEST` | `128` | Cap on resolved prompts after dedupe |
 | `SAM3_DEFAULT_PROMPT_PROFILE` | *(empty → modality auto)* | Force a profile (`satellite_v1` / `ground_v1` / custom) regardless of modality |
 | `SAM3_LABEL_FILE` | *(unset)* | Optional path to a JSON file with a `prompts` array — overrides the modality-auto path |
 | `SAM3_HF_HUB_OFFLINE` / `SAM3_TRANSFORMERS_OFFLINE` | `0` | Flip to `1` once the `sam3_models` volume is populated |

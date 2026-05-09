@@ -164,6 +164,7 @@ services:
       SAM3_COMPILE_IMAGE: ${SAM3_COMPILE_IMAGE:-0}
       SAM3_COMPILE_VIDEO: ${SAM3_COMPILE_VIDEO:-0}
       SAM3_WARM_UP_VIDEO: ${SAM3_WARM_UP_VIDEO:-1}
+      SAM3_PRELOAD_MODELS: ${SAM3_PRELOAD_MODELS:-1}
       SAM3_BATCHED_TEXT: ${SAM3_BATCHED_TEXT:-1}
       SAM3_BATCHED_TEXT_CHUNK_SIZE: ${SAM3_BATCHED_TEXT_CHUNK_SIZE:-8}
       DINOV3_SAT_MODEL_ID: ${DINOV3_SAT_MODEL_ID:-facebook/dinov3-vitl16-pretrain-sat493m}
@@ -178,8 +179,8 @@ services:
       SAM3_OBB_MIN_AREA_PX: ${SAM3_OBB_MIN_AREA_PX:-4}
       SAM3_DEFAULT_PROMPT_PROFILE: ${SAM3_DEFAULT_PROMPT_PROFILE:-}
       SAM3_LABEL_FILE: ${SAM3_LABEL_FILE:-}
-      SAM3_MAX_PROMPTS_PER_REQUEST: ${SAM3_MAX_PROMPTS_PER_REQUEST:-64}
-      SAM3_MAX_IMAGE_PROMPTS: ${SAM3_MAX_IMAGE_PROMPTS:-64}
+      SAM3_MAX_PROMPTS_PER_REQUEST: ${SAM3_MAX_PROMPTS_PER_REQUEST:-128}
+      SAM3_MAX_IMAGE_PROMPTS: ${SAM3_MAX_IMAGE_PROMPTS:-128}
       SAM3_MAX_VIDEO_PROMPTS: ${SAM3_MAX_VIDEO_PROMPTS:-128}
       SAM3_EMBED_DETECTIONS: ${SAM3_EMBED_DETECTIONS:-0}
       # Per-component runtime loader flags. The checked-in .env enables the full
@@ -207,11 +208,11 @@ services:
       - fmv_data:/data/fmv:ro
     working_dir: /app
     healthcheck:
-      test: ["CMD-SHELL", "python -c 'import socket; s = socket.socket(); s.settimeout(2); exit(0 if s.connect_ex((\"127.0.0.1\", 8001)) == 0 else 1)' || exit 1"]
+      test: ["CMD-SHELL", "python -c 'import json, urllib.request; data=json.load(urllib.request.urlopen(\"http://127.0.0.1:8001/health\", timeout=5)); raise SystemExit(0 if data.get(\"model_loaded\") and not data.get(\"model_error\") else 1)' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 60s
+      start_period: 420s
 
   redis:
     image: redis:alpine

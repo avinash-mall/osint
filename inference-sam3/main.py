@@ -47,6 +47,9 @@ SAM3_EMBED_DETECTIONS = os.getenv("SAM3_EMBED_DETECTIONS", "0").strip().lower() 
 def _flag(name: str, default: str = "1") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
+
+SAM3_PRELOAD_MODELS = _flag("SAM3_PRELOAD_MODELS", "1")
+
 # Master switch — when 0, individual flags below also default to 0 (kept for compatibility).
 SAM3_LOAD_OPTIONAL_MODELS = _flag("SAM3_LOAD_OPTIONAL_MODELS", "1")
 _DEFAULT = "1" if SAM3_LOAD_OPTIONAL_MODELS else "0"
@@ -64,6 +67,21 @@ _load_lock = threading.Lock()
 _active_lock = threading.Lock()
 _active_requests = 0
 _model_error: str | None = None
+
+
+@app.on_event("startup")
+def preload_models_on_startup() -> None:
+    if not SAM3_PRELOAD_MODELS:
+        logger.info("SAM3 model preload disabled; models will load on first request")
+        return
+    started = time.perf_counter()
+    logger.info("Preloading SAM3 model bundle during service startup")
+    _load_pool()
+    elapsed = time.perf_counter() - started
+    if _pool:
+        logger.info("Preloaded SAM3 model bundle in %.3fs", elapsed)
+    else:
+        logger.error("SAM3 model preload failed in %.3fs: %s", elapsed, _model_error or "unknown error")
 
 
 def _load_pool() -> None:
