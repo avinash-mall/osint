@@ -57,10 +57,29 @@ def env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-MAX_INFERENCE_CHIPS = env_int("MAX_INFERENCE_CHIPS", 0)
-DEFAULT_INFERENCE_CHIP_SIZE = env_int("INFERENCE_CHIP_SIZE", 1024)
-DEFAULT_INFERENCE_OVERLAP = env_int("INFERENCE_CHIP_OVERLAP", 256)
-INFERENCE_CHIP_CONCURRENCY = max(1, env_int("INFERENCE_CHIP_CONCURRENCY", 8))
+INFERENCE_SPEED_PROFILES = {
+    "recall_review": {
+        "chip_size": 1008,
+        "overlap": 252,
+        "max_chips": 0,
+        "concurrency": 2,
+    },
+    "fast_review": {
+        "chip_size": 1008,
+        "overlap": 252,
+        "max_chips": 256,
+        "concurrency": 1,
+    },
+}
+INFERENCE_SPEED_PROFILE = os.getenv("INFERENCE_SPEED_PROFILE", "recall_review").strip().lower()
+if INFERENCE_SPEED_PROFILE not in INFERENCE_SPEED_PROFILES:
+    INFERENCE_SPEED_PROFILE = "recall_review"
+_INFERENCE_PROFILE_DEFAULTS = INFERENCE_SPEED_PROFILES[INFERENCE_SPEED_PROFILE]
+
+MAX_INFERENCE_CHIPS = env_int("MAX_INFERENCE_CHIPS", _INFERENCE_PROFILE_DEFAULTS["max_chips"])
+DEFAULT_INFERENCE_CHIP_SIZE = env_int("INFERENCE_CHIP_SIZE", _INFERENCE_PROFILE_DEFAULTS["chip_size"])
+DEFAULT_INFERENCE_OVERLAP = env_int("INFERENCE_CHIP_OVERLAP", _INFERENCE_PROFILE_DEFAULTS["overlap"])
+INFERENCE_CHIP_CONCURRENCY = max(1, env_int("INFERENCE_CHIP_CONCURRENCY", _INFERENCE_PROFILE_DEFAULTS["concurrency"]))
 INFERENCE_CHIP_TIMEOUT_S = env_int("INFERENCE_CHIP_TIMEOUT_S", 120)
 INFERENCE_MIN_VALID_CHIP_FRACTION = max(0.0, min(1.0, env_float("INFERENCE_MIN_VALID_CHIP_FRACTION", 0.01)))
 INFERENCE_MIN_VALID_DETECTION_FRACTION = max(0.0, min(1.0, env_float("INFERENCE_MIN_VALID_DETECTION_FRACTION", 0.20)))
@@ -488,8 +507,14 @@ def sample_axis_indices(count: int, sample_count: int) -> list[int]:
 
 def plan_inference_grid(width: int, height: int, chip_size: int, overlap: int, max_chips: int) -> dict:
     step = max(1, chip_size - overlap)
-    x_count = max(1, math.ceil(width / step))
-    y_count = max(1, math.ceil(height / step))
+
+    def axis_count(size: int) -> int:
+        if size <= chip_size:
+            return 1
+        return max(1, math.ceil((size - chip_size) / step) + 1)
+
+    x_count = axis_count(width)
+    y_count = axis_count(height)
     source_total = x_count * y_count
 
     if max_chips <= 0 or source_total <= max_chips:
@@ -786,6 +811,7 @@ def slice_and_infer(
             "planned_chips": total_windows,
             "source_total_chips": grid["source_total"],
             "processed_chips": 0,
+            "inference_speed_profile": INFERENCE_SPEED_PROFILE,
             "coverage_fraction": coverage_fraction,
             "sampling_enabled": grid["sampled"],
             "max_inference_chips": grid["max_chips"],
@@ -797,19 +823,27 @@ def slice_and_infer(
             "chip_spool_max_bytes": INFERENCE_CHIP_SPOOL_MAX_BYTES,
         }
 
-        if progress_callback and grid["sampled"]:
+        if progress_callback:
+            if grid["sampled"]:
+                message = f"Large raster detected; sampling {total_windows} of {grid['source_total']} chips for inference."
+            else:
+                message = f"Prepared {total_windows} raster chips for inference."
             progress_callback(
                 "inference",
-                55,
-                f"Large raster detected; sampling {total_windows} of {grid['source_total']} chips for inference.",
+                56,
+                message,
                 {
-                                "planned_chips": total_windows,
-                                "source_total_chips": grid["source_total"],
-                                "max_inference_chips": grid["max_chips"],
-                                "sampling_enabled": True,
-                                "coverage_fraction": coverage_fraction,
-                            },
-                        )
+                    "planned_chips": total_windows,
+                    "total_chips": total_windows,
+                    "source_total_chips": grid["source_total"],
+                    "processed_chips": 0,
+                    "failed_chips": 0,
+                    "inference_speed_profile": INFERENCE_SPEED_PROFILE,
+                    "max_inference_chips": grid["max_chips"],
+                    "sampling_enabled": grid["sampled"],
+                    "coverage_fraction": coverage_fraction,
+                },
+            )
 
         # HTTP session shared across the chip ThreadPoolExecutor so connection
         # pooling actually engages (default requests.post opens a fresh TCP per
@@ -967,6 +1001,7 @@ def slice_and_infer(
                         "planned_chips": total_windows,
                         "source_total_chips": grid["source_total"],
                         "sampling_enabled": grid["sampled"],
+                        "inference_speed_profile": INFERENCE_SPEED_PROFILE,
                         "coverage_fraction": coverage_fraction,
                     },
                 )

@@ -64,6 +64,7 @@ import {
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 const TILE_PROXY_URL = import.meta.env.VITE_TILE_PROXY_URL || '/tiles';
+const CARTO_BASEMAP_URL = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
 const DETECTION_CENTER_MARKER_LIMIT = 800;
 const CanvasGeoJSON = GeoJSON as any;
 
@@ -1201,7 +1202,7 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
           <MapContainer
             center={[25.0, 55.0]}
             zoom={6}
-            style={{ height: '100%', width: '100%', background: '#0b0d0f' }}
+            style={{ height: '100%', width: '100%', background: '#122231' }}
             zoomControl={false}
           >
             <ZoomControl position="bottomright" />
@@ -1210,18 +1211,32 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
             <MapFitToImagery imagery={selectedImageryData} />
             <MapFitToDetections geojson={filteredDetectionsGeoJSON} filterKey={detectionClassFilter} />
 
-            <ImageOverlay url="/world_map.svg" bounds={[[-85, -180], [85, 180]]} opacity={0.5} />
+            <TileLayer
+              url={CARTO_BASEMAP_URL}
+              subdomains="abcd"
+              maxZoom={20}
+              opacity={1}
+              attribution="&copy; OpenStreetMap &copy; CARTO"
+            />
+
+            <ImageOverlay url="/world_map.svg" bounds={[[-85, -180], [85, 180]]} opacity={0.32} />
 
             {activeLayers.grid && (
               <GeoJSON
                 data={basemapGeoJSON}
                 style={() => ({
-                  color: '#4ea1ff',
-                  weight: 1,
-                  opacity: 0.82,
-                  fillColor: '#1d2227',
-                  fillOpacity: 0.18,
+                  color: '#c4e6ff',
+                  weight: 1.75,
+                  opacity: 1,
+                  fillColor: '#33556e',
+                  fillOpacity: 0.56,
+                  dashArray: '4 3',
                 })}
+                onEachFeature={(feature, layer) => {
+                  const props = feature?.properties || {};
+                  const name = props.admin || props.name || props.iso_a3;
+                  if (name) layer.bindTooltip(String(name), { sticky: true, direction: 'top', opacity: 0.92 });
+                }}
               />
             )}
 

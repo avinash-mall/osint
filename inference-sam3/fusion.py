@@ -126,17 +126,26 @@ def mask_aware_nms(detections: list[dict[str, Any]], iou: float = 0.50) -> list[
     if not detections:
         return []
     ranked = sorted(detections, key=lambda d: float(d.get("confidence") or 0.0), reverse=True)
-    masks = [decode_rle(d["mask_rle"]) for d in ranked]
+    rles = [_rle_for_coco_ops(d["mask_rle"]) for d in ranked]
+    boxes = np.asarray([_xyxy_from_detection(d) for d in ranked], dtype=np.float32)
+    areas = np.asarray([_detection_area(d, rle) for d, rle in zip(ranked, rles)], dtype=np.float32)
     keep: list[dict[str, Any]] = []
     suppressed = [False] * len(ranked)
     for i, det in enumerate(ranked):
         if suppressed[i]:
             continue
         keep.append(det)
+        candidates: list[int] = []
         for j in range(i + 1, len(ranked)):
             if suppressed[j] or det.get("class") != ranked[j].get("class"):
                 continue
-            if _iou(masks[i], masks[j]) >= iou:
+            if _can_reach_mask_iou(boxes[i], boxes[j], float(areas[i]), float(areas[j]), iou):
+                candidates.append(j)
+        if not candidates:
+            continue
+        mask_ious = coco_mask.iou([rles[i]], [rles[j] for j in candidates], [0] * len(candidates))[0]
+        for j, mask_iou in zip(candidates, mask_ious):
+            if float(mask_iou) >= iou:
                 suppressed[j] = True
     return keep
 
@@ -173,6 +182,53 @@ def _iou(a_bool, b_bool) -> float:
     inter = np.logical_and(a, b).sum()
     union = np.logical_or(a, b).sum()
     return float(inter) / float(union) if union else 0.0
+
+
+def _rle_for_coco_ops(rle: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(rle)
+    counts = payload.get("counts", b"")
+    if isinstance(counts, str):
+        payload["counts"] = base64.b64decode(counts)
+    return payload
+
+
+def _detection_area(det: dict[str, Any], rle: dict[str, Any]) -> float:
+    try:
+        area = max(0.0, float(det.get("area") or 0.0))
+    except (TypeError, ValueError):
+        area = 0.0
+    return area if area > 0.0 else float(coco_mask.area(rle))
+
+
+def _xyxy_from_detection(det: dict[str, Any]) -> list[float]:
+    bbox = det.get("bbox") or []
+    size = (det.get("mask_rle") or {}).get("size") or [1, 1]
+    height, width = int(size[0]), int(size[1])
+    if len(bbox) >= 4:
+        cx, cy, bw, bh = [float(value) for value in bbox[:4]]
+        x1 = (cx - bw / 2.0) * width
+        y1 = (cy - bh / 2.0) * height
+        x2 = (cx + bw / 2.0) * width
+        y2 = (cy + bh / 2.0) * height
+        return [x1, y1, x2, y2]
+    x, y, w, h = [float(value) for value in coco_mask.toBbox(_rle_for_coco_ops(det["mask_rle"]))]
+    return [x, y, x + w, y + h]
+
+
+def _can_reach_mask_iou(box_a: np.ndarray, box_b: np.ndarray, area_a: float, area_b: float, threshold: float) -> bool:
+    x1 = max(float(box_a[0]), float(box_b[0]))
+    y1 = max(float(box_a[1]), float(box_b[1]))
+    x2 = min(float(box_a[2]), float(box_b[2]))
+    y2 = min(float(box_a[3]), float(box_b[3]))
+    box_intersection = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    if box_intersection <= 0.0:
+        return False
+
+    # For mask IoU to reach t, mask_intersection must be at least
+    # t * (area_a + area_b) / (1 + t). Since mask_intersection cannot exceed
+    # bbox intersection, pairs below this bound can be skipped exactly.
+    required_intersection = (threshold * (area_a + area_b)) / (1.0 + threshold)
+    return box_intersection + 1e-6 >= required_intersection
 
 
 def _clamp(value: float) -> float:

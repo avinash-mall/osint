@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import importlib
 from pathlib import Path
 
 import numpy as np
@@ -60,3 +61,37 @@ def test_emit_chip_payload_sar_for_sam3(tmp_path):
     chip_file.close()
 
 
+def test_fast_review_profile_defaults(monkeypatch):
+    monkeypatch.setenv("INFERENCE_SPEED_PROFILE", "fast_review")
+    monkeypatch.delenv("INFERENCE_CHIP_SIZE", raising=False)
+    monkeypatch.delenv("INFERENCE_CHIP_OVERLAP", raising=False)
+    monkeypatch.delenv("MAX_INFERENCE_CHIPS", raising=False)
+    monkeypatch.delenv("INFERENCE_CHIP_CONCURRENCY", raising=False)
+
+    import worker
+
+    worker = importlib.reload(worker)
+
+    assert worker.INFERENCE_SPEED_PROFILE == "fast_review"
+    assert worker.DEFAULT_INFERENCE_CHIP_SIZE == 1008
+    assert worker.DEFAULT_INFERENCE_OVERLAP == 252
+    assert worker.MAX_INFERENCE_CHIPS == 256
+    assert worker.INFERENCE_CHIP_CONCURRENCY == 1
+
+
+def test_recall_review_profile_keeps_full_coverage(monkeypatch):
+    monkeypatch.setenv("INFERENCE_SPEED_PROFILE", "recall_review")
+    monkeypatch.delenv("INFERENCE_CHIP_SIZE", raising=False)
+    monkeypatch.delenv("INFERENCE_CHIP_OVERLAP", raising=False)
+    monkeypatch.delenv("MAX_INFERENCE_CHIPS", raising=False)
+    monkeypatch.delenv("INFERENCE_CHIP_CONCURRENCY", raising=False)
+
+    import worker
+
+    worker = importlib.reload(worker)
+
+    assert worker.INFERENCE_SPEED_PROFILE == "recall_review"
+    assert worker.DEFAULT_INFERENCE_CHIP_SIZE == 1008
+    assert worker.DEFAULT_INFERENCE_OVERLAP == 252
+    assert worker.MAX_INFERENCE_CHIPS == 0
+    assert worker.INFERENCE_CHIP_CONCURRENCY == 2

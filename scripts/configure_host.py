@@ -22,21 +22,17 @@ SAM3_CU126_ENV = {
     "SAM3_TORCH_INDEX_URL": "https://download.pytorch.org/whl/cu126",
     "SAM3_TORCH_VERSION": "2.7.1",
     "SAM3_TORCHVISION_VERSION": "0.22.1",
-    "SAM3_TORCHAUDIO_VERSION": "2.7.1",
 }
 
 
 @dataclass(frozen=True)
 class HostGpu:
     name: str
-    memory_total_mb: int
-    memory_free_mb: int
 
 
 @dataclass(frozen=True)
 class HostGpuInfo:
     driver_version: str
-    cuda_version: str
     gpus: tuple[HostGpu, ...]
 
 
@@ -52,12 +48,11 @@ def version_at_least(actual: str, minimum: str) -> bool:
     return actual_parts + (0,) * (width - len(actual_parts)) >= minimum_parts + (0,) * (width - len(minimum_parts))
 
 
-def parse_nvidia_smi_header(output: str) -> tuple[str, str]:
+def parse_nvidia_smi_header(output: str) -> str:
     driver_match = re.search(r"Driver Version:\s*([0-9.]+)", output)
-    cuda_match = re.search(r"CUDA Version:\s*([0-9.]+)", output)
     if not driver_match:
         raise RuntimeError("Could not parse NVIDIA driver version from nvidia-smi output.")
-    return driver_match.group(1), cuda_match.group(1) if cuda_match else "unknown"
+    return driver_match.group(1)
 
 
 def parse_gpu_query(output: str) -> tuple[HostGpu, ...]:
@@ -67,10 +62,9 @@ def parse_gpu_query(output: str) -> tuple[HostGpu, ...]:
         if not line:
             continue
         parts = [part.strip() for part in line.split(",")]
-        if len(parts) != 3:
+        if len(parts) != 1:
             raise RuntimeError(f"Unexpected nvidia-smi GPU query row: {line!r}")
-        name, total, free = parts
-        gpus.append(HostGpu(name=name, memory_total_mb=int(float(total)), memory_free_mb=int(float(free))))
+        gpus.append(HostGpu(name=parts[0]))
     if not gpus:
         raise RuntimeError("nvidia-smi did not report any GPUs.")
     return tuple(gpus)
@@ -87,7 +81,7 @@ def detect_host_gpu_info() -> HostGpuInfo:
         query = subprocess.run(
             [
                 "nvidia-smi",
-                "--query-gpu=name,memory.total,memory.free",
+                "--query-gpu=name",
                 "--format=csv,noheader,nounits",
             ],
             check=True,
@@ -99,10 +93,9 @@ def detect_host_gpu_info() -> HostGpuInfo:
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(f"nvidia-smi failed: {exc.stderr or exc.stdout}") from exc
 
-    driver_version, cuda_version = parse_nvidia_smi_header(header)
+    driver_version = parse_nvidia_smi_header(header)
     return HostGpuInfo(
         driver_version=driver_version,
-        cuda_version=cuda_version,
         gpus=parse_gpu_query(query),
     )
 
@@ -119,7 +112,11 @@ def validate_driver(profile: GpuBuildProfile, driver_version: str) -> None:
 def sam3_build_env(profile: GpuBuildProfile, driver_version: str) -> dict[str, str]:
     if profile.torch_index_url.endswith("/cu128"):
         return {
-            **profile.build_env("SAM3_"),
+            "SAM3_CUDA_VERSION": profile.cuda_version,
+            "SAM3_TORCH_INDEX_URL": profile.torch_index_url,
+            "SAM3_TORCH_VERSION": profile.torch_version,
+            "SAM3_TORCHVISION_VERSION": profile.torchvision_version,
+            "SAM3_TORCH_CUDA_ARCH_LIST": profile.torch_cuda_arch_list,
             "SAM3_UBUNTU_VERSION": "24.04",
         }
     return {
@@ -136,17 +133,11 @@ def generated_env_values(info: HostGpuInfo) -> dict[str, str]:
 
     values = {
         "GPU_MODEL": primary_gpu.name,
-        "GPU_DRIVER_VERSION": info.driver_version,
-        "GPU_CUDA_VERSION": info.cuda_version,
-        "GPU_COUNT": str(len(info.gpus)),
-        "GPU_MEMORY_TOTAL_MB": str(primary_gpu.memory_total_mb),
-        "GPU_MEMORY_FREE_MB": str(primary_gpu.memory_free_mb),
         "NVIDIA_VISIBLE_DEVICES": "all",
         "NVIDIA_DRIVER_CAPABILITIES": "compute,utility",
     }
 
     for prefix in SERVICE_PREFIXES:
-        values.update(profile.build_env(prefix))
         values[f"{prefix}GPU_PROFILE"] = profile.name
     values.update(sam3_build_env(profile, info.driver_version))
 
@@ -216,7 +207,7 @@ def main() -> int:
     args.env_file.write_text(replace_generated_block(existing, block), encoding="utf-8")
     print(
         f"Wrote GPU config for {values['GPU_MODEL']} "
-        f"({values['SAM3_GPU_PROFILE']}, driver {values['GPU_DRIVER_VERSION']}) to {args.env_file}"
+        f"({values['SAM3_GPU_PROFILE']}, driver {info.driver_version}) to {args.env_file}"
     )
     return 0
 

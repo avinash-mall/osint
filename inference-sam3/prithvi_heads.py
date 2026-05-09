@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -28,12 +30,22 @@ CROP_CLASS_NAMES = [
 
 
 def load_all(device: str):
-    return {
+    bundle = {
         "flood": _load_task_model(PRITHVI_FLOOD_ID, device, "PRITHVI_FLOOD"),
         "burn": _load_task_model(PRITHVI_BURN_ID, device, "PRITHVI_BURN"),
-        "crop": _load_task_model(PRITHVI_CROP_ID, device, "PRITHVI_CROP"),
+        "crop": _load_optional_task_model(PRITHVI_CROP_ID, device, "PRITHVI_CROP"),
         "device": device,
     }
+    bundle["loaded_heads"] = sorted(key for key in ("flood", "burn", "crop") if bundle.get(key) is not None)
+    return bundle
+
+
+def _load_optional_task_model(repo_id: str, device: str, env_prefix: str):
+    try:
+        return _load_task_model(repo_id, device, env_prefix)
+    except (Exception, SystemExit) as exc:
+        print(f"[prithvi_heads] Optional Prithvi head skipped for {repo_id}: {exc}")
+        return None
 
 
 def _load_task_model(repo_id: str, device: str, env_prefix: str):
@@ -62,9 +74,10 @@ def _load_task_model(repo_id: str, device: str, env_prefix: str):
         try:
             from terratorch.cli_tools import LightningInferenceModel
 
-            model = LightningInferenceModel.from_config(config, checkpoint)
+            with _clean_argv_for_lightning():
+                model = LightningInferenceModel.from_config(str(config), str(checkpoint))
             return _to_eval_device(model, device)
-        except Exception as exc:
+        except (Exception, SystemExit) as exc:
             print(f"[prithvi_heads] LightningInferenceModel load failed for {repo_id}: {exc}; trying registry fallback")
 
     from terratorch.registry import BACKBONE_REGISTRY
@@ -72,11 +85,23 @@ def _load_task_model(repo_id: str, device: str, env_prefix: str):
     return _to_eval_device(BACKBONE_REGISTRY.build(repo_id), device)
 
 
+@contextmanager
+def _clean_argv_for_lightning():
+    original = sys.argv[:]
+    sys.argv = [original[0] if original else "python"]
+    try:
+        yield
+    finally:
+        sys.argv = original
+
+
 def _first_existing(root: Path, patterns: tuple[str, ...]) -> str | None:
     for pattern in patterns:
         matches = sorted(path for path in root.rglob(pattern) if path.is_file())
         if matches:
-            return str(matches[0])
+            for match in matches:
+                if match.stat().st_size > 0:
+                    return str(match)
     return None
 
 
@@ -96,7 +121,7 @@ def run_all(prithvi_bundle, chip6_full: np.ndarray, target_hw: tuple[int, int], 
     overlays: dict[str, np.ndarray] = {}
     overlays["water"] = _run_binary_windowed(prithvi_bundle, "flood", chip6_full, (h, w))
     overlays["burn_scar"] = _run_binary_windowed(prithvi_bundle, "burn", chip6_full, (h, w))
-    if chip6_temporal_3 is not None:
+    if chip6_temporal_3 is not None and prithvi_bundle.get("crop") is not None:
         overlays["crop"] = _run_crop_windowed(prithvi_bundle, chip6_temporal_3, (h, w))
     return overlays
 

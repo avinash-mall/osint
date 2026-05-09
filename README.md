@@ -73,8 +73,8 @@ Every label SAM 3 emits — text-prompted from the active prompt profile or from
 | `GLOBAL_CONFIDENCE_FLOOR` | `0.0` | Single floor applied to every class. `0.0` means "accept everything" |
 | `HIGH_CONFIDENCE_THRESHOLD` | `0.5` | Tag threshold for `high_confidence` review status |
 | `PER_CLASS_CONFIDENCE_OVERRIDES` | `{}` | Optional JSON map of class-specific floors |
-| `INFERENCE_CHIP_SIZE` | `1024` | Better small-object recall than 640 px chips |
-| `INFERENCE_CHIP_OVERLAP` | `512` | 50 % overlap so objects on chip boundaries appear fully in ≥1 chip |
+| `INFERENCE_CHIP_SIZE` | `1008` | Matches SAM3's intended square image resolution |
+| `INFERENCE_CHIP_OVERLAP` | `252` | 25 % overlap for boundary objects while keeping SAM3-native chip geometry |
 | `MAX_INFERENCE_CHIPS` | `0` | Full raster coverage; no silent chip sampling |
 
 `parent_class_for_label` clusters detections into broad open buckets (aircraft, vessel, vehicle, train, building, infrastructure, storage_tank, bridge, harbor, airfield, recreation, vegetation, water, person, animal, food, furniture, household, electronic, tool, clothing, plant, sport, segment, track) and falls back to the **normalized label itself** when no cluster matches — true open vocabulary. The `segment` parent catches mask outputs; the `track` parent catches SAM3 video tracks.
@@ -152,7 +152,7 @@ The dashboard is a single-page application with a sidebar of 7 tabs.
 
 ## Imagery Pipeline
 
-Open-vocabulary inference uses overlapping 1024×1024 chips by default, OBB-aware cross-chip dedupe, and full-raster coverage unless `MAX_INFERENCE_CHIPS` is explicitly capped. Stored detections include parent class, original (open-vocab) class, calibrated confidence, review status, threshold profile, chip provenance, model/taxonomy version, and coverage metadata.
+Open-vocabulary inference uses overlapping 1008×1008 chips by default, OBB-aware cross-chip dedupe, and full-raster coverage unless `MAX_INFERENCE_CHIPS` is explicitly capped. Stored detections include parent class, original (open-vocab) class, calibrated confidence, review status, threshold profile, chip provenance, model/taxonomy version, and coverage metadata.
 
 ### Ingest a GeoTIFF
 
@@ -168,7 +168,7 @@ The `imagery` Celery worker then:
 1. Converts the raster to a Cloud-Optimised GeoTIFF (COG) via `gdal_translate`
 2. Catalogs the pass in PostGIS with a `MULTIPOLYGON` footprint
 3. Creates a `SatellitePass` node in Neo4j
-4. Slices the COG into overlapping 1024×1024 chips (PNG for RGB, GeoTIFF for multispectral/SAR)
+4. Slices the COG into overlapping 1008×1008 chips (PNG for RGB, GeoTIFF for multispectral/SAR)
 5. Sends each chip to SAM3 (`POST /detect`)
 6. Georeferences bounding boxes back to Lat/Lon
 7. Stores detections in PostGIS and Neo4j
@@ -244,7 +244,7 @@ The worker auto-selects modality from the raster; callers can override via `meta
 
 | Modality | `metadata.modality` | Chip format | Pipeline |
 |---|---|---|---|
-| **Optical RGB satellite / aerial** | `rgb` *(default)* | uint8 PNG (1024×1024 from the worker's `chip_to_uint8_rgb`) | SAM3 text prompts (via `metadata.text_prompts` / profile) or box prompts (via `metadata.prompt_boxes`, normalized cxcywh `bbox` and/or 8-pt `obb`) → mask + bbox + OBB + DINOv3-SAT embedding |
+| **Optical RGB satellite / aerial** | `rgb` *(default)* | uint8 PNG (1008×1008 from the worker's `chip_to_uint8_rgb`) | SAM3 text prompts (via `metadata.text_prompts` / profile) or box prompts (via `metadata.prompt_boxes`, normalized cxcywh `bbox` and/or 8-pt `obb`) → mask + bbox + OBB + DINOv3-SAT embedding |
 | **Multispectral (HLS-6 / S2-L2A)** | `multispectral` | float32 6-band GeoTIFF — Blue, Green, Red, Narrow-NIR, SWIR-1, SWIR-2 (Prithvi `constant_scale=0.0001`) | Resize to 224 → Prithvi flood + burn → SAM3 on the RGB preview → optional 3-timestep crop classifier when `metadata.hls_timesteps == 3` |
 | **SAR (Sentinel-1 GRD)** | `sar` | float32 2-band GeoTIFF (VV, VH; dB clipped to [-30, 0] then linear-stretched to [0, 1]) | TerraMind S1→S2L2A → bands 3,2,1 RGB preview → SAM3 prompts on the synthetic preview, `confidence` capped at `SAM3_SAR_CONF_CAP=0.85`, `sar_proxy: true` and `review_status: review_candidate` always set |
 | **FMV (video)** | sent via `/detect_video` | MP4 / MOV / TS / AVI / MPEG-TS | SAM 3.1 Object Multiplex session — `start_session → add_prompt(text) → handle_stream_request(propagate_in_video) → close_session`. One DINOv3-LVD embedding per track on its first frame. |
@@ -285,14 +285,14 @@ The video endpoint streams one JSON object per frame×track with the same shape 
 
 The platform is open-vocab by construction: SAM 3 was trained on **~4 M unique noun-phrase concepts** from the SA-Co dataset, so the prompt *is* the label. Defaults are auto-selected per modality:
 
-| Profile | Auto-applied to | Source vocabularies | Count | Latency / 1024 px chip (RTX 5070 Ti, warm) |
+| Profile | Auto-applied to | Source vocabularies | Count | Latency / 1008 px chip (RTX 5070 Ti, warm) |
 |---|---|---|---|---|
 | `satellite_v1` *(default)* | `rgb` · `multispectral` · `sar` | Curated subset hitting the 25 most useful aerial classes | **25 prompts** ([prompts/satellite_v1.json](inference-sam3/prompts/satellite_v1.json)) | **~2 s** |
 | `satellite_v1_full` *(opt-in)* | — | xView · DOTA v2.0 · DIOR · fMoW · FAIR1M · HRSC2016 ship-types · RarePlanes attributes (deduped) | **214 prompts** ([prompts/satellite_v1_full.json](inference-sam3/prompts/satellite_v1_full.json)) | ~16 s |
 | `ground_v1` *(default)* | `fmv` | COCO 2017 80 categories | **80 prompts** ([prompts/ground_v1.json](inference-sam3/prompts/ground_v1.json)) | ~4–6 s |
 | `ground_v1_full` *(opt-in)* | — | COCO 2017 + Objects365 v2 + LVIS v1 curated extension (deduped) | **576 prompts** ([prompts/ground_v1_full.json](inference-sam3/prompts/ground_v1_full.json)) | ~30 s |
 
-**Why two tiers?** SAM 3 inference loops one grounding-head forward per prompt over a single cached backbone pass; the 214-prompt union takes ~16 s per 1024 px chip on the smoke-test GPU, and with `INFERENCE_CHIP_CONCURRENCY=4` chips pipelined to a single-GPU service that's 64 s of head-of-line latency before the worker's `INFERENCE_CHIP_TIMEOUT_S=600` even starts to bite. The 25/80-prompt fast defaults keep the round-trip comfortable on commodity GPUs; opt into `*_full` when you need the long tail.
+**Why two tiers?** SAM 3 inference loops one grounding-head forward per prompt over a single cached backbone pass; the 214-prompt union is expensive on commodity GPUs, and high chip concurrency into a single-GPU service creates head-of-line latency before the worker's `INFERENCE_CHIP_TIMEOUT_S=600` even starts to bite. The 25/80-prompt fast defaults keep the round-trip comfortable; opt into `*_full` when you need the long tail.
 
 Override priority (each step skips the rest):
 

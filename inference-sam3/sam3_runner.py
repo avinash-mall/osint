@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import itertools
 from typing import Any, Iterable
 
 import numpy as np
@@ -10,7 +11,13 @@ from PIL import Image
 
 SAM3_IMAGE_MODEL_ID = os.getenv("SAM3_IMAGE_MODEL_ID", "facebook/sam3")
 SAM3_USE_MULTIPLEX = os.getenv("SAM3_USE_MULTIPLEX", "1").strip().lower() in {"1", "true", "yes", "on"}
+SAM3_COMPILE_IMAGE = os.getenv("SAM3_COMPILE_IMAGE", "0").strip().lower() in {"1", "true", "yes", "on"}
+SAM3_COMPILE_VIDEO = os.getenv("SAM3_COMPILE_VIDEO", "0").strip().lower() in {"1", "true", "yes", "on"}
+SAM3_WARM_UP_VIDEO = os.getenv("SAM3_WARM_UP_VIDEO", "1").strip().lower() in {"1", "true", "yes", "on"}
+SAM3_BATCHED_TEXT = os.getenv("SAM3_BATCHED_TEXT", "1").strip().lower() in {"1", "true", "yes", "on"}
+SAM3_BATCHED_TEXT_CHUNK_SIZE = max(1, int(os.getenv("SAM3_BATCHED_TEXT_CHUNK_SIZE", "8")))
 PROMPT_TEMPLATE = os.getenv("SAM3_PROMPT_TEMPLATE", "{label}")
+_QUERY_IDS = itertools.count(1)
 
 
 def _patch_pkg_resources_py312() -> None:
@@ -99,7 +106,7 @@ def build_image(device: str) -> dict[str, Any]:
     from sam3.model_builder import build_sam3_image_model
     from sam3.model.sam3_image_processor import Sam3Processor
 
-    model = build_sam3_image_model().to(device).eval()
+    model = build_sam3_image_model(device=device, compile=SAM3_COMPILE_IMAGE).to(device).eval()
     return {"model": model, "processor": Sam3Processor(model, device=device)}
 
 
@@ -107,13 +114,22 @@ def build_video(device: str):
     _patch_pkg_resources_py312()
     from sam3.model_builder import build_sam3_multiplex_video_predictor, build_sam3_video_predictor
 
-    return build_sam3_multiplex_video_predictor() if SAM3_USE_MULTIPLEX else build_sam3_video_predictor()
+    if SAM3_USE_MULTIPLEX:
+        return build_sam3_multiplex_video_predictor(
+            compile=SAM3_COMPILE_VIDEO,
+            warm_up=SAM3_COMPILE_VIDEO and SAM3_WARM_UP_VIDEO,
+        )
+    return build_sam3_video_predictor()
 
 
 def versions() -> dict[str, str]:
     return {
         "sam3_image": SAM3_IMAGE_MODEL_ID,
         "sam3_video": "sam3.1-multiplex" if SAM3_USE_MULTIPLEX else "sam3",
+        "sam3_compile_image": str(SAM3_COMPILE_IMAGE).lower(),
+        "sam3_compile_video": str(SAM3_COMPILE_VIDEO).lower(),
+        "sam3_batched_text": str(SAM3_BATCHED_TEXT).lower(),
+        "sam3_batched_text_chunk_size": str(SAM3_BATCHED_TEXT_CHUNK_SIZE),
         "dinov3_sat": os.getenv("DINOV3_SAT_MODEL_ID", "facebook/dinov3-vitl16-pretrain-sat493m"),
         "dinov3_lvd": os.getenv("DINOV3_LVD_MODEL_ID", "facebook/dinov3-vitl16-pretrain-lvd1689m"),
         "prithvi_backbone": os.getenv("PRITHVI_BACKBONE_ID", "ibm-nasa-geospatial/Prithvi-EO-2.0-600M-TL"),
@@ -138,6 +154,23 @@ def run_text_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompt
     ``processor.set_image`` returns an inference state that caches vision
     features; ``set_text_prompt`` reuses the state for each prompt.
     """
+    prompts = list(prompts)
+    if SAM3_BATCHED_TEXT and len(prompts) > 1:
+        try:
+            candidates: list[tuple[np.ndarray, list[float], float, str]] = []
+            for offset in range(0, len(prompts), SAM3_BATCHED_TEXT_CHUNK_SIZE):
+                candidates.extend(
+                    _run_text_prompts_batched(
+                        bundle,
+                        image_rgb_uint8,
+                        prompts[offset:offset + SAM3_BATCHED_TEXT_CHUNK_SIZE],
+                        score_threshold,
+                    )
+                )
+            return candidates
+        except Exception as exc:
+            print(f"[INFERENCE-SAM3] batched text prompt path failed; falling back to native loop: {exc}")
+
     processor = bundle["sam3_image"]["processor"]
     device = bundle.get("device", "cpu")
     pil_image = Image.fromarray(image_rgb_uint8)
@@ -150,6 +183,104 @@ def run_text_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompt
             output = processor.set_text_prompt(state=state, prompt=phrase)
             candidates.extend(_collect_candidates(output, score_threshold, label))
     return candidates
+
+
+def _run_text_prompts_batched(
+    bundle: dict[str, Any],
+    image_rgb_uint8: np.ndarray,
+    prompts: list[str],
+    score_threshold: float,
+):
+    """Run the upstream SAM3 batched image API for multiple text queries.
+
+    This mirrors ``examples/sam3_image_batched_inference.ipynb`` from
+    facebookresearch/sam3: build one datapoint containing many text queries,
+    collate it, move it to the target device, then call the image model once.
+    """
+    import torch
+    from sam3.eval.postprocessors import PostProcessImage
+    from sam3.model.utils.misc import copy_data_to_device
+    from sam3.train.data.collator import collate_fn_api as collate
+    from sam3.train.data.sam3_image_dataset import (
+        Datapoint,
+        FindQueryLoaded,
+        Image as SAMImage,
+        InferenceMetadata,
+    )
+    from sam3.train.transforms.basic_for_api import ComposeAPI, NormalizeAPI, RandomResizeAPI, ToTensorAPI
+
+    device = bundle.get("device", "cpu")
+    pil_image = Image.fromarray(image_rgb_uint8)
+    width, height = pil_image.size
+    datapoint = Datapoint(
+        find_queries=[],
+        images=[SAMImage(data=pil_image, objects=[], size=[height, width])],
+    )
+    query_labels: dict[int, str] = {}
+    for label in prompts:
+        query_id = next(_QUERY_IDS)
+        phrase = PROMPT_TEMPLATE.format(label=label)
+        datapoint.find_queries.append(
+            FindQueryLoaded(
+                query_text=phrase,
+                image_id=0,
+                object_ids_output=[],
+                is_exhaustive=True,
+                query_processing_order=0,
+                inference_metadata=InferenceMetadata(
+                    coco_image_id=query_id,
+                    original_image_id=query_id,
+                    original_category_id=1,
+                    original_size=(height, width),
+                    object_id=0,
+                    frame_index=0,
+                ),
+            )
+        )
+        query_labels[query_id] = label
+
+    transform = ComposeAPI(
+        transforms=[
+            RandomResizeAPI(sizes=1008, max_size=1008, square=True, consistent_transform=False),
+            ToTensorAPI(),
+            NormalizeAPI(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+        ]
+    )
+    datapoint = transform(datapoint)
+    batch = collate([datapoint], dict_key="sam3")["sam3"]
+    batch = copy_data_to_device(batch, torch.device(device), non_blocking=device.startswith("cuda"))
+    postprocessor = PostProcessImage(
+        max_dets_per_img=-1,
+        iou_type="segm",
+        use_original_sizes_box=True,
+        use_original_sizes_mask=True,
+        convert_mask_to_rle=False,
+        detection_threshold=score_threshold,
+        to_cpu=True,
+        always_interpolate_masks_on_gpu=device.startswith("cuda"),
+    )
+
+    with bundle["lock"], _inference_mode(), _autocast_ctx(device):
+        output = bundle["sam3_image"]["model"](batch)
+        processed = postprocessor.process_results(output, batch.find_metadatas)
+    return _collect_batched_candidates(processed, query_labels)
+
+
+def _collect_batched_candidates(processed: dict[int, dict[str, Any]], query_labels: dict[int, str]):
+    out: list[tuple[np.ndarray, list[float], float, str]] = []
+    for query_id, result in processed.items():
+        label = query_labels.get(int(query_id), "object")
+        masks = _to_list(result.get("masks"))
+        boxes = _to_list(result.get("boxes"))
+        scores = _to_list(result.get("scores"))
+        for mask, box_xyxy, score in zip(masks, boxes, scores):
+            out.append((
+                np.asarray(_to_numpy(mask), dtype=bool).squeeze(),
+                [float(v) for v in _to_numpy(box_xyxy).reshape(-1)[:4]],
+                float(score),
+                label,
+            ))
+    return out
 
 
 def run_box_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompt_boxes: list[dict[str, Any]], score_threshold: float):
