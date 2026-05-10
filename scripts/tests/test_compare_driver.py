@@ -162,3 +162,74 @@ def test_dry_run_via_subprocess(tmp_path: Path) -> None:
     assert report_path.exists()
     content = report_path.read_text(encoding="utf-8")
     assert "## Box Detectors" in content
+
+
+def test_dry_run_segmenter_slice_produces_section(tmp_path: Path) -> None:
+    """--dry-run --slice hls_burn produces report with ## Semantic Segmenters section."""
+    report_path = tmp_path / "segmenter_report.md"
+
+    exit_code = _run_main(
+        [
+            "--dry-run",
+            "--slice", "hls_burn",
+            "--max-chips", "4",
+            "--output", str(report_path),
+        ]
+    )
+
+    assert exit_code == 0, f"main() returned non-zero exit code: {exit_code}"
+    assert report_path.exists(), f"Report file was not created at {report_path}"
+
+    content = report_path.read_text(encoding="utf-8")
+    assert "## Semantic Segmenters" in content, (
+        "'## Semantic Segmenters' section missing from report.\n"
+        f"Report content:\n{content[:1000]}"
+    )
+
+
+def test_dry_run_sen1floods_segmenter_section(tmp_path: Path) -> None:
+    """--dry-run --slice sen1floods also produces ## Semantic Segmenters section."""
+    report_path = tmp_path / "floods_report.md"
+
+    exit_code = _run_main(
+        [
+            "--dry-run",
+            "--slice", "sen1floods",
+            "--max-chips", "4",
+            "--output", str(report_path),
+        ]
+    )
+
+    assert exit_code == 0, f"main() returned non-zero exit code: {exit_code}"
+    content = report_path.read_text(encoding="utf-8")
+    assert "## Semantic Segmenters" in content, (
+        "'## Semantic Segmenters' section missing from report.\n"
+        f"Report content:\n{content[:1000]}"
+    )
+
+
+def test_dry_run_hls_burn_json_has_segmenter_results(tmp_path: Path) -> None:
+    """--slice hls_burn JSON artifact has 'segmenter_results' key."""
+    report_path = tmp_path / "report.md"
+    json_path = tmp_path / "report.json"
+
+    exit_code = _run_main(
+        [
+            "--dry-run",
+            "--slice", "hls_burn",
+            "--max-chips", "4",
+            "--output", str(report_path),
+            "--json-output", str(json_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert json_path.exists()
+
+    import json as _json
+    data = _json.loads(json_path.read_text(encoding="utf-8"))
+    assert "segmenter_results" in data, "'segmenter_results' key missing from JSON"
+    assert isinstance(data["segmenter_results"], list)
+    config_names = [r["config_name"] for r in data["segmenter_results"]]
+    assert "sam3_only" in config_names
+    assert "sam3+prithvi" in config_names
