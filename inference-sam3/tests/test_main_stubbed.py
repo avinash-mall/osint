@@ -93,6 +93,8 @@ def test_enabled_layers_sam3_only(monkeypatch):
     )
 
     assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["enabled_layers_unavailable"] == []
     assert mock_dota.call_count == 0
     assert mock_yolo.call_count == 0
     assert mock_gdino.call_count == 0

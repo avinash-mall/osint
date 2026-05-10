@@ -202,7 +202,8 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
     # Per-request layer toggle. When enabled_layers is present, only the named
     # layers run (SAM3 always runs regardless). When absent, all loaded layers
     # run as usual (backward-compatible default).
-    _enabled = set(meta.get("enabled_layers") or [])
+    _raw_enabled = meta.get("enabled_layers")
+    _enabled = set(_raw_enabled) if isinstance(_raw_enabled, list) else set()
     _layer_active = (lambda layer: (layer in _enabled)) if _enabled else (lambda _: True)
 
     # Surface layers that were requested but are not loaded in the bundle.
@@ -217,10 +218,7 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
         t0 = mark("model_queue", t0)
 
         # Compute unavailable layers now that we have the bundle.
-        _unavailable = [
-            l for l in _enabled
-            if l not in ("sam3",) and not bundle.get(l) and not bundle.get(l.replace("_", ""))
-        ]
+        _unavailable = [l for l in _enabled if l not in ("sam3",) and not bundle.get(l)]
 
         try:
             if modality == "multispectral":
@@ -319,10 +317,12 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
                 det["prithvi_labels"] = fusion.overlay_labels(mask, overlays, threshold=SAM3_PRITHVI_OVERLAY_THR)
             if modality == "sar":
                 det["confidence"] = float(min(det["confidence"], SAM3_SAR_CONF_CAP))
-                if _layer_active("terramind"):
-                    det["sar_proxy"] = True
-                    det["review_status"] = "review_candidate"
+                det["sar_proxy"] = True
+                det["review_status"] = "review_candidate"
+                if _layer_active("terramind") and bundle.get("terramind"):
                     det["terramind_embedding"] = terramind.pool_patches(bundle.get("terramind"), chip2)
+                else:
+                    det["terramind_embedding"] = None
             detections.append(det)
         timings["embedding"] = round(embedding_ms, 3)
         t0 = mark("postprocess", t0)
