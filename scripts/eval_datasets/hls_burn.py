@@ -259,7 +259,20 @@ def iter_hls_burn(
             continue
 
         chip_bytes: bytes = _read_chip_bytes(chip_path)
-        gt_positive: bool = bool(record.get("burn_scar", False))
+        # Backward compat: honour both top-level "burn_scar" (synthetic format)
+        # and "ground_truth.burn_scar" / "ground_truth.flood" (real Sen1Floods).
+        gt_dict = record.get("ground_truth") or {}
+        gt_positive: bool = bool(
+            record.get("burn_scar", False)
+            or gt_dict.get("burn_scar", False)
+            or gt_dict.get("flood", False)
+        )
 
-        yield chip_bytes, "multispectral", [], {"burn_scar": gt_positive}
+        # PRITHVI segmentation labels are attached to detections, so SAM3 needs
+        # something to detect for the chip-level IoU to differ between
+        # PRITHVI-on / PRITHVI-off runs. Send broad geographic prompts that
+        # SAM3 can find on aerial multispectral imagery.
+        prompts = ["water", "vegetation", "field", "land", "ground"]
+
+        yield chip_bytes, "multispectral", prompts, {"burn_scar": gt_positive}
         count += 1

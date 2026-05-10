@@ -2642,6 +2642,11 @@ def upload_imagery(
     acquisition_time: Optional[str] = Form(None),
     auto_process: bool = Form(True),
     text_prompts: Optional[str] = Form(None),
+    # Front-end now sends modality (rgb/multispectral/sar) and the
+    # recommended specialist layers based on the sensor dropdown. Both are
+    # optional — when absent the worker falls back to per-sensor defaults.
+    modality: Optional[str] = Form(None),
+    enabled_layers: Optional[str] = Form(None),
 ):
     ensure_platform_tables()
     filename = safe_filename(file.filename or "upload.tif")
@@ -2709,6 +2714,8 @@ def upload_imagery(
                     "acquisition_time": effective_acquisition_time,
                     "auto_process": auto_process,
                     "text_prompts": text_prompts,
+                    "modality": modality,
+                    "enabled_layers": enabled_layers,
                     "bytes": size,
                     "raster_metadata": raster_metadata,
                     "source_hash": None,
@@ -2721,7 +2728,19 @@ def upload_imagery(
         upload_job_recorded = True
 
     if media_type == "imagery" and auto_process:
-        task = process_satellite_imagery.delay(str(local_path), sensor_type, effective_acquisition_time, upload_id)
+        # Parse enabled_layers JSON (forwarded from upload form's sensor dropdown).
+        parsed_enabled_layers = None
+        if enabled_layers:
+            try:
+                parsed_enabled_layers = json.loads(enabled_layers)
+                if not isinstance(parsed_enabled_layers, list):
+                    parsed_enabled_layers = None
+            except (TypeError, json.JSONDecodeError):
+                parsed_enabled_layers = None
+        task = process_satellite_imagery.delay(
+            str(local_path), sensor_type, effective_acquisition_time, upload_id,
+            enabled_layers=parsed_enabled_layers,
+        )
         celery_task_id = task.id
         status = "queued"
         with postgis_db.get_cursor(commit=True) as cursor:

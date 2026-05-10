@@ -22,12 +22,12 @@ import dota_obb
 import embedding
 import fusion
 import grounding_dino
+import grounding_dino_gate
 import multispectral
 import prithvi_heads
 import sam3_runner
 import sar
 import terramind
-import yolo_defence
 from prompts.loader import resolve_prompts
 
 
@@ -59,13 +59,16 @@ _DEFAULT = "1" if SAM3_LOAD_OPTIONAL_MODELS else "0"
 
 # Per-component flags so operators can selectively load on memory-constrained GPUs.
 SAM3_LOAD_DINOV3_SAT = _flag("SAM3_LOAD_DINOV3_SAT", _DEFAULT)
-SAM3_LOAD_DINOV3_LVD = _flag("SAM3_LOAD_DINOV3_LVD", _DEFAULT)
+# DINOV3_LVD removed: produces NaN embeddings on small drone-video crops and
+# is 2.5× slower than DINOV3_SAT with no measured quality advantage. See
+# docs/video_tracking_stability.md.
 SAM3_LOAD_PRITHVI    = _flag("SAM3_LOAD_PRITHVI",    _DEFAULT)
 SAM3_LOAD_TERRAMIND  = _flag("SAM3_LOAD_TERRAMIND",  _DEFAULT)
 
 # Specialist detectors that complement SAM 3 zero-shot prompts.
+# DEFENCE_YOLO was removed: produced 1297 false positives across 26 DOTA val
+# chips with no true positives (see docs/inference_layer_comparison*).
 SAM3_LOAD_DOTA_OBB        = _flag("SAM3_LOAD_DOTA_OBB",        _DEFAULT)
-SAM3_LOAD_DEFENCE_YOLO    = _flag("SAM3_LOAD_DEFENCE_YOLO",    _DEFAULT)
 SAM3_LOAD_GROUNDING_DINO  = _flag("SAM3_LOAD_GROUNDING_DINO",  _DEFAULT)
 
 _pool: list[dict[str, Any]] = []
@@ -108,20 +111,16 @@ def _load_pool() -> None:
                     "sam3_image": sam3_runner.build_image(device),
                     "sam3_video": None,
                     "dinov3_sat": None,
-                    "dinov3_lvd": None,
                     "prithvi": None,
                     "terramind": None,
                 }
                 if SAM3_LOAD_DINOV3_SAT:
                     bundle["dinov3_sat"] = embedding.load_sat(device)
-                if SAM3_LOAD_DINOV3_LVD:
-                    bundle["dinov3_lvd"] = embedding.load_lvd(device)
                 if SAM3_LOAD_PRITHVI:
                     bundle["prithvi"] = prithvi_heads.load_all(device)
                 if SAM3_LOAD_TERRAMIND:
                     bundle["terramind"] = terramind.load(device)
                 bundle["dota_obb"] = dota_obb.load(device) if SAM3_LOAD_DOTA_OBB else None
-                bundle["yolo_defence"] = yolo_defence.load(device) if SAM3_LOAD_DEFENCE_YOLO else None
                 bundle["grounding_dino"] = grounding_dino.load(device) if SAM3_LOAD_GROUNDING_DINO else None
                 _pool.append(bundle)
                 logger.info("Loaded model bundle on %s with components=%s", device, _bundle_components(bundle))
@@ -169,11 +168,9 @@ def health() -> dict[str, Any]:
         "embed_detections": SAM3_EMBED_DETECTIONS,
         "load_flags": {
             "dinov3_sat": SAM3_LOAD_DINOV3_SAT,
-            "dinov3_lvd": SAM3_LOAD_DINOV3_LVD,
             "prithvi": SAM3_LOAD_PRITHVI,
             "terramind": SAM3_LOAD_TERRAMIND,
             "dota_obb": SAM3_LOAD_DOTA_OBB,
-            "yolo_defence": SAM3_LOAD_DEFENCE_YOLO,
             "grounding_dino": SAM3_LOAD_GROUNDING_DINO,
         },
     }
@@ -267,11 +264,21 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
             candidates.extend(
                 await run_in_threadpool(dota_obb.run, bundle["dota_obb"], chip3, dota_obb.DOTA_OBB_THRESHOLD)
             )
-        if bundle.get("yolo_defence") and _layer_active("yolo_defence"):
-            candidates.extend(
-                await run_in_threadpool(yolo_defence.run, bundle["yolo_defence"], chip3, yolo_defence.DEFENCE_YOLO_THRESHOLD)
-            )
-        if bundle.get("grounding_dino") and prompts and _layer_active("grounding_dino"):
+        # GROUNDING_DINO: auto-gated unless prompts include uncommon classes.
+        # The gate skips GROUNDING_DINO (~115 ms) when SAM3's pretrained vocab
+        # already covers every prompt — see grounding_dino_gate.py for the
+        # common-vocab definition (576 ground_v1 + 18 DOTA + geo terms).
+        # `force_grounding_dino: true` in metadata bypasses the gate.
+        gd_force = bool(meta.get("force_grounding_dino", False))
+        gd_should_run, gd_gated_reason = grounding_dino_gate.should_run_grounding_dino(
+            prompts, force=gd_force,
+        )
+        if (
+            bundle.get("grounding_dino")
+            and prompts
+            and _layer_active("grounding_dino")
+            and gd_should_run
+        ):
             candidates.extend(
                 await run_in_threadpool(
                     grounding_dino.run,
@@ -280,6 +287,10 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
                     prompts,
                     grounding_dino.GROUNDING_DINO_THR,
                 )
+            )
+        elif _layer_active("grounding_dino") and gd_gated_reason:
+            logger.debug(
+                "grounding_dino auto-gated: reason=%s n_prompts=%d", gd_gated_reason, len(prompts),
             )
         t0 = mark("specialists", t0)
 
@@ -305,7 +316,10 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
             )
             if meta.get("geo"):
                 det["geo"] = {**meta["geo"], "obb_map_crs": None, "obb_map_geojson": None}
-            if SAM3_EMBED_DETECTIONS and _layer_active("dinov3_sat"):
+            # DINOV3_SAT is the only embedding backend. DINOV3_LVD was removed
+            # (NaN on drone-video crops, 2.5× slower than SAT, no measured
+            # quality advantage — see docs/video_tracking_stability.md).
+            if SAM3_EMBED_DETECTIONS and _layer_active("dinov3_sat") and bundle.get("dinov3_sat"):
                 emb_start = time.perf_counter()
                 det["embedding"] = embedding.embed_crop(bundle.get("dinov3_sat"), chip3, bbox_xyxy)
                 embedding_ms += (time.perf_counter() - emb_start) * 1000
@@ -347,6 +361,7 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
             "queue_depth": queue_depth,
             "input_metadata": meta,
             "enabled_layers_unavailable": _unavailable,
+            "grounding_dino_gated": gd_gated_reason,
         }
     finally:
         _leave_request()
@@ -391,7 +406,7 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
                     start_frame=start_frame,
                     end_frame=end_frame,
                     max_frames=max_frames,
-                    dinov3=bundle.get("dinov3_lvd"),
+                    dinov3=None,  # DINOV3_LVD removed (NaN on real video crops)
                     score_threshold=SAM3_TEXT_THR,
                 )
             )
@@ -430,12 +445,10 @@ def _bundle_components(bundle: dict[str, Any]) -> dict[str, Any]:
         "sam3_image": bundle.get("sam3_image") is not None,
         "sam3_video": bundle.get("sam3_video") is not None,
         "dinov3_sat": bundle.get("dinov3_sat") is not None,
-        "dinov3_lvd": bundle.get("dinov3_lvd") is not None,
         "prithvi": bool(prithvi_bundle),
         "prithvi_heads": list(prithvi_bundle.get("loaded_heads") or []),
         "terramind": bundle.get("terramind") is not None,
         "dota_obb": _model_loaded(bundle.get("dota_obb")),
-        "yolo_defence": _model_loaded(bundle.get("yolo_defence")),
         "grounding_dino": _model_loaded(bundle.get("grounding_dino")),
     }
 

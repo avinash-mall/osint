@@ -23,6 +23,7 @@ import {
   isSam3Prompt,
   objectMatchesSensor,
   parseCustomPrompts,
+  pipelineForSensor,
   uploadSensorToTag,
 } from '../utils/defenceOntology';
 import { BranchIcon, ObjectIcon } from '../utils/branchIcons';
@@ -105,6 +106,7 @@ export default function IngestConnect() {
 
   const searchTerm = objectSearch.trim().toLowerCase();
   const sensorTag: Sensor = uploadSensorToTag(sensorType);
+  const sensorPipeline = useMemo(() => pipelineForSensor(sensorType), [sensorType]);
   const visibleDefenceIds = useMemo(() => {
     return new Set(
       DEFENCE_OBJECTS
@@ -194,6 +196,8 @@ export default function IngestConnect() {
       const form = new FormData();
       form.append('file', file);
       form.append('sensor_type', sensorType);
+      form.append('modality', sensorPipeline.modality);
+      form.append('enabled_layers', JSON.stringify(sensorPipeline.enabledLayers));
       form.append('auto_process', 'true');
       if (selectedPrompts.length > 0) {
         form.append('text_prompts', JSON.stringify(selectedPrompts));
@@ -350,23 +354,44 @@ export default function IngestConnect() {
           />
         </label>
 
-        <div className="flex flex-col sm:flex-row gap-3">
-          <select
-            value={sensorType}
-            onChange={(event) => setSensorType(event.target.value)}
-            className="bg-slate-900 border border-slate-700 rounded px-3 py-3 text-sm sm:w-48"
-          >
-            <option>Optical</option>
-            <option>Radar</option>
-            <option>Thermal</option>
-          </select>
-          <button
-            onClick={uploadImage}
-            disabled={!file || uploading}
-            className="flex-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed rounded px-4 py-3 text-sm font-bold uppercase tracking-wider flex items-center justify-center gap-2"
-          >
-            <DatabaseZap className="w-4 h-4" /> Upload &amp; Process
-          </button>
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-col sm:flex-row gap-3">
+            <select
+              value={sensorType}
+              onChange={(event) => setSensorType(event.target.value)}
+              className="bg-slate-900 border border-slate-700 rounded px-3 py-3 text-sm sm:w-56"
+              title="Sensor type — auto-selects relevant inference layers"
+            >
+              <option value="Optical">Optical (RGB)</option>
+              <option value="Multispectral">Multispectral</option>
+              <option value="Hyperspectral">Hyperspectral</option>
+              <option value="SAR">SAR</option>
+            </select>
+            <button
+              onClick={uploadImage}
+              disabled={!file || uploading}
+              className="flex-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed rounded px-4 py-3 text-sm font-bold uppercase tracking-wider flex items-center justify-center gap-2"
+            >
+              <DatabaseZap className="w-4 h-4" /> Upload &amp; Process
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-1.5 items-center font-mono text-[10px] text-slate-400">
+            <span className="text-slate-500 uppercase tracking-wider">Models:</span>
+            {sensorPipeline.models.map((model) => (
+              <span
+                key={model}
+                className="border border-blue-500/40 bg-blue-500/10 text-blue-300 px-2 py-0.5 rounded"
+              >
+                {model}
+              </span>
+            ))}
+          </div>
+          {sensorPipeline.warning && (
+            <div className="flex items-start gap-2 border border-yellow-500/40 bg-yellow-500/5 text-yellow-200 text-xs px-3 py-2 rounded">
+              <span className="font-bold uppercase tracking-wider text-[10px]">Note:</span>
+              <span>{sensorPipeline.warning}</span>
+            </div>
+          )}
         </div>
 
         <div className="border border-slate-800 bg-slate-900/70 rounded">

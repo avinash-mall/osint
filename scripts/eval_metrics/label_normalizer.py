@@ -129,10 +129,21 @@ def _build_prompt_lookup(
     except (OSError, json.JSONDecodeError):
         return exact, pairs
 
+    # Skip the Battle_Damage branch when building the prompt lookup. Its
+    # objects use very generic prompts ("vehicle", "ship", "bridge") because
+    # SAM3 has no concept of "wreckage" — but those generic prompts collide
+    # with everyday detections and produce massive false-positive counts under
+    # the battle_damage canonical (1134 FPs in our DOTA val run, see
+    # docs/inference_layer_comparison.md). Damage classification needs human
+    # review or a dedicated detector, not a generic-prompt mapping.
+    SKIP_BRANCHES = {"Battle_Damage"}
+
     for branch in data.get("branches", []):
         branch_id: str = branch.get("id", "")
+        if branch_id in SKIP_BRANCHES:
+            continue
         canonical = _BRANCH_ID_TO_CANONICAL.get(branch_id, "other")
-        _walk_prompt_branch(branch, canonical, exact, pairs)
+        _walk_prompt_branch(branch, canonical, exact, pairs, SKIP_BRANCHES)
 
     # Sort pairs longest-first so substring matching prefers specific prompts
     pairs.sort(key=lambda t: len(t[0]), reverse=True)
@@ -144,8 +155,10 @@ def _walk_prompt_branch(
     canonical: str,
     exact: Dict[str, str],
     pairs: list[tuple[str, str]],
+    skip_branches: set[str] | None = None,
 ) -> None:
     """Recursive helper that populates exact and pairs in-place."""
+    skip_branches = skip_branches or set()
     for obj in branch.get("objects", []):
         prompt_raw: Optional[str] = obj.get("prompt")
         if not prompt_raw or prompt_raw.startswith("__prithvi_"):
@@ -157,8 +170,10 @@ def _walk_prompt_branch(
 
     for child in branch.get("children", []):
         child_id: str = child.get("id", "")
+        if child_id in skip_branches:
+            continue
         child_canonical = _BRANCH_ID_TO_CANONICAL.get(child_id, canonical)
-        _walk_prompt_branch(child, child_canonical, exact, pairs)
+        _walk_prompt_branch(child, child_canonical, exact, pairs, skip_branches)
 
 
 # Module-level lookup tables built once at import time.

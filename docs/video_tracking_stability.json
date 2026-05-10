@@ -1,0 +1,91 @@
+{
+  "config": {
+    "url": "http://172.18.0.2:8001",
+    "videos": [
+      "/nvme/osint/sample/53902-476396222_medium.mp4",
+      "/nvme/osint/sample/168811-839864556_medium.mp4"
+    ],
+    "prompts": [
+      "car",
+      "vehicle",
+      "person",
+      "truck"
+    ],
+    "n_frames": 6,
+    "iou_threshold": 0.2,
+    "layers": [
+      "dinov3_sat",
+      "dinov3_lvd"
+    ]
+  },
+  "results": [
+    {
+      "n_tracks_multi_frame": 35,
+      "n_tracks_total": 295,
+      "intra_pairs": 47,
+      "inter_pairs": 595,
+      "intra_mean": 0.8717526260842668,
+      "intra_std": 0.06186361436055631,
+      "inter_mean": 0.8048673000656256,
+      "inter_std": 0.12033285907048935,
+      "separation": 0.06688532601864128,
+      "top1_retrieval_accuracy": 0.0,
+      "video": "53902-476396222_medium.mp4",
+      "embed_layer": "dinov3_sat",
+      "n_frames_processed": 6,
+      "iou_threshold": 0.2,
+      "elapsed_s": 12.2
+    },
+    {
+      "n_tracks_multi_frame": 35,
+      "n_tracks_total": 295,
+      "intra_pairs": 47,
+      "inter_pairs": 595,
+      "intra_mean": NaN,
+      "intra_std": NaN,
+      "inter_mean": NaN,
+      "inter_std": NaN,
+      "separation": NaN,
+      "top1_retrieval_accuracy": 0.0,
+      "video": "53902-476396222_medium.mp4",
+      "embed_layer": "dinov3_lvd",
+      "n_frames_processed": 6,
+      "iou_threshold": 0.2,
+      "elapsed_s": 11.4
+    },
+    {
+      "n_tracks_multi_frame": 21,
+      "n_tracks_total": 133,
+      "intra_pairs": 51,
+      "inter_pairs": 210,
+      "intra_mean": 0.8981106561772964,
+      "intra_std": 0.04324620385245174,
+      "inter_mean": 0.6814495044095176,
+      "inter_std": 0.1505663076387373,
+      "separation": 0.21666115176777878,
+      "top1_retrieval_accuracy": 0.14285714285714285,
+      "video": "168811-839864556_medium.mp4",
+      "embed_layer": "dinov3_sat",
+      "n_frames_processed": 6,
+      "iou_threshold": 0.2,
+      "elapsed_s": 15.1
+    },
+    {
+      "n_tracks_multi_frame": 21,
+      "n_tracks_total": 133,
+      "intra_pairs": 51,
+      "inter_pairs": 210,
+      "intra_mean": NaN,
+      "intra_std": NaN,
+      "inter_mean": NaN,
+      "inter_std": NaN,
+      "separation": NaN,
+      "top1_retrieval_accuracy": 0.0,
+      "video": "168811-839864556_medium.mp4",
+      "embed_layer": "dinov3_lvd",
+      "n_frames_processed": 6,
+      "iou_threshold": 0.2,
+      "elapsed_s": 15.2
+    }
+  ]
+}

@@ -165,10 +165,10 @@ services:
       SAM3_COMPILE_VIDEO: ${SAM3_COMPILE_VIDEO:-0}
       SAM3_WARM_UP_VIDEO: ${SAM3_WARM_UP_VIDEO:-1}
       SAM3_PRELOAD_MODELS: ${SAM3_PRELOAD_MODELS:-1}
+      PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
       SAM3_BATCHED_TEXT: ${SAM3_BATCHED_TEXT:-1}
       SAM3_BATCHED_TEXT_CHUNK_SIZE: ${SAM3_BATCHED_TEXT_CHUNK_SIZE:-8}
       DINOV3_SAT_MODEL_ID: ${DINOV3_SAT_MODEL_ID:-facebook/dinov3-vitl16-pretrain-sat493m}
-      DINOV3_LVD_MODEL_ID: ${DINOV3_LVD_MODEL_ID:-facebook/dinov3-vitl16-pretrain-lvd1689m}
       PRITHVI_BACKBONE_ID: ${PRITHVI_BACKBONE_ID:-ibm-nasa-geospatial/Prithvi-EO-2.0-600M-TL}
       TERRAMIND_MODEL_ID: ${TERRAMIND_MODEL_ID:-terramind_v1_large}
       SAM3_TEXT_THRESHOLD: ${SAM3_TEXT_THRESHOLD:-0.30}
@@ -184,16 +184,15 @@ services:
       # auxiliary stack; turn individual flags off on memory-constrained GPUs.
       SAM3_LOAD_OPTIONAL_MODELS: ${SAM3_LOAD_OPTIONAL_MODELS:-1}
       SAM3_LOAD_DINOV3_SAT: ${SAM3_LOAD_DINOV3_SAT:-1}
-      SAM3_LOAD_DINOV3_LVD: ${SAM3_LOAD_DINOV3_LVD:-1}
+      # DINOV3_LVD removed: NaN on real video crops + 2.5x slower than SAT.
       SAM3_LOAD_PRITHVI:    ${SAM3_LOAD_PRITHVI:-1}
       SAM3_LOAD_TERRAMIND:  ${SAM3_LOAD_TERRAMIND:-1}
       # Specialist detectors (run alongside SAM 3 on every chip).
+      # DEFENCE_YOLO removed — produced 1297 false positives across DOTA val
+      # with zero true positives (see docs/inference_layer_comparison.md).
       SAM3_LOAD_DOTA_OBB:        ${SAM3_LOAD_DOTA_OBB:-1}
-      SAM3_LOAD_DEFENCE_YOLO:    ${SAM3_LOAD_DEFENCE_YOLO:-1}
       SAM3_LOAD_GROUNDING_DINO:  ${SAM3_LOAD_GROUNDING_DINO:-1}
       DOTA_OBB_MODEL_ID:         ${DOTA_OBB_MODEL_ID:-yolo11n-obb.pt}
-      DEFENCE_YOLO_REPO_ID:      ${DEFENCE_YOLO_REPO_ID:-spencercdz/YOLOv8m_defence}
-      DEFENCE_YOLO_FILENAME:     ${DEFENCE_YOLO_FILENAME:-yolov8m_defence.pt}
       GROUNDING_DINO_REPO_ID:    ${GROUNDING_DINO_REPO_ID:-IDEA-Research/grounding-dino-tiny}
       GROUNDING_DINO_THRESHOLD:  ${GROUNDING_DINO_THRESHOLD:-0.35}
       GROUNDING_DINO_TEXT_THRESHOLD: ${GROUNDING_DINO_TEXT_THRESHOLD:-0.25}
@@ -206,7 +205,7 @@ services:
       SAM3_WEIGHTS_SOURCE:  ${SAM3_WEIGHTS_SOURCE:-official}
       SAM3_MIRROR_REPO_ID:  ${SAM3_MIRROR_REPO_ID:-1038lab/sam3}
       SAM3_MIRROR_FILENAME: ${SAM3_MIRROR_FILENAME:-sam3.safetensors}
-      MODEL_VERSION: ${SAM3_MODEL_VERSION:-sam3-image+sam3.1-video+dinov3-sat-l+prithvi+terramind+dota-obb+yolo-defence+grounding-dino}
+      MODEL_VERSION: ${SAM3_MODEL_VERSION:-sam3-image+sam3.1-video+dinov3-sat-l+prithvi+terramind+dota-obb+grounding-dino}
       HF_HOME: /models/hf
       HUGGINGFACE_HUB_CACHE: /models/hf/hub
       TORCH_HOME: /models/torch

@@ -2,51 +2,101 @@
   {
     "chip_file": "chips/chip_0000.tif",
     "modality": "multispectral",
-    "burn_scar": true
+    "source": "sen1floods11:Bolivia_103757_S2Hand",
+    "ground_truth": {
+      "burn_scar": true,
+      "flood": true
+    },
+    "annotations": []
   },
   {
     "chip_file": "chips/chip_0001.tif",
     "modality": "multispectral",
-    "burn_scar": false
+    "source": "sen1floods11:Bolivia_129334_S2Hand",
+    "ground_truth": {
+      "burn_scar": true,
+      "flood": true
+    },
+    "annotations": []
   },
   {
     "chip_file": "chips/chip_0002.tif",
     "modality": "multispectral",
-    "burn_scar": true
+    "source": "sen1floods11:Bolivia_195474_S2Hand",
+    "ground_truth": {
+      "burn_scar": true,
+      "flood": true
+    },
+    "annotations": []
   },
   {
     "chip_file": "chips/chip_0003.tif",
     "modality": "multispectral",
-    "burn_scar": false
+    "source": "sen1floods11:Bolivia_23014_S2Hand",
+    "ground_truth": {
+      "burn_scar": true,
+      "flood": true
+    },
+    "annotations": []
   },
   {
     "chip_file": "chips/chip_0004.tif",
     "modality": "multispectral",
-    "burn_scar": true
+    "source": "sen1floods11:Bolivia_233925_S2Hand",
+    "ground_truth": {
+      "burn_scar": true,
+      "flood": true
+    },
+    "annotations": []
   },
   {
     "chip_file": "chips/chip_0005.tif",
     "modality": "multispectral",
-    "burn_scar": false
+    "source": "sen1floods11:Bolivia_242570_S2Hand",
+    "ground_truth": {
+      "burn_scar": true,
+      "flood": true
+    },
+    "annotations": []
   },
   {
     "chip_file": "chips/chip_0006.tif",
     "modality": "multispectral",
-    "burn_scar": true
+    "source": "sen1floods11:Bolivia_290290_S2Hand",
+    "ground_truth": {
+      "burn_scar": true,
+      "flood": true
+    },
+    "annotations": []
   },
   {
     "chip_file": "chips/chip_0007.tif",
     "modality": "multispectral",
-    "burn_scar": false
+    "source": "sen1floods11:Bolivia_294583_S2Hand",
+    "ground_truth": {
+      "burn_scar": true,
+      "flood": true
+    },
+    "annotations": []
   },
   {
     "chip_file": "chips/chip_0008.tif",
     "modality": "multispectral",
-    "burn_scar": true
+    "source": "sen1floods11:Bolivia_312675_S2Hand",
+    "ground_truth": {
+      "burn_scar": true,
+      "flood": true
+    },
+    "annotations": []
   },
   {
     "chip_file": "chips/chip_0009.tif",
     "modality": "multispectral",
-    "burn_scar": false
+    "source": "sen1floods11:Bolivia_314919_S2Hand",
+    "ground_truth": {
+      "burn_scar": true,
+      "flood": true
+    },
+    "annotations": []
   }
 ]

@@ -51,6 +51,7 @@ import requests  # noqa: E402
 
 from eval_datasets.dota import iter_dota  # noqa: E402
 from eval_datasets.hls_burn import iter_hls_burn  # noqa: E402
+from eval_datasets.sar_synth import iter_sar_synth  # noqa: E402
 from eval_datasets.sen1floods import iter_sen1floods  # noqa: E402
 from eval_metrics.box_metrics import compute_box_metrics  # noqa: E402
 from eval_metrics.label_normalizer import normalize  # noqa: E402
@@ -79,20 +80,12 @@ LAYER_CONFIGS: list[dict] = [
         "enabled_layers": ["sam3", "dota_obb"],
     },
     {
-        "config_name": "sam3+yolo_defence",
-        "enabled_layers": ["sam3", "yolo_defence"],
-    },
-    {
         "config_name": "sam3+grounding_dino",
         "enabled_layers": ["sam3", "grounding_dino"],
     },
     {
-        "config_name": "sam3+dota_obb+yolo_defence",
-        "enabled_layers": ["sam3", "dota_obb", "yolo_defence"],
-    },
-    {
-        "config_name": "sam3+dota_obb+yolo_defence+grounding_dino",
-        "enabled_layers": ["sam3", "dota_obb", "yolo_defence", "grounding_dino"],
+        "config_name": "sam3+dota_obb+grounding_dino",
+        "enabled_layers": ["sam3", "dota_obb", "grounding_dino"],
     },
 ]
 
@@ -116,9 +109,8 @@ SEGMENTER_CONFIGS: list[dict] = [
 EMBEDDING_CONFIGS: list[dict] = [
     {"name": "sam3_only",       "enabled_layers": ["sam3"]},
     {"name": "sam3+dinov3_sat", "enabled_layers": ["sam3", "dinov3_sat"]},
-    {"name": "sam3+dinov3_lvd", "enabled_layers": ["sam3", "dinov3_lvd"]},
     {"name": "sam3+terramind",  "enabled_layers": ["sam3", "terramind"]},
-    {"name": "all_embeddings",  "enabled_layers": ["sam3", "dinov3_sat", "dinov3_lvd", "terramind"]},
+    # DINOV3_LVD removed: NaN on real video crops, 2.5× slower than SAT.
 ]
 
 
@@ -145,23 +137,25 @@ def _post_detect(
     enabled_layers: list[str],
     modality: str = "rgb",
     timeout: int = 120,
+    force_grounding_dino: bool = False,
 ) -> dict:
     """POST chip to /detect and return the parsed JSON response + elapsed_ms."""
     started = time.perf_counter()
     # Choose MIME type based on modality
     mime_type = "image/tiff" if modality == "multispectral" else "image/png"
     filename = "chip.tif" if modality == "multispectral" else "chip.png"
+    metadata: dict[str, Any] = {
+        "modality": modality,
+        "text_prompts": prompts,
+        "max_prompts": len(prompts),
+        "enabled_layers": enabled_layers,
+    }
+    if force_grounding_dino and "grounding_dino" in enabled_layers:
+        metadata["force_grounding_dino"] = True
     resp = requests.post(
         f"{url.rstrip('/')}/detect",
         files={"image": (filename, io.BytesIO(chip_bytes), mime_type)},
-        data={
-            "metadata": json.dumps({
-                "modality": modality,
-                "text_prompts": prompts,
-                "max_prompts": len(prompts),
-                "enabled_layers": enabled_layers,
-            })
-        },
+        data={"metadata": json.dumps(metadata)},
         timeout=timeout,
     )
     elapsed_ms = (time.perf_counter() - started) * 1000.0
@@ -284,8 +278,6 @@ def _synthetic_embedding_response(enabled_layers: list[str]) -> dict:
     rng = random.Random(77 + len(enabled_layers))
 
     has_dinov3_sat = "dinov3_sat" in enabled_layers
-    has_dinov3_lvd = "dinov3_lvd" in enabled_layers
-    has_dinov3 = has_dinov3_sat or has_dinov3_lvd
     has_terramind = "terramind" in enabled_layers
 
     # Build a few synthetic detections
@@ -297,10 +289,9 @@ def _synthetic_embedding_response(enabled_layers: list[str]) -> dict:
             "confidence": round(rng.uniform(0.5, 0.95), 3),
             "bbox": {"x": rng.randint(0, 200), "y": rng.randint(0, 200), "w": 32, "h": 32},
         }
-        if has_dinov3:
-            model_name = "dinov3_sat" if has_dinov3_sat else "dinov3_lvd"
+        if has_dinov3_sat:
             det["embedding"] = {
-                "model": model_name,
+                "model": "dinov3_sat",
                 "dim": 768,
                 "fp16_b64": "AAAA" + "AA==" * 192,  # fake base64 placeholder
             }
@@ -312,7 +303,7 @@ def _synthetic_embedding_response(enabled_layers: list[str]) -> dict:
         "sam3_inference": round(rng.uniform(80, 150), 1),
         "total": round(rng.uniform(300, 800), 1),
     }
-    if has_dinov3:
+    if has_dinov3_sat:
         timings["embedding"] = round(rng.uniform(50, 200), 1)
 
     return {
@@ -330,37 +321,46 @@ def _synthetic_embedding_response(enabled_layers: list[str]) -> dict:
 def _parse_detections(
     response: dict,
     enabled_layers: list[str],
+    chip_size: tuple[int, int] = (1024, 1024),
 ) -> list[dict]:
     """Extract normalised predictions from a /detect response dict.
 
+    chip_size: (width, height) in pixels — needed to denormalise bbox coords.
     Returns a list of {"label": str, "bbox_xyxy": [...], "score": float}.
     """
     raw = response.get("detections", [])
+    width, height = chip_size
 
-    # Determine normalisation layer key:
-    # - Single specialist layer → use its name
-    # - Multiple layers or sam3-only → "mixed"
     specialist_layers = [l for l in enabled_layers if l != "sam3"]
     norm_layer = specialist_layers[0] if len(specialist_layers) == 1 else "mixed"
 
     predictions = []
     for det in raw:
-        label = det.get("label", "")
+        label = det.get("class") or det.get("label") or det.get("original_class") or ""
         score = float(det.get("confidence", det.get("score", 0.0)))
 
-        # bbox can be {x, y, w, h} or bbox_xyxy
+        # The /detect API returns bbox as normalised YOLO [cx, cy, w, h] floats in [0, 1].
+        # Older synthetic dry-run paths used dict {x,y,w,h} or bbox_xyxy — handle both.
+        bbox_xyxy = None
         if "bbox" in det:
             b = det["bbox"]
-            x, y, w, h = b.get("x", 0), b.get("y", 0), b.get("w", 0), b.get("h", 0)
-            bbox_xyxy = [x, y, x + w, y + h]
-        elif "bbox_xyxy" in det:
+            if isinstance(b, list) and len(b) == 4:
+                cx, cy, bw, bh = b
+                x1 = (cx - bw / 2.0) * width
+                y1 = (cy - bh / 2.0) * height
+                x2 = (cx + bw / 2.0) * width
+                y2 = (cy + bh / 2.0) * height
+                bbox_xyxy = [x1, y1, x2, y2]
+            elif isinstance(b, dict):
+                x = b.get("x", 0); y = b.get("y", 0)
+                bw = b.get("w", 0); bh = b.get("h", 0)
+                bbox_xyxy = [x, y, x + bw, y + bh]
+        if bbox_xyxy is None and "bbox_xyxy" in det:
             bbox_xyxy = det["bbox_xyxy"]
-        else:
-            continue  # skip malformed detection
+        if bbox_xyxy is None:
+            continue
 
-        # Normalise label
         norm_label = normalize(label, norm_layer)
-
         predictions.append({
             "label": norm_label,
             "bbox_xyxy": bbox_xyxy,
@@ -382,6 +382,7 @@ def _evaluate_chip(
     repeats: int,
     dry_run: bool,
     modality: str = "rgb",
+    force_grounding_dino: bool = False,
 ) -> dict | None:
     """Run N repeats for a single chip+config. Returns chip result dict or None on failure."""
 
@@ -394,7 +395,11 @@ def _evaluate_chip(
             if dry_run:
                 payload = _synthetic_response(enabled_layers, ground_truth)
             else:
-                payload = _post_detect(url, chip_bytes, prompts, enabled_layers, modality=modality)
+                payload = _post_detect(
+                    url, chip_bytes, prompts, enabled_layers,
+                    modality=modality,
+                    force_grounding_dino=force_grounding_dino,
+                )
         except requests.exceptions.RequestException as exc:
             log.warning("HTTP error on repeat %d: %s", attempt + 1, exc)
             return None
@@ -418,7 +423,15 @@ def _evaluate_chip(
     if last_payload is None:
         return None
 
-    predictions = _parse_detections(last_payload, enabled_layers)
+    chip_size = (1024, 1024)
+    try:
+        from PIL import Image
+        import io as _io
+        with Image.open(_io.BytesIO(chip_bytes)) as _img:
+            chip_size = _img.size
+    except Exception:
+        pass
+    predictions = _parse_detections(last_payload, enabled_layers, chip_size=chip_size)
 
     # Normalise GT labels for fair comparison (use "dota_obb" as source for DOTA GT)
     norm_gt = [
@@ -865,8 +878,10 @@ def _iter_slice(
         yield from iter_hls_burn(labels_path=layers_path, max_chips=max_chips)
     elif slice_name == "sen1floods":
         yield from iter_sen1floods(labels_path=layers_path, max_chips=max_chips)
+    elif slice_name == "sar":
+        yield from iter_sar_synth(labels_path=layers_path, max_chips=max_chips)
     else:
-        raise ValueError(f"Unknown slice: {slice_name!r}. Choices: dota, hls_burn, sen1floods, embedding, all")
+        raise ValueError(f"Unknown slice: {slice_name!r}. Choices: dota, hls_burn, sen1floods, sar, embedding, all")
 
 
 # ---------------------------------------------------------------------------
@@ -947,7 +962,7 @@ def _build_markdown(
 
         # Per-class tables for baseline and full config
         for result in all_results:
-            if result["config_name"] not in ("sam3_only", "sam3+dota_obb+yolo_defence+grounding_dino"):
+            if result["config_name"] not in ("sam3_only", "sam3+dota_obb+grounding_dino"):
                 continue
             cfg_label = (
                 "SAM3 baseline"
@@ -1140,8 +1155,7 @@ def _build_markdown(
         # Box layer latencies
         sam3_ms_cp     = _med(all_results, "sam3_only")
         dota_ms_cp     = _med(all_results, "sam3+dota_obb")
-        yolo_ms_cp     = _med(all_results, "sam3+dota_obb+yolo_defence")
-        full_box_ms_cp = _med(all_results, "sam3+dota_obb+yolo_defence+grounding_dino")
+        full_box_ms_cp = _med(all_results, "sam3+dota_obb+grounding_dino")
 
         # Segmenter (PRITHVI) latency delta vs its own baseline
         prithvi_result_cp = next(
@@ -1161,30 +1175,25 @@ def _build_markdown(
             return r["delta_ms_vs_baseline"] if r else 0.0
 
         dinov3_sat_delta_cp = _emb_delta_cp("sam3+dinov3_sat")
-        dinov3_lvd_delta_cp = _emb_delta_cp("sam3+dinov3_lvd")
         terramind_delta_cp  = _emb_delta_cp("sam3+terramind")
 
         # Detection counts (box layers only; embedding/segmenter don't change det count)
         det_sam3_cp = _det_count(all_results, "sam3_only")
         det_dota_cp = _det_count(all_results, "sam3+dota_obb")
-        det_yolo_cp = _det_count(all_results, "sam3+dota_obb+yolo_defence")
-        det_full_cp = _det_count(all_results, "sam3+dota_obb+yolo_defence+grounding_dino")
+        det_full_cp = _det_count(all_results, "sam3+dota_obb+grounding_dino")
 
         # Rows: (label, median_total_ms, delta_vs_prev, cumulative_delta, det_avg, det_delta)
         cum_pipeline_rows = [
             ("SAM3 (base)",      sam3_ms_cp, None, None, det_sam3_cp, None),
             ("+ DOTA_OBB",       dota_ms_cp, dota_ms_cp - sam3_ms_cp,
              dota_ms_cp - sam3_ms_cp, det_dota_cp, det_dota_cp - det_sam3_cp),
-            ("+ DEFENCE_YOLO",   yolo_ms_cp, yolo_ms_cp - dota_ms_cp,
-             yolo_ms_cp - sam3_ms_cp, det_yolo_cp, det_yolo_cp - det_dota_cp),
-            ("+ GROUNDING_DINO", full_box_ms_cp, full_box_ms_cp - yolo_ms_cp,
-             full_box_ms_cp - sam3_ms_cp, det_full_cp, det_full_cp - det_yolo_cp),
+            ("+ GROUNDING_DINO", full_box_ms_cp, full_box_ms_cp - dota_ms_cp,
+             full_box_ms_cp - sam3_ms_cp, det_full_cp, det_full_cp - det_dota_cp),
         ]
 
         cum_p  = full_box_ms_cp - sam3_ms_cp + prithvi_delta_cp
         cum_ds = cum_p  + dinov3_sat_delta_cp
-        cum_dl = cum_ds + dinov3_lvd_delta_cp
-        cum_tm = cum_dl + terramind_delta_cp
+        cum_tm = cum_ds + terramind_delta_cp
 
         cum_pipeline_rows += [
             ("+ PRITHVI",
@@ -1193,11 +1202,8 @@ def _build_markdown(
             ("+ DINOV3_SAT",
              full_box_ms_cp + prithvi_delta_cp + dinov3_sat_delta_cp,
              dinov3_sat_delta_cp, cum_ds, det_full_cp, 0),
-            ("+ DINOV3_LVD",
-             full_box_ms_cp + prithvi_delta_cp + dinov3_sat_delta_cp + dinov3_lvd_delta_cp,
-             dinov3_lvd_delta_cp, cum_dl, det_full_cp, 0),
             ("+ TERRAMIND (SAR)",
-             full_box_ms_cp + prithvi_delta_cp + dinov3_sat_delta_cp + dinov3_lvd_delta_cp + terramind_delta_cp,
+             full_box_ms_cp + prithvi_delta_cp + dinov3_sat_delta_cp + terramind_delta_cp,
              terramind_delta_cp, cum_tm, det_full_cp, 0),
         ]
 
@@ -1272,39 +1278,23 @@ def _build_markdown(
     dota_lat_rec = _box_lat_delta_rec("sam3+dota_obb")
 
     dota_r_rec = next((r for r in all_results if r.get("config_name") == "sam3+dota_obb"), None)
-    yolo_r_rec = next((r for r in all_results if r.get("config_name") == "sam3+dota_obb+yolo_defence"), None)
-    yolo_map_rec = _box_map_delta_rec("sam3+dota_obb+yolo_defence") or "+N.NN mAP"
-    if dota_r_rec and yolo_r_rec:
-        yolo_lat_val_rec = (
-            yolo_r_rec["latency_ms"]["median_total"]
-            - dota_r_rec["latency_ms"]["median_total"]
-        )
-        yolo_lat_rec = f"+{yolo_lat_val_rec:.0f} ms"
-    else:
-        yolo_lat_rec = "?"
-
-    dino_map_rec       = _box_map_delta_rec("sam3+dota_obb+yolo_defence+grounding_dino") or "+N.NN mAP"
-    dino_lat_rec       = _box_lat_delta_rec("sam3+dota_obb+yolo_defence+grounding_dino")
+    dino_map_rec       = _box_map_delta_rec("sam3+dota_obb+grounding_dino") or "+N.NN mAP"
+    dino_lat_rec       = _box_lat_delta_rec("sam3+dota_obb+grounding_dino")
     prithvi_lat_rec    = _seg_lat_delta_rec()
     dinov3_sat_lat_rec = _emb_lat_rec("sam3+dinov3_sat")
-    dinov3_lvd_lat_rec = _emb_lat_rec("sam3+dinov3_lvd")
     terramind_lat_rec  = _emb_lat_rec("sam3+terramind")
 
     rec_rows = [
         ("DOTA_OBB",       "\u2705 Keep",               dota_map_rec,              dota_lat_rec,
          "Adds aerial vehicle/plane classes not in SAM3 vocab"),
-        ("DEFENCE_YOLO",   "\u26a0\ufe0f Make optional", yolo_map_rec,            yolo_lat_rec,
-         "Overlaps with DOTA classes; redundant on RGB; enable only for defence domain"),
-        ("GROUNDING_DINO", "\u2705 Keep",               dino_map_rec,              dino_lat_rec,
-         "Improves open-vocab recall; complements SAM3 prompts"),
+        ("GROUNDING_DINO", "\u2705 Keep (auto-gated)",  dino_map_rec,              dino_lat_rec,
+         "Open-vocab recall; auto-gated when all prompts are in SAM3+DOTA common vocab"),
         ("PRITHVI",        "\u2705 Keep",               "\u2014 (segmentation)",  prithvi_lat_rec,
          "Only specialist for multispectral flood/burn; no alternative"),
-        ("DINOV3_SAT",     "\u26a0\ufe0f Make optional", "\u2014 (embedding)",   dinov3_sat_lat_rec,
-         "Downstream retrieval value; disable if not using embedding search"),
-        ("DINOV3_LVD",     "\u26a0\ufe0f Make optional", "\u2014 (embedding)",   dinov3_lvd_lat_rec,
-         "FMV-specific; enable only for video/FMV workflows"),
-        ("TERRAMIND",      "\u26a0\ufe0f Make optional", "\u2014 (embedding)",   terramind_lat_rec,
-         "SAR-only; no impact on RGB/multispectral; enable only for SAR"),
+        ("DINOV3_SAT",     "\u2705 Keep for tracking",  "\u2014 (embedding)",     dinov3_sat_lat_rec,
+         "Embedding for cross-image object re-ID; see video_tracking_stability.md"),
+        ("TERRAMIND",      "\u26a0\ufe0f SAR-only",     "\u2014 (embedding)",     terramind_lat_rec,
+         "SAR-only; no impact on RGB/multispectral; enable only for SAR pipelines"),
     ]
 
     for layer_rec, verdict_rec, quality_rec, lat_cost_rec, notes_rec in rec_rows:
@@ -1323,6 +1313,46 @@ def _build_markdown(
 
 _SEGMENTER_SLICES = frozenset({"hls_burn", "sen1floods"})
 _EMBEDDING_SLICES = frozenset({"embedding"})
+_SAR_SLICES = frozenset({"sar"})
+
+# SAR-modality configs: measures TERRAMIND latency overhead in the SAR pipeline.
+SAR_CONFIGS: list[dict] = [
+    {"config_name": "sam3_only_sar",     "enabled_layers": ["sam3"]},
+    {"config_name": "sam3+terramind",    "enabled_layers": ["sam3", "terramind"]},
+]
+
+
+def _restart_service(restart_cmd: str | None, url: str, wait_timeout: int) -> bool:
+    """Run restart_cmd, then poll url/health until 200 or wait_timeout elapses.
+
+    Returns True on successful restart + ready, False otherwise. Caller
+    decides whether to abort or skip the restart.
+    """
+    if not restart_cmd:
+        return True
+    import shlex
+    import subprocess
+    import time as _time
+    log.info("Restarting service via: %s", restart_cmd)
+    started = _time.time()
+    try:
+        subprocess.run(shlex.split(restart_cmd), check=True, timeout=60)
+    except (subprocess.SubprocessError, FileNotFoundError) as exc:
+        log.error("Restart command failed: %s", exc)
+        return False
+    health_url = f"{url.rstrip('/')}/health"
+    while _time.time() - started < wait_timeout:
+        try:
+            r = requests.get(health_url, timeout=3)
+            if r.status_code == 200:
+                elapsed = _time.time() - started
+                log.info("Service back up after %.1fs", elapsed)
+                return True
+        except requests.exceptions.RequestException:
+            pass
+        _time.sleep(3)
+    log.error("Service did not become healthy within %ds", wait_timeout)
+    return False
 
 
 def run(args: argparse.Namespace) -> int:
@@ -1335,10 +1365,16 @@ def run(args: argparse.Namespace) -> int:
     json_output: Path | None = Path(args.json_output) if args.json_output else None
     layers_path: str | None = args.layers_path
     dry_run: bool = args.dry_run
+    restart_cmd: str | None = getattr(args, "restart_cmd", None)
+    restart_wait: int = getattr(args, "restart_wait_timeout", 180)
+    force_gd: bool = getattr(args, "force_grounding_dino", False)
+    if dry_run:
+        restart_cmd = None  # never restart in dry-run mode
 
     is_all_slice = slice_name == "all"
     is_segmenter_slice = slice_name in _SEGMENTER_SLICES
     is_embedding_slice = slice_name in _EMBEDDING_SLICES
+    is_sar_slice = slice_name in _SAR_SLICES
 
     # ------------------------------------------------------------------
     # Probe service availability
@@ -1375,7 +1411,13 @@ def run(args: argparse.Namespace) -> int:
         log.info("Loaded %d dota chip(s).", len(dota_chips_all))
 
         all_results_sl: list[dict] = []
-        for cfg in LAYER_CONFIGS:
+        # Always restart at the start of the slice (in case the GPU was left
+        # fragmented by an earlier process — e.g. a previous test run, or the
+        # health-probe that loaded the video model).
+        _restart_service(restart_cmd, url, restart_wait)
+        for cfg_idx, cfg in enumerate(LAYER_CONFIGS):
+            if cfg_idx > 0:
+                _restart_service(restart_cmd, url, restart_wait)
             config_name = cfg["config_name"]
             enabled_layers = cfg["enabled_layers"]
             log.info("Evaluating config: %s  layers=%s", config_name, enabled_layers)
@@ -1385,6 +1427,7 @@ def run(args: argparse.Namespace) -> int:
                     url=url, chip_bytes=chip_bytes_sl, prompts=prompts_sl,
                     ground_truth=gt_sl, enabled_layers=enabled_layers,
                     repeats=repeats, dry_run=dry_run, modality=modality_sl,
+                    force_grounding_dino=force_gd,
                 )
                 if result_sl is not None:
                     chip_results_box_sl.append(result_sl)
@@ -1406,7 +1449,11 @@ def run(args: argparse.Namespace) -> int:
         tasks_sl = list(sample_gt_sl.keys())
         segmenter_results_sl: list[dict] = []
         n_seg_chips_sl = 0
-        for cfg in SEGMENTER_CONFIGS:
+        # Always restart between slices (box→segmenter switches modality + payload size).
+        _restart_service(restart_cmd, url, restart_wait)
+        for cfg_idx, cfg in enumerate(SEGMENTER_CONFIGS):
+            if cfg_idx > 0:
+                _restart_service(restart_cmd, url, restart_wait)
             config_name = cfg["config_name"]
             enabled_layers = cfg["enabled_layers"]
             log.info("Evaluating segmenter config: %s  layers=%s", config_name, enabled_layers)
@@ -1437,7 +1484,12 @@ def run(args: argparse.Namespace) -> int:
         embedding_results_sl: list[dict] = []
         n_emb_chips_sl = 0
         baseline_emb_ms_sl: float | None = None
-        for cfg in EMBEDDING_CONFIGS:
+        # Always restart before the embedding slice (segmenter just ran lots of
+        # multispectral PRITHVI inference — GPU is fragmented again).
+        _restart_service(restart_cmd, url, restart_wait)
+        for cfg_idx, cfg in enumerate(EMBEDDING_CONFIGS):
+            if cfg_idx > 0:
+                _restart_service(restart_cmd, url, restart_wait)
             config_name = cfg["name"]
             enabled_layers = cfg["enabled_layers"]
             log.info("Evaluating embedding config: %s  layers=%s", config_name, enabled_layers)
@@ -1453,10 +1505,65 @@ def run(args: argparse.Namespace) -> int:
                 chip_results_emb_sl, config_name,
                 baseline_median_ms=baseline_emb_ms_sl,
             )
+            # Warn if a non-baseline config got 0 chips — usually means all
+            # layers loaded together exceeded GPU memory. The classic culprit
+            # is `all_embeddings` (SAT + LVD + TERRAMIND together).
+            if (
+                len(chip_results_emb_sl) == 0
+                and config_name != "sam3_only"
+                and not dry_run
+            ):
+                log.warning(
+                    "Config %s evaluated 0 chips — likely GPU OOM with %d "
+                    "embedding model(s) active. Consider testing each "
+                    "embedding layer in isolation, or freeing one of the "
+                    "image-only layers (DOTA_OBB / GROUNDING_DINO / PRITHVI) "
+                    "for this config.",
+                    config_name, len([l for l in enabled_layers if l != "sam3"]),
+                )
+                agg_emb_sl["warning"] = (
+                    f"0 chips evaluated; likely GPU OOM with "
+                    f"{len(enabled_layers) - 1} embedding model(s) active"
+                )
             embedding_results_sl.append(agg_emb_sl)
             n_emb_chips_sl = max(n_emb_chips_sl, len(chip_results_emb_sl))
             if config_name == "sam3_only":
                 baseline_emb_ms_sl = agg_emb_sl["median_total_ms"]
+
+        # ---- sar (TERRAMIND latency) ----
+        log.info("Loading chips from slice 'sar' ...")
+        sar_chips_sl: list[tuple[bytes, str, list[str], Any]] = list(
+            _iter_slice("sar", max_chips, layers_path)
+        )
+        log.info("Loaded %d sar chip(s).", len(sar_chips_sl))
+
+        sar_results_sl: list[dict] = []
+        n_sar_chips_sl = 0
+        if sar_chips_sl:
+            _restart_service(restart_cmd, url, restart_wait)
+            for cfg_idx, cfg in enumerate(SAR_CONFIGS):
+                if cfg_idx > 0:
+                    _restart_service(restart_cmd, url, restart_wait)
+                config_name = cfg["config_name"]
+                enabled_layers = cfg["enabled_layers"]
+                log.info("Evaluating SAR config: %s  layers=%s", config_name, enabled_layers)
+                chip_results_sar_sl: list[dict] = []
+                for chip_bytes_sl, modality_sl, prompts_sl, gt_sl in sar_chips_sl:
+                    result_sl = _evaluate_chip(
+                        url=url, chip_bytes=chip_bytes_sl, prompts=prompts_sl,
+                        ground_truth=gt_sl, enabled_layers=enabled_layers,
+                        repeats=repeats, dry_run=dry_run, modality=modality_sl,
+                    )
+                    if result_sl is not None:
+                        chip_results_sar_sl.append(result_sl)
+                agg_sar_sl = _aggregate_results(chip_results_sar_sl)
+                agg_sar_sl["config_name"] = config_name
+                agg_sar_sl["enabled_layers"] = enabled_layers
+                sar_results_sl.append(agg_sar_sl)
+                n_sar_chips_sl = max(n_sar_chips_sl, agg_sar_sl["chips_evaluated"])
+                log.info("  chips=%d  median_total=%.1fms",
+                         agg_sar_sl["chips_evaluated"],
+                         agg_sar_sl["latency_ms"]["median_total"])
 
         # ---- Write JSON ----
         if json_output:
@@ -1472,6 +1579,8 @@ def run(args: argparse.Namespace) -> int:
                         "results": all_results_sl,
                         "segmenter_results": segmenter_results_sl,
                         "embedding_results": embedding_results_sl,
+                        "sar_results": sar_results_sl,
+                        "sar_chips_loaded": len(sar_chips_sl),
                     },
                     indent=2,
                 ),
@@ -1495,6 +1604,38 @@ def run(args: argparse.Namespace) -> int:
             embedding_results=embedding_results_sl,
             n_embedding_chips=n_emb_chips_sl,
         )
+
+        # Append SAR section (synthetic 2-band SAR, latency-only).
+        if sar_results_sl:
+            sar_lines = [
+                "",
+                "## SAR / TERRAMIND (Synthetic)",
+                "",
+                f"Dataset: synthetic 2-band SAR ({n_sar_chips_sl} chips). Real Sentinel-1 GRD VV/VH "
+                "is not freely available on HuggingFace at a manageable size (the SSL4EO-S12 "
+                "S1 archive is 480 GB). Quality cannot be measured here — TERRAMIND only "
+                "exposes a pooled embedding + RGB preview, no per-pixel labels — but **latency** "
+                "is reliable.",
+                "",
+                "| Config | Chips | Median Total ms | Δ ms vs SAM3 (SAR) |",
+                "|---|---|---|---|",
+            ]
+            sar_baseline_ms = next(
+                (r["latency_ms"]["median_total"] for r in sar_results_sl
+                 if r["config_name"] == "sam3_only_sar"),
+                0.0,
+            )
+            for r in sar_results_sl:
+                med = r["latency_ms"]["median_total"]
+                if r["config_name"] == "sam3_only_sar":
+                    delta = "—"
+                else:
+                    delta = f"{med - sar_baseline_ms:+.1f} ms"
+                sar_lines.append(
+                    f"| {r['config_name']} | {r['chips_evaluated']} | "
+                    f"{med:.1f} | {delta} |"
+                )
+            markdown_sl = markdown_sl.rstrip() + "\n" + "\n".join(sar_lines) + "\n"
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(markdown_sl, encoding="utf-8")
         log.info("Markdown report written to %s", output)
@@ -1706,11 +1847,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--slice",
-        choices=["dota", "hls_burn", "sen1floods", "embedding", "all"],
+        choices=["dota", "hls_burn", "sen1floods", "sar", "embedding", "all"],
         default="dota",
         help=(
             "Dataset slice to evaluate (default: dota). "
             "Choices: dota (box detectors), hls_burn / sen1floods (PRITHVI segmenter heads), "
+            "sar (synthetic 2-band SAR for TERRAMIND latency only), "
             "embedding (DINOV3_SAT / DINOV3_LVD / TERRAMIND embedding latency), "
             "all (runs dota + hls_burn + embedding and combines into one full report)."
         ),
@@ -1752,6 +1894,34 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Skip HTTP calls and use synthetic results. "
             "Useful for testing report generation without a live server."
+        ),
+    )
+    parser.add_argument(
+        "--restart-cmd",
+        dest="restart_cmd",
+        default=None,
+        help=(
+            "Shell command to run between configs to clear GPU memory "
+            "(e.g. 'docker restart osint-inference-sam3-1'). After running, "
+            "the driver polls --url/health until it returns 200."
+        ),
+    )
+    parser.add_argument(
+        "--restart-wait-timeout",
+        dest="restart_wait_timeout",
+        type=int,
+        default=180,
+        help="Seconds to wait for /health after a restart (default: 180)",
+    )
+    parser.add_argument(
+        "--force-grounding-dino",
+        dest="force_grounding_dino",
+        action="store_true",
+        help=(
+            "Set force_grounding_dino=true in metadata for configs that include "
+            "grounding_dino in enabled_layers. Bypasses the common-vocab gate so "
+            "GROUNDING_DINO's contribution can actually be measured on common "
+            "prompts (otherwise it auto-skips and the config is identical to baseline)."
         ),
     )
     return parser

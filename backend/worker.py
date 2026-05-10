@@ -11,6 +11,7 @@ import tempfile
 import base64
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 from urllib.parse import urlparse
 from celery import Celery
 
@@ -1372,9 +1373,20 @@ def detection_class_summary(pass_id: int) -> list[dict]:
 
 
 @celery_app.task(queue="imagery", bind=True)
-def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical", acquisition_time: str = None, upload_id: str = None):
+def process_satellite_imagery(
+    self,
+    image_url: str,
+    sensor_type: str = "Optical",
+    acquisition_time: str = None,
+    upload_id: str = None,
+    enabled_layers: Optional[list[str]] = None,
+):
     """
     Full pipeline: download/validate -> COG conversion -> catalog -> inference -> store.
+
+    enabled_layers: optional list of inference layer names to forward to
+        /detect (e.g. ["sam3", "dota_obb", "grounding_dino", "dinov3_sat"]).
+        When None the inference service runs all loaded layers.
     """
     try:
         logger.info("[WORKER] Processing satellite image: %s", image_url)
@@ -1545,6 +1557,22 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
         prompt_override = _parse_prompt_override(upload_meta.get("text_prompts"))
         if prompt_override:
             inference_metadata["text_prompts"] = prompt_override
+        # Honor enabled_layers from the upload form. Two channels: explicit
+        # task arg (already parsed) takes precedence; otherwise read from the
+        # stored upload_meta which may carry a JSON-encoded list.
+        layers_to_use = enabled_layers
+        if not layers_to_use:
+            raw_layers = upload_meta.get("enabled_layers")
+            if isinstance(raw_layers, str):
+                try:
+                    layers_to_use = json.loads(raw_layers)
+                except json.JSONDecodeError:
+                    layers_to_use = None
+            elif isinstance(raw_layers, list):
+                layers_to_use = raw_layers
+        if layers_to_use:
+            inference_metadata["enabled_layers"] = list(layers_to_use)
+            logger.info("[WORKER] Forwarding enabled_layers=%s to /detect", layers_to_use)
         inference_result = slice_and_infer(
             cog_path,
             pass_id,

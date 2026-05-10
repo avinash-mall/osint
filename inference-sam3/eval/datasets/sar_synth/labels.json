@@ -1,0 +1,72 @@
+[
+  {
+    "chip_file": "chips/sar_0000.tif",
+    "modality": "sar",
+    "source": "synthetic_2band_dB_v1",
+    "ground_truth": {},
+    "annotations": []
+  },
+  {
+    "chip_file": "chips/sar_0001.tif",
+    "modality": "sar",
+    "source": "synthetic_2band_dB_v1",
+    "ground_truth": {},
+    "annotations": []
+  },
+  {
+    "chip_file": "chips/sar_0002.tif",
+    "modality": "sar",
+    "source": "synthetic_2band_dB_v1",
+    "ground_truth": {},
+    "annotations": []
+  },
+  {
+    "chip_file": "chips/sar_0003.tif",
+    "modality": "sar",
+    "source": "synthetic_2band_dB_v1",
+    "ground_truth": {},
+    "annotations": []
+  },
+  {
+    "chip_file": "chips/sar_0004.tif",
+    "modality": "sar",
+    "source": "synthetic_2band_dB_v1",
+    "ground_truth": {},
+    "annotations": []
+  },
+  {
+    "chip_file": "chips/sar_0005.tif",
+    "modality": "sar",
+    "source": "synthetic_2band_dB_v1",
+    "ground_truth": {},
+    "annotations": []
+  },
+  {
+    "chip_file": "chips/sar_0006.tif",
+    "modality": "sar",
+    "source": "synthetic_2band_dB_v1",
+    "ground_truth": {},
+    "annotations": []
+  },
+  {
+    "chip_file": "chips/sar_0007.tif",
+    "modality": "sar",
+    "source": "synthetic_2band_dB_v1",
+    "ground_truth": {},
+    "annotations": []
+  },
+  {
+    "chip_file": "chips/sar_0008.tif",
+    "modality": "sar",
+    "source": "synthetic_2band_dB_v1",
+    "ground_truth": {},
+    "annotations": []
+  },
+  {
+    "chip_file": "chips/sar_0009.tif",
+    "modality": "sar",
+    "source": "synthetic_2band_dB_v1",
+    "ground_truth": {},
+    "annotations": []
+  }
+]

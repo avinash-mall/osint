@@ -1,6 +1,6 @@
 import rawOntology from './defenceOntology.json';
 
-export type Sensor = 'optical' | 'sar' | 'multispectral' | 'thermal';
+export type Sensor = 'optical' | 'sar' | 'multispectral' | 'hyperspectral' | 'thermal';
 
 export type BranchIconKey =
   | 'military'
@@ -224,10 +224,74 @@ export function isSam3Prompt(prompt: string): boolean {
 
 const UPLOAD_SENSOR_TO_TAG: Record<string, Sensor> = {
   optical: 'optical',
+  rgb: 'optical',
+  multispectral: 'multispectral',
+  hyperspectral: 'hyperspectral',
+  sar: 'sar',
   radar: 'sar',
   thermal: 'thermal',
 };
 
 export function uploadSensorToTag(uploadSensor: string): Sensor {
   return UPLOAD_SENSOR_TO_TAG[uploadSensor.toLowerCase()] ?? 'optical';
+}
+
+/**
+ * Maps the upload-page sensor selection onto the inference service's
+ * `modality` parameter and the recommended specialist layers (`enabled_layers`).
+ *
+ * Decisions backed by docs/inference_layer_comparison.md:
+ *   - optical  → SAM3 + DOTA_OBB (mAP 0.05→0.61) + DINOV3_SAT (re-ID embedding,
+ *                only fires when SAM3_EMBED_DETECTIONS=1). GROUNDING_DINO is
+ *                loaded but auto-gated server-side for in-vocab prompts.
+ *   - multispectral → SAM3 + PRITHVI (flood / burn-scar / crop heads, +20ms).
+ *   - hyperspectral → SAM3 only. PRITHVI's heads were trained on HLS 6-band
+ *                multispectral, not hyperspectral; we surface this as a UI
+ *                warning so callers know quality may be lower.
+ *   - sar      → SAM3 + TERRAMIND (S1→RGB preview + embedding pool).
+ */
+export interface SensorPipeline {
+  /** modality string sent to /detect */
+  modality: 'rgb' | 'multispectral' | 'sar';
+  /** specialist layers to request (sam3 always implicit) */
+  enabledLayers: string[];
+  /** human-readable model labels for the UI badge */
+  models: string[];
+  /** optional warning shown under the dropdown */
+  warning?: string;
+}
+
+const SENSOR_PIPELINE: Record<string, SensorPipeline> = {
+  optical: {
+    modality: 'rgb',
+    enabledLayers: ['sam3', 'dota_obb', 'grounding_dino', 'dinov3_sat'],
+    models: ['SAM3', 'DOTA-OBB', 'GroundingDINO (auto-gated)', 'DINOV3_SAT'],
+  },
+  multispectral: {
+    modality: 'multispectral',
+    enabledLayers: ['sam3', 'prithvi', 'dinov3_sat'],
+    models: ['SAM3', 'PRITHVI (flood/burn/crop)', 'DINOV3_SAT'],
+  },
+  hyperspectral: {
+    modality: 'multispectral',
+    enabledLayers: ['sam3', 'prithvi', 'dinov3_sat'],
+    models: ['SAM3', 'PRITHVI (HLS-trained, may underperform)', 'DINOV3_SAT'],
+    warning:
+      'Native hyperspectral support is experimental — the request is forwarded to the multispectral pipeline. Quality on >6-band data is not validated.',
+  },
+  sar: {
+    modality: 'sar',
+    enabledLayers: ['sam3', 'terramind'],
+    models: ['SAM3 (on TERRAMIND-rendered preview)', 'TERRAMIND'],
+  },
+  thermal: {
+    modality: 'rgb',
+    enabledLayers: ['sam3', 'grounding_dino'],
+    models: ['SAM3', 'GroundingDINO'],
+    warning: 'No thermal-specialist model is loaded — request is treated as RGB.',
+  },
+};
+
+export function pipelineForSensor(sensor: string): SensorPipeline {
+  return SENSOR_PIPELINE[sensor.toLowerCase()] ?? SENSOR_PIPELINE.optical;
 }

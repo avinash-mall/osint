@@ -106,10 +106,8 @@ def test_dry_run_all_configs_present(tmp_path: Path) -> None:
     expected = [
         "sam3_only",
         "sam3+dota_obb",
-        "sam3+yolo_defence",
         "sam3+grounding_dino",
-        "sam3+dota_obb+yolo_defence",
-        "sam3+dota_obb+yolo_defence+grounding_dino",
+        "sam3+dota_obb+grounding_dino",
     ]
     for name in expected:
         assert name in config_names, f"Config '{name}' missing from results"
@@ -261,32 +259,21 @@ def test_dry_run_embedding_slice_produces_section(tmp_path: Path) -> None:
         f"Report content:\n{content[:1000]}"
     )
 
-    # All 5 embedding config names should appear in the report
-    for config_name in [
-        "sam3_only",
-        "sam3+dinov3_sat",
-        "sam3+dinov3_lvd",
-        "sam3+terramind",
-        "all_embeddings",
-    ]:
+    # All current embedding config names should appear in the report
+    expected_configs = ["sam3_only", "sam3+dinov3_sat", "sam3+terramind"]
+    for config_name in expected_configs:
         assert config_name in content, (
             f"Config '{config_name}' missing from Embedding Models table.\n"
             f"Report content:\n{content[:1500]}"
         )
 
-    # JSON artifact should have embedding_results key with all 5 configs
+    # JSON artifact should have embedding_results key with the same configs
     assert json_path.exists(), f"JSON artifact was not created at {json_path}"
     data = _json.loads(json_path.read_text(encoding="utf-8"))
     assert "embedding_results" in data, "'embedding_results' key missing from JSON artifact"
     assert isinstance(data["embedding_results"], list)
     emb_config_names = [r["config_name"] for r in data["embedding_results"]]
-    for config_name in [
-        "sam3_only",
-        "sam3+dinov3_sat",
-        "sam3+dinov3_lvd",
-        "sam3+terramind",
-        "all_embeddings",
-    ]:
+    for config_name in expected_configs:
         assert config_name in emb_config_names, (
             f"Config '{config_name}' missing from embedding_results JSON"
         )

@@ -9,7 +9,6 @@ from PIL import Image
 
 
 DINOV3_SAT_MODEL_ID = os.getenv("DINOV3_SAT_MODEL_ID", "facebook/dinov3-vitl16-pretrain-sat493m")
-DINOV3_LVD_MODEL_ID = os.getenv("DINOV3_LVD_MODEL_ID", "facebook/dinov3-vitl16-pretrain-lvd1689m")
 
 
 def _load(model_id: str, device: str) -> dict[str, Any]:
@@ -26,10 +25,6 @@ def _load(model_id: str, device: str) -> dict[str, Any]:
 
 def load_sat(device: str) -> dict[str, Any]:
     return _load(DINOV3_SAT_MODEL_ID, device)
-
-
-def load_lvd(device: str) -> dict[str, Any]:
-    return _load(DINOV3_LVD_MODEL_ID, device)
 
 
 def embed_crop(bundle: dict[str, Any] | None, image_uint8: np.ndarray, bbox_xyxy: list[float]) -> dict[str, Any]:

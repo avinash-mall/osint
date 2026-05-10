@@ -106,10 +106,25 @@ def _first_existing(root: Path, patterns: tuple[str, ...]) -> str | None:
 
 
 def _to_eval_device(model, device: str):
-    if hasattr(model, "to"):
-        model = model.to(device)
-    if hasattr(model, "eval"):
-        model = model.eval()
+    # LightningInferenceModel wraps a Lightning module under .model — its own
+    # .to()/.eval() do NOT propagate to the inner module's weights, so on a
+    # CUDA device we'd hit "Input type (cuda.FloatTensor) and weight type
+    # (FloatTensor) should be the same". Move/eval the inner module too when
+    # present.
+    inner = getattr(model, "model", None)
+    for target in (inner, model):
+        if target is None:
+            continue
+        if hasattr(target, "to"):
+            try:
+                target.to(device)
+            except Exception:
+                pass
+        if hasattr(target, "eval"):
+            try:
+                target.eval()
+            except Exception:
+                pass
     return model
 
 
@@ -156,6 +171,17 @@ def _windows(height: int, width: int):
             yield y1, min(height, y1 + PRITHVI_WINDOW_SIZE), x1, min(width, x1 + PRITHVI_WINDOW_SIZE)
 
 
+def _invoke_prithvi(model_obj, x):
+    # LightningInferenceModel wrappers from terratorch.cli_tools are not directly
+    # callable — invoke their underlying Lightning module via .model(x). Bare
+    # nn.Module instances (BACKBONE_REGISTRY fallback) ARE callable, so call
+    # directly. Try the wrapper path first since it's the default loader.
+    inner = getattr(model_obj, "model", None)
+    if inner is not None and callable(inner):
+        return inner(x)
+    return model_obj(x)
+
+
 def _predict_single_window(prithvi_bundle, model_key: str, window: np.ndarray, output_hw: tuple[int, int]) -> np.ndarray:
     import cv2
     import torch
@@ -163,7 +189,7 @@ def _predict_single_window(prithvi_bundle, model_key: str, window: np.ndarray, o
 
     x = torch.from_numpy(multispectral.resize_to_prithvi(window)).unsqueeze(0).to(prithvi_bundle["device"])
     with torch.inference_mode():
-        logits = _extract_logits(prithvi_bundle[model_key](x))
+        logits = _extract_logits(_invoke_prithvi(prithvi_bundle[model_key], x))
     pred = logits.argmax(1)[0].detach().cpu().numpy().astype(np.int16)
     return cv2.resize(pred, (output_hw[1], output_hw[0]), interpolation=cv2.INTER_NEAREST)
 
@@ -179,14 +205,19 @@ def _predict_crop_window(prithvi_bundle, window: np.ndarray, output_hw: tuple[in
     )
     x = torch.from_numpy(stacked).unsqueeze(0).to(prithvi_bundle["device"])
     with torch.inference_mode():
-        logits = _extract_logits(prithvi_bundle["crop"](x))
+        logits = _extract_logits(_invoke_prithvi(prithvi_bundle["crop"], x))
     pred = logits.argmax(1)[0].detach().cpu().numpy().astype(np.int16)
     return cv2.resize(pred, (output_hw[1], output_hw[0]), interpolation=cv2.INTER_NEAREST)
 
 
 def _extract_logits(output):
+    # terratorch's SemanticSegmentationTask returns a ModelOutput with .output;
+    # other backends return a tensor, dict, or tuple/list.
+    direct = getattr(output, "output", None)
+    if direct is not None:
+        return direct
     if isinstance(output, dict):
-        for key in ("logits", "prediction", "pred"):
+        for key in ("logits", "prediction", "pred", "output"):
             if key in output:
                 return output[key]
     if isinstance(output, (tuple, list)):

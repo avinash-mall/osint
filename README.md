@@ -34,7 +34,7 @@ An open-source GEOINT exploitation platform that ingests satellite imagery, fuse
 | Task queue | Celery + Redis alpine (queues: `imagery`, `default`) |
 | Tile server | TiTiler — Cloud-Optimised GeoTIFF on-the-fly |
 | Vector tiles | Martin — PostGIS → Mapbox Vector Tiles |
-| AI inference | SAM 3 / 3.1 (open-vocab segmentation + Object Multiplex video tracking) · DINOv3 ViT-L (SAT-493M satellite + LVD-1689M general) embedder · Prithvi-EO-2.0 (flood / burn-scar / multi-temporal-crop heads) · TerraMind v1 large (S1↔S2 any-to-any generative EO) |
+| AI inference | SAM 3 / 3.1 (open-vocab segmentation + Object Multiplex video tracking) · DINOv3 ViT-L SAT-493M (re-ID embedding) · Prithvi-EO-2.0 (flood / burn-scar / multi-temporal-crop heads) · TerraMind v1 large (S1↔S2 generative EO) · DOTA-OBB (aerial vehicle/plane detector) · Grounding DINO (auto-gated open-vocab fallback) |
 | Frontend | React 19 · TypeScript · Vite 8 · Tailwind CSS v4 |
 | Map | react-leaflet (2D) · react-globe.gl (3D globe) · CesiumJS 1.124 (3D terrain) |
 | GPU | NVIDIA RTX 50-series (Blackwell `sm_120`) supported via CUDA 12.8 |
@@ -353,11 +353,16 @@ The image always loads SAM 3 image + SAM 3.1 video. Auxiliaries are env-flagged 
 
 | Flag | Default in compose | Adds (≈ FP16) | Enables |
 |---|---|---|---|
-| `SAM3_LOAD_DINOV3_SAT` | `1` | ~0.6 GB | `embedding` field on satellite/aerial detections |
-| `SAM3_LOAD_DINOV3_LVD` | `0` | ~0.6 GB | `embedding` field on FMV tracks |
-| `SAM3_LOAD_PRITHVI` | `0` | ~3 GB | `prithvi_labels: ["water","burn_scar","crop:<class>"]` on multispectral chips |
-| `SAM3_LOAD_TERRAMIND` | `0` | ~6 GB | SAR S1→S2 generation + `terramind_embedding` (else SAM3 falls back to a deterministic SAR-as-RGB stretch) |
-| `SAM3_LOAD_OPTIONAL_MODELS` | `0` | — | Master switch — when `0`, the four flags above default off; set to `1` to flip them all on at once |
+| `SAM3_LOAD_DINOV3_SAT` | `1` | ~0.6 GB | `embedding` field on every detection (re-ID across images and video frames). Verified Top-1 = 100 % on DOTA augmented stills, SEP = +0.22 on 1440p drone video tracking — see *Inference Layer Comparison* below. |
+| `SAM3_LOAD_PRITHVI` | `0` | ~3 GB | `prithvi_labels: ["water","burn_scar","crop:<class>"]` on multispectral chips (+20 ms/chip). |
+| `SAM3_LOAD_TERRAMIND` | `0` | ~6 GB | SAR S1→S2 generation + `terramind_embedding` (else SAM3 falls back to a deterministic SAR-as-RGB stretch). |
+| `SAM3_LOAD_DOTA_OBB` | `1` | ~0.05 GB | DOTA-v1 oriented-bbox specialist (mAP 0.05 → 0.61 on aerial RGB). |
+| `SAM3_LOAD_GROUNDING_DINO` | `1` | ~0.5 GB | Open-vocab text-to-box fallback. **Auto-gated**: skipped server-side when every prompt is in the SAM3 + DOTA common vocab (saves ~115 ms/request). |
+| `SAM3_LOAD_OPTIONAL_MODELS` | `0` | — | Master switch — when `0`, the flags above default off; set to `1` to flip them all on at once. |
+
+> **Removed in this release**
+> - `SAM3_LOAD_DEFENCE_YOLO` — DEFENCE_YOLO produced 1297 false positives / 0 true positives across 26 DOTA val chips and was removed entirely.
+> - `SAM3_LOAD_DINOV3_LVD` — DINOV3_LVD produced **NaN embeddings** on real drone-video crops and was 2.5× slower than DINOV3_SAT with no measured quality advantage. Removed. See [docs/video_tracking_stability.md](docs/video_tracking_stability.md).
 
 Approximate steady-state VRAM observed on the smoke run (RTX 5070 Ti, 16 GB): SAM 3 + SAM 3.1 video + DINOv3-SAT-L = **~11 GB used**. Loading Prithvi + TerraMind on top pushes close to 22 GB — use a 24 GB+ GPU for the full configuration.
 
@@ -424,7 +429,7 @@ wc -l tracks.ndjson
 | Build fails with `error: externally-managed-environment` (PEP 668) | Ubuntu 24.04 base | Already fixed — Dockerfile sets `PIP_BREAK_SYSTEM_PACKAGES=1` |
 | `RuntimeError: mat1 and mat2 must have the same dtype, but got BFloat16 and Float` | Native model is fp32 but autocast was previously off | Already fixed — inference is wrapped in `torch.autocast(device_type="cuda", dtype=torch.bfloat16)` |
 | `HF 401/403` during first `/detect` | `HF_TOKEN` missing or no approved gating | Apply for access at the model card pages; ensure `HF_TOKEN` is in `.env` and that compose passes it through (it does by default) |
-| `OutOfMemoryError` at startup | Loaded too many auxiliaries for the GPU | Set `SAM3_LOAD_PRITHVI=0` / `SAM3_LOAD_TERRAMIND=0` / `SAM3_LOAD_DINOV3_LVD=0`; restart the container |
+| `OutOfMemoryError` at startup | Loaded too many auxiliaries for the GPU | Set `SAM3_LOAD_PRITHVI=0` / `SAM3_LOAD_TERRAMIND=0`; restart the container. Also set `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` (now default in compose) to reduce fragmentation. |
 | `400 No labels supplied for SAM3` | Prompt resolver couldn't find anything | Check `metadata.text_prompts` is a non-empty list, or that the auto-select profile JSON exists at `inference-sam3/prompts/<name>.json` |
 
 ### Licenses
@@ -448,6 +453,100 @@ docker compose up -d --build
 ```
 
 The preflight fails before build when a profile requires a newer host driver. For example, A100 hosts resolve to the Ampere CUDA 12.4 / PyTorch 2.6 profile, while RTX 50-series hosts resolve to the Blackwell CUDA 12.8 / PyTorch 2.7 profile only when the driver is new enough.
+
+---
+
+## Inference Layer Comparison
+
+The 7-layer inference stack was systematically benchmarked on real public data
+(DOTA-v1.0 val for RGB box-detection quality, Sen1Floods11 for multispectral
+PRITHVI, NASA drone footage for video re-ID, synthetic 2-band SAR for TERRAMIND
+latency). Reports under [docs/](docs/):
+
+- [docs/inference_layer_comparison.md](docs/inference_layer_comparison.md) — image-stack mAP/latency tables
+- [docs/embedding_stability.md](docs/embedding_stability.md) — DINOV3_SAT augmentation re-ID quality
+- [docs/video_tracking_stability.md](docs/video_tracking_stability.md) — drone-video cross-frame tracking
+
+### Headline results (RTX 5070 Ti, 16 GB)
+
+| Layer | Verdict | Quality | Cost / chip | Evidence |
+|---|---|---|---|---|
+| **SAM3 (base)** | ✅ Foundation | mAP 0.05 alone on DOTA val | 590 ms | Required for masks |
+| **DOTA_OBB** | ✅ **Keep** | mAP **0.05 → 0.61** (aircraft recall **0 % → 92 %**, naval **0.6 % → 21 %**) | **+50 ms** | Single biggest quality win |
+| **GROUNDING_DINO** | ✅ Keep — **auto-gated** | +0.01 mAP when forced | +115 ms (skipped 100 % of the time on common-vocab prompts) | Server-side gate at [grounding_dino_gate.py](inference-sam3/grounding_dino_gate.py) |
+| **PRITHVI** | ✅ Keep | Per-pixel flood/burn (chip-level metric N/A through current API) | **+20 ms** | 10/10 Sen1Floods chips ran clean post-fix |
+| **DINOV3_SAT** | ✅ Keep | Top-1 re-ID **100 %** on stills, SEP **+0.22** on 1440p drone video | +217 ms / 293 ms embed | Only embedding worth keeping |
+| **TERRAMIND** | ⚠️ SAR-only | Quality unmeasurable without real S1 GRD | **~0 ms** (within noise) | Free latency overhead; only fires on `modality=sar` |
+| ~~DEFENCE_YOLO~~ | ❌ **Removed** | 1297 FPs / 0 TPs as `battle_damage` | — | Actively degraded mAP |
+| ~~DINOV3_LVD~~ | ❌ **Removed** | NaN embeddings on drone-video crops | 715 ms (2.5× SAT) | Silent failure on real data |
+
+**Key finding: DOTA_OBB alone (mAP 0.61) outperforms DOTA_OBB + GROUNDING_DINO together (mAP 0.11)** — adding GDINO causes NMS to suppress DOTA's correct detections. The auto-gate prevents this in production for common DOTA-vocab prompts.
+
+### Sensor-aware Upload page
+
+The dashboard's **Ingest** tab now drives the inference stack from a sensor dropdown:
+
+| Selection | `modality` sent to /detect | `enabled_layers` |
+|---|---|---|
+| **Optical (RGB)** | `rgb` | `sam3, dota_obb, grounding_dino, dinov3_sat` |
+| **Multispectral** | `multispectral` | `sam3, prithvi, dinov3_sat` |
+| **Hyperspectral** | `multispectral` (with UI warning) | `sam3, prithvi, dinov3_sat` |
+| **SAR** | `sar` | `sam3, terramind` |
+
+The frontend forwards both `modality` and `enabled_layers` (JSON list) on `POST /api/ingest/upload`. The backend stores them in `upload_jobs.metadata` and the worker injects them into every chip's `/detect` metadata.
+
+### How to Run the Comparison Yourself
+
+The full benchmark harness lives under [scripts/](scripts/):
+
+```bash
+# 1. Pull real DOTA-v1.0 val + Sen1Floods11 multispectral slices
+#    (requires HF_TOKEN in .env). Falls back to synthetic if HF unreachable.
+python scripts/fetch_real_datasets.py
+python scripts/fetch_eval_datasets.py        # also generates synthetic SAR chips
+
+# 2. Run the full comparison: 4 box configs + 2 segmenter + 3 embedding + 2 SAR.
+#    --restart-cmd clears GPU fragmentation between configs (each restart ~50s).
+#    --force-grounding-dino bypasses the auto-gate so GDINO's contribution is
+#    measurable on common-vocab DOTA prompts.
+python scripts/compare_inference_layers.py \
+  --url http://172.18.0.2:8001 \
+  --slice all --max-chips 30 --repeats 3 \
+  --output docs/inference_layer_comparison.md \
+  --json-output docs/inference_layer_comparison.json \
+  --restart-cmd "docker restart osint-inference-sam3-1" \
+  --restart-wait-timeout 180 \
+  --force-grounding-dino
+
+# 3. Augmentation-based DINOV3_SAT re-ID stability on still DOTA chips.
+python scripts/embedding_stability.py \
+  --url http://172.18.0.2:8001 \
+  --max-chips 8 --max-instances 15 --n-aug 4 --layers dinov3_sat
+
+# 4. Drone-video cross-frame tracking quality (cv2 + /detect; sidesteps the
+#    SAM3 video tracker SDK issues).
+python scripts/video_tracking_stability.py \
+  --url http://172.18.0.2:8001 \
+  --videos sample/53902-476396222_medium.mp4,sample/168811-839864556_medium.mp4 \
+  --prompts car,vehicle,person,truck \
+  --n-frames 6 --iou-threshold 0.2 --layers dinov3_sat
+
+# 5. Driver unit + smoke tests
+cd inference-sam3 && python -m pytest tests/ -q
+cd .. && python -m pytest scripts/ --ignore=scripts/eval_datasets/tests/test_inria_fallback.py -q
+```
+
+The driver supports a `--dry-run` flag (no live service required) for verifying report generation.
+
+### Per-Slice Test Datasets
+
+| Slice | Source | Size | What it measures |
+|---|---|---|---|
+| `dota` | `Last-Bullet/DOTAv1.0` val (HF) | 30 chips, 1619 GT boxes | Box-detector quality (mAP@0.5, per-class P/R/F1) |
+| `hls_burn` | `KozaMateusz/sen1floods11` S2Hand → HLS 6-band | 10 chips | PRITHVI segmenter latency + chip-level positivity |
+| `sen1floods` | Same source, flood masks | 10 chips | PRITHVI flood-head latency |
+| `sar` | Synthetic 2-band dB-range TIFFs (real S1 GRD is 480 GB) | 10 chips | TERRAMIND latency overhead (quality requires real GRD) |
+| `embedding` | DOTA chips, but only embedding latency reported | 30 chips | DINOV3_SAT and TERRAMIND total/embed times |
 
 ---
 

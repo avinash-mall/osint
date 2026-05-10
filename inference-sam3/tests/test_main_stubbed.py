@@ -20,11 +20,9 @@ def setup_function():
         "sam3_image": object(),
         "sam3_video": None,
         "dinov3_sat": None,
-        "dinov3_lvd": None,
         "prithvi": None,
         "terramind": None,
         "dota_obb": {"model": object()},
-        "yolo_defence": {"model": object()},
         "grounding_dino": {"model": object()},
     })
 
@@ -73,10 +71,8 @@ def test_enabled_layers_sam3_only(monkeypatch):
     monkeypatch.setattr(main.sam3_runner, "run_text_prompts", fake_text)
 
     mock_dota = MagicMock(return_value=[])
-    mock_yolo = MagicMock(return_value=[])
     mock_gdino = MagicMock(return_value=[])
     monkeypatch.setattr(main.dota_obb, "run", mock_dota)
-    monkeypatch.setattr(main.yolo_defence, "run", mock_yolo)
     monkeypatch.setattr(main.grounding_dino, "run", mock_gdino)
 
     img = Image.new("RGB", (16, 16), color=(10, 20, 30))
@@ -96,5 +92,4 @@ def test_enabled_layers_sam3_only(monkeypatch):
     payload = resp.json()
     assert payload["enabled_layers_unavailable"] == []
     assert mock_dota.call_count == 0
-    assert mock_yolo.call_count == 0
     assert mock_gdino.call_count == 0
