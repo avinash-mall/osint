@@ -18,13 +18,16 @@ from fastapi.responses import StreamingResponse
 from PIL import Image
 from starlette.concurrency import run_in_threadpool
 
+import dota_obb
 import embedding
 import fusion
+import grounding_dino
 import multispectral
 import prithvi_heads
 import sam3_runner
 import sar
 import terramind
+import yolo_defence
 from prompts.loader import resolve_prompts
 
 
@@ -59,6 +62,11 @@ SAM3_LOAD_DINOV3_SAT = _flag("SAM3_LOAD_DINOV3_SAT", _DEFAULT)
 SAM3_LOAD_DINOV3_LVD = _flag("SAM3_LOAD_DINOV3_LVD", _DEFAULT)
 SAM3_LOAD_PRITHVI    = _flag("SAM3_LOAD_PRITHVI",    _DEFAULT)
 SAM3_LOAD_TERRAMIND  = _flag("SAM3_LOAD_TERRAMIND",  _DEFAULT)
+
+# Specialist detectors that complement SAM 3 zero-shot prompts.
+SAM3_LOAD_DOTA_OBB        = _flag("SAM3_LOAD_DOTA_OBB",        _DEFAULT)
+SAM3_LOAD_DEFENCE_YOLO    = _flag("SAM3_LOAD_DEFENCE_YOLO",    _DEFAULT)
+SAM3_LOAD_GROUNDING_DINO  = _flag("SAM3_LOAD_GROUNDING_DINO",  _DEFAULT)
 
 _pool: list[dict[str, Any]] = []
 _pool_lock = threading.Lock()
@@ -112,6 +120,9 @@ def _load_pool() -> None:
                     bundle["prithvi"] = prithvi_heads.load_all(device)
                 if SAM3_LOAD_TERRAMIND:
                     bundle["terramind"] = terramind.load(device)
+                bundle["dota_obb"] = dota_obb.load(device) if SAM3_LOAD_DOTA_OBB else None
+                bundle["yolo_defence"] = yolo_defence.load(device) if SAM3_LOAD_DEFENCE_YOLO else None
+                bundle["grounding_dino"] = grounding_dino.load(device) if SAM3_LOAD_GROUNDING_DINO else None
                 _pool.append(bundle)
                 logger.info("Loaded model bundle on %s with components=%s", device, _bundle_components(bundle))
         except (Exception, SystemExit) as exc:
@@ -163,6 +174,9 @@ def health() -> dict[str, Any]:
             "dinov3_lvd": SAM3_LOAD_DINOV3_LVD,
             "prithvi": SAM3_LOAD_PRITHVI,
             "terramind": SAM3_LOAD_TERRAMIND,
+            "dota_obb": SAM3_LOAD_DOTA_OBB,
+            "yolo_defence": SAM3_LOAD_DEFENCE_YOLO,
+            "grounding_dino": SAM3_LOAD_GROUNDING_DINO,
         },
     }
 
@@ -184,12 +198,29 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
         meta = {}
     if not isinstance(meta, dict):
         meta = {}
+
+    # Per-request layer toggle. When enabled_layers is present, only the named
+    # layers run (SAM3 always runs regardless). When absent, all loaded layers
+    # run as usual (backward-compatible default).
+    _enabled = set(meta.get("enabled_layers") or [])
+    _layer_active = (lambda layer: (layer in _enabled)) if _enabled else (lambda _: True)
+
+    # Surface layers that were requested but are not loaded in the bundle.
+    # We compute this after bundle selection so we can check bundle keys.
+    # Note: bundle is resolved below; this list is populated after _next_bundle().
+
     try:
         raw = await image.read()
         t0 = mark("read_upload", started)
         modality = str(meta.get("modality") or "rgb").lower()
         bundle = _next_bundle()
         t0 = mark("model_queue", t0)
+
+        # Compute unavailable layers now that we have the bundle.
+        _unavailable = [
+            l for l in _enabled
+            if l not in ("sam3",) and not bundle.get(l) and not bundle.get(l.replace("_", ""))
+        ]
 
         try:
             if modality == "multispectral":
@@ -217,6 +248,7 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
         valid_mask = _decode_valid_mask(meta.get("valid_mask"), (height, width))
         prompt_boxes = meta.get("prompt_boxes")
         prompt_count = 0
+        prompts: list[str] = []
         if isinstance(prompt_boxes, list) and prompt_boxes:
             prompt_count = len(prompt_boxes)
             candidates = await run_in_threadpool(sam3_runner.run_box_prompts, bundle, chip3, prompt_boxes, SAM3_BOX_THR)
@@ -229,9 +261,38 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
             candidates = await run_in_threadpool(sam3_runner.run_text_prompts, bundle, chip3, prompts, SAM3_TEXT_THR)
         t0 = mark("sam3_inference", t0)
 
+        # Specialist detectors run alongside SAM 3 and feed into the same fusion
+        # NMS pipeline. DOTA-OBB uses Ultralytics' DOTA-v1 class names, the
+        # defence-YOLO module uses its own 18 categories, Grounding DINO is
+        # an open-vocab text-to-box detector that takes the same prompt list
+        # we sent to SAM 3. fusion.mask_aware_nms dedupes overlapping
+        # detections across SAM 3 + specialists.
+        if bundle.get("dota_obb") and _layer_active("dota_obb"):
+            candidates.extend(
+                await run_in_threadpool(dota_obb.run, bundle["dota_obb"], chip3, dota_obb.DOTA_OBB_THRESHOLD)
+            )
+        if bundle.get("yolo_defence") and _layer_active("yolo_defence"):
+            candidates.extend(
+                await run_in_threadpool(yolo_defence.run, bundle["yolo_defence"], chip3, yolo_defence.DEFENCE_YOLO_THRESHOLD)
+            )
+        if bundle.get("grounding_dino") and prompts and _layer_active("grounding_dino"):
+            candidates.extend(
+                await run_in_threadpool(
+                    grounding_dino.run,
+                    bundle["grounding_dino"],
+                    chip3,
+                    prompts,
+                    grounding_dino.GROUNDING_DINO_THR,
+                )
+            )
+        t0 = mark("specialists", t0)
+
         overlays: dict[str, np.ndarray] = {}
         if modality == "multispectral":
-            overlays = await run_in_threadpool(prithvi_heads.run_all, bundle.get("prithvi"), chip6, (height, width), chip6_temporal_3)
+            if _layer_active("prithvi"):
+                overlays = await run_in_threadpool(prithvi_heads.run_all, bundle.get("prithvi"), chip6, (height, width), chip6_temporal_3)
+            else:
+                overlays = {}
         t0 = mark("overlays", t0)
 
         detections = []
@@ -248,7 +309,7 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
             )
             if meta.get("geo"):
                 det["geo"] = {**meta["geo"], "obb_map_crs": None, "obb_map_geojson": None}
-            if SAM3_EMBED_DETECTIONS:
+            if SAM3_EMBED_DETECTIONS and _layer_active("dinov3_sat"):
                 emb_start = time.perf_counter()
                 det["embedding"] = embedding.embed_crop(bundle.get("dinov3_sat"), chip3, bbox_xyxy)
                 embedding_ms += (time.perf_counter() - emb_start) * 1000
@@ -258,9 +319,10 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
                 det["prithvi_labels"] = fusion.overlay_labels(mask, overlays, threshold=SAM3_PRITHVI_OVERLAY_THR)
             if modality == "sar":
                 det["confidence"] = float(min(det["confidence"], SAM3_SAR_CONF_CAP))
-                det["sar_proxy"] = True
-                det["review_status"] = "review_candidate"
-                det["terramind_embedding"] = terramind.pool_patches(bundle.get("terramind"), chip2)
+                if _layer_active("terramind"):
+                    det["sar_proxy"] = True
+                    det["review_status"] = "review_candidate"
+                    det["terramind_embedding"] = terramind.pool_patches(bundle.get("terramind"), chip2)
             detections.append(det)
         timings["embedding"] = round(embedding_ms, 3)
         t0 = mark("postprocess", t0)
@@ -286,6 +348,7 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
             "timings_ms": timings,
             "queue_depth": queue_depth,
             "input_metadata": meta,
+            "enabled_layers_unavailable": _unavailable,
         }
     finally:
         _leave_request()
@@ -363,6 +426,8 @@ def _leave_request() -> None:
 
 def _bundle_components(bundle: dict[str, Any]) -> dict[str, Any]:
     prithvi_bundle = bundle.get("prithvi") or {}
+    def _model_loaded(b):
+        return bool(b) and b.get("model") is not None
     return {
         "sam3_image": bundle.get("sam3_image") is not None,
         "sam3_video": bundle.get("sam3_video") is not None,
@@ -371,6 +436,9 @@ def _bundle_components(bundle: dict[str, Any]) -> dict[str, Any]:
         "prithvi": bool(prithvi_bundle),
         "prithvi_heads": list(prithvi_bundle.get("loaded_heads") or []),
         "terramind": bundle.get("terramind") is not None,
+        "dota_obb": _model_loaded(bundle.get("dota_obb")),
+        "yolo_defence": _model_loaded(bundle.get("yolo_defence")),
+        "grounding_dino": _model_loaded(bundle.get("grounding_dino")),
     }
 
 
