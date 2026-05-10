@@ -1,3 +1,13 @@
+/**
+ * @deprecated The regex-based `objectIconComponent` is now the LAST-RESORT
+ * fallback for icon resolution. New code should use the curated
+ * `IconRenderer` from `./iconLibrary` and pass an explicit `iconKey` (the
+ * snake_case stable id emitted by `backend/scripts/seed_ontology.py`).
+ *
+ * The exports in this file (`ObjectIcon`, `objectIconComponent`,
+ * `BRANCH_ICON_BY_KEY`) remain for backwards compatibility with integrators
+ * that have not yet migrated.
+ */
 import {
   Activity,
   Anchor,
@@ -32,7 +42,7 @@ import {
   Wheat,
   type LucideIcon,
 } from 'lucide-react';
-import { ALL_BRANCHES, type BranchIconKey } from './defenceOntology';
+import { type BranchIconKey } from './defenceOntology';
 
 export const BRANCH_ICON_BY_KEY: Record<BranchIconKey, LucideIcon> = {
   military: Shield,
@@ -51,23 +61,6 @@ export const BRANCH_ICON_BY_KEY: Record<BranchIconKey, LucideIcon> = {
   damage: Flame,
   other: CircleHelp,
 };
-
-const BRANCH_ICON_KEY_BY_ID: Record<string, BranchIconKey> = ALL_BRANCHES.reduce(
-  (acc, branch) => {
-    acc[branch.id] = branch.iconKey;
-    return acc;
-  },
-  {} as Record<string, BranchIconKey>
-);
-
-export function branchIconForId(branchId: string): LucideIcon {
-  const key = BRANCH_ICON_KEY_BY_ID[branchId];
-  return key ? BRANCH_ICON_BY_KEY[key] : CircleHelp;
-}
-
-export function branchIconForKey(iconKey: BranchIconKey | undefined | null): LucideIcon {
-  return iconKey ? BRANCH_ICON_BY_KEY[iconKey] : CircleHelp;
-}
 
 /**
  * Pick a specific lucide icon for an object based on its prompt or raw class
@@ -111,19 +104,6 @@ export function objectIconComponent(
   if (/vehicle_track|heavy_track|tire_tracks|foot_path|wheel_ruts|track_vehicle_marking|activity_trail|recently_cleared|newly_painted|stockpile_growth|disturbed_vegetation|fresh_earth|soil_disturbance|burn_patch|new_excavation|new_trench|new_temporary|new_building|new_pad|new_road|removed_structure|object_moved|object_removed|object_added|convoy_moving|empty_storage|loaded_storage|increased_depot_activity|smoke_plume|steam_plume|active_burning/.test(raw)) return Activity;
   if (/checkpoint|barricade|sniper_position|rooftop_position|crew_served_weapon_position|garrison|combat_outpost|forward_operating_base|military_base|military_headquarters|barracks|officer_quarters|mess_hall|vehicle_shed|motor_pool|training_area|firing_range|tank_range|drone_range|command_bunker|hardened_command_post|tent_city|bivouac|temporary_camp|refugee_camp|detention_facility|vehicle_inspection_lane|vehicle_wash_rack|garrison_helipad/.test(raw)) return Landmark;
   return fallbackIconKey ? BRANCH_ICON_BY_KEY[fallbackIconKey] : CircleHelp;
-}
-
-export function BranchIcon({
-  branchId,
-  iconKey,
-  className = 'h-3.5 w-3.5',
-}: {
-  branchId?: string;
-  iconKey?: BranchIconKey;
-  className?: string;
-}) {
-  const Icon = iconKey ? branchIconForKey(iconKey) : branchId ? branchIconForId(branchId) : CircleHelp;
-  return <Icon className={className} />;
 }
 
 export function ObjectIcon({

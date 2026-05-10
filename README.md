@@ -136,7 +136,7 @@ To restart only inference after config changes, run `docker compose up -d --no-d
 
 ## Frontend Modules
 
-The dashboard is a single-page application with a sidebar of 7 tabs.
+The dashboard is a single-page application with a sidebar of tabs.
 
 | Tab | Component | What it shows |
 |-----|-----------|---------------|
@@ -147,6 +147,7 @@ The dashboard is a single-page application with a sidebar of 7 tabs.
 | **Browser** | Data Browser | Tabular view of raw graph nodes and telemetry from `/api/graph`; sortable columns |
 | **Ava** | Cognitive Engine | Natural-language chat → `GraphCypherQAChain` (LangChain) → Neo4j Cypher → answer; shows "LLM OFFLINE" when no endpoint is configured |
 | **3D** | View3D (CesiumJS) | CesiumJS 1.124 globe with offline NaturalEarth II TMS basemap via `CESIUM_BASE_URL='/cesium/'`; FMV clip integration hook |
+| **Admin** | Ontology Editor (`/admin/ontology`) | DB-backed editor for branches, objects, prompts, sensors, and per-object icons. No auth (single-tenant); writes go straight to PostGIS and bump the ontology version pinned on every new detection. |
 
 ---
 
@@ -283,25 +284,23 @@ The video endpoint streams one JSON object per frame×track with the same shape 
 
 ### Open vocabulary — every text phrase is a label
 
-The platform is open-vocab by construction: SAM 3 was trained on **~4 M unique noun-phrase concepts** from the SA-Co dataset, so the prompt *is* the label. Defaults are auto-selected per modality:
+The platform is open-vocab by construction: SAM 3 was trained on **~4 M unique noun-phrase concepts** from the SA-Co dataset, so the prompt *is* the label.
 
-| Profile | Auto-applied to | Source vocabularies | Count | Latency / 1008 px chip (RTX 5070 Ti, warm) |
-|---|---|---|---|---|
-| `satellite_v1` *(default)* | `rgb` · `multispectral` · `sar` | Curated subset hitting the 25 most useful aerial classes | **25 prompts** ([prompts/satellite_v1.json](inference-sam3/prompts/satellite_v1.json)) | **~2 s** |
-| `satellite_v1_full` *(opt-in)* | — | xView · DOTA v2.0 · DIOR · fMoW · FAIR1M · HRSC2016 ship-types · RarePlanes attributes (deduped) | **214 prompts** ([prompts/satellite_v1_full.json](inference-sam3/prompts/satellite_v1_full.json)) | ~16 s |
-| `ground_v1` *(default)* | `fmv` | COCO 2017 80 categories | **80 prompts** ([prompts/ground_v1.json](inference-sam3/prompts/ground_v1.json)) | ~4–6 s |
-| `ground_v1_full` *(opt-in)* | — | COCO 2017 + Objects365 v2 + LVIS v1 curated extension (deduped) | **576 prompts** ([prompts/ground_v1_full.json](inference-sam3/prompts/ground_v1_full.json)) | ~30 s |
+**Ontology** — Categories, objects, prompts, sensors, and per-object icons live in PostGIS (`ontology_branches`, `ontology_objects`, `ontology_unknown_labels` tables). Edit via the **Admin** tab in the dashboard (`/admin/ontology`, no auth — single-tenant). The seed JSON `defenceOntology.json` is treated as a one-shot seed source consumed by `backend/scripts/seed_ontology.py`; the DB is the canonical store at runtime.
 
-**Why two tiers?** SAM 3 inference loops one grounding-head forward per prompt over a single cached backbone pass; the 214-prompt union is expensive on commodity GPUs, and high chip concurrency into a single-GPU service creates head-of-line latency before the worker's `INFERENCE_CHIP_TIMEOUT_S=600` even starts to bite. The 25/80-prompt fast defaults keep the round-trip comfortable; opt into `*_full` when you need the long tail.
+**Classifier** — A single Python function `backend.ontology.normalize(label, layer)` is shared by the worker, the eval-metrics comparison harness, and any script. Unknown labels gracefully fall back to an `Other` branch with a `circle_help` icon and are logged to `ontology_unknown_labels` for admin triage.
+
+**Per-object icons** — Curated lucide-react icons live in `frontend/src/utils/iconLibrary.tsx`. Add new entries there if you create new objects in the admin UI; the regex matcher in `branchIcons.tsx` is now a last-resort fallback.
+
+**Prompt selection** — Sensor-default prompts are served by `GET /api/ontology/default-prompts?sensor=optical|multispectral|sar|fmv`. The shipped prompt-profile JSON files (`satellite_v1_full.json`, `ground_v1_full.json`) and `prompts/loader.py` were removed; the inference service fetches its defaults from the backend on demand and caches them for 5 minutes.
 
 Override priority (each step skips the rest):
 
 1. `metadata.text_prompts: ["..."]` — arbitrary list.
-2. `metadata.prompt_profile: "satellite_v1"|"ground_v1"|"<custom>"` — pick a shipped profile or a custom `<custom>.json` next to it.
-3. `SAM3_LABEL_FILE=/app/prompts/custom.json` — env-pinned override.
-4. **Auto-select** by `metadata.modality` (FMV → `ground_v1`, everything else → `satellite_v1`).
+2. `metadata.prompt_profile: "<sensor>"` — fetch the sensor-default prompts from `/api/ontology/default-prompts`.
+3. **Auto-select** by `metadata.modality` (FMV → ground default, everything else → optical default).
 
-All prompts pass through trim → lowercase → dedupe-preserve-order → cap at `SAM3_MAX_PROMPTS_PER_REQUEST` (default 128). Empty resolved list → HTTP 400. To regenerate the JSONs from the source taxonomies, run `python prompts/_build_satellite_v1.py` or `python prompts/_build_ground_v1.py` inside `inference-sam3/`.
+All prompts pass through trim → lowercase → dedupe-preserve-order → cap at `SAM3_MAX_PROMPTS_PER_REQUEST` (default 128). Empty resolved list → HTTP 400. To re-seed the DB ontology from a fresh JSON snapshot, run `python backend/scripts/seed_ontology.py`.
 
 ### Backend integration
 
@@ -380,8 +379,7 @@ Approximate steady-state VRAM observed on the smoke run (RTX 5070 Ti, 16 GB): SA
 | `SAM3_OBB_OPENING_KERNEL_PCT` | `0.01` | Morphological opening kernel as a fraction of the smaller mask extent before `cv2.minAreaRect` |
 | `SAM3_OBB_MIN_AREA_PX` | `4` | Minimum contour area before falling back to HBB |
 | `SAM3_MAX_PROMPTS_PER_REQUEST` | `128` | Cap on resolved prompts after dedupe |
-| `SAM3_DEFAULT_PROMPT_PROFILE` | *(empty → modality auto)* | Force a profile (`satellite_v1` / `ground_v1` / custom) regardless of modality |
-| `SAM3_LABEL_FILE` | *(unset)* | Optional path to a JSON file with a `prompts` array — overrides the modality-auto path |
+| `ONTOLOGY_BACKEND_URL` | `http://backend:8080` | Backend URL the inference service queries for sensor-default prompts (`/api/ontology/default-prompts`). Cached in-process for 5 min; SIGHUP forces refresh. |
 | `SAM3_HF_HUB_OFFLINE` / `SAM3_TRANSFORMERS_OFFLINE` | `0` | Flip to `1` once the `sam3_models` volume is populated |
 | `HF_TOKEN` | from host `.env` | Required at first run to fetch gated `facebook/sam3*` and `facebook/dinov3-vitl16-pretrain-*` checkpoints |
 

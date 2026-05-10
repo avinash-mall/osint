@@ -25,25 +25,22 @@ import {
   Shield,
   Swords,
 } from 'lucide-react';
-import { BranchIcon as SharedBranchIcon, ObjectIcon as SharedObjectIcon, objectIconComponent } from '../utils/branchIcons';
+import { objectIconComponent } from '../utils/branchIcons';
+import { IconRenderer, iconComponentByKey } from '../utils/iconLibrary';
 import 'leaflet/dist/leaflet.css';
 import { useEventStream } from '../hooks/useEventStream';
 import { type UploadJob, isUploadActive, uploadMessage, uploadProgress, uploadProgressClass, uploadStage } from '../utils/uploadProgress';
 import {
-  CATEGORY_ORDER,
-  DETECTION_CATEGORIES,
   SOURCE_ORDER,
-  classifyDetectionClass,
+  branchIdForFeature,
+  categoryFor,
   detectionClassLabel,
   detectionClassSource,
+  useDetectionCategories,
   type DetectionCategoryId,
+  type DetectionCategoryMap,
 } from '../utils/detectionTaxonomy';
-import { ALL_BRANCHES, type DefenceBranch } from '../utils/defenceOntology';
-
-const ALL_BRANCHES_BY_ID: Record<string, DefenceBranch> = ALL_BRANCHES.reduce((acc, branch) => {
-  acc[branch.id] = branch;
-  return acc;
-}, {} as Record<string, DefenceBranch>);
+import type { OntologyBranch } from '../utils/useOntology';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 const TILE_PROXY_URL = import.meta.env.VITE_TILE_PROXY_URL || '/tiles';
@@ -80,13 +77,13 @@ function detectionClassKeys(feature: any): string[] {
   ].filter(Boolean).map((value) => String(value))));
 }
 
+/**
+ * Server-computed branch id is now the source of truth. The frontend no
+ * longer regex-classifies — features without a `branch_id` fall to
+ * `Other` (consistent with the legend's catch-all bucket).
+ */
 function detectionCategoryForFeature(feature: any): DetectionCategoryId {
-  const props = feature?.properties || {};
-  return classifyDetectionClass(props.original_class || props.metadata?.original_class || props.class || props.label, props.ontology?.category || props.category);
-}
-
-function detectionCategoryForLabel(label: string, ontologyCategory?: string | null): DetectionCategoryId {
-  return classifyDetectionClass(label, ontologyCategory);
+  return branchIdForFeature(feature);
 }
 
 function confidenceValue(feature: any) {
@@ -178,9 +175,9 @@ const TRACKER_CATEGORY_TO_CATEGORY_ID: Record<string, DetectionCategoryId> = {
   unknown: 'Other',
 };
 
-function trackColor(category: string): string {
+function trackColorFor(category: string, categories: DetectionCategoryMap): string {
   const catId = TRACKER_CATEGORY_TO_CATEGORY_ID[category] ?? 'Other';
-  return DETECTION_CATEGORIES[catId]?.color ?? '#727a83';
+  return categoryFor(catId, categories).color;
 }
 
 function trackDashArray(status: DetectionTrack['status']): string | undefined {
@@ -248,19 +245,21 @@ const HEAVY_OUTLINE_CATEGORIES: ReadonlySet<DetectionCategoryId> = new Set([
   'Industrial_Dual_Use',
 ] as DetectionCategoryId[]);
 
-const getDetectionStyle = (feature: any) => {
-  const category = detectionCategoryForFeature(feature);
-  const color = DETECTION_CATEGORIES[category].color;
-  const isHeavy = HEAVY_OUTLINE_CATEGORIES.has(category);
-  return {
-    color,
-    weight: isHeavy ? 1.8 : 1.3,
-    opacity: 0.92,
-    fillColor: color,
-    fillOpacity: confidenceValue(feature) > 0.85 ? 0.14 : 0.05,
-    dashArray: category === 'Military_Forces' ? '2, 3' : '3, 4',
+function makeDetectionStyle(categories: DetectionCategoryMap) {
+  return (feature: any) => {
+    const category = detectionCategoryForFeature(feature);
+    const color = categoryFor(category, categories).color;
+    const isHeavy = HEAVY_OUTLINE_CATEGORIES.has(category);
+    return {
+      color,
+      weight: isHeavy ? 1.8 : 1.3,
+      opacity: 0.92,
+      fillColor: color,
+      fillOpacity: confidenceValue(feature) > 0.85 ? 0.14 : 0.05,
+      dashArray: category === 'Military_Forces' ? '2, 3' : '3, 4',
+    };
   };
-};
+}
 
 type DetectionClassStat = {
   rawClass: string;
@@ -275,36 +274,71 @@ type DetectionClassStat = {
   source: string;
 };
 
-function CategoryIcon({ category, className = 'h-3.5 w-3.5' }: { category: DetectionCategoryId; className?: string }) {
-  return <SharedBranchIcon branchId={category} className={className} />;
+function CategoryIcon({
+  category,
+  branchById,
+  className = 'h-3.5 w-3.5',
+}: {
+  category: DetectionCategoryId;
+  branchById: Map<string, OntologyBranch>;
+  className?: string;
+}) {
+  const branch = branchById.get(category);
+  return <IconRenderer iconKey={branch?.icon_key ?? null} className={className} />;
 }
 
 function DetectionSubclassIcon({
+  iconKey,
   label,
   category,
+  branchById,
   className = 'h-3.5 w-3.5',
 }: {
+  iconKey?: string | null;
   label?: string | null;
   category: DetectionCategoryId;
+  branchById: Map<string, OntologyBranch>;
   className?: string;
 }) {
-  const branch = ALL_BRANCHES_BY_ID[category];
-  return <SharedObjectIcon prompt={label} branchIconKey={branch?.iconKey} className={className} />;
+  const branch = branchById.get(category);
+  const branchIconKey = branch?.icon_key ?? null;
+  // Prefer an explicit iconKey from the feature; fall back to the branch-level
+  // key. If neither resolves, fall through to the legacy regex matcher (kept
+  // available as a last-resort) and finally to CircleHelp via IconRenderer.
+  if (iconKey || branchIconKey) {
+    return <IconRenderer iconKey={iconKey ?? null} fallbackBranchKey={branchIconKey as any} className={className} />;
+  }
+  // Last-resort: regex on the raw label.
+  const Icon = objectIconComponent(label, branchIconKey as any);
+  return <Icon className={className} />;
 }
 
-function detectionIcon(feature: any) {
-  const category = detectionCategoryForFeature(feature);
-  const color = DETECTION_CATEGORIES[category].color;
-  const props = feature?.properties || {};
-  const branch = ALL_BRANCHES_BY_ID[category];
-  const Icon = objectIconComponent(props.original_class || props.class || props.label, branch?.iconKey);
-  const iconMarkup = renderToStaticMarkup(<Icon size={12} strokeWidth={2.2} />);
-  return L.divIcon({
-    className: '',
-    iconSize: [14, 14],
-    iconAnchor: [15, 15],
-    html: `<div class="sentinel-detection-icon" style="color:${color};border-color:${color};box-shadow:0 0 8px ${color}55;">${iconMarkup}</div>`,
-  });
+function makeDetectionIcon(
+  categories: DetectionCategoryMap,
+  branchById: Map<string, OntologyBranch>,
+) {
+  return (feature: any) => {
+    const category = detectionCategoryForFeature(feature);
+    const color = categoryFor(category, categories).color;
+    const props = feature?.properties || {};
+    const branch = branchById.get(category);
+    const branchIconKey = branch?.icon_key ?? null;
+    // 1. Explicit icon_key from backend feature properties (Step 9 preferred path).
+    // 2. Branch-level icon_key fallback.
+    // 3. Legacy regex matcher on the raw class/label.
+    const featureIconKey: string | null = props.icon_key ?? null;
+    const Icon =
+      iconComponentByKey(featureIconKey) ??
+      iconComponentByKey(branchIconKey) ??
+      objectIconComponent(props.original_class || props.class || props.label, branchIconKey as any);
+    const iconMarkup = renderToStaticMarkup(<Icon size={12} strokeWidth={2.2} />);
+    return L.divIcon({
+      className: '',
+      iconSize: [14, 14],
+      iconAnchor: [15, 15],
+      html: `<div class="sentinel-detection-icon" style="color:${color};border-color:${color};box-shadow:0 0 8px ${color}55;">${iconMarkup}</div>`,
+    });
+  };
 }
 
 function MapBoundsUpdater({ onBoundsChange }: { onBoundsChange: (bounds: string) => void }) {
@@ -431,6 +465,24 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
     [uploadJobs],
   );
 
+  // Live ontology categories (sensor-agnostic — the map shows all detections
+  // regardless of sensor). Order/colour/short come from the API and update
+  // automatically when the backend bumps `version_id`.
+  const { order: CATEGORY_ORDER, categories: DETECTION_CATEGORIES, branches: ONTOLOGY_BRANCHES_FLAT } = useDetectionCategories();
+
+  const branchById = useMemo(() => {
+    const map = new Map<string, OntologyBranch>();
+    for (const branch of ONTOLOGY_BRANCHES_FLAT) map.set(branch.id, branch);
+    return map;
+  }, [ONTOLOGY_BRANCHES_FLAT]);
+
+  const getDetectionStyle = useMemo(() => makeDetectionStyle(DETECTION_CATEGORIES), [DETECTION_CATEGORIES]);
+  const detectionIcon = useMemo(() => makeDetectionIcon(DETECTION_CATEGORIES, branchById), [DETECTION_CATEGORIES, branchById]);
+  const trackColor = useCallback(
+    (category: string) => trackColorFor(category, DETECTION_CATEGORIES),
+    [DETECTION_CATEGORIES],
+  );
+
   const detectionLabelStats = useMemo<DetectionClassStat[]>(() => {
     const stats = new Map<string, DetectionClassStat>();
     const parentClassesWithSubclassDetails = new Set<string>();
@@ -439,7 +491,8 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
       const rawClass = detectionLabel(feature);
       const parentClass = String(feature?.properties?.parent_class || feature?.properties?.metadata?.parent_class || rawClass);
       const storedClass = String(feature?.properties?.class || '');
-      const category = detectionCategoryForLabel(rawClass, feature?.properties?.ontology?.category || feature?.properties?.category);
+      // Server now writes `branch_id` onto every feature; fall back to Other.
+      const category = branchIdForFeature(feature);
       if (rawClass !== parentClass && rawClass !== storedClass) {
         parentClassesWithSubclassDetails.add(parentClass);
         if (storedClass) parentClassesWithSubclassDetails.add(storedClass);
@@ -452,7 +505,7 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
         label: rawClass === storedClass ? feature?.properties?.label || existing?.label || detectionClassLabel(rawClass) : existing?.label || detectionClassLabel(rawClass),
         count: Number(existing?.count || 0) + 1,
         maxConfidence: Math.max(Number(existing?.maxConfidence || 0), confidenceValue(feature)),
-        color: DETECTION_CATEGORIES[category].color,
+        color: categoryFor(category, DETECTION_CATEGORIES).color,
         ontology: existing?.ontology || feature?.properties?.ontology,
         threatLevel: existing?.threatLevel || feature?.properties?.threat_level,
         category,
@@ -463,7 +516,8 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
     for (const meta of detectionClasses) {
       const rawClass = String(meta.class || meta.label || 'Unknown');
       const parentClass = String(meta.parent_class || meta.ontology?.parent_class || rawClass);
-      const category = detectionCategoryForLabel(rawClass, meta?.ontology?.category);
+      // /api/detections/classes also returns server-computed branch_id.
+      const category: DetectionCategoryId = (meta?.branch_id ? String(meta.branch_id) : 'Other') as DetectionCategoryId;
       const existing = stats.get(rawClass);
       if (!existing && parentClassesWithSubclassDetails.has(rawClass)) continue;
       stats.set(rawClass, {
@@ -473,7 +527,7 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
         label: existing?.label || meta?.label || detectionClassLabel(rawClass),
         count: Number(existing?.count ?? meta?.count ?? 0),
         maxConfidence: Math.max(Number(existing?.maxConfidence || 0), Number(meta?.max_confidence || 0)),
-        color: DETECTION_CATEGORIES[category].color,
+        color: categoryFor(category, DETECTION_CATEGORIES).color,
         ontology: existing?.ontology || meta?.ontology,
         threatLevel: existing?.threatLevel || meta?.threat_level,
         category,
@@ -481,19 +535,36 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
       });
     }
 
-    return Array.from(stats.values()).filter((item) => item.count > 0).sort((a, b) => (
-      CATEGORY_ORDER.indexOf(a.category) - CATEGORY_ORDER.indexOf(b.category)
-      || b.count - a.count
-      || a.label.localeCompare(b.label)
-    ));
-  }, [detectionsGeoJSON, detectionClasses]);
+    return Array.from(stats.values()).filter((item) => item.count > 0).sort((a, b) => {
+      const aIdx = CATEGORY_ORDER.indexOf(a.category);
+      const bIdx = CATEGORY_ORDER.indexOf(b.category);
+      const aSafe = aIdx === -1 ? CATEGORY_ORDER.length : aIdx;
+      const bSafe = bIdx === -1 ? CATEGORY_ORDER.length : bIdx;
+      return aSafe - bSafe || b.count - a.count || a.label.localeCompare(b.label);
+    });
+  }, [detectionsGeoJSON, detectionClasses, DETECTION_CATEGORIES, CATEGORY_ORDER]);
 
   const filteredDetectionsGeoJSON = useMemo(() => ({
     ...detectionsGeoJSON,
     features: (detectionsGeoJSON.features || []).filter((feature: any) => {
       const labels = detectionClassKeys(feature);
-      if (detectionClassFilter && !labels.includes(detectionClassFilter)) return false;
-      if (hiddenDetectionCategories.includes(detectionCategoryForFeature(feature))) return false;
+      if (detectionClassFilter) {
+        // SOLO mode: restrict to features whose own raw class matches.
+        // Compare ONLY the leaf class (`original_class` / `class` / `label`),
+        // not parent_class — otherwise a feature with parent_class="building"
+        // and class="military_facility" gets erased by the auto-hide of
+        // every other class (including "building") that SOLO injects into
+        // hiddenDetectionLabels.
+        const props = feature?.properties || {};
+        const leafClasses = [
+          props.original_class,
+          props.metadata?.original_class,
+          props.class,
+          props.label,
+        ].filter(Boolean).map((value) => String(value));
+        return leafClasses.includes(detectionClassFilter);
+      }
+      if (hiddenDetectionCategories.includes(branchIdForFeature(feature))) return false;
       return !labels.some((label) => hiddenDetectionLabels.includes(label));
     }),
   }), [detectionsGeoJSON, detectionClassFilter, hiddenDetectionCategories, hiddenDetectionLabels]);
@@ -501,7 +572,7 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
   const filteredDetectionClassStats = useMemo(() => {
     const query = detectionLabelSearch.trim().toLowerCase();
     return query
-      ? detectionLabelStats.filter((item) => `${item.label} ${item.rawClass} ${item.parentClass || ''} ${DETECTION_CATEGORIES[item.category].label} ${item.source} ${item.ontology?.category || ''} ${item.threatLevel || ''}`.toLowerCase().includes(query))
+      ? detectionLabelStats.filter((item) => `${item.label} ${item.rawClass} ${item.parentClass || ''} ${categoryFor(item.category, DETECTION_CATEGORIES).label} ${item.source} ${item.ontology?.category || ''} ${item.threatLevel || ''}`.toLowerCase().includes(query))
       : detectionLabelStats;
   }, [detectionLabelSearch, detectionLabelStats]);
 
@@ -520,7 +591,7 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
       }).filter((group) => group.classes.length > 0);
     }
     return CATEGORY_ORDER.map((category) => {
-      const categoryMeta = DETECTION_CATEGORIES[category];
+      const categoryMeta = categoryFor(category, DETECTION_CATEGORIES);
       const classes = filteredDetectionClassStats.filter((item) => item.category === category);
       return {
         id: category,
@@ -531,7 +602,7 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
         classes,
       };
     }).filter((group) => group.classes.length > 0);
-  }, [detectionGroupMode, filteredDetectionClassStats]);
+  }, [detectionGroupMode, filteredDetectionClassStats, CATEGORY_ORDER, DETECTION_CATEGORIES]);
 
   const maxDetectionLabelCount = Math.max(1, ...detectionLabelStats.map((item) => item.count));
   const visibleDetectionCount = filteredDetectionsGeoJSON.features?.length || 0;
@@ -700,12 +771,14 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
   }, [focusTimeRange, selectedImagery, timeRange]);
 
   const fetchDetectionClasses = useCallback(async () => {
-    if (!mapBounds) return;
+    // The class legend shows every class present in the timeframe globally —
+    // bbox is intentionally NOT applied so the panel stays useful even when
+    // the map viewport doesn't yet cover newly-uploaded imagery. Map-rendered
+    // features are still bbox-filtered separately by fetchDetectionFeatures().
     try {
       const classParams = new URLSearchParams({
         start_time: timeRange.start,
         end_time: timeRange.end,
-        bbox: mapBounds,
         llm: 'true',
       });
       const response = await axios.get(`${API_URL}/api/detections/classes?${classParams.toString()}`, { timeout: 10000 });
@@ -713,7 +786,7 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
     } catch (error) {
       console.error('Error fetching detection classes:', error);
     }
-  }, [mapBounds, timeRange]);
+  }, [timeRange]);
 
   const fetchDetectionFeatures = useCallback(async () => {
     if (!mapBounds || !detectionClassFilter) {
@@ -934,7 +1007,7 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
   const onEachDetection = (feature: any, layer: L.Layer) => {
     const props = feature.properties;
     const category = detectionCategoryForFeature(feature);
-    const categoryMeta = DETECTION_CATEGORIES[category];
+    const categoryMeta = categoryFor(category, DETECTION_CATEGORIES);
     const reviewStatus = props.review_status || props.metadata?.review_status || 'review_candidate';
     const originalClass = props.original_class || props.metadata?.original_class || props.class;
     const parentClass = props.parent_class || props.metadata?.parent_class || props.class;
@@ -1090,7 +1163,7 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
                     onClick={() => toggleDetectionGroupExpanded(group.id)}
                   >
                     <span className="flex min-w-0 items-center gap-2">
-                      {detectionGroupMode === 'CAT' && <span style={{ color: groupColor }}><CategoryIcon category={category} /></span>}
+                      {detectionGroupMode === 'CAT' && <span style={{ color: groupColor }}><CategoryIcon category={category} branchById={branchById} /></span>}
                       <span className={`truncate text-xs ${groupHidden ? 'text-sentinel-muted' : 'text-slate-200'}`}>{group.label}</span>
                     </span>
                   </button>
@@ -1115,12 +1188,12 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
                             {hidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                           </button>
                           <span style={{ color: hidden ? 'var(--ink-2)' : item.color }}>
-                            <DetectionSubclassIcon label={item.rawClass} category={item.category} className="h-3 w-3" />
+                            <DetectionSubclassIcon label={item.rawClass} category={item.category} branchById={branchById} className="h-3 w-3" />
                           </span>
                           <button type="button" className="min-w-0 text-left" onClick={() => soloDetectionClass(item.rawClass)}>
                             <span className={`block truncate text-[11px] ${hidden ? 'text-sentinel-muted' : 'text-slate-200'}`}>{item.label}{solo ? ' / SOLO' : ''}</span>
                           </button>
-                          <span className={`sentinel-tag ${threatClass(item.threatLevel)}`}>{item.threatLevel || DETECTION_CATEGORIES[item.category].short}</span>
+                          <span className={`sentinel-tag ${threatClass(item.threatLevel)}`}>{item.threatLevel || categoryFor(item.category, DETECTION_CATEGORIES).short}</span>
                           <span className="font-mono text-[10px]" style={{ color: hidden ? 'var(--ink-2)' : item.color }}>{item.count}</span>
                         </div>
                       );
@@ -1238,7 +1311,7 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
               const badgePosition = detectionBadgePosition(feature);
               if (!badgePosition) return null;
               const category = detectionCategoryForFeature(feature);
-              const categoryMeta = DETECTION_CATEGORIES[category];
+              const categoryMeta = categoryFor(category, DETECTION_CATEGORIES);
               const props = feature.properties || {};
               return (
                 <Marker
@@ -1250,7 +1323,7 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
                   <Popup className="sentinel-popup">
                     <div className="border border-sentinel-line bg-sentinel-panel p-2 text-slate-200">
                       <div className="mb-2 flex items-center gap-2 border-b border-sentinel-line pb-1 text-xs font-bold uppercase tracking-wider">
-                        <span style={{ color: categoryMeta.color }}><DetectionSubclassIcon label={props.original_class || props.class || props.label} category={category} /></span>
+                        <span style={{ color: categoryMeta.color }}><DetectionSubclassIcon iconKey={props.icon_key ?? null} label={props.original_class || props.class || props.label} category={category} branchById={branchById} /></span>
                         <span>{props.label || detectionClassLabel(props.class)}</span>
                       </div>
                       <div className="font-mono text-[11px] text-sentinel-muted">
@@ -1269,7 +1342,7 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
               const center = detectionCenter(feature);
               if (!center) return null;
               const category = detectionCategoryForFeature(feature);
-              const categoryMeta = DETECTION_CATEGORIES[category];
+              const categoryMeta = categoryFor(category, DETECTION_CATEGORIES);
               const props = feature.properties || {};
               return (
                 <CircleMarker
@@ -1288,7 +1361,7 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
                   <Popup className="sentinel-popup">
                     <div className="border border-sentinel-line bg-sentinel-panel p-2 text-slate-200">
                       <div className="mb-2 flex items-center gap-2 border-b border-sentinel-line pb-1 text-xs font-bold uppercase tracking-wider">
-                        <span style={{ color: categoryMeta.color }}><DetectionSubclassIcon label={props.original_class || props.class || props.label} category={category} /></span>
+                        <span style={{ color: categoryMeta.color }}><DetectionSubclassIcon iconKey={props.icon_key ?? null} label={props.original_class || props.class || props.label} category={category} branchById={branchById} /></span>
                         <span>{props.label || detectionClassLabel(props.class)}</span>
                       </div>
                       <div className="font-mono text-[11px] text-sentinel-muted">
@@ -1525,12 +1598,12 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
               <div className="border-b border-sentinel-line p-3">
                 {(() => {
                   const category = detectionCategoryForFeature(selectedDetection);
-                  const categoryMeta = DETECTION_CATEGORIES[category];
+                  const categoryMeta = categoryFor(category, DETECTION_CATEGORIES);
                   return (
                     <>
                       <div className="font-mono text-[10px] text-sentinel-muted">DET-{selectedDetection.properties?.id} / {selectedDetection.properties?.parent_class || selectedDetection.properties?.class}</div>
                       <div className="mt-1 flex items-center gap-2">
-                        <span style={{ color: categoryMeta.color }}><CategoryIcon category={category} /></span>
+                        <span style={{ color: categoryMeta.color }}><CategoryIcon category={category} branchById={branchById} /></span>
                         <div className="text-lg font-semibold text-slate-100">{selectedDetection.properties?.label || detectionClassLabel(selectedDetection.properties?.class)}</div>
                       </div>
                     </>

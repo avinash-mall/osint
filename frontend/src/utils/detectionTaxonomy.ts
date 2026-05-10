@@ -1,4 +1,8 @@
-import { ALL_BRANCHES, BRANCH_ORDER, classifyToBranch, type BranchId } from './defenceOntology';
+import { useMemo } from 'react';
+import type { BranchId } from './defenceOntology';
+import { useOntology, flattenBranches, type OntologyBranch } from './useOntology';
+
+const OTHER_CATEGORY = { label: 'Other', color: '#727a83', short: 'OTH' };
 
 export const CLASS_LIST = [
   'aircraft', 'ship', 'vehicle', 'military_vehicle', 'storage_tank', 'bridge', 'harbor', 'airfield', 'building', 'infrastructure',
@@ -63,19 +67,78 @@ export const CLASS_LIST = [
 
 export type DetectionCategoryId = BranchId;
 
-export const CATEGORY_ORDER: DetectionCategoryId[] = BRANCH_ORDER as DetectionCategoryId[];
+export interface DetectionCategoryMeta {
+  label: string;
+  color: string;
+  short: string;
+}
 
-export const DETECTION_CATEGORIES: Record<DetectionCategoryId, { label: string; color: string; short: string }> =
-  ALL_BRANCHES.reduce((acc, branch) => {
-    acc[branch.id as DetectionCategoryId] = { label: branch.label, color: branch.color, short: branch.short };
-    return acc;
-  }, {} as Record<DetectionCategoryId, { label: string; color: string; short: string }>);
+export type DetectionCategoryMap = Record<DetectionCategoryId, DetectionCategoryMeta>;
+
+/**
+ * Live category lookup powered by the runtime ontology (`useOntology`).
+ *
+ * `branch_id` on every detection feature is now computed server-side, so
+ * the frontend only needs the branch metadata (label/color/short) for the
+ * legend + map styling. The `Other` bucket is always present as a
+ * fallback for features whose branch is missing from the active tree.
+ */
+export interface UseDetectionCategoriesResult {
+  /** Branch ids in display order, with `Other` last. */
+  order: DetectionCategoryId[];
+  /** Branch id -> { label, color, short }. Always contains `Other`. */
+  categories: DetectionCategoryMap;
+  /** Recursive list of all branches in the live tree. */
+  branches: OntologyBranch[];
+  isLoading: boolean;
+}
+
+export function useDetectionCategories(opts: { sensor?: string } = {}): UseDetectionCategoriesResult {
+  const { branches: roots, isLoading } = useOntology(opts);
+
+  return useMemo(() => {
+    const flat = flattenBranches(roots);
+    const order: DetectionCategoryId[] = [];
+    const categories: DetectionCategoryMap = {};
+    for (const branch of flat) {
+      order.push(branch.id);
+      categories[branch.id] = {
+        label: branch.label,
+        color: branch.color || '#727a83',
+        short: branch.short || branch.id.slice(0, 3).toUpperCase(),
+      };
+    }
+    if (!categories.Other) {
+      categories.Other = { ...OTHER_CATEGORY };
+      order.push('Other');
+    }
+    return { order, categories, branches: flat, isLoading };
+  }, [roots, isLoading]);
+}
+
+export function categoryFor(
+  categoryId: string | null | undefined,
+  categories: DetectionCategoryMap,
+): DetectionCategoryMeta {
+  if (!categoryId) return categories.Other ?? OTHER_CATEGORY;
+  return categories[categoryId] ?? categories.Other ?? OTHER_CATEGORY;
+}
+
+/**
+ * Read the canonical category id from a GeoJSON feature.
+ *
+ * Backend now classifies every detection server-side and writes
+ * `branch_id` into `feature.properties`. The frontend no longer runs any
+ * regex-based fallback — features without a `branch_id` are bucketed as
+ * `Other` (consistent with the legend's catch-all).
+ */
+export function branchIdForFeature(feature: any): DetectionCategoryId {
+  const props = feature?.properties || {};
+  const id = props.branch_id || props.metadata?.branch_id;
+  return (id ? String(id) : 'Other') as DetectionCategoryId;
+}
 
 export const SOURCE_ORDER = ['xView', 'DOTA', 'FAIR1M', 'DIOR-R', 'SODA-A', 'HRSC', 'fMoW', 'Local'] as const;
-
-export function classifyDetectionClass(value?: string | null, ontologyCategory?: string | null): DetectionCategoryId {
-  return classifyToBranch(value, ontologyCategory) as DetectionCategoryId;
-}
 
 export function detectionClassLabel(value?: string | null): string {
   const raw = String(value || 'unknown').trim();

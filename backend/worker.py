@@ -29,6 +29,7 @@ from PIL import Image
 from imagery_metadata import extract_raster_metadata
 from detection_policy import active_detection_policy, detection_decision, parent_class_for_label
 from threat_assessment import assess_detection_threat, clean_detection_class, conservative_detection_ontology
+from ontology import normalize as ontology_normalize
 import provider_lifecycle
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
@@ -1045,7 +1046,17 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
     """Store detections in PostGIS and create Neo4j nodes."""
     if not detections:
         return 0
-    
+
+    # Step 3 of /home/avinash/.claude/plans/the-inference-system-has-piped-nest.md:
+    # Each detection now carries the new defence-ontology classification
+    # (branch_id / icon_key / canonical_label / was_unknown / ontology_object_id)
+    # in its metadata JSON. The `class` column itself is FROZEN as the raw
+    # lowercase_underscore label from inference and the existing
+    # `parent_class` field stays for backward compat (Step 7 makes
+    # parent_class_for_label() a wrapper). The authoritative classification
+    # going forward is `branch_id`. See backend/ontology.py::normalize().
+    unknown_count = 0
+    total_normalized = 0
     with postgis_db.get_cursor(commit=True) as cursor, db.get_session() as neo_session:
         for det in detections:
             lon1, lat1, lon2, lat2 = det["geo_bbox"]
@@ -1054,6 +1065,12 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
             original_class = det.get("original_class") or det_class
             parent_class = det.get("parent_class") or parent_class_for_label(original_class)
             decision = detection_decision(original_class, confidence, DETECTION_POLICY)
+            # Defence-ontology normalization (Step 3). Falls back gracefully
+            # when source_layer is missing — empty string is the documented default.
+            ont = ontology_normalize(original_class, layer=det.get("source_layer", ""))
+            total_normalized += 1
+            if ont.was_unknown:
+                unknown_count += 1
             ontology = (ontology_by_class or {}).get(det_class) or detection_ontology(det_class)
             assessment = assess_detection_threat(det_class, confidence=confidence, allegiance=det.get("allegiance", "unknown"))
             ontology = {
@@ -1095,6 +1112,15 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
                     "calibrated_confidence": det.get("calibrated_confidence", confidence),
                     "original_class": original_class,
                     "parent_class": parent_class,
+                    # Step 3: defence-ontology fields. Step 5 surfaces these
+                    # through the API; nothing reads them yet so this is
+                    # backwards-compatible. branch_id is the authoritative
+                    # classification going forward.
+                    "branch_id": ont.branch_id,
+                    "icon_key": ont.icon_key,
+                    "canonical_label": ont.canonical_label,
+                    "was_unknown": ont.was_unknown,
+                    "ontology_object_id": ont.ontology_object_id,
                     "review_status": det.get("review_status") or decision["review_status"],
                     "policy_review_status": det.get("policy_review_status") or decision["review_status"],
                     "threshold_profile": det.get("threshold_profile") or DETECTION_POLICY["threshold_profile"],
@@ -1184,7 +1210,17 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
                 "lat": (lat1 + lat2) / 2,
                 "lon": (lon1 + lon2) / 2
             })
-    
+
+    # Step 3: per-batch summary of how many labels could not be resolved by
+    # the defence-ontology normalizer (branch_id == "Other" / icon == circle_help).
+    if total_normalized:
+        logger.info(
+            "ontology.normalize: pass_id=%s normalized=%d unknown=%d",
+            pass_id,
+            total_normalized,
+            unknown_count,
+        )
+
     return len(detections)
 
 

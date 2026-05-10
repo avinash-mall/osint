@@ -14,29 +14,40 @@ import {
 import { useEventStream } from '../hooks/useEventStream';
 import { type UploadJob, isUploadActive, uploadMessage, uploadProgress, uploadProgressClass, uploadStage } from '../utils/uploadProgress';
 import {
-  DEFENCE_OBJECTS,
-  DEFENCE_ONTOLOGY,
-  type DefenceBranch,
-  type DefenceObject,
   type Sensor,
-  isHighResolutionOnly,
   isSam3Prompt,
-  objectMatchesSensor,
   parseCustomPrompts,
   pipelineForSensor,
   uploadSensorToTag,
 } from '../utils/defenceOntology';
-import { BranchIcon, ObjectIcon } from '../utils/branchIcons';
+import {
+  flattenObjects,
+  useOntology,
+  type OntologyBranch,
+  type OntologyObject,
+} from '../utils/useOntology';
+import { BRANCH_ICON_BY_KEY, ObjectIcon } from '../utils/branchIcons';
+import type { BranchIconKey } from '../utils/defenceOntology';
+import { CircleHelp } from 'lucide-react';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
-const defenceObjectById = new Map(DEFENCE_OBJECTS.map((item) => [item.id, item]));
+const HIGH_RES_GSD_THRESHOLD = 0.3;
 
-function branchObjectIds(branch: DefenceBranch): string[] {
+function branchObjectIds(branch: OntologyBranch): string[] {
   return [
     ...(branch.objects || []).map((item) => item.id),
     ...(branch.children || []).flatMap(branchObjectIds),
   ];
+}
+
+function isHighRes(obj: OntologyObject): boolean {
+  return typeof obj.min_gsd_meters === 'number' && obj.min_gsd_meters <= HIGH_RES_GSD_THRESHOLD;
+}
+
+function branchIconComponent(iconKey: string | null | undefined) {
+  if (!iconKey) return CircleHelp;
+  return BRANCH_ICON_BY_KEY[iconKey as BranchIconKey] ?? CircleHelp;
 }
 
 export default function IngestConnect() {
@@ -50,9 +61,32 @@ export default function IngestConnect() {
   const [uploadTransferProgress, setUploadTransferProgress] = useState(0);
   const [activeUploadId, setActiveUploadId] = useState<string | null>(null);
   const [uploadJobs, setUploadJobs] = useState<UploadJob[]>([]);
-  const [expandedBranches, setExpandedBranches] = useState<Set<string>>(
-    () => new Set(DEFENCE_ONTOLOGY.length > 0 ? [DEFENCE_ONTOLOGY[0].id] : [])
-  );
+  const [expandedBranches, setExpandedBranches] = useState<Set<string>>(() => new Set());
+  const [incompatibleNotice, setIncompatibleNotice] = useState<string | null>(null);
+
+  const sensorTag: Sensor = uploadSensorToTag(sensorType);
+  const sensorPipeline = useMemo(() => pipelineForSensor(sensorType), [sensorType]);
+
+  // Live ontology, server-filtered for the active sensor. The hook caches
+  // per-sensor and reacts to backend version bumps automatically.
+  const { branches: ontologyBranches } = useOntology({ sensor: sensorTag });
+
+  const defenceObjectById = useMemo(() => {
+    const map = new Map<string, OntologyObject>();
+    flattenObjects(ontologyBranches).forEach((obj) => map.set(obj.id, obj));
+    return map;
+  }, [ontologyBranches]);
+
+  // Auto-expand the first top-level branch the first time we see a tree (or
+  // any time the sensor changes and the previously expanded branches are
+  // no longer present).
+  useEffect(() => {
+    if (!ontologyBranches.length) return;
+    setExpandedBranches((current) => {
+      if (current.size > 0) return current;
+      return new Set([ontologyBranches[0].id]);
+    });
+  }, [ontologyBranches]);
 
   const fetchUploadJobs = useCallback(async () => {
     try {
@@ -105,33 +139,59 @@ export default function IngestConnect() {
   }, [customPrompts, selectedDefenceIds]);
 
   const searchTerm = objectSearch.trim().toLowerCase();
-  const sensorTag: Sensor = uploadSensorToTag(sensorType);
-  const sensorPipeline = useMemo(() => pipelineForSensor(sensorType), [sensorType]);
+  // The hook delivers a tree pre-filtered by sensor on the server side
+  // (`/api/ontology?sensor=...`). All objects in `defenceObjectById` are
+  // already sensor-compatible, so visibility just folds in the search box.
   const visibleDefenceIds = useMemo(() => {
-    return new Set(
-      DEFENCE_OBJECTS
-        .filter((item) => objectMatchesSensor(item, sensorTag))
-        .filter((item) => !searchTerm || `${item.label} ${item.prompt}`.toLowerCase().includes(searchTerm))
-        .map((item) => item.id)
-    );
-  }, [searchTerm, sensorTag]);
+    const ids = new Set<string>();
+    defenceObjectById.forEach((item) => {
+      if (!searchTerm || `${item.label} ${item.prompt}`.toLowerCase().includes(searchTerm)) {
+        ids.add(item.id);
+      }
+    });
+    return ids;
+  }, [defenceObjectById, searchTerm]);
+
+  // When the sensor changes, drop any selected ids that are no longer
+  // sensor-compatible. We only show a notice for the user-driven case;
+  // initial mount (from an empty selection) is silent.
+  useEffect(() => {
+    if (selectedDefenceIds.size === 0) return;
+    if (defenceObjectById.size === 0) return; // tree not loaded yet
+    setSelectedDefenceIds((current) => {
+      const next = new Set<string>();
+      let dropped = 0;
+      current.forEach((id) => {
+        if (defenceObjectById.has(id)) next.add(id);
+        else dropped += 1;
+      });
+      if (dropped > 0) {
+        setIncompatibleNotice(`${dropped} item${dropped === 1 ? '' : 's'} removed — incompatible with ${sensorTag.toUpperCase()}`);
+        window.setTimeout(() => setIncompatibleNotice(null), 5000);
+      }
+      return dropped > 0 ? next : current;
+    });
+    // intentionally not depending on selectedDefenceIds — we only want to
+    // trim when the catalog (tree) shifts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defenceObjectById]);
 
   // When the user types a search, auto-expand any branch with visible matches.
   useEffect(() => {
     if (!searchTerm) return;
     const matchingBranchIds = new Set<string>();
-    const walk = (branch: DefenceBranch) => {
+    const walk = (branch: OntologyBranch) => {
       const ids = branchObjectIds(branch);
       if (ids.some((id) => visibleDefenceIds.has(id))) matchingBranchIds.add(branch.id);
       branch.children?.forEach(walk);
     };
-    DEFENCE_ONTOLOGY.forEach(walk);
+    ontologyBranches.forEach(walk);
     setExpandedBranches((current) => {
       const next = new Set(current);
       matchingBranchIds.forEach((id) => next.add(id));
       return next;
     });
-  }, [searchTerm, visibleDefenceIds]);
+  }, [searchTerm, visibleDefenceIds, ontologyBranches]);
 
   const toggleBranchExpanded = (id: string) => {
     setExpandedBranches((current) => {
@@ -151,7 +211,7 @@ export default function IngestConnect() {
     });
   };
 
-  const toggleBranchSelection = (branch: DefenceBranch) => {
+  const toggleBranchSelection = (branch: OntologyBranch) => {
     const ids = branchObjectIds(branch).filter((id) => visibleDefenceIds.has(id));
     if (!ids.length) return;
     setSelectedDefenceIds((current) => {
@@ -221,10 +281,11 @@ export default function IngestConnect() {
     }
   };
 
-  const renderObject = (item: DefenceObject, parentBranch: DefenceBranch) => {
+  const renderObject = (item: OntologyObject, parentBranch: OntologyBranch) => {
     if (!visibleDefenceIds.has(item.id)) return null;
     const selected = selectedDefenceIds.has(item.id);
-    const highRes = isHighResolutionOnly(item);
+    const highRes = isHighRes(item);
+    const branchIconKey = (parentBranch.icon_key ?? null) as BranchIconKey | null;
     return (
       <button
         key={item.id}
@@ -240,10 +301,10 @@ export default function IngestConnect() {
         <input type="checkbox" checked={selected} readOnly className="mt-0.5 shrink-0" />
         <span
           className="mt-0.5 shrink-0"
-          style={{ color: parentBranch.color }}
+          style={{ color: parentBranch.color || undefined }}
           aria-hidden
         >
-          <ObjectIcon prompt={item.prompt} branchIconKey={parentBranch.iconKey} className="h-4 w-4" />
+          <ObjectIcon prompt={item.prompt} branchIconKey={branchIconKey} className="h-4 w-4" />
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex items-center gap-1.5">
@@ -260,7 +321,7 @@ export default function IngestConnect() {
     );
   };
 
-  const renderBranch = (branch: DefenceBranch, depth = 0) => {
+  const renderBranch = (branch: OntologyBranch, depth = 0) => {
     const ids = branchObjectIds(branch).filter((id) => visibleDefenceIds.has(id));
     if (!ids.length) return null;
     const selectedCount = ids.filter((id) => selectedDefenceIds.has(id)).length;
@@ -270,6 +331,8 @@ export default function IngestConnect() {
     const wrapperClass = depth === 0
       ? 'border border-slate-800 bg-slate-950/30'
       : 'border-l border-slate-800 ml-2';
+    const branchColor = branch.color || '#727a83';
+    const BranchIconCmp = branchIconComponent(branch.icon_key);
     return (
       <div key={branch.id} className={wrapperClass}>
         <div
@@ -299,10 +362,10 @@ export default function IngestConnect() {
             />
             <span
               className="shrink-0 grid place-items-center rounded border w-6 h-6"
-              style={{ color: branch.color, borderColor: `${branch.color}55`, background: `${branch.color}1a` }}
+              style={{ color: branchColor, borderColor: `${branchColor}55`, background: `${branchColor}1a` }}
               aria-hidden
             >
-              <BranchIcon iconKey={branch.iconKey} className="w-3.5 h-3.5" />
+              <BranchIconCmp className="w-3.5 h-3.5" />
             </span>
             <span className="min-w-0 flex-1">
               <span className="block text-xs font-bold uppercase tracking-wider text-slate-200">{branch.label}</span>
@@ -310,10 +373,10 @@ export default function IngestConnect() {
             </span>
             <span
               className="shrink-0 font-mono text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded border"
-              style={{ color: branch.color, borderColor: `${branch.color}55` }}
+              style={{ color: branchColor, borderColor: `${branchColor}55` }}
               aria-hidden
             >
-              {branch.short}
+              {branch.short || branch.id.slice(0, 3).toUpperCase()}
             </span>
           </button>
         </div>
@@ -341,6 +404,12 @@ export default function IngestConnect() {
           <UploadCloud className="w-7 h-7 text-blue-400" />
           <h2 className="text-xl font-bold uppercase tracking-wider">Imagery Upload</h2>
         </div>
+
+        {incompatibleNotice && (
+          <div className="border border-amber-500/40 bg-amber-500/10 text-amber-200 text-xs px-3 py-2 rounded">
+            {incompatibleNotice}
+          </div>
+        )}
 
         <label className="min-h-56 border border-dashed border-slate-700 bg-slate-900/40 hover:bg-slate-900 transition rounded flex flex-col items-center justify-center cursor-pointer">
           <FileImage className="w-12 h-12 text-slate-500 mb-3" />
@@ -439,7 +508,7 @@ export default function IngestConnect() {
               />
             </div>
             <div className="max-h-96 overflow-auto space-y-2 pr-1">
-              {DEFENCE_ONTOLOGY.map((branch) => renderBranch(branch))}
+              {ontologyBranches.map((branch) => renderBranch(branch))}
             </div>
             <label className="block">
               <span className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-300">Custom Objects</span>

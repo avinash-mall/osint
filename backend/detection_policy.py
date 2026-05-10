@@ -35,27 +35,6 @@ TAXONOMY_VERSION = os.getenv("DETECTION_TAXONOMY_VERSION", "open-world-v1")
 DEFAULT_MODEL_VERSION = os.getenv("MODEL_VERSION", "open-vocab-multi-model")
 
 
-# ---------------------------------------------------------------------------
-# Coarse open-vocabulary categories.
-#
-# These are *clusters* used only for UI grouping / dedupe / threat-routing —
-# they are NOT a closed taxonomy. ``parent_class_for_label`` falls back to
-# returning the normalized label itself when no cluster matches.
-# ---------------------------------------------------------------------------
-PARENT_CLASSES: tuple[str, ...] = (
-    # Geospatial
-    "aircraft", "vessel", "vehicle", "train",
-    "building", "infrastructure", "storage_tank",
-    "bridge", "harbor", "airfield",
-    "recreation", "vegetation", "water",
-    # Ground / FMV
-    "person", "animal", "food", "furniture", "household",
-    "electronic", "tool", "clothing", "plant", "sport",
-    # Generic fall-throughs
-    "segment", "object",
-)
-
-
 SOURCE_PREFIXES = (
     "xview", "dota", "fair1m", "fmow", "rareplanes", "dior",
     "sodaa", "hrsc", "hrsc2016", "lvis", "coco", "objects365", "local",
@@ -78,108 +57,30 @@ def strip_source_prefix(label: str) -> str:
     return normalized
 
 
-def _has_any(text: str, terms: tuple[str, ...]) -> bool:
-    return any(term in text for term in terms)
-
-
-# Cluster signatures. Order matters — first match wins.
-_CLUSTER_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("aircraft", (
-        "aircraft", "airplane", "plane", "helicopter", "fixed_wing",
-        "boeing", "airbus", "a220", "a321", "a330", "a350", "arj21",
-        "c919", "drone", "uav", "glider", "biplane", "jet",
-    )),
-    ("vessel", (
-        "ship", "boat", "vessel", "tanker", "barge", "tug", "ferry",
-        "yacht", "hovercraft", "cargo_ship", "fishing_boat",
-        "motorboat", "sailboat", "engineering_ship",
-    )),
-    ("airfield", ("airport", "runway", "airstrip", "airfield", "helipad", "hangar")),
-    ("harbor",   ("harbor", "harbour", "port", "shipyard", "dry_dock", "container_crane")),
-    ("bridge",   ("bridge", "overpass", "viaduct", "aqueduct")),
-    ("storage_tank", ("storage_tank", "storagetank", "oil_tank", "fuel_tank")),
-    ("train", (
-        "locomotive", "trainstation", "railway", "passenger_car",
-        "cargo_car", "flat_car", "train",
-    )),
-    ("vehicle", (
-        "vehicle", "truck", "car", "bus", "van", "trailer", "tractor",
-        "excavator", "grader", "bulldozer", "loader", "mixer",
-        "stacker", "carrier", "mobile_crane", "haul_truck",
-        "pickup_truck", "utility_truck", "small_car", "passenger_car",
-        "minivan", "motorcycle", "bicycle",
-    )),
-    ("building", (
-        "building", "facility", "depot", "shed", "hut", "tent",
-        "terminal", "warehouse", "house", "residential", "factory",
-        "school", "hospital", "office",
-    )),
-    ("infrastructure", (
-        "container", "crane", "chimney", "windmill", "tower", "pylon",
-        "substation", "powerplant", "plant", "construction", "roundabout",
-        "intersection", "expressway", "pipeline", "antenna", "dish",
-        "solar", "transmission",
-    )),
-    ("recreation", (
-        "baseball", "basketball", "tennis", "soccer", "football",
-        "golf", "stadium", "swimming_pool", "swimming", "ground_track",
-        "groundtrack", "groundtrackfield", "amusement", "park", "zoo",
-        "race_track", "court", "field", "playground",
-    )),
-    ("vegetation", ("forest", "tree", "grassland", "vegetation", "wetlands", "shrub", "hedge")),
-    ("water", ("lake", "pond", "river", "stream", "canal", "reservoir", "flood", "water")),
-    ("person", ("person", "people", "pedestrian", "rider", "child", "man", "woman")),
-    ("animal", (
-        "dog", "cat", "horse", "cow", "sheep", "elephant", "bear",
-        "zebra", "giraffe", "bird", "animal",
-    )),
-    ("food", (
-        "banana", "apple", "sandwich", "orange", "broccoli", "carrot",
-        "hot_dog", "pizza", "donut", "cake", "food", "fruit",
-    )),
-    ("furniture", (
-        "chair", "couch", "potted_plant", "bed", "dining_table",
-        "toilet", "tv", "table", "desk", "bench",
-    )),
-    ("electronic", (
-        "laptop", "mouse", "remote", "keyboard", "cell_phone",
-        "tablet", "monitor", "printer",
-    )),
-    ("tool", ("microwave", "oven", "toaster", "sink", "refrigerator", "tool", "scissors")),
-    ("clothing", ("hat", "shirt", "jacket", "shoe", "dress", "pants", "tie", "backpack", "umbrella")),
-    ("sport", ("ball", "bat", "racket", "skateboard", "surfboard", "skis", "snowboard", "kite", "frisbee")),
-)
-
-
 def parent_class_for_label(label: Any) -> str:
-    """Return a coarse cluster for ``label`` or the normalized label itself.
+    """Backwards-compat wrapper around backend.ontology.normalize().
 
-    Open-vocabulary: any prompt SAM3 (or another open-vocab model) emits is
-    valid. We never collapse to ``"unknown"``.
+    The canonical normalizer lives in backend/ontology.py and reads from the
+    DB ontology. This function is kept so existing callers (older code paths,
+    tests) continue to work; new code should call ontology.normalize() directly.
+
+    Falls back to the local ``normalize_label`` cleanup if ``ontology`` cannot
+    be imported (e.g. when this module is loaded by ``inference-sam3`` via
+    ``importlib`` without the backend directory on sys.path) or when the DB
+    is unreachable from a stand-alone tool.
     """
-    raw = normalize_label(label)
-    text = strip_source_prefix(raw)
-
-    if raw in PARENT_CLASSES:
-        return raw
-    if raw in {"mask", "region"}:
-        return "segment"
-    if raw == "track":
-        return "track"
-    if raw.startswith("crop:"):
-        return "vegetation"
-    if raw in {"flood", "water"}:
-        return "water"
-    if raw == "burn_scar":
-        return "vegetation"
-
-    for parent, terms in _CLUSTER_RULES:
-        if text in terms or _has_any(text, terms):
-            return parent
-
-    # Open-vocab default: keep the label itself as the class. This is the
-    # whole point of "all possible labels".
-    return raw
+    try:
+        # Ensure the sibling ``ontology`` module is importable even when this
+        # file is loaded via importlib from outside the backend directory.
+        import sys as _sys
+        from pathlib import Path as _Path
+        _here = _Path(__file__).resolve().parent
+        if str(_here) not in _sys.path:
+            _sys.path.insert(0, str(_here))
+        from ontology import normalize as _normalize
+        return _normalize(label or "").parent_class
+    except Exception:
+        return normalize_label(label)
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +129,7 @@ def active_detection_policy() -> dict[str, Any]:
         "threshold_profile": profile_name,
         "global_confidence_floor": global_floor,
         "high_confidence_threshold": high_threshold,
-        "enabled_parent_classes": list(PARENT_CLASSES),  # purely informational
+        "enabled_parent_classes": [],  # open-vocab: no closed set; informational only
         "disabled_parent_classes": [],
         "class_thresholds": _load_json_thresholds("PER_CLASS_CONFIDENCE_OVERRIDES"),
     }

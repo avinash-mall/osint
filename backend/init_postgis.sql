@@ -221,3 +221,66 @@ CREATE TABLE IF NOT EXISTS detection_track_members (
 CREATE INDEX IF NOT EXISTS idx_dtm_track     ON detection_track_members(track_id, observed_at);
 CREATE INDEX IF NOT EXISTS idx_dtm_detection ON detection_track_members(detection_id);
 CREATE INDEX IF NOT EXISTS idx_dtm_pass      ON detection_track_members(pass_id);
+
+-- Ontology: single source of truth for categories, objects, prompts, icons.
+-- See plan: /home/avinash/.claude/plans/the-inference-system-has-piped-nest.md
+-- detections.class is FROZEN as the raw lowercase_underscore label from
+-- inference; all branch/category logic lives in metadata.branch_id (set by
+-- backend/ontology.py normalizer).
+
+CREATE TABLE IF NOT EXISTS ontology_branches (
+    id            TEXT PRIMARY KEY,
+    parent_id     TEXT REFERENCES ontology_branches(id) ON DELETE RESTRICT,
+    label         TEXT NOT NULL,
+    color         TEXT,
+    short         TEXT,
+    icon_key      TEXT,
+    matchers      JSONB DEFAULT '[]'::jsonb,
+    sensors       JSONB DEFAULT '["optical"]'::jsonb,
+    order_index   INTEGER NOT NULL DEFAULT 0,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ontology_branches_parent ON ontology_branches(parent_id);
+
+CREATE TABLE IF NOT EXISTS ontology_objects (
+    id              TEXT PRIMARY KEY,
+    branch_id       TEXT NOT NULL REFERENCES ontology_branches(id) ON DELETE CASCADE,
+    label           TEXT NOT NULL,
+    prompt          TEXT NOT NULL,
+    sensors         JSONB DEFAULT '["optical"]'::jsonb,
+    min_gsd_meters  NUMERIC,
+    icon_key        TEXT,
+    order_index     INTEGER NOT NULL DEFAULT 0,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ontology_objects_branch ON ontology_objects(branch_id);
+CREATE INDEX IF NOT EXISTS idx_ontology_objects_label ON ontology_objects(LOWER(label));
+
+CREATE TABLE IF NOT EXISTS ontology_unknown_labels (
+    label                TEXT PRIMARY KEY,
+    layer                TEXT,
+    first_seen           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen            TIMESTAMPTZ NOT NULL DEFAULT now(),
+    count                INTEGER NOT NULL DEFAULT 1,
+    suggested_branch_id  TEXT REFERENCES ontology_branches(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ontology_unknown_suggested
+  ON ontology_unknown_labels(suggested_branch_id);
+
+CREATE TABLE IF NOT EXISTS ontology_version (
+    singleton    BOOLEAN PRIMARY KEY DEFAULT TRUE,
+    version_id   BIGINT NOT NULL DEFAULT 1,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT one_row CHECK (singleton = TRUE)
+);
+INSERT INTO ontology_version (singleton, version_id) VALUES (TRUE, 1)
+  ON CONFLICT (singleton) DO NOTHING;
+
+-- Always-present 'Other' fallback branch — referenced by ontology.normalize()
+-- when a label can't be classified. Insert is idempotent.
+INSERT INTO ontology_branches (id, parent_id, label, color, short, icon_key, matchers, sensors, order_index)
+VALUES ('Other', NULL, 'Other / Unknown', '#727a83', 'OTH', 'circle_help',
+        '[]'::jsonb, '["optical","sar","multispectral","hyperspectral","thermal"]'::jsonb, 9999)
+ON CONFLICT (id) DO NOTHING;

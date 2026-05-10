@@ -177,8 +177,7 @@ services:
       SAM3_SAR_CONF_CAP: ${SAM3_SAR_CONF_CAP:-0.85}
       SAM3_OBB_OPENING_KERNEL_PCT: ${SAM3_OBB_OPENING_KERNEL_PCT:-0.01}
       SAM3_OBB_MIN_AREA_PX: ${SAM3_OBB_MIN_AREA_PX:-4}
-      SAM3_DEFAULT_PROMPT_PROFILE: ${SAM3_DEFAULT_PROMPT_PROFILE:-}
-      SAM3_LABEL_FILE: ${SAM3_LABEL_FILE:-}
+      ONTOLOGY_BACKEND_URL: ${ONTOLOGY_BACKEND_URL:-http://backend:8080}
       SAM3_EMBED_DETECTIONS: ${SAM3_EMBED_DETECTIONS:-0}
       # Per-component runtime loader flags. The checked-in .env enables the full
       # auxiliary stack; turn individual flags off on memory-constrained GPUs.

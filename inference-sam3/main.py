@@ -18,6 +18,8 @@ from fastapi.responses import StreamingResponse
 from PIL import Image
 from starlette.concurrency import run_in_threadpool
 
+import requests
+
 import dota_obb
 import embedding
 import fusion
@@ -28,7 +30,6 @@ import prithvi_heads
 import sam3_runner
 import sar
 import terramind
-from prompts.loader import resolve_prompts
 
 
 cv2.setNumThreads(0)
@@ -78,6 +79,105 @@ _load_lock = threading.Lock()
 _active_lock = threading.Lock()
 _active_requests = 0
 _model_error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Prompt resolution: DB-derived defaults via backend ontology API.
+# Replaces the deleted prompts.loader module which read static JSON profiles.
+# ---------------------------------------------------------------------------
+ONTOLOGY_BACKEND_URL = os.getenv("ONTOLOGY_BACKEND_URL", "http://backend:8080")
+_DEFAULT_PROMPTS_TTL = 30.0  # seconds — matches backend ontology cache TTL
+_DEFAULT_PROMPTS_CACHE: dict[str, tuple[float, list[str]]] = {}
+_DEFAULT_PROMPTS_LOCK = threading.Lock()
+
+
+class OntologyBackendUnavailable(RuntimeError):
+    """Raised when the backend ontology API cannot be reached and no
+    explicit text_prompts were supplied. Mapped to HTTP 503 by callers."""
+
+
+def _modality_to_sensor(modality: str) -> str:
+    """Map /detect modality strings to ontology sensor type."""
+    m = (modality or "rgb").lower()
+    return {
+        "rgb": "optical",
+        "fmv": "optical",
+        "multispectral": "multispectral",
+        "hyperspectral": "multispectral",  # routed here per plan §F (UI surfaces a warning)
+        "sar": "sar",
+    }.get(m, "optical")
+
+
+def _fetch_default_prompts(sensor: str, timeout: float = 5.0) -> list[str]:
+    """Fetch the default prompt list from the backend ontology API.
+    Caches per-sensor for _DEFAULT_PROMPTS_TTL seconds."""
+    now = time.time()
+    with _DEFAULT_PROMPTS_LOCK:
+        cached = _DEFAULT_PROMPTS_CACHE.get(sensor)
+        if cached and (now - cached[0]) < _DEFAULT_PROMPTS_TTL:
+            return cached[1]
+    # Network fetch happens outside the lock so concurrent requests for
+    # different sensors don't serialize on each other.
+    resp = requests.get(
+        f"{ONTOLOGY_BACKEND_URL}/api/ontology/default-prompts",
+        params={"sensor": sensor},
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    prompts = [str(p) for p in (resp.json().get("prompts") or [])]
+    with _DEFAULT_PROMPTS_LOCK:
+        _DEFAULT_PROMPTS_CACHE[sensor] = (time.time(), prompts)
+    return prompts
+
+
+def resolve_prompts(meta: dict[str, Any] | None) -> list[str]:
+    """Resolve the SAM3 prompt list for a request.
+
+    Order of resolution:
+      1. Explicit ``meta['text_prompts']`` (deduped + lowercased + stripped).
+      2. Backend ontology defaults for the sensor mapped from ``meta['modality']``.
+
+    Raises:
+        ValueError: when neither source produces any prompts (e.g. caller
+            passed an empty list and the backend returned nothing).
+        OntologyBackendUnavailable: when the backend HTTP call fails and no
+            explicit text_prompts were given. Callers should map to HTTP 503.
+    """
+    meta = meta or {}
+    explicit = meta.get("text_prompts")
+    if isinstance(explicit, list) and explicit:
+        seen: set[str] = set()
+        out: list[str] = []
+        for raw in explicit:
+            s = " ".join(str(raw).strip().lower().split())
+            if s and s not in seen:
+                seen.add(s)
+                out.append(s)
+        if out:
+            return out
+
+    sensor = _modality_to_sensor(str(meta.get("modality") or "rgb"))
+    try:
+        prompts = _fetch_default_prompts(sensor)
+    except Exception as exc:
+        raise OntologyBackendUnavailable(
+            f"No text_prompts provided and ontology backend unavailable "
+            f"(sensor={sensor}): {exc}"
+        ) from exc
+
+    seen2: set[str] = set()
+    out2: list[str] = []
+    for raw in prompts:
+        s = " ".join(str(raw).strip().lower().split())
+        if s and s not in seen2:
+            seen2.add(s)
+            out2.append(s)
+    if not out2:
+        raise ValueError(
+            f"No labels available for SAM3 (sensor={sensor}): backend returned "
+            f"no prompts and no text_prompts were supplied"
+        )
+    return out2
 
 
 @app.on_event("startup")
@@ -248,6 +348,8 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
         else:
             try:
                 prompts = resolve_prompts(meta)
+            except OntologyBackendUnavailable as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             prompt_count = len(prompts)
@@ -388,7 +490,12 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
         if not video_path:
             raise HTTPException(status_code=400, detail="video upload or metadata.video_path required")
 
-    prompts = resolve_prompts({**meta, "modality": "fmv"})
+    try:
+        prompts = resolve_prompts({**meta, "modality": "fmv"})
+    except OntologyBackendUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     frame_stride = max(1, int(meta.get("frame_stride", 1)))
     start_frame = int(meta.get("start_frame", 0))
     end_frame = meta.get("end_frame")
