@@ -233,3 +233,60 @@ def test_dry_run_hls_burn_json_has_segmenter_results(tmp_path: Path) -> None:
     config_names = [r["config_name"] for r in data["segmenter_results"]]
     assert "sam3_only" in config_names
     assert "sam3+prithvi" in config_names
+
+
+def test_dry_run_embedding_slice_produces_section(tmp_path: Path) -> None:
+    """--dry-run --slice embedding produces ## Embedding Models section."""
+    import json as _json
+
+    report_path = tmp_path / "embedding_report.md"
+    json_path = tmp_path / "embedding_report.json"
+
+    exit_code = _run_main(
+        [
+            "--dry-run",
+            "--slice", "embedding",
+            "--max-chips", "3",
+            "--output", str(report_path),
+            "--json-output", str(json_path),
+        ]
+    )
+
+    assert exit_code == 0, f"main() returned non-zero exit code: {exit_code}"
+    assert report_path.exists(), f"Report file was not created at {report_path}"
+
+    content = report_path.read_text(encoding="utf-8")
+    assert "## Embedding Models" in content, (
+        "'## Embedding Models' section missing from report.\n"
+        f"Report content:\n{content[:1000]}"
+    )
+
+    # All 5 embedding config names should appear in the report
+    for config_name in [
+        "sam3_only",
+        "sam3+dinov3_sat",
+        "sam3+dinov3_lvd",
+        "sam3+terramind",
+        "all_embeddings",
+    ]:
+        assert config_name in content, (
+            f"Config '{config_name}' missing from Embedding Models table.\n"
+            f"Report content:\n{content[:1500]}"
+        )
+
+    # JSON artifact should have embedding_results key with all 5 configs
+    assert json_path.exists(), f"JSON artifact was not created at {json_path}"
+    data = _json.loads(json_path.read_text(encoding="utf-8"))
+    assert "embedding_results" in data, "'embedding_results' key missing from JSON artifact"
+    assert isinstance(data["embedding_results"], list)
+    emb_config_names = [r["config_name"] for r in data["embedding_results"]]
+    for config_name in [
+        "sam3_only",
+        "sam3+dinov3_sat",
+        "sam3+dinov3_lvd",
+        "sam3+terramind",
+        "all_embeddings",
+    ]:
+        assert config_name in emb_config_names, (
+            f"Config '{config_name}' missing from embedding_results JSON"
+        )

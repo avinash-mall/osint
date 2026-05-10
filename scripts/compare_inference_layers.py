@@ -110,6 +110,17 @@ SEGMENTER_CONFIGS: list[dict] = [
     },
 ]
 
+# ---------------------------------------------------------------------------
+# Layer configurations (embedding-only scope, Task 7)
+# ---------------------------------------------------------------------------
+EMBEDDING_CONFIGS: list[dict] = [
+    {"name": "sam3_only",       "enabled_layers": ["sam3"]},
+    {"name": "sam3+dinov3_sat", "enabled_layers": ["sam3", "dinov3_sat"]},
+    {"name": "sam3+dinov3_lvd", "enabled_layers": ["sam3", "dinov3_lvd"]},
+    {"name": "sam3+terramind",  "enabled_layers": ["sam3", "terramind"]},
+    {"name": "all_embeddings",  "enabled_layers": ["sam3", "dinov3_sat", "dinov3_lvd", "terramind"]},
+]
+
 
 # ---------------------------------------------------------------------------
 # HTTP helpers
@@ -258,6 +269,57 @@ def _synthetic_segmenter_response(
         },
         "enabled_layers_unavailable": [],
         "_elapsed_ms": round(rng.uniform(130, 320), 1),
+    }
+
+
+def _synthetic_embedding_response(enabled_layers: list[str]) -> dict:
+    """Return a plausible fake /detect response for --dry-run mode (embedding slice).
+
+    Synthesises:
+    - ``timings_ms["embedding"]`` in range 50–200 ms (when a DINOv3 layer is active).
+    - ``timings_ms["total"]`` in range 300–800 ms.
+    - Each detection has ``embedding = {"model": "dinov3_sat", "dim": 768, "fp16_b64": "AAAA..."}``.
+    - For terramind config: ``terramind_embedding`` is a list of floats.
+    """
+    rng = random.Random(77 + len(enabled_layers))
+
+    has_dinov3_sat = "dinov3_sat" in enabled_layers
+    has_dinov3_lvd = "dinov3_lvd" in enabled_layers
+    has_dinov3 = has_dinov3_sat or has_dinov3_lvd
+    has_terramind = "terramind" in enabled_layers
+
+    # Build a few synthetic detections
+    n_dets = rng.randint(2, 6)
+    detections: list[dict] = []
+    for i in range(n_dets):
+        det: dict = {
+            "label": "vehicle",
+            "confidence": round(rng.uniform(0.5, 0.95), 3),
+            "bbox": {"x": rng.randint(0, 200), "y": rng.randint(0, 200), "w": 32, "h": 32},
+        }
+        if has_dinov3:
+            model_name = "dinov3_sat" if has_dinov3_sat else "dinov3_lvd"
+            det["embedding"] = {
+                "model": model_name,
+                "dim": 768,
+                "fp16_b64": "AAAA" + "AA==" * 192,  # fake base64 placeholder
+            }
+        if has_terramind:
+            det["terramind_embedding"] = [round(rng.uniform(-1.0, 1.0), 4) for _ in range(64)]
+        detections.append(det)
+
+    timings: dict = {
+        "sam3_inference": round(rng.uniform(80, 150), 1),
+        "total": round(rng.uniform(300, 800), 1),
+    }
+    if has_dinov3:
+        timings["embedding"] = round(rng.uniform(50, 200), 1)
+
+    return {
+        "detections": detections,
+        "timings_ms": timings,
+        "enabled_layers_unavailable": [],
+        "_elapsed_ms": round(rng.uniform(310, 820), 1),
     }
 
 
@@ -561,6 +623,136 @@ def _aggregate_segmenter_results(
 
 
 # ---------------------------------------------------------------------------
+# Embedding chip evaluation (DINOV3_SAT, DINOV3_LVD, TERRAMIND)
+# ---------------------------------------------------------------------------
+
+def _evaluate_embedding_chip(
+    url: str,
+    chip_bytes: bytes,
+    enabled_layers: list[str],
+    repeats: int,
+    dry_run: bool,
+    modality: str = "rgb",
+) -> dict | None:
+    """Run N repeats for a single chip under an embedding config.
+
+    Returns a dict with keys:
+        ``"timings"``          — list of timing dicts (embedding_ms, total_ms).
+        ``"embed_coverage"``   — fraction of detections with dim > 0.
+        ``"terramind_any"``    — bool, True if any detection has terramind_embedding.
+        ``"unavailable"``      — bool.
+    """
+    timings: list[dict] = []
+    last_payload: dict | None = None
+    unavailable_count = 0
+
+    for attempt in range(repeats):
+        try:
+            if dry_run:
+                payload = _synthetic_embedding_response(enabled_layers)
+            else:
+                payload = _post_detect(url, chip_bytes, [], enabled_layers, modality=modality)
+        except requests.exceptions.RequestException as exc:
+            log.warning("HTTP error on embedding repeat %d: %s", attempt + 1, exc)
+            return None
+
+        if payload.get("enabled_layers_unavailable"):
+            unavailable_count += 1
+
+        timings_ms = payload.get("timings_ms", {})
+        timings.append({
+            "embedding_ms": timings_ms.get("embedding", 0.0),
+            "total_ms": timings_ms.get("total", payload.get("_elapsed_ms", 0.0)),
+        })
+        last_payload = payload
+
+    if last_payload is None:
+        return None
+
+    detections = last_payload.get("detections", [])
+    n_dets = len(detections)
+    if n_dets > 0:
+        n_with_embedding = sum(
+            1 for d in detections
+            if isinstance(d.get("embedding"), dict) and d["embedding"].get("dim", 0) > 0
+        )
+        embed_coverage = n_with_embedding / n_dets
+    else:
+        embed_coverage = 0.0
+
+    terramind_any = any(
+        d.get("terramind_embedding") is not None for d in detections
+    )
+
+    return {
+        "timings": timings,
+        "embed_coverage": embed_coverage,
+        "terramind_any": terramind_any,
+        "unavailable": unavailable_count > 0,
+    }
+
+
+def _aggregate_embedding_results(
+    chip_results: list[dict],
+    config_name: str,
+    baseline_median_ms: float | None = None,
+) -> dict:
+    """Aggregate embedding chip results into latency and coverage stats.
+
+    Parameters
+    ----------
+    chip_results:
+        List of dicts returned by ``_evaluate_embedding_chip``.
+    config_name:
+        Name of the embedding config (e.g. ``"sam3+dinov3_sat"``).
+    baseline_median_ms:
+        Median total latency of the sam3_only config, for delta calculation.
+
+    Returns
+    -------
+    dict with keys:
+        ``"config_name"``
+        ``"median_total_ms"``
+        ``"delta_ms_vs_baseline"``
+        ``"median_embedding_ms"``
+        ``"embed_coverage_fraction"``
+    """
+    if not chip_results:
+        return {
+            "config_name": config_name,
+            "median_total_ms": 0.0,
+            "delta_ms_vs_baseline": 0.0,
+            "median_embedding_ms": 0.0,
+            "embed_coverage_fraction": 0.0,
+        }
+
+    all_total: list[float] = []
+    all_embedding: list[float] = []
+    all_coverage: list[float] = []
+
+    for cr in chip_results:
+        for t in cr["timings"]:
+            all_total.append(t["total_ms"])
+            if t["embedding_ms"] > 0:
+                all_embedding.append(t["embedding_ms"])
+        all_coverage.append(cr["embed_coverage"])
+
+    median_total = round(statistics.median(all_total), 1) if all_total else 0.0
+    median_embedding = round(statistics.median(all_embedding), 1) if all_embedding else 0.0
+    mean_coverage = round(statistics.mean(all_coverage), 4) if all_coverage else 0.0
+
+    delta = round(median_total - (baseline_median_ms or 0.0), 1)
+
+    return {
+        "config_name": config_name,
+        "median_total_ms": median_total,
+        "delta_ms_vs_baseline": delta,
+        "median_embedding_ms": median_embedding,
+        "embed_coverage_fraction": mean_coverage,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Aggregate chip results across a config
 # ---------------------------------------------------------------------------
 
@@ -666,14 +858,15 @@ def _iter_slice(
     max_chips: int,
     layers_path: str | None,
 ) -> Iterator[tuple[bytes, str, list[str], Any]]:
-    if slice_name == "dota":
+    if slice_name in ("dota", "embedding"):
+        # embedding slice uses DOTA chips for RGB layers
         yield from iter_dota(labels_path=layers_path, max_chips=max_chips)
     elif slice_name == "hls_burn":
         yield from iter_hls_burn(labels_path=layers_path, max_chips=max_chips)
     elif slice_name == "sen1floods":
         yield from iter_sen1floods(labels_path=layers_path, max_chips=max_chips)
     else:
-        raise ValueError(f"Unknown slice: {slice_name!r}. Choices: dota, hls_burn, sen1floods")
+        raise ValueError(f"Unknown slice: {slice_name!r}. Choices: dota, hls_burn, sen1floods, embedding")
 
 
 # ---------------------------------------------------------------------------
@@ -698,6 +891,8 @@ def _build_markdown(
     segmenter_results: list[dict] | None = None,
     segmenter_slice: str | None = None,
     n_segmenter_chips: int = 0,
+    embedding_results: list[dict] | None = None,
+    n_embedding_chips: int = 0,
 ) -> str:
     lines: list[str] = []
 
@@ -855,6 +1050,53 @@ def _build_markdown(
 
         lines.append("")
 
+    # ------------------------------------------------------------------
+    # Embedding Models section (only when embedding slice was run)
+    # ------------------------------------------------------------------
+    if embedding_results is not None:
+        lines.append("## Embedding Models (Latency-Only)")
+        lines.append("")
+        lines.append(
+            "These layers add no detections — they enrich detections with embedding vectors "
+            "for downstream retrieval/re-ID."
+        )
+        lines.append("")
+        lines.append(f"Dataset: DOTA ({n_embedding_chips} chips, RGB modality)")
+        lines.append("")
+
+        embed_baseline = next(
+            (r for r in embedding_results if r["config_name"] == "sam3_only"), None
+        )
+
+        emb_headers = ["Config", "Median Total ms", "Δ ms vs SAM3", "Embed ms", "Coverage"]
+        lines.append("| " + " | ".join(emb_headers) + " |")
+        lines.append("|" + "|".join(["---"] * len(emb_headers)) + "|")
+
+        for result in embedding_results:
+            cfg = result["config_name"]
+            median_total = result["median_total_ms"]
+            embed_ms = result["median_embedding_ms"]
+            coverage = result["embed_coverage_fraction"]
+
+            if cfg == "sam3_only":
+                delta_str = "—"
+                embed_ms_str = "0"
+                coverage_str = "0%"
+            elif cfg == "sam3+terramind":
+                delta_str = f"+{result['delta_ms_vs_baseline']:.1f}"
+                embed_ms_str = "N/A"
+                coverage_str = "N/A (SAR)"
+            else:
+                delta_str = f"+{result['delta_ms_vs_baseline']:.1f}"
+                embed_ms_str = f"{embed_ms:.1f}"
+                coverage_str = f"{coverage * 100:.0f}%"
+
+            lines.append(
+                f"| {cfg} | {median_total:.1f} | {delta_str} | {embed_ms_str} | {coverage_str} |"
+            )
+
+        lines.append("")
+
     return "\n".join(lines)
 
 
@@ -863,6 +1105,7 @@ def _build_markdown(
 # ---------------------------------------------------------------------------
 
 _SEGMENTER_SLICES = frozenset({"hls_burn", "sen1floods"})
+_EMBEDDING_SLICES = frozenset({"embedding"})
 
 
 def run(args: argparse.Namespace) -> int:
@@ -877,6 +1120,7 @@ def run(args: argparse.Namespace) -> int:
     dry_run: bool = args.dry_run
 
     is_segmenter_slice = slice_name in _SEGMENTER_SLICES
+    is_embedding_slice = slice_name in _EMBEDDING_SLICES
 
     # ------------------------------------------------------------------
     # Probe service availability
@@ -917,8 +1161,54 @@ def run(args: argparse.Namespace) -> int:
     all_results: list[dict] = []
     segmenter_results: list[dict] | None = None
     n_segmenter_chips = 0
+    embedding_results: list[dict] | None = None
+    n_embedding_chips = 0
 
-    if is_segmenter_slice:
+    if is_embedding_slice:
+        embedding_results = []
+        baseline_embedding_ms: float | None = None
+
+        for cfg in EMBEDDING_CONFIGS:
+            config_name = cfg["name"]
+            enabled_layers = cfg["enabled_layers"]
+            log.info("Evaluating embedding config: %s  layers=%s", config_name, enabled_layers)
+
+            chip_results_emb: list[dict] = []
+
+            for chip_idx, (chip_bytes, modality, prompts, ground_truth) in enumerate(chips):
+                result = _evaluate_embedding_chip(
+                    url=url,
+                    chip_bytes=chip_bytes,
+                    enabled_layers=enabled_layers,
+                    repeats=repeats,
+                    dry_run=dry_run,
+                    modality=modality,
+                )
+                if result is None:
+                    log.warning("Chip %d/%d skipped (embedding eval failed).", chip_idx + 1, len(chips))
+                    continue
+                chip_results_emb.append(result)
+
+            agg_emb = _aggregate_embedding_results(
+                chip_results_emb,
+                config_name,
+                baseline_median_ms=baseline_embedding_ms,
+            )
+            embedding_results.append(agg_emb)
+            n_embedding_chips = max(n_embedding_chips, len(chip_results_emb))
+
+            if config_name == "sam3_only":
+                baseline_embedding_ms = agg_emb["median_total_ms"]
+
+            log.info(
+                "  chips_evaluated=%d  median_total_ms=%.1f  embed_ms=%.1f  coverage=%.2f",
+                len(chip_results_emb),
+                agg_emb["median_total_ms"],
+                agg_emb["median_embedding_ms"],
+                agg_emb["embed_coverage_fraction"],
+            )
+
+    elif is_segmenter_slice:
         # Determine which tasks appear in the ground truth
         sample_gt = chips[0][3] if chips else {}
         tasks = list(sample_gt.keys())
@@ -1010,6 +1300,7 @@ def run(args: argparse.Namespace) -> int:
                     "repeats": repeats,
                     "results": all_results,
                     "segmenter_results": segmenter_results,
+                    "embedding_results": embedding_results,
                 },
                 indent=2,
             ),
@@ -1032,6 +1323,8 @@ def run(args: argparse.Namespace) -> int:
         segmenter_results=segmenter_results,
         segmenter_slice=slice_name if is_segmenter_slice else None,
         n_segmenter_chips=n_segmenter_chips,
+        embedding_results=embedding_results,
+        n_embedding_chips=n_embedding_chips,
     )
 
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -1056,11 +1349,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--slice",
-        choices=["dota", "hls_burn", "sen1floods"],
+        choices=["dota", "hls_burn", "sen1floods", "embedding"],
         default="dota",
         help=(
             "Dataset slice to evaluate (default: dota). "
-            "Choices: dota (box detectors), hls_burn / sen1floods (PRITHVI segmenter heads)."
+            "Choices: dota (box detectors), hls_burn / sen1floods (PRITHVI segmenter heads), "
+            "embedding (DINOV3_SAT / DINOV3_LVD / TERRAMIND embedding latency)."
         ),
     )
     parser.add_argument(
