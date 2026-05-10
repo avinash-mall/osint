@@ -43,6 +43,9 @@ SAM3_TEXT_THR = float(os.getenv("SAM3_TEXT_THRESHOLD", "0.30"))
 SAM3_BOX_THR = float(os.getenv("SAM3_BOX_THRESHOLD", "0.25"))
 SAM3_PRITHVI_OVERLAY_THR = float(os.getenv("SAM3_PRITHVI_OVERLAY_THRESHOLD", "0.30"))
 SAM3_SAR_CONF_CAP = float(os.getenv("SAM3_SAR_CONF_CAP", "0.85"))
+SAM3_MAX_PROMPTS = int(os.getenv("SAM3_MAX_PROMPTS_PER_REQUEST", "64"))
+SAM3_MAX_IMAGE_PROMPTS = int(os.getenv("SAM3_MAX_IMAGE_PROMPTS", str(SAM3_MAX_PROMPTS)))
+SAM3_MAX_VIDEO_PROMPTS = int(os.getenv("SAM3_MAX_VIDEO_PROMPTS", "128"))
 SAM3_EMBED_DETECTIONS = os.getenv("SAM3_EMBED_DETECTIONS", "0").strip().lower() in {"1", "true", "yes", "on"}
 def _flag(name: str, default: str = "1") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
@@ -169,6 +172,9 @@ def health() -> dict[str, Any]:
             "dinov3_lvd": SAM3_LOAD_DINOV3_LVD,
             "prithvi": SAM3_LOAD_PRITHVI,
             "terramind": SAM3_LOAD_TERRAMIND,
+            "dota_obb": SAM3_LOAD_DOTA_OBB,
+            "yolo_defence": SAM3_LOAD_DEFENCE_YOLO,
+            "grounding_dino": SAM3_LOAD_GROUNDING_DINO,
         },
     }
 
@@ -190,12 +196,27 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
         meta = {}
     if not isinstance(meta, dict):
         meta = {}
+
+    # Per-request layer toggle. When enabled_layers is present, only the named
+    # layers run (SAM3 always runs regardless). When absent, all loaded layers
+    # run as usual (backward-compatible default).
+    _raw_enabled = meta.get("enabled_layers")
+    _enabled = set(_raw_enabled) if isinstance(_raw_enabled, list) else set()
+    _layer_active = (lambda layer: (layer in _enabled)) if _enabled else (lambda _: True)
+
+    # Surface layers that were requested but are not loaded in the bundle.
+    # We compute this after bundle selection so we can check bundle keys.
+    # Note: bundle is resolved below; this list is populated after _next_bundle().
+
     try:
         raw = await image.read()
         t0 = mark("read_upload", started)
         modality = str(meta.get("modality") or "rgb").lower()
         bundle = _next_bundle()
         t0 = mark("model_queue", t0)
+
+        # Compute unavailable layers now that we have the bundle.
+        _unavailable = [l for l in _enabled if l not in ("sam3",) and not bundle.get(l)]
 
         try:
             if modality == "multispectral":
@@ -242,15 +263,15 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
         # an open-vocab text-to-box detector that takes the same prompt list
         # we sent to SAM 3. fusion.mask_aware_nms dedupes overlapping
         # detections across SAM 3 + specialists.
-        if bundle.get("dota_obb"):
+        if bundle.get("dota_obb") and _layer_active("dota_obb"):
             candidates.extend(
                 await run_in_threadpool(dota_obb.run, bundle["dota_obb"], chip3, dota_obb.DOTA_OBB_THRESHOLD)
             )
-        if bundle.get("yolo_defence"):
+        if bundle.get("yolo_defence") and _layer_active("yolo_defence"):
             candidates.extend(
                 await run_in_threadpool(yolo_defence.run, bundle["yolo_defence"], chip3, yolo_defence.DEFENCE_YOLO_THRESHOLD)
             )
-        if bundle.get("grounding_dino") and prompts:
+        if bundle.get("grounding_dino") and prompts and _layer_active("grounding_dino"):
             candidates.extend(
                 await run_in_threadpool(
                     grounding_dino.run,
@@ -264,7 +285,10 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
 
         overlays: dict[str, np.ndarray] = {}
         if modality == "multispectral":
-            overlays = await run_in_threadpool(prithvi_heads.run_all, bundle.get("prithvi"), chip6, (height, width), chip6_temporal_3)
+            if _layer_active("prithvi"):
+                overlays = await run_in_threadpool(prithvi_heads.run_all, bundle.get("prithvi"), chip6, (height, width), chip6_temporal_3)
+            else:
+                overlays = {}
         t0 = mark("overlays", t0)
 
         detections = []
@@ -281,7 +305,7 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
             )
             if meta.get("geo"):
                 det["geo"] = {**meta["geo"], "obb_map_crs": None, "obb_map_geojson": None}
-            if SAM3_EMBED_DETECTIONS:
+            if SAM3_EMBED_DETECTIONS and _layer_active("dinov3_sat"):
                 emb_start = time.perf_counter()
                 det["embedding"] = embedding.embed_crop(bundle.get("dinov3_sat"), chip3, bbox_xyxy)
                 embedding_ms += (time.perf_counter() - emb_start) * 1000
@@ -293,7 +317,10 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
                 det["confidence"] = float(min(det["confidence"], SAM3_SAR_CONF_CAP))
                 det["sar_proxy"] = True
                 det["review_status"] = "review_candidate"
-                det["terramind_embedding"] = terramind.pool_patches(bundle.get("terramind"), chip2)
+                if _layer_active("terramind") and bundle.get("terramind"):
+                    det["terramind_embedding"] = terramind.pool_patches(bundle.get("terramind"), chip2)
+                else:
+                    det["terramind_embedding"] = None
             detections.append(det)
         timings["embedding"] = round(embedding_ms, 3)
         t0 = mark("postprocess", t0)
@@ -319,6 +346,7 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
             "timings_ms": timings,
             "queue_depth": queue_depth,
             "input_metadata": meta,
+            "enabled_layers_unavailable": _unavailable,
         }
     finally:
         _leave_request()
@@ -410,6 +438,16 @@ def _bundle_components(bundle: dict[str, Any]) -> dict[str, Any]:
         "yolo_defence": _model_loaded(bundle.get("yolo_defence")),
         "grounding_dino": _model_loaded(bundle.get("grounding_dino")),
     }
+
+
+def _prompt_limit(meta: dict[str, Any], modality: str) -> int:
+    default = SAM3_MAX_VIDEO_PROMPTS if (modality or "").lower() == "fmv" else SAM3_MAX_IMAGE_PROMPTS
+    override = meta.get("max_prompts")
+    try:
+        requested = int(override)
+    except (TypeError, ValueError):
+        requested = default
+    return max(1, min(requested, default))
 
 
 def _decode_valid_mask(payload: Any, expected_hw: tuple[int, int]) -> np.ndarray | None:

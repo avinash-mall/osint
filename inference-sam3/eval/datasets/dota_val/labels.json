@@ -1,0 +1,412 @@
+[
+  {
+    "chip": "chip_000.png",
+    "boxes": [
+      {
+        "label": "bridge",
+        "bbox_xyxy": [
+          142,
+          104,
+          467,
+          418
+        ],
+        "difficulty": 0
+      },
+      {
+        "label": "soccer-ball-field",
+        "bbox_xyxy": [
+          95,
+          223,
+          311,
+          438
+        ],
+        "difficulty": 0
+      }
+    ]
+  },
+  {
+    "chip": "chip_001.png",
+    "boxes": [
+      {
+        "label": "helipad",
+        "bbox_xyxy": [
+          665,
+          718,
+          697,
+          783
+        ],
+        "difficulty": 1
+      },
+      {
+        "label": "harbor",
+        "bbox_xyxy": [
+          6,
+          163,
+          435,
+          505
+        ],
+        "difficulty": 1
+      }
+    ]
+  },
+  {
+    "chip": "chip_002.png",
+    "boxes": [
+      {
+        "label": "ground-track-field",
+        "bbox_xyxy": [
+          94,
+          389,
+          466,
+          641
+        ],
+        "difficulty": 0
+      },
+      {
+        "label": "helicopter",
+        "bbox_xyxy": [
+          618,
+          270,
+          692,
+          312
+        ],
+        "difficulty": 0
+      },
+      {
+        "label": "swimming-pool",
+        "bbox_xyxy": [
+          387,
+          80,
+          535,
+          175
+        ],
+        "difficulty": 0
+      }
+    ]
+  },
+  {
+    "chip": "chip_003.png",
+    "boxes": [
+      {
+        "label": "ground-track-field",
+        "bbox_xyxy": [
+          677,
+          233,
+          912,
+          456
+        ],
+        "difficulty": 0
+      },
+      {
+        "label": "storage-tank",
+        "bbox_xyxy": [
+          103,
+          389,
+          292,
+          498
+        ],
+        "difficulty": 0
+      },
+      {
+        "label": "swimming-pool",
+        "bbox_xyxy": [
+          373,
+          166,
+          534,
+          352
+        ],
+        "difficulty": 0
+      },
+      {
+        "label": "helicopter",
+        "bbox_xyxy": [
+          273,
+          718,
+          306,
+          780
+        ],
+        "difficulty": 0
+      }
+    ]
+  },
+  {
+    "chip": "chip_004.png",
+    "boxes": [
+      {
+        "label": "harbor",
+        "bbox_xyxy": [
+          388,
+          276,
+          671,
+          712
+        ],
+        "difficulty": 0
+      },
+      {
+        "label": "small-vehicle",
+        "bbox_xyxy": [
+          794,
+          57,
+          867,
+          126
+        ],
+        "difficulty": 0
+      },
+      {
+        "label": "ship",
+        "bbox_xyxy": [
+          410,
+          274,
+          481,
+          314
+        ],
+        "difficulty": 0
+      },
+      {
+        "label": "ground-track-field",
+        "bbox_xyxy": [
+          217,
+          511,
+          707,
+          872
+        ],
+        "difficulty": 1
+      },
+      {
+        "label": "swimming-pool",
+        "bbox_xyxy": [
+          142,
+          252,
+          240,
+          365
+        ],
+        "difficulty": 0
+      },
+      {
+        "label": "soccer-ball-field",
+        "bbox_xyxy": [
+          370,
+          224,
+          868,
+          628
+        ],
+        "difficulty": 0
+      }
+    ]
+  },
+  {
+    "chip": "chip_005.png",
+    "boxes": [
+      {
+        "label": "ship",
+        "bbox_xyxy": [
+          156,
+          642,
+          231,
+          669
+        ],
+        "difficulty": 0
+      },
+      {
+        "label": "soccer-ball-field",
+        "bbox_xyxy": [
+          390,
+          610,
+          622,
+          1007
+        ],
+        "difficulty": 1
+      }
+    ]
+  },
+  {
+    "chip": "chip_006.png",
+    "boxes": [
+      {
+        "label": "plane",
+        "bbox_xyxy": [
+          117,
+          698,
+          180,
+          764
+        ],
+        "difficulty": 0
+      },
+      {
+        "label": "small-vehicle",
+        "bbox_xyxy": [
+          445,
+          161,
+          472,
+          199
+        ],
+        "difficulty": 1
+      },
+      {
+        "label": "plane",
+        "bbox_xyxy": [
+          736,
+          269,
+          802,
+          345
+        ],
+        "difficulty": 0
+      },
+      {
+        "label": "airport",
+        "bbox_xyxy": [
+          654,
+          519,
+          908,
+          871
+        ],
+        "difficulty": 0
+      },
+      {
+        "label": "tennis-court",
+        "bbox_xyxy": [
+          165,
+          552,
+          292,
+          729
+        ],
+        "difficulty": 0
+      },
+      {
+        "label": "small-vehicle",
+        "bbox_xyxy": [
+          114,
+          951,
+          165,
+          972
+        ],
+        "difficulty": 0
+      }
+    ]
+  },
+  {
+    "chip": "chip_007.png",
+    "boxes": [
+      {
+        "label": "harbor",
+        "bbox_xyxy": [
+          87,
+          749,
+          577,
+          989
+        ],
+        "difficulty": 1
+      },
+      {
+        "label": "storage-tank",
+        "bbox_xyxy": [
+          784,
+          128,
+          961,
+          276
+        ],
+        "difficulty": 0
+      }
+    ]
+  },
+  {
+    "chip": "chip_008.png",
+    "boxes": [
+      {
+        "label": "bridge",
+        "bbox_xyxy": [
+          216,
+          552,
+          686,
+          968
+        ],
+        "difficulty": 0
+      },
+      {
+        "label": "large-vehicle",
+        "bbox_xyxy": [
+          665,
+          382,
+          710,
+          444
+        ],
+        "difficulty": 1
+      },
+      {
+        "label": "airport",
+        "bbox_xyxy": [
+          253,
+          230,
+          684,
+          491
+        ],
+        "difficulty": 0
+      }
+    ]
+  },
+  {
+    "chip": "chip_009.png",
+    "boxes": [
+      {
+        "label": "helipad",
+        "bbox_xyxy": [
+          225,
+          7,
+          259,
+          64
+        ],
+        "difficulty": 0
+      },
+      {
+        "label": "ship",
+        "bbox_xyxy": [
+          927,
+          32,
+          961,
+          56
+        ],
+        "difficulty": 0
+      },
+      {
+        "label": "storage-tank",
+        "bbox_xyxy": [
+          285,
+          685,
+          430,
+          795
+        ],
+        "difficulty": 1
+      },
+      {
+        "label": "ground-track-field",
+        "bbox_xyxy": [
+          484,
+          248,
+          960,
+          515
+        ],
+        "difficulty": 1
+      },
+      {
+        "label": "soccer-ball-field",
+        "bbox_xyxy": [
+          99,
+          674,
+          396,
+          922
+        ],
+        "difficulty": 1
+      },
+      {
+        "label": "helicopter",
+        "bbox_xyxy": [
+          478,
+          884,
+          525,
+          930
+        ],
+        "difficulty": 0
+      }
+    ]
+  }
+]
