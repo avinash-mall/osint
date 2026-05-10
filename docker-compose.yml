@@ -179,9 +179,6 @@ services:
       SAM3_OBB_MIN_AREA_PX: ${SAM3_OBB_MIN_AREA_PX:-4}
       SAM3_DEFAULT_PROMPT_PROFILE: ${SAM3_DEFAULT_PROMPT_PROFILE:-}
       SAM3_LABEL_FILE: ${SAM3_LABEL_FILE:-}
-      SAM3_MAX_PROMPTS_PER_REQUEST: ${SAM3_MAX_PROMPTS_PER_REQUEST:-128}
-      SAM3_MAX_IMAGE_PROMPTS: ${SAM3_MAX_IMAGE_PROMPTS:-128}
-      SAM3_MAX_VIDEO_PROMPTS: ${SAM3_MAX_VIDEO_PROMPTS:-128}
       SAM3_EMBED_DETECTIONS: ${SAM3_EMBED_DETECTIONS:-0}
       # Per-component runtime loader flags. The checked-in .env enables the full
       # auxiliary stack; turn individual flags off on memory-constrained GPUs.
@@ -190,7 +187,26 @@ services:
       SAM3_LOAD_DINOV3_LVD: ${SAM3_LOAD_DINOV3_LVD:-1}
       SAM3_LOAD_PRITHVI:    ${SAM3_LOAD_PRITHVI:-1}
       SAM3_LOAD_TERRAMIND:  ${SAM3_LOAD_TERRAMIND:-1}
-      MODEL_VERSION: ${SAM3_MODEL_VERSION:-sam3-image+sam3.1-video+dinov3-sat-l+prithvi+terramind}
+      # Specialist detectors (run alongside SAM 3 on every chip).
+      SAM3_LOAD_DOTA_OBB:        ${SAM3_LOAD_DOTA_OBB:-1}
+      SAM3_LOAD_DEFENCE_YOLO:    ${SAM3_LOAD_DEFENCE_YOLO:-1}
+      SAM3_LOAD_GROUNDING_DINO:  ${SAM3_LOAD_GROUNDING_DINO:-1}
+      DOTA_OBB_MODEL_ID:         ${DOTA_OBB_MODEL_ID:-yolo11n-obb.pt}
+      DEFENCE_YOLO_REPO_ID:      ${DEFENCE_YOLO_REPO_ID:-spencercdz/YOLOv8m_defence}
+      DEFENCE_YOLO_FILENAME:     ${DEFENCE_YOLO_FILENAME:-yolov8m_defence.pt}
+      GROUNDING_DINO_REPO_ID:    ${GROUNDING_DINO_REPO_ID:-IDEA-Research/grounding-dino-tiny}
+      GROUNDING_DINO_THRESHOLD:  ${GROUNDING_DINO_THRESHOLD:-0.35}
+      GROUNDING_DINO_TEXT_THRESHOLD: ${GROUNDING_DINO_TEXT_THRESHOLD:-0.25}
+      # Category-level presence gate (SegEarth-OV-3 idea). 0.0 disables.
+      # 0.40 suppresses prompts whose best mask still has weak presence,
+      # which is what produces hallucinated detections on absent concepts.
+      SAM3_CATEGORY_THRESHOLD: ${SAM3_CATEGORY_THRESHOLD:-0.40}
+      # SAM 3 weights source: "official" → gated facebook/sam3 (needs HF_TOKEN),
+      # "mirror" → 1038lab/sam3 non-gated mirror (HF_TOKEN optional).
+      SAM3_WEIGHTS_SOURCE:  ${SAM3_WEIGHTS_SOURCE:-official}
+      SAM3_MIRROR_REPO_ID:  ${SAM3_MIRROR_REPO_ID:-1038lab/sam3}
+      SAM3_MIRROR_FILENAME: ${SAM3_MIRROR_FILENAME:-sam3.safetensors}
+      MODEL_VERSION: ${SAM3_MODEL_VERSION:-sam3-image+sam3.1-video+dinov3-sat-l+prithvi+terramind+dota-obb+yolo-defence+grounding-dino}
       HF_HOME: /models/hf
       HUGGINGFACE_HUB_CACHE: /models/hf/hub
       TORCH_HOME: /models/torch
@@ -199,7 +215,10 @@ services:
       # Flip both to "1" once the volume is populated to enforce offline.
       HF_HUB_OFFLINE: ${SAM3_HF_HUB_OFFLINE:-0}
       TRANSFORMERS_OFFLINE: ${SAM3_TRANSFORMERS_OFFLINE:-0}
-      HF_TOKEN: ${HF_TOKEN:?HF_TOKEN required for gated facebook/sam3* + DINOv3 weights}
+      # HF_TOKEN is required for the official gated facebook/sam3* weights and
+      # DINOv3 (also gated). Pass an empty string when SAM3_WEIGHTS_SOURCE=mirror
+      # AND SAM3_LOAD_DINOV3_*=0 to run fully un-tokened.
+      HF_TOKEN: ${HF_TOKEN:-}
     volumes:
       - ./inference-sam3:/app
       - ./backend/detection_policy.py:/app/detection_policy.py:ro

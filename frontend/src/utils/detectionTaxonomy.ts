@@ -1,3 +1,5 @@
+import { ALL_BRANCHES, BRANCH_ORDER, classifyToBranch, type BranchId } from './defenceOntology';
+
 export const CLASS_LIST = [
   'aircraft', 'ship', 'vehicle', 'military_vehicle', 'storage_tank', 'bridge', 'harbor', 'airfield', 'building', 'infrastructure',
   'xview_fixed_wing_aircraft', 'xview_small_aircraft', 'xview_cargo_plane', 'xview_helicopter',
@@ -59,96 +61,20 @@ export const CLASS_LIST = [
   'hrsc_liquid_cargo_ship',
 ] as const;
 
-export type DetectionCategoryId =
-  | 'air'
-  | 'vehicle'
-  | 'rail'
-  | 'sea'
-  | 'construction'
-  | 'structure'
-  | 'mil'
-  | 'energy'
-  | 'sport'
-  | 'infra'
-  | 'agri'
-  | 'water'
-  | 'logistics'
-  | 'transit'
-  | 'other';
+export type DetectionCategoryId = BranchId;
 
-export const CATEGORY_ORDER: DetectionCategoryId[] = [
-  'air',
-  'vehicle',
-  'rail',
-  'sea',
-  'construction',
-  'structure',
-  'mil',
-  'energy',
-  'sport',
-  'infra',
-  'agri',
-  'water',
-  'logistics',
-  'transit',
-  'other',
-];
+export const CATEGORY_ORDER: DetectionCategoryId[] = BRANCH_ORDER as DetectionCategoryId[];
 
-export const DETECTION_CATEGORIES: Record<DetectionCategoryId, { label: string; color: string; short: string }> = {
-  air: { label: 'Air', color: '#4ea1ff', short: 'AIR' },
-  vehicle: { label: 'Vehicle', color: '#ff7a1a', short: 'VEH' },
-  rail: { label: 'Rail', color: '#a78bfa', short: 'RAL' },
-  sea: { label: 'Maritime', color: '#3dd68c', short: 'SEA' },
-  construction: { label: 'Construct', color: '#f5b400', short: 'CON' },
-  structure: { label: 'Structure', color: '#aab2bb', short: 'STR' },
-  mil: { label: 'Military', color: '#ff3b30', short: 'MIL' },
-  energy: { label: 'Energy', color: '#ff3b30', short: 'ENR' },
-  sport: { label: 'Recreation', color: '#3dd68c', short: 'REC' },
-  infra: { label: 'Infra', color: '#9bb1c4', short: 'INF' },
-  agri: { label: 'Agri', color: '#a8d34a', short: 'AGR' },
-  water: { label: 'Water', color: '#4ea1ff', short: 'WTR' },
-  logistics: { label: 'Logistics', color: '#f5b400', short: 'LOG' },
-  transit: { label: 'Transit', color: '#aab2bb', short: 'TRN' },
-  other: { label: 'Other', color: '#727a83', short: 'OTH' },
-};
+export const DETECTION_CATEGORIES: Record<DetectionCategoryId, { label: string; color: string; short: string }> =
+  ALL_BRANCHES.reduce((acc, branch) => {
+    acc[branch.id as DetectionCategoryId] = { label: branch.label, color: branch.color, short: branch.short };
+    return acc;
+  }, {} as Record<DetectionCategoryId, { label: string; color: string; short: string }>);
 
 export const SOURCE_ORDER = ['xView', 'DOTA', 'FAIR1M', 'DIOR-R', 'SODA-A', 'HRSC', 'fMoW', 'Local'] as const;
 
-const CATEGORY_BY_ONTOLOGY: Record<string, DetectionCategoryId> = {
-  air: 'air',
-  maritime: 'sea',
-  ground: 'vehicle',
-  combat: 'mil',
-  infrastructure: 'infra',
-  logistics: 'logistics',
-  energy: 'energy',
-  facility: 'structure',
-  unknown: 'other',
-};
-
 export function classifyDetectionClass(value?: string | null, ontologyCategory?: string | null): DetectionCategoryId {
-  const raw = String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '_');
-  const ontology = CATEGORY_BY_ONTOLOGY[String(ontologyCategory || '').toLowerCase()];
-  // Maritime checked before air so 'aircraft_carrier', 'container_ship', 'naval_vessel' resolve to sea.
-  if (/aircraft_carrier|ship|vessel|boat|tanker|barge|tugboat|ferry|yacht|harbor|harbour|port|shipyard|warship|warcraft|destroyer|frigate|cruiser|corvette|submarine|hovercraft|naval/.test(raw)) return 'sea';
-  if (/aircraft|plane|airplane|hangar|airport|runway|helipad|helicopter|boeing|a3\d\d|a2\d\d|arj21|c919|a350/.test(raw)) return 'air';
-  if (/military_vehicle|missile|launcher|artillery|sam|armored|armoured/.test(raw)) return 'mil';
-  if (/locomotive|railway|rail|tank_car|flat_car|cargo_car|passenger_car|train_station|trainstation/.test(raw)) return 'rail';
-  if (/truck|car|vehicle|bus|trailer|van|tractor/.test(raw)) return 'vehicle';
-  if (/excavator|crane|loader|grader|dump|scraper|stacker|straddle|cement|construction|mining|surface_mine|engineering/.test(raw)) return 'construction';
-  if (/storage_?tank|oil|gas|smokestack|powerplant|substation|factory|nuclear|solar|wind_?farm|windmill|chimney/.test(raw)) return 'energy';
-  if (/military|prison|police|fire|border|checkpoint/.test(raw)) return 'mil';
-  if (/airfield/.test(raw)) return 'air';
-  if (/bridge|overpass|interchange|roundabout|toll|tunnel|road|track|expressway|transportation_station/.test(raw)) return 'infra';
-  if (/stadium|baseball|tennis|basketball|soccer|football|golf|race_track|ground_?track|swim|park|recreation|amusement|zoo|fountain/.test(raw)) return 'sport';
-  if (/residential|office|shopping|mall|hospital|school|education|worship|burial|archaeological|lighthouse|tower|pylon|shed|hut|barn|building|facility/.test(raw)) return 'structure';
-  if (/crop|aquaculture|farm/.test(raw)) return 'agri';
-  if (/lake|pond|water_treatment|dam|flooded|debris|rubble|waste|impoverished/.test(raw)) return 'water';
-  if (/container|shipping/.test(raw)) return 'logistics';
-  if (/parking|lot|dealership|gas_station/.test(raw)) return 'transit';
-  // HRSC2016 is exclusively maritime, so any unmapped hrsc_* class falls back to sea.
-  if (raw.startsWith('hrsc')) return 'sea';
-  return ontology || 'other';
+  return classifyToBranch(value, ontologyCategory) as DetectionCategoryId;
 }
 
 export function detectionClassLabel(value?: string | null): string {

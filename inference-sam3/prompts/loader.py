@@ -40,7 +40,7 @@ def _load_extra_file(path: str) -> list[str]:
     return [str(item) for item in prompts]
 
 
-def resolve_prompts(meta: dict[str, Any] | None, *, max_prompts: int) -> list[str]:
+def resolve_prompts(meta: dict[str, Any] | None) -> list[str]:
     meta = meta or {}
     if isinstance(meta.get("text_prompts"), list) and meta["text_prompts"]:
         prompts = [str(item) for item in meta["text_prompts"]]
@@ -63,8 +63,6 @@ def resolve_prompts(meta: dict[str, Any] | None, *, max_prompts: int) -> list[st
             continue
         seen.add(normalized)
         out.append(normalized)
-        if len(out) >= max(1, max_prompts):
-            break
     if not out:
         raise ValueError("No labels supplied for SAM3")
     return out

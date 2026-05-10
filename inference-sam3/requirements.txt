@@ -14,3 +14,4 @@ shapely
 pyproj
 pycocotools
 terratorch>=1.1,<1.5
+ultralytics>=8.3.0

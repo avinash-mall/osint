@@ -25,7 +25,6 @@ from rasterio.windows import Window
 from shapely.geometry import Polygon, MultiPolygon
 import numpy as np
 from PIL import Image
-from ai import ai_status, get_llm_json
 from imagery_metadata import extract_raster_metadata
 from detection_policy import active_detection_policy, detection_decision, parent_class_for_label
 from threat_assessment import assess_detection_threat, clean_detection_class, conservative_detection_ontology
@@ -84,9 +83,6 @@ INFERENCE_CHIP_TIMEOUT_S = env_int("INFERENCE_CHIP_TIMEOUT_S", 120)
 INFERENCE_MIN_VALID_CHIP_FRACTION = max(0.0, min(1.0, env_float("INFERENCE_MIN_VALID_CHIP_FRACTION", 0.01)))
 INFERENCE_MIN_VALID_DETECTION_FRACTION = max(0.0, min(1.0, env_float("INFERENCE_MIN_VALID_DETECTION_FRACTION", 0.20)))
 DETECTION_POLICY = active_detection_policy()
-ENABLE_LLM_DETECTION_CLASSIFICATION = env_bool("ENABLE_LLM_DETECTION_CLASSIFICATION", True)
-LLM_DETECTION_BATCH_SIZE = max(1, env_int("LLM_DETECTION_BATCH_SIZE", 8))
-LLM_DETECTION_CLASS_TIMEOUT_SECONDS = env_int("LLM_DETECTION_CLASS_TIMEOUT_SECONDS", 3)
 INFERENCE_MAX_PENDING_CHIPS = max(
     1,
     env_int("INFERENCE_MAX_PENDING_CHIPS", INFERENCE_CHIP_CONCURRENCY * 2),
@@ -228,23 +224,6 @@ def report_progress(task, upload_id: str, file_path: str, stage: str, progress: 
         task.update_state(state="PROGRESS", meta=payload)
     publish_event("imagery", {"type": "imagery_progress", **payload})
     publish_event("ops", {"type": "imagery_progress", **payload})
-
-
-def report_llm_progress(upload_id: str, pass_id: int, stage: str, progress: int, message: str, extra: dict = None) -> None:
-    progress = max(0, min(100, int(progress)))
-    status = "complete" if progress >= 100 else "running"
-    payload = {
-        "upload_id": upload_id,
-        "pass_id": pass_id,
-        "llm_status": status,
-        "llm_stage": stage,
-        "llm_progress": progress,
-        "llm_message": message,
-        **(extra or {}),
-    }
-    update_upload_job(upload_id=upload_id, metadata=payload)
-    publish_event("imagery", {"type": "imagery_llm_progress", **payload})
-    publish_event("ops", {"type": "imagery_llm_progress", **payload})
 
 
 def ensure_cog(input_path: str, output_path: str) -> str:
@@ -547,50 +526,6 @@ def detection_ontology(det_class: str) -> dict:
     return conservative_detection_ontology(det_class)
 
 
-def llm_detection_ontology(det_class: str, count: int, avg_confidence: float) -> dict:
-    base = conservative_detection_ontology(det_class, confidence=avg_confidence)
-    prompt = json.dumps({
-        "task": "Classify a GEOINT computer-vision detection class for upload processing metadata.",
-        "input": {
-            "raw_class": det_class,
-            "fallback_label": base["label"],
-            "fallback_category": base["category"],
-            "fallback_threat_level": base["threat_level"],
-            "count_in_image": count,
-            "avg_confidence": avg_confidence,
-        },
-        "required_json_schema": {
-            "label": "short human label",
-            "domain": "GEOINT",
-            "category": "one of air, maritime, ground, combat, infrastructure, logistics, energy, facility, unknown",
-            "threat_level": "one of low, medium, high, critical",
-            "description": "one short analyst-facing sentence",
-            "recommended_filter": "short filter chip text",
-        },
-    }, default=str)
-    system = "Return only compact JSON. Do not invent sightings or facts. Use only the class name and counts provided."
-    data = get_llm_json(
-        prompt,
-        system=system,
-        max_tokens=240,
-        timeout_seconds=LLM_DETECTION_CLASS_TIMEOUT_SECONDS,
-    )
-    return {
-        **base,
-        "label": str(data.get("label") or base["label"])[:80],
-        "domain": "GEOINT",
-        "category": base["category"],
-        "threat_level": base["threat_level"],
-        "threat_confidence": base["threat_confidence"],
-        "assessment_status": base["assessment_status"],
-        "evidence": base["evidence"],
-        "description": str(data.get("description") or base["description"])[:280],
-        "recommended_filter": str(data.get("recommended_filter") or data.get("label") or base["recommended_filter"])[:80],
-        "generated_by": f"{ai_status().get('model') or 'llm'}; threat=deterministic-rules",
-        "status": "ok",
-    }
-
-
 def classify_detection_ontologies(detections: list, progress_callback=None) -> dict[str, dict]:
     grouped: dict[str, list[float]] = {}
     for det in detections:
@@ -600,12 +535,7 @@ def classify_detection_ontologies(detections: list, progress_callback=None) -> d
     ontology_by_class: dict[str, dict] = {}
     if not grouped:
         if progress_callback:
-            progress_callback(
-                "classification",
-                94,
-                "No detections found; skipping class labeling.",
-                {"llm_classes_processed": 0, "llm_classes_total": 0, "llm_enabled": False},
-            )
+            progress_callback("classification", 94, "No detections found; skipping class labeling.")
         return ontology_by_class
 
     for det_class in grouped:
@@ -614,12 +544,7 @@ def classify_detection_ontologies(detections: list, progress_callback=None) -> d
             "status": "deterministic",
         }
     if progress_callback:
-        progress_callback(
-            "classification",
-            94,
-            "Detection classes labeled with deterministic ontology rules.",
-            {"llm_classes_processed": 0, "llm_classes_total": len(grouped), "llm_enabled": False},
-        )
+        progress_callback("classification", 94, "Detection classes labeled with deterministic ontology rules.")
     return ontology_by_class
 
 
@@ -954,7 +879,12 @@ def slice_and_infer(
                 if decision["review_status"] == "below_class_threshold":
                     continue
 
-                det["class"] = decision["parent_class"]
+                # Preserve the original SAM3 prompt as the canonical class. The
+                # decision["parent_class"] is a coarse legacy bucket from naive
+                # substring matching (e.g. "disturbed earth" → "bed" → "furniture")
+                # and overwriting class with it discards information the
+                # frontend defence-ontology classifier needs.
+                det["class"] = decision["original_class"]
                 det_model_version = det.get("model_version") or decision["model_version"]
                 det_taxonomy_version = det.get("taxonomy_version") or decision["taxonomy_version"]
                 det_threshold_profile = det.get("threshold_profile") or decision["threshold_profile"]
@@ -1441,145 +1371,6 @@ def detection_class_summary(pass_id: int) -> list[dict]:
         return [dict(row) for row in cursor.fetchall()]
 
 
-def update_detection_class_ontology(pass_id: int, det_class: str, ontology: dict) -> int:
-    enriched_at = datetime.now(timezone.utc).isoformat()
-    metadata_patch = {
-        "ontology": ontology,
-        "llm_ontology_status": ontology.get("status", "ok"),
-        "llm_enriched_at": enriched_at,
-    }
-    with postgis_db.get_cursor(commit=True) as cursor:
-        cursor.execute("""
-            UPDATE detections
-            SET metadata = coalesce(metadata, '{}'::jsonb) || %s::jsonb
-            WHERE pass_id = %s AND class = %s
-            RETURNING id
-        """, (json.dumps(metadata_patch, default=str), pass_id, det_class))
-        det_ids = [row["id"] for row in cursor.fetchall()]
-
-    if det_ids:
-        with db.get_session() as neo_session:
-            for offset in range(0, len(det_ids), 1000):
-                neo_session.run("""
-                    MATCH (d:Detection)
-                    WHERE d.postgis_id IN $det_ids
-                    SET d.label = $label,
-                        d.ontology_category = $ontology_category,
-                        d.llm_ontology_status = $llm_ontology_status,
-                        d.llm_enriched_at = datetime($llm_enriched_at)
-                """, {
-                    "det_ids": det_ids[offset:offset + 1000],
-                    "label": ontology.get("label") or clean_detection_class(det_class),
-                    "ontology_category": ontology.get("category") or "unknown",
-                    "llm_ontology_status": ontology.get("status", "ok"),
-                    "llm_enriched_at": enriched_at,
-                })
-    return len(det_ids)
-
-
-@celery_app.task(queue="default", bind=True)
-def classify_detection_ontologies_for_pass(self, pass_id: int, upload_id: str = None):
-    ensure_worker_imagery_schema()
-    rows = detection_class_summary(pass_id)
-    total = len(rows)
-
-    if not ENABLE_LLM_DETECTION_CLASSIFICATION:
-        report_llm_progress(
-            upload_id,
-            pass_id,
-            "llm skipped",
-            100,
-            "LLM class enrichment disabled; deterministic labels are stored.",
-            {"llm_classes_processed": 0, "llm_classes_total": total, "llm_enabled": False},
-        )
-        return {"pass_id": pass_id, "classes": total, "status": "disabled"}
-
-    if not ai_status().get("configured"):
-        report_llm_progress(
-            upload_id,
-            pass_id,
-            "llm unavailable",
-            100,
-            "LLM unavailable; deterministic detection labels are stored.",
-            {"llm_classes_processed": 0, "llm_classes_total": total, "llm_enabled": False},
-        )
-        return {"pass_id": pass_id, "classes": total, "status": "unavailable"}
-
-    if total == 0:
-        report_llm_progress(
-            upload_id,
-            pass_id,
-            "llm complete",
-            100,
-            "No detection classes to enrich.",
-            {"llm_classes_processed": 0, "llm_classes_total": 0, "llm_enabled": True},
-        )
-        return {"pass_id": pass_id, "classes": 0, "status": "complete"}
-
-    processed = 0
-    updated = 0
-    failures = 0
-    report_llm_progress(
-        upload_id,
-        pass_id,
-        "llm queued",
-        0,
-        f"LLM class enrichment queued ({total} classes).",
-        {"llm_classes_processed": 0, "llm_classes_total": total, "llm_enabled": True},
-    )
-
-    for batch_start in range(0, total, LLM_DETECTION_BATCH_SIZE):
-        batch = rows[batch_start:batch_start + LLM_DETECTION_BATCH_SIZE]
-        report_llm_progress(
-            upload_id,
-            pass_id,
-            "llm classification",
-            int(processed / total * 100),
-            f"Enriching detection classes ({processed}/{total}).",
-            {"llm_classes_processed": processed, "llm_classes_total": total, "llm_enabled": True},
-        )
-        for row in batch:
-            det_class = row.get("class") or "Unknown"
-            try:
-                ontology = llm_detection_ontology(
-                    det_class,
-                    count=int(row.get("count") or 0),
-                    avg_confidence=float(row.get("avg_confidence") or 0),
-                )
-            except Exception as exc:
-                failures += 1
-                logger.warning("Background LLM enrichment fell back for %s: %s", det_class, exc)
-                ontology = {
-                    **detection_ontology(det_class),
-                    "description": f"LLM enrichment unavailable: {exc}",
-                    "status": "unavailable",
-                }
-            updated += update_detection_class_ontology(pass_id, det_class, ontology)
-            processed += 1
-            self.update_state(state="PROGRESS", meta={
-                "pass_id": pass_id,
-                "upload_id": upload_id,
-                "llm_classes_processed": processed,
-                "llm_classes_total": total,
-            })
-
-    report_llm_progress(
-        upload_id,
-        pass_id,
-        "llm complete",
-        100,
-        f"LLM class enrichment complete ({processed}/{total} classes).",
-        {
-            "llm_classes_processed": processed,
-            "llm_classes_total": total,
-            "llm_enabled": True,
-            "llm_failures": failures,
-            "llm_updated_detections": updated,
-        },
-    )
-    return {"pass_id": pass_id, "classes": processed, "updated_detections": updated, "failures": failures, "status": "complete"}
-
-
 @celery_app.task(queue="imagery", bind=True)
 def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical", acquisition_time: str = None, upload_id: str = None):
     """
@@ -1814,18 +1605,6 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
         except Exception as exc:
             logger.exception("[WORKER] Tracker update failed for pass %s: %s", pass_id, exc)
 
-        llm_task_id = None
-        llm_should_queue = False
-        llm_status = "unavailable"
-        llm_message = "LLM unavailable; deterministic detection labels are stored."
-        if ENABLE_LLM_DETECTION_CLASSIFICATION and ai_status().get("configured"):
-            llm_should_queue = True
-            llm_status = "queued"
-            llm_message = "Imagery ready; LLM class enrichment queued."
-        elif not ENABLE_LLM_DETECTION_CLASSIFICATION:
-            llm_status = "disabled"
-            llm_message = "LLM class enrichment disabled; deterministic detection labels are stored."
-
         payload = {
             "pass_id": pass_id,
             "cog_path": cog_path,
@@ -1834,7 +1613,6 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
             "candidate_links_count": candidate_count,
             "acquisition_time": acq_time,
             "replacement": replacement,
-            "llm_task_id": llm_task_id,
             "inference_summary": inference_summary,
             "processed_chips": inference_summary.get("processed_chips"),
             "total_chips": inference_summary.get("planned_chips"),
@@ -1850,26 +1628,9 @@ def process_satellite_imagery(self, image_url: str, sensor_type: str = "Optical"
                 "stage": "ready",
                 "progress": 100,
                 "message": "Imagery processing complete.",
-                "llm_status": llm_status,
-                "llm_stage": "llm queued" if llm_status == "queued" else llm_status,
-                "llm_progress": 0 if llm_status == "queued" else 100,
-                "llm_message": llm_message,
-                "llm_enabled": llm_status == "queued",
             },
             clear_metadata_keys=("error",),
         )
-        if llm_should_queue:
-            llm_task = classify_detection_ontologies_for_pass.delay(pass_id, upload_id)
-            llm_task_id = llm_task.id
-            payload["llm_task_id"] = llm_task_id
-            update_upload_job(upload_id=upload_id, file_path=input_path, metadata={
-                "llm_task_id": llm_task_id,
-                "llm_status": "queued",
-                "llm_stage": "llm queued",
-                "llm_progress": 0,
-                "llm_message": llm_message,
-                "llm_enabled": True,
-            })
         publish_event("detections", {"type": "detections_updated", **payload})
         publish_event("imagery", {"type": "ingest_succeeded", "stage": "ready", "progress": 100, **payload})
         publish_event("ops", {"type": "imagery_ready", "stage": "ready", "progress": 100, **payload})

@@ -18,13 +18,16 @@ from fastapi.responses import StreamingResponse
 from PIL import Image
 from starlette.concurrency import run_in_threadpool
 
+import dota_obb
 import embedding
 import fusion
+import grounding_dino
 import multispectral
 import prithvi_heads
 import sam3_runner
 import sar
 import terramind
+import yolo_defence
 from prompts.loader import resolve_prompts
 
 
@@ -40,9 +43,6 @@ SAM3_TEXT_THR = float(os.getenv("SAM3_TEXT_THRESHOLD", "0.30"))
 SAM3_BOX_THR = float(os.getenv("SAM3_BOX_THRESHOLD", "0.25"))
 SAM3_PRITHVI_OVERLAY_THR = float(os.getenv("SAM3_PRITHVI_OVERLAY_THRESHOLD", "0.30"))
 SAM3_SAR_CONF_CAP = float(os.getenv("SAM3_SAR_CONF_CAP", "0.85"))
-SAM3_MAX_PROMPTS = int(os.getenv("SAM3_MAX_PROMPTS_PER_REQUEST", "64"))
-SAM3_MAX_IMAGE_PROMPTS = int(os.getenv("SAM3_MAX_IMAGE_PROMPTS", str(SAM3_MAX_PROMPTS)))
-SAM3_MAX_VIDEO_PROMPTS = int(os.getenv("SAM3_MAX_VIDEO_PROMPTS", "128"))
 SAM3_EMBED_DETECTIONS = os.getenv("SAM3_EMBED_DETECTIONS", "0").strip().lower() in {"1", "true", "yes", "on"}
 def _flag(name: str, default: str = "1") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
@@ -59,6 +59,11 @@ SAM3_LOAD_DINOV3_SAT = _flag("SAM3_LOAD_DINOV3_SAT", _DEFAULT)
 SAM3_LOAD_DINOV3_LVD = _flag("SAM3_LOAD_DINOV3_LVD", _DEFAULT)
 SAM3_LOAD_PRITHVI    = _flag("SAM3_LOAD_PRITHVI",    _DEFAULT)
 SAM3_LOAD_TERRAMIND  = _flag("SAM3_LOAD_TERRAMIND",  _DEFAULT)
+
+# Specialist detectors that complement SAM 3 zero-shot prompts.
+SAM3_LOAD_DOTA_OBB        = _flag("SAM3_LOAD_DOTA_OBB",        _DEFAULT)
+SAM3_LOAD_DEFENCE_YOLO    = _flag("SAM3_LOAD_DEFENCE_YOLO",    _DEFAULT)
+SAM3_LOAD_GROUNDING_DINO  = _flag("SAM3_LOAD_GROUNDING_DINO",  _DEFAULT)
 
 _pool: list[dict[str, Any]] = []
 _pool_lock = threading.Lock()
@@ -112,6 +117,9 @@ def _load_pool() -> None:
                     bundle["prithvi"] = prithvi_heads.load_all(device)
                 if SAM3_LOAD_TERRAMIND:
                     bundle["terramind"] = terramind.load(device)
+                bundle["dota_obb"] = dota_obb.load(device) if SAM3_LOAD_DOTA_OBB else None
+                bundle["yolo_defence"] = yolo_defence.load(device) if SAM3_LOAD_DEFENCE_YOLO else None
+                bundle["grounding_dino"] = grounding_dino.load(device) if SAM3_LOAD_GROUNDING_DINO else None
                 _pool.append(bundle)
                 logger.info("Loaded model bundle on %s with components=%s", device, _bundle_components(bundle))
         except (Exception, SystemExit) as exc:
@@ -155,8 +163,6 @@ def health() -> dict[str, Any]:
         "model_version": MODEL_VERSION,
         "gpu_model": GPU_MODEL,
         "active_requests": _active_requests,
-        "max_image_prompts": SAM3_MAX_IMAGE_PROMPTS,
-        "max_video_prompts": SAM3_MAX_VIDEO_PROMPTS,
         "embed_detections": SAM3_EMBED_DETECTIONS,
         "load_flags": {
             "dinov3_sat": SAM3_LOAD_DINOV3_SAT,
@@ -217,17 +223,44 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
         valid_mask = _decode_valid_mask(meta.get("valid_mask"), (height, width))
         prompt_boxes = meta.get("prompt_boxes")
         prompt_count = 0
+        prompts: list[str] = []
         if isinstance(prompt_boxes, list) and prompt_boxes:
             prompt_count = len(prompt_boxes)
             candidates = await run_in_threadpool(sam3_runner.run_box_prompts, bundle, chip3, prompt_boxes, SAM3_BOX_THR)
         else:
             try:
-                prompts = resolve_prompts(meta, max_prompts=_prompt_limit(meta, modality))
+                prompts = resolve_prompts(meta)
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             prompt_count = len(prompts)
             candidates = await run_in_threadpool(sam3_runner.run_text_prompts, bundle, chip3, prompts, SAM3_TEXT_THR)
         t0 = mark("sam3_inference", t0)
+
+        # Specialist detectors run alongside SAM 3 and feed into the same fusion
+        # NMS pipeline. DOTA-OBB uses Ultralytics' DOTA-v1 class names, the
+        # defence-YOLO module uses its own 18 categories, Grounding DINO is
+        # an open-vocab text-to-box detector that takes the same prompt list
+        # we sent to SAM 3. fusion.mask_aware_nms dedupes overlapping
+        # detections across SAM 3 + specialists.
+        if bundle.get("dota_obb"):
+            candidates.extend(
+                await run_in_threadpool(dota_obb.run, bundle["dota_obb"], chip3, dota_obb.DOTA_OBB_THRESHOLD)
+            )
+        if bundle.get("yolo_defence"):
+            candidates.extend(
+                await run_in_threadpool(yolo_defence.run, bundle["yolo_defence"], chip3, yolo_defence.DEFENCE_YOLO_THRESHOLD)
+            )
+        if bundle.get("grounding_dino") and prompts:
+            candidates.extend(
+                await run_in_threadpool(
+                    grounding_dino.run,
+                    bundle["grounding_dino"],
+                    chip3,
+                    prompts,
+                    grounding_dino.GROUNDING_DINO_THR,
+                )
+            )
+        t0 = mark("specialists", t0)
 
         overlays: dict[str, np.ndarray] = {}
         if modality == "multispectral":
@@ -312,7 +345,7 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
         if not video_path:
             raise HTTPException(status_code=400, detail="video upload or metadata.video_path required")
 
-    prompts = resolve_prompts({**meta, "modality": "fmv"}, max_prompts=_prompt_limit(meta, "fmv"))
+    prompts = resolve_prompts({**meta, "modality": "fmv"})
     frame_stride = max(1, int(meta.get("frame_stride", 1)))
     start_frame = int(meta.get("start_frame", 0))
     end_frame = meta.get("end_frame")
@@ -363,6 +396,8 @@ def _leave_request() -> None:
 
 def _bundle_components(bundle: dict[str, Any]) -> dict[str, Any]:
     prithvi_bundle = bundle.get("prithvi") or {}
+    def _model_loaded(b):
+        return bool(b) and b.get("model") is not None
     return {
         "sam3_image": bundle.get("sam3_image") is not None,
         "sam3_video": bundle.get("sam3_video") is not None,
@@ -371,17 +406,10 @@ def _bundle_components(bundle: dict[str, Any]) -> dict[str, Any]:
         "prithvi": bool(prithvi_bundle),
         "prithvi_heads": list(prithvi_bundle.get("loaded_heads") or []),
         "terramind": bundle.get("terramind") is not None,
+        "dota_obb": _model_loaded(bundle.get("dota_obb")),
+        "yolo_defence": _model_loaded(bundle.get("yolo_defence")),
+        "grounding_dino": _model_loaded(bundle.get("grounding_dino")),
     }
-
-
-def _prompt_limit(meta: dict[str, Any], modality: str) -> int:
-    default = SAM3_MAX_VIDEO_PROMPTS if (modality or "").lower() == "fmv" else SAM3_MAX_IMAGE_PROMPTS
-    override = meta.get("max_prompts")
-    try:
-        requested = int(override)
-    except (TypeError, ValueError):
-        requested = default
-    return max(1, min(requested, default))
 
 
 def _decode_valid_mask(payload: Any, expected_hw: tuple[int, int]) -> np.ndarray | None:

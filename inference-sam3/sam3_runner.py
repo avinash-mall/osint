@@ -10,12 +10,28 @@ from PIL import Image
 
 
 SAM3_IMAGE_MODEL_ID = os.getenv("SAM3_IMAGE_MODEL_ID", "facebook/sam3")
+# "official" → gated facebook/sam3 (requires HF_TOKEN). "mirror" → non-gated
+# 1038lab/sam3 mirror; tokenizer + processor configs still come from the
+# upstream sam3 Python package shipped in the container, so the mirror is a
+# pure weight substitution, not a full repo fork.
+SAM3_WEIGHTS_SOURCE = os.getenv("SAM3_WEIGHTS_SOURCE", "official").strip().lower()
+SAM3_MIRROR_REPO_ID = os.getenv("SAM3_MIRROR_REPO_ID", "1038lab/sam3")
+SAM3_MIRROR_FILENAME = os.getenv("SAM3_MIRROR_FILENAME", "sam3.safetensors")
 SAM3_USE_MULTIPLEX = os.getenv("SAM3_USE_MULTIPLEX", "1").strip().lower() in {"1", "true", "yes", "on"}
 SAM3_COMPILE_IMAGE = os.getenv("SAM3_COMPILE_IMAGE", "0").strip().lower() in {"1", "true", "yes", "on"}
 SAM3_COMPILE_VIDEO = os.getenv("SAM3_COMPILE_VIDEO", "0").strip().lower() in {"1", "true", "yes", "on"}
 SAM3_WARM_UP_VIDEO = os.getenv("SAM3_WARM_UP_VIDEO", "1").strip().lower() in {"1", "true", "yes", "on"}
 SAM3_BATCHED_TEXT = os.getenv("SAM3_BATCHED_TEXT", "1").strip().lower() in {"1", "true", "yes", "on"}
 SAM3_BATCHED_TEXT_CHUNK_SIZE = max(1, int(os.getenv("SAM3_BATCHED_TEXT_CHUNK_SIZE", "8")))
+# Category-level presence gate (SegEarth-OV-3 idea): drop the entire prompt if
+# its best candidate is below this threshold. SAM 3 internally multiplies
+# per-mask scores by the presence-token probability before thresholding, so
+# the maximum candidate score for a prompt is a proxy for the per-prompt
+# presence signal. A high `category_threshold` value forces the model to
+# return zero detections for prompts whose concept is absent from the scene
+# (which is what produced the false-positive "Oil Refinery Complex" hits in
+# central Vienna). Setting this to 0.0 disables the gate.
+SAM3_CATEGORY_THR = float(os.getenv("SAM3_CATEGORY_THRESHOLD", "0.40"))
 PROMPT_TEMPLATE = os.getenv("SAM3_PROMPT_TEMPLATE", "{label}")
 _QUERY_IDS = itertools.count(1)
 
@@ -106,8 +122,52 @@ def build_image(device: str) -> dict[str, Any]:
     from sam3.model_builder import build_sam3_image_model
     from sam3.model.sam3_image_processor import Sam3Processor
 
-    model = build_sam3_image_model(device=device, compile=SAM3_COMPILE_IMAGE).to(device).eval()
+    checkpoint_path = None
+    load_from_hf = True
+    if SAM3_WEIGHTS_SOURCE == "mirror":
+        checkpoint_path = _resolve_mirror_checkpoint()
+        load_from_hf = False
+
+    model = build_sam3_image_model(
+        device=device,
+        compile=SAM3_COMPILE_IMAGE,
+        checkpoint_path=checkpoint_path,
+        load_from_HF=load_from_hf,
+    ).to(device).eval()
     return {"model": model, "processor": Sam3Processor(model, device=device)}
+
+
+def _resolve_mirror_checkpoint() -> str:
+    """Download (or reuse cached) `sam3.safetensors` from the 1038lab mirror,
+    convert to a torch-compatible state-dict file the upstream loader can read.
+
+    The upstream `_load_checkpoint` calls `torch.load`, so we need a `.pt`. We
+    convert the safetensors file once and cache the result alongside it.
+    """
+    from huggingface_hub import hf_hub_download
+
+    safetensors_path = hf_hub_download(
+        repo_id=SAM3_MIRROR_REPO_ID,
+        filename=SAM3_MIRROR_FILENAME,
+    )
+    pt_path = safetensors_path + ".pt"
+    if os.path.exists(pt_path) and os.path.getmtime(pt_path) >= os.path.getmtime(safetensors_path):
+        return pt_path
+
+    import torch
+    try:
+        from safetensors.torch import load_file as load_safetensors
+    except ImportError as exc:
+        raise RuntimeError(
+            "safetensors package required for SAM3_WEIGHTS_SOURCE=mirror"
+        ) from exc
+
+    state = load_safetensors(safetensors_path)
+    # Upstream `_load_checkpoint` looks for keys containing "detector" /
+    # "tracker"; the 1038lab mirror preserves Meta's original key namespace,
+    # so we just round-trip through torch.save without renaming.
+    torch.save({"model": state}, pt_path)
+    return pt_path
 
 
 def build_video(device: str):
@@ -125,11 +185,14 @@ def build_video(device: str):
 def versions() -> dict[str, str]:
     return {
         "sam3_image": SAM3_IMAGE_MODEL_ID,
+        "sam3_weights_source": SAM3_WEIGHTS_SOURCE,
+        "sam3_mirror_repo_id": SAM3_MIRROR_REPO_ID if SAM3_WEIGHTS_SOURCE == "mirror" else "",
         "sam3_video": "sam3.1-multiplex" if SAM3_USE_MULTIPLEX else "sam3",
         "sam3_compile_image": str(SAM3_COMPILE_IMAGE).lower(),
         "sam3_compile_video": str(SAM3_COMPILE_VIDEO).lower(),
         "sam3_batched_text": str(SAM3_BATCHED_TEXT).lower(),
         "sam3_batched_text_chunk_size": str(SAM3_BATCHED_TEXT_CHUNK_SIZE),
+        "sam3_category_threshold": f"{SAM3_CATEGORY_THR:.2f}",
         "dinov3_sat": os.getenv("DINOV3_SAT_MODEL_ID", "facebook/dinov3-vitl16-pretrain-sat493m"),
         "dinov3_lvd": os.getenv("DINOV3_LVD_MODEL_ID", "facebook/dinov3-vitl16-pretrain-lvd1689m"),
         "prithvi_backbone": os.getenv("PRITHVI_BACKBONE_ID", "ibm-nasa-geospatial/Prithvi-EO-2.0-600M-TL"),
@@ -181,8 +244,27 @@ def run_text_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompt
         for label in prompts:
             phrase = PROMPT_TEMPLATE.format(label=label)
             output = processor.set_text_prompt(state=state, prompt=phrase)
+            if not _prompt_passes_category_gate(output):
+                continue
             candidates.extend(_collect_candidates(output, score_threshold, label))
     return candidates
+
+
+def _prompt_passes_category_gate(output) -> bool:
+    """Category-level presence gate. ``True`` if the prompt's best candidate
+    score is at least ``SAM3_CATEGORY_THR``. Suppresses the entire prompt's
+    detections when the concept is effectively absent from the scene
+    (presence-token probability multiplied with per-mask quality < gate)."""
+    if SAM3_CATEGORY_THR <= 0.0:
+        return True
+    scores = _to_list(output.get("scores"))
+    if not scores:
+        return False
+    try:
+        max_score = max(float(s) for s in scores)
+    except Exception:
+        return True
+    return max_score >= SAM3_CATEGORY_THR
 
 
 def _run_text_prompts_batched(
@@ -273,6 +355,15 @@ def _collect_batched_candidates(processed: dict[int, dict[str, Any]], query_labe
         masks = _to_list(result.get("masks"))
         boxes = _to_list(result.get("boxes"))
         scores = _to_list(result.get("scores"))
+        # Category-level presence gate: drop the entire prompt if its best
+        # candidate score is below SAM3_CATEGORY_THR. See _prompt_passes_category_gate.
+        if SAM3_CATEGORY_THR > 0.0 and scores:
+            try:
+                max_score = max(float(s) for s in scores)
+            except Exception:
+                max_score = 1.0
+            if max_score < SAM3_CATEGORY_THR:
+                continue
         for mask, box_xyxy, score in zip(masks, boxes, scores):
             out.append((
                 np.asarray(_to_numpy(mask), dtype=bool).squeeze(),

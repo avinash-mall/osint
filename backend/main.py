@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import json
 import logging
 import math
@@ -46,13 +45,6 @@ app.add_middleware(
 )
 
 # --- Existing Models ---
-class ChatRequest(BaseModel):
-    message: str
-
-class TargetStatusUpdate(BaseModel):
-    status: str
-
-
 class DetectionTagUpdate(BaseModel):
     allegiance: str
 
@@ -65,10 +57,6 @@ class CollectionTaskCreate(BaseModel):
     queue: Optional[str] = None
     notes: Optional[str] = None
     aipoints: Optional[List[dict]] = None
-
-
-class CollectionTaskUpdate(BaseModel):
-    status: str
 
 
 class FeedEventCreate(BaseModel):
@@ -87,26 +75,6 @@ class AnalyticsRequest(BaseModel):
     destination: Optional[dict] = None
     radius_m: Optional[float] = 5000
     minutes: Optional[int] = 15
-
-
-class CollectionRequirementCreate(BaseModel):
-    title: str
-    description: Optional[str] = None
-    priority: str = "Medium"
-    status: str = "draft"
-    aoi: Optional[dict] = None
-    target_id: Optional[str] = None
-
-
-class PedTaskUpdate(BaseModel):
-    status: str
-
-
-class ReportCreate(BaseModel):
-    target_id: Optional[str] = None
-    title: Optional[str] = None
-    include_detections: bool = True
-    include_tasks: bool = True
 
 
 class TrainingJobCreate(BaseModel):
@@ -822,16 +790,6 @@ def read_document_text(path: str, limit: int = 12000) -> str:
         return ""
 
 
-def ontology_chat_relevant(text: str) -> bool:
-    lower = (text or "").lower()
-    action_terms = {
-        "ontology", "link", "associate", "association", "connect", "relationship",
-        "target", "detection", "entity", "facility", "aircraft", "ship", "vessel",
-        "vehicle", "base", "airfield", "site", "suspect", "update graph", "add to graph",
-    }
-    return any(term in lower for term in action_terms)
-
-
 def sanitize_ontology_label(value: Optional[str], fallback: str = "Entity") -> str:
     label = re.sub(r"\s+", " ", str(value or "")).strip()
     label = re.sub(r"[^A-Za-z0-9 ._:/()#-]+", "", label)
@@ -1229,97 +1187,6 @@ def telemetry_rows_for_clip(clip_id: int, duration: float, fps: Optional[float])
     return rows
 
 
-def demo_targets() -> list[dict]:
-    return [
-        {
-            "id": "demo-transloading-facility",
-            "properties": {
-                "id": "demo-transloading-facility",
-                "name": "Transloading Facility",
-                "type": "Building",
-                "category": "Multi-Aimpoint Target",
-                "priority": "High",
-                "status": "Ready",
-                "queue": "ATD Queue",
-                "latitude": 29.9469,
-                "longitude": 48.1677,
-                "description": "Port-side logistics facility with three collection aimpoints.",
-            },
-        },
-        {
-            "id": "demo-port-defenses",
-            "properties": {
-                "id": "demo-port-defenses",
-                "name": "Port Defenses",
-                "type": "Building",
-                "category": "Multi-Aimpoint Target",
-                "priority": "Medium",
-                "status": "Ready",
-                "queue": "ATD Queue",
-                "latitude": 29.9926,
-                "longitude": 48.3533,
-                "description": "Defensive infrastructure associated with the port approach.",
-            },
-        },
-        {
-            "id": "demo-dry-dock",
-            "properties": {
-                "id": "demo-dry-dock",
-                "name": "Dry Dock",
-                "type": "Building",
-                "category": "Facility",
-                "priority": "Medium",
-                "status": "Monitored",
-                "queue": "TEA Queue",
-                "latitude": 25.276987,
-                "longitude": 55.296249,
-                "description": "Maritime repair site retained as a baseline collection target.",
-            },
-        },
-    ]
-
-
-def build_aipoints(target: dict) -> list[dict]:
-    props = target.get("properties", {})
-    existing = props.get("aipoints")
-    if isinstance(existing, list) and existing:
-        return existing
-
-    lat = props.get("latitude")
-    lon = props.get("longitude")
-    if lat is None or lon is None:
-        return []
-
-    seed = int(hashlib.sha1(str(target.get("id")).encode("utf-8")).hexdigest()[:8], 16) % 90000
-    offsets = [(0.0000, 0.0000), (0.0028, -0.0022), (-0.0021, 0.0027)]
-    return [
-        {
-            "id": f"39RTP {seed + idx * 131:05d} {seed + idx * 197:05d}",
-            "label": f"Aimpoint {idx}",
-            "latitude": round(float(lat) + dlat, 6),
-            "longitude": round(float(lon) + dlon, 6),
-            "radius_m": 180 if idx == 1 else 120,
-        }
-        for idx, (dlat, dlon) in enumerate(offsets, start=1)
-    ]
-
-
-def fetch_targets_for_ops() -> list[dict]:
-    try:
-        with db.get_session() as session:
-            result = session.run("""
-                MATCH (t)
-                WHERE 'Target' IN labels(t)
-                WITH t, properties(t) AS props
-                RETURN t
-                ORDER BY CASE coalesce(props.priority, '') WHEN 'High' THEN 3 WHEN 'Medium' THEN 2 WHEN 'Low' THEN 1 ELSE 0 END DESC,
-                         coalesce(props.name, '') ASC
-            """)
-            targets = [{"id": record["t"].element_id, "properties": dict(record["t"])} for record in result]
-            return targets or demo_targets()
-    except Exception:
-        return demo_targets()
-
 # --- Shutdown ---
 @app.on_event("shutdown")
 def shutdown_event():
@@ -1353,156 +1220,6 @@ def health():
     status["healthy"] = status["neo4j"] == "ok" and status["postgis"] == "ok"
     return status
 
-
-@app.get("/api/ui/classification")
-def ui_classification(workspace: str = Query("map", max_length=80)):
-    """Generate workstation banner text from the configured LLM.
-
-    This endpoint intentionally returns an explicit unavailable state instead of
-    fabricating classification text when no LLM is configured.
-    """
-    current_health = health()
-    context: dict = {
-        "workspace": workspace,
-        "health": current_health,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-    }
-    try:
-        summary = dashboard_summary()
-        context["counts"] = summary.get("counts", {})
-        context["priority_targets"] = [
-            {
-                "id": item.get("id"),
-                "name": item.get("properties", {}).get("name"),
-                "priority": item.get("properties", {}).get("priority"),
-                "status": item.get("properties", {}).get("status"),
-            }
-            for item in summary.get("priority_targets", [])[:4]
-        ]
-        context["recent_timeline"] = [
-            {
-                "domain": item.get("domain"),
-                "event_type": item.get("event_type"),
-                "title": item.get("title"),
-            }
-            for item in summary.get("timeline", [])[:5]
-        ]
-        context["models"] = [
-            {
-                "name": item.get("name"),
-                "version": item.get("version"),
-                "status": item.get("status"),
-                "promoted": item.get("promoted"),
-            }
-            for item in summary.get("models", [])[:3]
-        ]
-    except Exception:
-        context["summary_error"] = "dashboard context unavailable"
-
-    try:
-        with postgis_db.get_cursor() as cursor:
-            cursor.execute("""
-                SELECT d.class, count(*) AS count, avg(d.confidence) AS avg_confidence
-                FROM detections d
-                GROUP BY d.class
-                ORDER BY count DESC, d.class ASC
-                LIMIT 8
-            """)
-            context["detection_classes"] = [dict(row) for row in cursor.fetchall()]
-    except Exception:
-        context["detection_classes"] = []
-
-    prompt = json.dumps({
-        "task": "Generate Sentinel workstation classification banner text from current system context.",
-        "context": context,
-        "required_json_schema": {
-            "top_banner": "short all-caps banner text, 8 to 16 words",
-            "bottom_banner": "short all-caps handling/caveat text, 8 to 18 words",
-            "caveat": "one short sentence about source limits or review posture",
-        },
-    }, default=str)
-    system = (
-        "Return only JSON. Do not claim any formal government classification unless provided. "
-        "Do not invent facts. Keep banner text concise and operational."
-    )
-    try:
-        generated = get_llm_json(prompt, system=system, max_tokens=260, timeout_seconds=6)
-        return {
-            "top_banner": str(generated.get("top_banner") or "").strip()[:160],
-            "bottom_banner": str(generated.get("bottom_banner") or "").strip()[:180],
-            "caveat": str(generated.get("caveat") or "").strip()[:240],
-            "generated_at": context["generated_at"],
-            "model": ai_status().get("model"),
-            "status": "ok",
-        }
-    except AIUnavailable as exc:
-        return {
-            "top_banner": None,
-            "bottom_banner": None,
-            "caveat": str(exc),
-            "generated_at": context["generated_at"],
-            "model": ai_status().get("model"),
-            "status": "unavailable",
-        }
-
-
-@app.get("/api/dashboard/summary")
-def dashboard_summary():
-    ensure_platform_tables()
-    targets = fetch_targets_for_ops()
-    with postgis_db.get_cursor() as cursor:
-        cursor.execute("""
-            SELECT
-                (SELECT count(*) FROM feed_sources WHERE enabled = TRUE) AS active_sources,
-                (SELECT count(*) FROM upload_jobs) AS uploads,
-                (SELECT count(*) FROM observations) AS observations,
-                (SELECT count(*) FROM timeline_events WHERE occurred_at > NOW() - INTERVAL '24 hours') AS recent_events,
-                (SELECT count(*) FROM ai_action_proposals WHERE status = 'pending_approval') AS pending_actions,
-                (SELECT count(*) FROM training_jobs WHERE status IN ('queued', 'running')) AS training_jobs,
-                (SELECT count(*) FROM reports) AS reports,
-                (SELECT count(*) FROM fmv_clips) AS fmv_clips
-        """)
-        counts = dict(cursor.fetchone())
-        cursor.execute("""
-            SELECT domain, count(*) AS count
-            FROM observations
-            GROUP BY domain
-            ORDER BY count DESC
-        """)
-        observations_by_domain = [dict(row) for row in cursor.fetchall()]
-        cursor.execute("""
-            SELECT id, domain, event_type, title, payload, occurred_at, created_at
-            FROM timeline_events
-            ORDER BY occurred_at DESC, created_at DESC
-            LIMIT 12
-        """)
-        timeline = [dict(row) for row in cursor.fetchall()]
-        cursor.execute("""
-            SELECT id, action_type, title, domain, risk_level, status, confidence, created_at
-            FROM ai_action_proposals
-            ORDER BY created_at DESC
-            LIMIT 8
-        """)
-        actions = [dict(row) for row in cursor.fetchall()]
-        cursor.execute("""
-            SELECT id, name, version, status, promoted, metrics, created_at
-            FROM models
-            ORDER BY promoted DESC, created_at DESC
-            LIMIT 5
-        """)
-        models = [dict(row) for row in cursor.fetchall()]
-
-    summary = {
-        "app": "Sentinel",
-        "counts": {**counts, "targets": len(targets), "high_priority_targets": len([t for t in targets if (t.get("properties", {}).get("priority") == "High")])},
-        "priority_targets": targets[:6],
-        "observations_by_domain": observations_by_domain,
-        "timeline": timeline,
-        "pending_actions": actions,
-        "models": models,
-        "ai": ai_status(),
-    }
-    return summary
 
 
 @app.get("/api/observations")
@@ -1826,84 +1543,6 @@ def get_geotime_features():
             
         return {"static": static_features, "tracks": tracks}
 
-@app.get("/api/targets")
-def get_targets():
-    return {"targets": fetch_targets_for_ops()}
-
-
-@app.get("/api/ops/targets")
-def get_ops_targets():
-    ensure_collection_tables()
-    targets = fetch_targets_for_ops()
-    target_ids = [target["id"] for target in targets]
-    tasks_by_target: dict[str, list[dict]] = {target_id: [] for target_id in target_ids}
-
-    with postgis_db.get_cursor() as cursor:
-        if target_ids:
-            cursor.execute("""
-                SELECT id, target_id, target_name, asset_type, priority, queue, status,
-                       notes, aipoints, requested_by, created_at, updated_at
-                FROM collection_tasks
-                WHERE target_id = ANY(%s)
-                ORDER BY updated_at DESC, created_at DESC
-            """, (target_ids,))
-            for row in cursor.fetchall():
-                task = dict(row)
-                tasks_by_target.setdefault(task["target_id"], []).append(task)
-
-    enriched = []
-    for target in targets:
-        props = target.get("properties", {})
-        aipoints = build_aipoints(target)
-        tasks = tasks_by_target.get(target["id"], [])
-        open_tasks = [task for task in tasks if task.get("status") not in {"complete", "cancelled", "failed"}]
-        readiness = "tasked" if open_tasks else "ready"
-        enriched.append({
-            **target,
-            "aipoints": aipoints,
-            "readiness": readiness,
-            "queue": props.get("queue") or ("ATD Queue" if props.get("priority") == "High" else "BHA Queue"),
-            "task_count": len(open_tasks),
-            "collection_tasks": tasks[:5],
-        })
-
-    ready_count = len([target for target in enriched if target["readiness"] == "ready"])
-    return {
-        "collection": "OP RADIANT SPHERE",
-        "targets": enriched,
-        "summary": {
-            "total": len(enriched),
-            "ready": ready_count,
-            "tasked": len(enriched) - ready_count,
-        },
-    }
-
-
-@app.get("/api/collection/tasks")
-def list_collection_tasks(target_id: Optional[str] = None, status: Optional[str] = None):
-    ensure_collection_tables()
-    conditions = []
-    params = []
-    if target_id:
-        conditions.append("target_id = %s")
-        params.append(target_id)
-    if status:
-        conditions.append("status = %s")
-        params.append(status)
-    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-
-    with postgis_db.get_cursor() as cursor:
-        cursor.execute(f"""
-            SELECT id, target_id, target_name, asset_type, priority, queue, status,
-                   notes, aipoints, requested_by, created_at, updated_at
-            FROM collection_tasks
-            {where_clause}
-            ORDER BY updated_at DESC, created_at DESC
-            LIMIT 250
-        """, params)
-        return {"tasks": [dict(row) for row in cursor.fetchall()]}
-
-
 @app.post("/api/collection/tasks")
 def create_collection_task(req: CollectionTaskCreate):
     ensure_collection_tables()
@@ -1927,30 +1566,6 @@ def create_collection_task(req: CollectionTaskCreate):
         task = dict(cursor.fetchone())
 
     publish_event("ops", {"type": "collection_task_created", "task": task})
-    return {"success": True, "task": task}
-
-
-@app.put("/api/collection/tasks/{task_id}")
-def update_collection_task(task_id: int, req: CollectionTaskUpdate):
-    ensure_collection_tables()
-    allowed_statuses = {"proposed", "queued", "tasked", "collecting", "complete", "cancelled", "failed"}
-    if req.status not in allowed_statuses:
-        raise HTTPException(status_code=400, detail="Unsupported collection task status")
-
-    with postgis_db.get_cursor(commit=True) as cursor:
-        cursor.execute("""
-            UPDATE collection_tasks
-            SET status = %s, updated_at = NOW()
-            WHERE id = %s
-            RETURNING id, target_id, target_name, asset_type, priority, queue, status,
-                      notes, aipoints, requested_by, created_at, updated_at
-        """, (req.status, task_id))
-        row = cursor.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Collection task not found")
-        task = dict(row)
-
-    publish_event("ops", {"type": "collection_task_updated", "task": task})
     return {"success": True, "task": task}
 
 
@@ -2313,162 +1928,6 @@ def list_analytics_jobs(limit: int = 100):
         return {"jobs": [dict(row) for row in cursor.fetchall()]}
 
 
-@app.post("/api/collection/requirements")
-def create_collection_requirement(req: CollectionRequirementCreate):
-    ensure_platform_tables()
-    with postgis_db.get_cursor(commit=True) as cursor:
-        cursor.execute("""
-            INSERT INTO collection_requirements (title, description, priority, status, target_id, aoi)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            RETURNING id, title, description, priority, status, target_id, aoi, created_at, updated_at
-        """, (req.title, req.description, req.priority, req.status, req.target_id, json.dumps(req.aoi or {})))
-        requirement = dict(cursor.fetchone())
-        cursor.execute("""
-            INSERT INTO ped_tasks (requirement_id, title, status, metadata)
-            VALUES (%s, %s, 'queued', %s)
-            RETURNING id, requirement_id, collection_task_id, title, status, assignee, metadata, created_at, updated_at
-        """, (requirement["id"], f"PED exploitation for {req.title}", json.dumps({"source": "collection_requirement"})))
-        ped_task = dict(cursor.fetchone())
-    publish_event("ops", {"type": "collection_requirement_created", "requirement": requirement, "ped_task": ped_task})
-    return {"success": True, "requirement": requirement, "ped_task": ped_task}
-
-
-@app.get("/api/collection/requirements")
-def list_collection_requirements():
-    ensure_platform_tables()
-    with postgis_db.get_cursor() as cursor:
-        cursor.execute("""
-            SELECT id, title, description, priority, status, target_id, aoi, created_at, updated_at
-            FROM collection_requirements
-            ORDER BY updated_at DESC, created_at DESC
-        """)
-        return {"requirements": [dict(row) for row in cursor.fetchall()]}
-
-
-@app.get("/api/collection/passes")
-def predict_collection_passes(target_id: Optional[str] = None, count: int = 5):
-    targets = fetch_targets_for_ops()
-    target = next((item for item in targets if item["id"] == target_id), targets[0] if targets else None)
-    now = datetime.now(timezone.utc)
-    passes = []
-    for idx in range(max(1, min(count, 12))):
-        start = now + timedelta(minutes=18 + idx * 47)
-        passes.append({
-            "id": f"PASS-{idx + 1:03d}",
-            "target_id": target["id"] if target else None,
-            "target_name": target.get("properties", {}).get("name") if target else None,
-            "satellite": ["WORLDVIEW-042", "FLOCK-1C-3", "SKYSAT-19"][idx % 3],
-            "sensor": ["Optical", "SAR", "Thermal"][idx % 3],
-            "start_time": start.isoformat(),
-            "end_time": (start + timedelta(minutes=7 + idx % 4)).isoformat(),
-            "access_score": round(0.91 - idx * 0.06, 2),
-            "cloud_cover": (idx * 13) % 55,
-        })
-    return {"passes": passes}
-
-
-@app.get("/api/ped/tasks")
-def list_ped_tasks():
-    ensure_platform_tables()
-    with postgis_db.get_cursor() as cursor:
-        cursor.execute("""
-            SELECT id, requirement_id, collection_task_id, title, status, assignee, metadata, created_at, updated_at
-            FROM ped_tasks
-            ORDER BY updated_at DESC, created_at DESC
-        """)
-        return {"tasks": [dict(row) for row in cursor.fetchall()]}
-
-
-@app.put("/api/ped/tasks/{task_id}")
-def update_ped_task(task_id: int, req: PedTaskUpdate):
-    ensure_platform_tables()
-    with postgis_db.get_cursor(commit=True) as cursor:
-        cursor.execute("""
-            UPDATE ped_tasks
-            SET status = %s, updated_at = NOW()
-            WHERE id = %s
-            RETURNING id, requirement_id, collection_task_id, title, status, assignee, metadata, created_at, updated_at
-        """, (req.status, task_id))
-        row = cursor.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="PED task not found")
-        task = dict(row)
-    publish_event("ops", {"type": "ped_task_updated", "task": task})
-    return {"success": True, "task": task}
-
-
-@app.post("/api/reports/target-packages")
-def create_target_package(req: ReportCreate):
-    ensure_platform_tables()
-    targets = fetch_targets_for_ops()
-    target = next((item for item in targets if item["id"] == req.target_id), targets[0] if targets else None)
-    if not target:
-        raise HTTPException(status_code=404, detail="No targets available for report")
-    content = {
-        "target": target,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "sections": ["summary", "aimpoints", "collection", "detections"],
-    }
-    title = req.title or f"Target Package - {target['properties'].get('name', target['id'])}"
-    with postgis_db.get_cursor(commit=True) as cursor:
-        cursor.execute("""
-            INSERT INTO reports (title, target_id, report_type, status, content)
-            VALUES (%s, %s, 'target_package', 'ready', %s)
-            RETURNING id, title, target_id, report_type, status, content, created_at
-        """, (title, target["id"], json.dumps(content)))
-        report = dict(cursor.fetchone())
-    publish_event("ops", {"type": "report_ready", "report": report})
-    return {"success": True, "report": report}
-
-
-@app.get("/api/reports")
-def list_reports():
-    ensure_platform_tables()
-    with postgis_db.get_cursor() as cursor:
-        cursor.execute("""
-            SELECT id, title, target_id, report_type, status, content, created_at
-            FROM reports
-            ORDER BY created_at DESC
-        """)
-        return {"reports": [dict(row) for row in cursor.fetchall()]}
-
-
-@app.get("/api/reports/{report_id}/export")
-def export_report(report_id: int, format: str = "json"):
-    ensure_platform_tables()
-    with postgis_db.get_cursor() as cursor:
-        cursor.execute("SELECT id, title, target_id, report_type, status, content, created_at FROM reports WHERE id = %s", (report_id,))
-        row = cursor.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Report not found")
-        report = dict(row)
-    export_format = format.lower()
-    if export_format == "geojson":
-        target = (report.get("content") or {}).get("target") or {}
-        props = target.get("properties") or {}
-        lon = props.get("longitude")
-        lat = props.get("latitude")
-        geometry = {"type": "Point", "coordinates": [lon, lat]} if lon is not None and lat is not None else None
-        return {
-            "type": "FeatureCollection",
-            "features": [{
-                "type": "Feature",
-                "geometry": geometry,
-                "properties": {
-                    "report_id": report["id"],
-                    "title": report["title"],
-                    "target_id": report["target_id"],
-                    "status": report["status"],
-                    "content": report["content"],
-                },
-            }],
-        }
-    if export_format == "json":
-        return {"report": report, "format": format.lower()}
-    if export_format in {"kmz", "pdf"}:
-        return {"report": report, "format": export_format, "message": "Binary export renderer is queued for the production packaging phase."}
-    raise HTTPException(status_code=400, detail="Unsupported report export format")
-
 
 @app.get("/api/models/datasets")
 def list_model_datasets():
@@ -2562,81 +2021,6 @@ def list_training_jobs():
         """)
         return {"jobs": [dict(row) for row in cursor.fetchall()]}
 
-
-@app.get("/api/targets/{target_id}/detections")
-def get_target_detections(target_id: str, limit: int = 50):
-    """Return detections linked to a target, with a geospatial fallback for seeded targets."""
-    with db.get_session() as session:
-        result = session.run("""
-            MATCH (t:Target)
-            WHERE elementId(t) = $target_id OR t.id = $target_id
-            OPTIONAL MATCH (t)-[:DETECTED_AS]->(d:Detection)
-            RETURN t.latitude AS lat, t.longitude AS lon, collect(d.postgis_id) AS detection_ids
-        """, {"target_id": target_id})
-        record = result.single()
-        if not record:
-            raise HTTPException(status_code=404, detail="Target not found")
-
-        detection_ids = [int(i) for i in record["detection_ids"] if i is not None]
-        lat = record["lat"]
-        lon = record["lon"]
-
-    base_query = """
-        SELECT d.id, d.class, d.confidence, d.pass_id, d.metadata, d.created_at,
-               ST_AsGeoJSON(d.geom) as geom_geojson,
-               ST_AsGeoJSON(d.centroid) as centroid_geojson,
-               sp.name as pass_name, sp.acquisition_time, sp.file_path
-        FROM detections d
-        JOIN satellite_passes sp ON d.pass_id = sp.id
-    """
-    with postgis_db.get_cursor() as cursor:
-        if detection_ids:
-            cursor.execute(base_query + """
-                WHERE d.id = ANY(%s)
-                ORDER BY sp.acquisition_time DESC NULLS LAST, d.confidence DESC
-                LIMIT %s
-            """, (detection_ids, limit))
-        elif lat is not None and lon is not None:
-            cursor.execute(base_query + """
-                ORDER BY d.centroid <-> ST_SetSRID(ST_MakePoint(%s, %s), 4326)
-                LIMIT %s
-            """, (lon, lat, limit))
-        else:
-            return {"detections": []}
-        return {"detections": [dict(row) for row in cursor.fetchall()]}
-
-@app.put("/api/targets/{target_id}/status")
-def update_target_status(target_id: str, req: TargetStatusUpdate):
-    with db.get_session() as session:
-        result = session.run("""
-            MATCH (t:Target)
-            WHERE elementId(t) = $id OR t.id = $id
-            SET t.status = $status
-            RETURN t
-        """, {"id": target_id, "status": req.status})
-        
-        record = result.single()
-        if record:
-            target = dict(record["t"])
-            publish_event("ops", {"type": "target_status_updated", "target_id": target_id, "status": req.status})
-            return {"success": True, "target": target}
-        return {"success": False, "error": "Target not found"}
-
-@app.get("/api/constellation")
-def get_constellation():
-    with db.get_session() as session:
-        result = session.run("""
-            MATCH (s:Satellite)
-            RETURN s
-        """)
-        satellites = []
-        for record in result:
-            s = record["s"]
-            satellites.append({
-                "id": s.element_id,
-                "properties": dict(s)
-            })
-        return {"satellites": satellites}
 
 # --- New Imagery & Detection Endpoints ---
 @app.get("/api/imagery")
@@ -3846,22 +3230,6 @@ async def websocket_events(websocket: WebSocket, topic: str = "detections"):
             await pubsub.close()
         if redis_client is not None:
             await redis_client.close()
-@app.post("/api/chat")
-def chat(req: ChatRequest):
-    try:
-        response = get_ai_response(req.message)
-        ontology_update = None
-        if ontology_chat_relevant(req.message):
-            ontology_update = run_ontology_update(
-                "ava_chat",
-                uuid.uuid4().hex,
-                f"Analyst input: {req.message}\n\nAva response: {response}",
-                "OSINT",
-            )
-        return {"reply": response, "status": "ok", "ontology_update": ontology_update}
-    except AIUnavailable as e:
-        raise HTTPException(status_code=503, detail=str(e))
-
 # ---------------------------------------------------------------------------
 # Detection Tracks API
 # ---------------------------------------------------------------------------

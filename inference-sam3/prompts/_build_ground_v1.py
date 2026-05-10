@@ -10,8 +10,7 @@ Sources:
   * LVIS v1 hand-picked extras (https://www.lvisdataset.org/) — useful long-tail
     nouns that SAM3 was trained against (the SA-Co dataset includes LVIS).
 
-Output file: ground_v1.json — deduped, lowercased, capped at the requested
-SAM3_MAX_PROMPTS_PER_REQUEST budget (default 1024).
+Output file: ground_v1.json — deduped, lowercased open-vocabulary union.
 """
 
 from __future__ import annotations
@@ -186,7 +185,8 @@ def main() -> None:
         "description": (
             "Open-vocabulary ground / oblique prompt union — COCO 2017 80-class set "
             "plus a curated extension drawn from the Objects365 v2 and LVIS v1 "
-            "taxonomies. Capped per request at SAM3_MAX_PROMPTS_PER_REQUEST."
+            "taxonomies. SAM3 has no inherent prompt-count limit; latency scales "
+            "linearly with prompt count (batched in chunks of SAM3_BATCHED_TEXT_CHUNK_SIZE)."
         ),
         "sources": ["coco-2017", "objects365-v2-curated", "lvis-v1-curated"],
         "count": len(prompts),

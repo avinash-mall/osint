@@ -1,27 +1,33 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
-import { Cable, CheckCircle2, DatabaseZap, FileImage, ListChecks, RadioTower, Search, ShieldCheck, UploadCloud, X } from 'lucide-react';
+import {
+  ChevronDown,
+  ChevronRight,
+  DatabaseZap,
+  FileImage,
+  ListChecks,
+  Search,
+  ShieldCheck,
+  UploadCloud,
+  X,
+} from 'lucide-react';
 import { useEventStream } from '../hooks/useEventStream';
 import { type UploadJob, isUploadActive, uploadMessage, uploadProgress, uploadProgressClass, uploadStage } from '../utils/uploadProgress';
-import { DEFENCE_OBJECTS, DEFENCE_ONTOLOGY, type DefenceBranch, parseCustomPrompts } from '../utils/defenceOntology';
+import {
+  DEFENCE_OBJECTS,
+  DEFENCE_ONTOLOGY,
+  type DefenceBranch,
+  type DefenceObject,
+  type Sensor,
+  isHighResolutionOnly,
+  isSam3Prompt,
+  objectMatchesSensor,
+  parseCustomPrompts,
+  uploadSensorToTag,
+} from '../utils/defenceOntology';
+import { BranchIcon, ObjectIcon } from '../utils/branchIcons';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
-const MAX_IMAGE_PROMPTS = 128;
-
-interface FeedSource {
-  id: number;
-  name: string;
-  feed_type: string;
-  protocol: string;
-  endpoint: string;
-  topic: string;
-  parser?: string;
-  enabled: boolean;
-  status: string;
-  last_error?: string;
-  created_at: string;
-  updated_at: string;
-}
 
 const defenceObjectById = new Map(DEFENCE_OBJECTS.map((item) => [item.id, item]));
 
@@ -35,7 +41,6 @@ function branchObjectIds(branch: DefenceBranch): string[] {
 export default function IngestConnect() {
   const [file, setFile] = useState<File | null>(null);
   const [sensorType, setSensorType] = useState('Optical');
-  const [autoProcess, setAutoProcess] = useState(true);
   const [selectedDefenceIds, setSelectedDefenceIds] = useState<Set<string>>(new Set());
   const [objectSearch, setObjectSearch] = useState('');
   const [customObjects, setCustomObjects] = useState('');
@@ -44,25 +49,9 @@ export default function IngestConnect() {
   const [uploadTransferProgress, setUploadTransferProgress] = useState(0);
   const [activeUploadId, setActiveUploadId] = useState<string | null>(null);
   const [uploadJobs, setUploadJobs] = useState<UploadJob[]>([]);
-  const [feeds, setFeeds] = useState<FeedSource[]>([]);
-  const [feedForm, setFeedForm] = useState({
-    name: 'AIS Gulf Feed',
-    feed_type: 'AIS',
-    protocol: 'tcp',
-    endpoint: 'tcp://localhost:4002',
-    topic: 'feeds',
-    parser: 'nmea'
-  });
-  const [feedStatus, setFeedStatus] = useState('');
-
-  const fetchFeeds = async () => {
-    try {
-      const response = await axios.get(`${API_URL}/api/feeds`);
-      setFeeds(response.data.feeds || []);
-    } catch (error) {
-      console.error('Error fetching feeds:', error);
-    }
-  };
+  const [expandedBranches, setExpandedBranches] = useState<Set<string>>(
+    () => new Set(DEFENCE_ONTOLOGY.length > 0 ? [DEFENCE_ONTOLOGY[0].id] : [])
+  );
 
   const fetchUploadJobs = useCallback(async () => {
     try {
@@ -74,7 +63,6 @@ export default function IngestConnect() {
   }, []);
 
   useEffect(() => {
-    fetchFeeds();
     fetchUploadJobs();
   }, [fetchUploadJobs]);
 
@@ -94,12 +82,17 @@ export default function IngestConnect() {
     || null;
 
   const customPrompts = useMemo(() => parseCustomPrompts(customObjects), [customObjects]);
+  // Real prompts to send to SAM 3. Sentinel "__prithvi_*__" / aux markers are
+  // dropped here — they live in the JSON only to surface specialist-model
+  // outputs (Prithvi burn / flood / crop) in the legend, not to be sent as
+  // text prompts to the SAM 3 inference service.
   const selectedPrompts = useMemo(() => {
     const seen = new Set<string>();
     const prompts = [
       ...Array.from(selectedDefenceIds)
         .map((id) => defenceObjectById.get(id)?.prompt)
-        .filter((value): value is string => Boolean(value)),
+        .filter((value): value is string => Boolean(value))
+        .filter(isSam3Prompt),
       ...customPrompts,
     ];
     return prompts.filter((prompt) => {
@@ -111,14 +104,41 @@ export default function IngestConnect() {
   }, [customPrompts, selectedDefenceIds]);
 
   const searchTerm = objectSearch.trim().toLowerCase();
+  const sensorTag: Sensor = uploadSensorToTag(sensorType);
   const visibleDefenceIds = useMemo(() => {
-    if (!searchTerm) return new Set(DEFENCE_OBJECTS.map((item) => item.id));
     return new Set(
       DEFENCE_OBJECTS
-        .filter((item) => `${item.label} ${item.prompt}`.toLowerCase().includes(searchTerm))
+        .filter((item) => objectMatchesSensor(item, sensorTag))
+        .filter((item) => !searchTerm || `${item.label} ${item.prompt}`.toLowerCase().includes(searchTerm))
         .map((item) => item.id)
     );
-  }, [searchTerm]);
+  }, [searchTerm, sensorTag]);
+
+  // When the user types a search, auto-expand any branch with visible matches.
+  useEffect(() => {
+    if (!searchTerm) return;
+    const matchingBranchIds = new Set<string>();
+    const walk = (branch: DefenceBranch) => {
+      const ids = branchObjectIds(branch);
+      if (ids.some((id) => visibleDefenceIds.has(id))) matchingBranchIds.add(branch.id);
+      branch.children?.forEach(walk);
+    };
+    DEFENCE_ONTOLOGY.forEach(walk);
+    setExpandedBranches((current) => {
+      const next = new Set(current);
+      matchingBranchIds.forEach((id) => next.add(id));
+      return next;
+    });
+  }, [searchTerm, visibleDefenceIds]);
+
+  const toggleBranchExpanded = (id: string) => {
+    setExpandedBranches((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   const toggleDefenceObject = (id: string) => {
     setSelectedDefenceIds((current) => {
@@ -129,7 +149,7 @@ export default function IngestConnect() {
     });
   };
 
-  const toggleBranch = (branch: DefenceBranch) => {
+  const toggleBranchSelection = (branch: DefenceBranch) => {
     const ids = branchObjectIds(branch).filter((id) => visibleDefenceIds.has(id));
     if (!ids.length) return;
     setSelectedDefenceIds((current) => {
@@ -174,7 +194,7 @@ export default function IngestConnect() {
       const form = new FormData();
       form.append('file', file);
       form.append('sensor_type', sensorType);
-      form.append('auto_process', String(autoProcess));
+      form.append('auto_process', 'true');
       if (selectedPrompts.length > 0) {
         form.append('text_prompts', JSON.stringify(selectedPrompts));
       }
@@ -187,7 +207,7 @@ export default function IngestConnect() {
         },
       });
       setActiveUploadId(response.data.upload_id || null);
-      setUploadStatus(autoProcess ? `Queued ${response.data.task_id}` : `Stored ${response.data.filename}`);
+      setUploadStatus(`Queued ${response.data.task_id || response.data.filename}`);
       await fetchUploadJobs();
       setFile(null);
     } catch (error: any) {
@@ -197,40 +217,40 @@ export default function IngestConnect() {
     }
   };
 
-  const connectFeed = async () => {
-    try {
-      const response = await axios.post(`${API_URL}/api/feeds/connect`, {
-        ...feedForm,
-        enabled: true
-      });
-      setFeedStatus(`Connected ${response.data.feed.name}`);
-      fetchFeeds();
-    } catch (error: any) {
-      setFeedStatus(error.response?.data?.detail || 'Connection failed');
-    }
-  };
-
-  const renderObject = (item: { id: string; label: string; prompt: string }) => {
+  const renderObject = (item: DefenceObject, parentBranch: DefenceBranch) => {
     if (!visibleDefenceIds.has(item.id)) return null;
     const selected = selectedDefenceIds.has(item.id);
+    const highRes = isHighResolutionOnly(item);
     return (
       <button
         key={item.id}
         type="button"
         onClick={() => toggleDefenceObject(item.id)}
-        title={item.prompt}
-        className={`min-h-10 border px-2 py-2 text-left transition ${
+        title={`${item.prompt}${highRes ? ' — needs <=0.3 m GSD imagery' : ''}`}
+        className={`flex items-start gap-2 border px-3 py-2 text-left transition ${
           selected
             ? 'border-blue-400/70 bg-blue-500/15 text-blue-100'
             : 'border-slate-800 bg-slate-950/40 text-slate-300 hover:border-slate-600'
         }`}
       >
-        <span className="flex items-start gap-2">
-          <input type="checkbox" checked={selected} readOnly className="mt-0.5" />
-          <span className="min-w-0">
-            <span className="block text-xs font-semibold leading-4">{item.label}</span>
-            <span className="block truncate font-mono text-[10px] text-slate-500">{item.prompt}</span>
+        <input type="checkbox" checked={selected} readOnly className="mt-0.5 shrink-0" />
+        <span
+          className="mt-0.5 shrink-0"
+          style={{ color: parentBranch.color }}
+          aria-hidden
+        >
+          <ObjectIcon prompt={item.prompt} branchIconKey={parentBranch.iconKey} className="h-4 w-4" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center gap-1.5">
+            <span className="block text-xs font-semibold leading-snug">{item.label}</span>
+            {highRes && (
+              <span className="border border-amber-500/50 bg-amber-500/10 text-amber-300 px-1 py-px font-mono text-[9px] leading-none rounded">
+                HIGH-RES
+              </span>
+            )}
           </span>
+          <span className="block truncate font-mono text-[10px] text-slate-500">{item.prompt}</span>
         </span>
       </button>
     );
@@ -240,291 +260,211 @@ export default function IngestConnect() {
     const ids = branchObjectIds(branch).filter((id) => visibleDefenceIds.has(id));
     if (!ids.length) return null;
     const selectedCount = ids.filter((id) => selectedDefenceIds.has(id)).length;
+    const allSelected = selectedCount === ids.length;
+    const partial = selectedCount > 0 && !allSelected;
+    const expanded = expandedBranches.has(branch.id);
+    const wrapperClass = depth === 0
+      ? 'border border-slate-800 bg-slate-950/30'
+      : 'border-l border-slate-800 ml-2';
     return (
-      <div key={branch.id} className={depth === 0 ? 'border border-slate-800 bg-slate-950/30' : 'border-l border-slate-800 pl-3'}>
-        <button
-          type="button"
-          onClick={() => toggleBranch(branch)}
-          className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left hover:bg-slate-800/40"
+      <div key={branch.id} className={wrapperClass}>
+        <div
+          className={`flex items-center gap-2 px-3 py-2 ${depth === 0 ? 'border-b border-slate-800/70' : ''}`}
         >
-          <span className="min-w-0">
-            <span className="block text-xs font-bold uppercase tracking-wider text-slate-200">{branch.label}</span>
-            <span className="block font-mono text-[10px] text-slate-500">{selectedCount}/{ids.length} selected</span>
-          </span>
-          <span className={`border px-2 py-1 font-mono text-[10px] ${selectedCount ? 'border-blue-400/50 text-blue-300' : 'border-slate-700 text-slate-500'}`}>
-            {selectedCount === ids.length ? 'ALL' : selectedCount ? 'PART' : 'ADD'}
-          </span>
-        </button>
-        <div className="space-y-2 px-3 pb-3">
-          {branch.children?.map((child) => renderBranch(child, depth + 1))}
-          {branch.objects && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-              {branch.objects.map(renderObject)}
-            </div>
-          )}
+          <button
+            type="button"
+            onClick={() => toggleBranchExpanded(branch.id)}
+            className="text-slate-400 hover:text-slate-200 shrink-0"
+            aria-label={expanded ? 'Collapse' : 'Expand'}
+          >
+            {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+          </button>
+          <button
+            type="button"
+            onClick={() => toggleBranchSelection(branch)}
+            className="flex flex-1 items-center gap-2 text-left"
+          >
+            <input
+              type="checkbox"
+              checked={allSelected}
+              ref={(el) => {
+                if (el) el.indeterminate = partial;
+              }}
+              readOnly
+              className="shrink-0"
+            />
+            <span
+              className="shrink-0 grid place-items-center rounded border w-6 h-6"
+              style={{ color: branch.color, borderColor: `${branch.color}55`, background: `${branch.color}1a` }}
+              aria-hidden
+            >
+              <BranchIcon iconKey={branch.iconKey} className="w-3.5 h-3.5" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-xs font-bold uppercase tracking-wider text-slate-200">{branch.label}</span>
+              <span className="block font-mono text-[10px] text-slate-500">{selectedCount}/{ids.length} selected</span>
+            </span>
+            <span
+              className="shrink-0 font-mono text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded border"
+              style={{ color: branch.color, borderColor: `${branch.color}55` }}
+              aria-hidden
+            >
+              {branch.short}
+            </span>
+          </button>
         </div>
+        {expanded && (
+          <div className="space-y-2 px-3 pb-3 pt-2">
+            {branch.children?.map((child) => renderBranch(child, depth + 1))}
+            {branch.objects && branch.objects.length > 0 && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                {branch.objects.map((obj) => renderObject(obj, branch))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     );
   };
 
+  const showProgressBar = uploading || (activeJob && isUploadActive(activeJob));
+  const transferOrJobProgress = uploading ? uploadTransferProgress : uploadProgress(activeJob);
+
   return (
     <div className="w-full h-full bg-slate-950 text-slate-200 overflow-auto">
-      <div className="h-full grid grid-cols-1 xl:grid-cols-[1fr_1fr]">
-        <section className="border-r border-slate-800 p-6 flex flex-col gap-5">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-            <div>
-              <h2 className="text-xl font-bold uppercase tracking-wider flex items-center gap-3">
-                <UploadCloud className="w-6 h-6 text-blue-400" /> Imagery Upload
-              </h2>
-              <div className="text-xs text-slate-500 font-mono mt-1">IMINT / GEOINT COLLECTION</div>
+      <div className="max-w-4xl mx-auto p-6 flex flex-col gap-5">
+        <div className="flex items-center gap-3 border-b border-slate-800 pb-4">
+          <UploadCloud className="w-7 h-7 text-blue-400" />
+          <h2 className="text-xl font-bold uppercase tracking-wider">Imagery Upload</h2>
+        </div>
+
+        <label className="min-h-56 border border-dashed border-slate-700 bg-slate-900/40 hover:bg-slate-900 transition rounded flex flex-col items-center justify-center cursor-pointer">
+          <FileImage className="w-12 h-12 text-slate-500 mb-3" />
+          <div className="font-mono text-sm text-slate-300">{file ? file.name : 'Select raster'}</div>
+          <div className="font-mono text-xs text-slate-500 mt-2">TIF / JP2 / NetCDF / PNG / JPG</div>
+          <input
+            type="file"
+            accept=".tif,.tiff,.jp2,.j2k,.nc,.netcdf,.png,.jpg,.jpeg"
+            onChange={(event) => setFile(event.target.files?.[0] || null)}
+            className="hidden"
+          />
+        </label>
+
+        <div className="flex flex-col sm:flex-row gap-3">
+          <select
+            value={sensorType}
+            onChange={(event) => setSensorType(event.target.value)}
+            className="bg-slate-900 border border-slate-700 rounded px-3 py-3 text-sm sm:w-48"
+          >
+            <option>Optical</option>
+            <option>Radar</option>
+            <option>Thermal</option>
+          </select>
+          <button
+            onClick={uploadImage}
+            disabled={!file || uploading}
+            className="flex-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed rounded px-4 py-3 text-sm font-bold uppercase tracking-wider flex items-center justify-center gap-2"
+          >
+            <DatabaseZap className="w-4 h-4" /> Upload &amp; Process
+          </button>
+        </div>
+
+        <div className="border border-slate-800 bg-slate-900/70 rounded">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
+            <div className="flex items-center gap-3">
+              <ShieldCheck className="w-5 h-5 text-blue-400" />
+              <div>
+                <div className="text-xs font-bold uppercase tracking-wider text-slate-200">Detection Objects</div>
+                <div className="font-mono text-[10px] text-slate-500">
+                  Pick what SAM3 should look for &middot; filtered for <span className="text-blue-300">{sensorTag.toUpperCase()}</span>
+                </div>
+              </div>
             </div>
-            <div className="text-xs font-mono text-blue-300 border border-blue-500/40 px-3 py-1 rounded bg-blue-500/10">
-              {uploading ? 'TRANSFERRING' : 'READY'}
+            <div className="flex items-center gap-2 font-mono text-[10px]">
+              <span className="border border-blue-500/40 bg-blue-500/10 text-blue-300 px-2 py-1 rounded">
+                {selectedPrompts.length} prompts
+              </span>
+              <button
+                type="button"
+                onClick={selectVisibleDefence}
+                title="Select all visible objects"
+                className="border border-slate-700 px-2 py-1 rounded text-slate-300 hover:border-blue-400"
+              >
+                <ListChecks className="w-3 h-3" />
+              </button>
+              <button
+                type="button"
+                onClick={clearAllPrompts}
+                title="Clear all selected"
+                className="border border-slate-700 px-2 py-1 rounded text-slate-300 hover:border-red-400"
+              >
+                <X className="w-3 h-3" />
+              </button>
             </div>
           </div>
 
-          <label className="min-h-64 border border-dashed border-slate-700 bg-slate-900/40 hover:bg-slate-900 transition rounded flex flex-col items-center justify-center cursor-pointer">
-            <FileImage className="w-12 h-12 text-slate-500 mb-4" />
-            <div className="font-mono text-sm text-slate-300">{file ? file.name : 'Select raster collection'}</div>
-            <div className="font-mono text-xs text-slate-500 mt-2">TIF / JP2 / NetCDF / PNG / JPG</div>
-            <input
-              type="file"
-              accept=".tif,.tiff,.jp2,.j2k,.nc,.netcdf,.png,.jpg,.jpeg"
-              onChange={(event) => setFile(event.target.files?.[0] || null)}
-              className="hidden"
-            />
-          </label>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <select
-              value={sensorType}
-              onChange={(event) => setSensorType(event.target.value)}
-              className="bg-slate-900 border border-slate-700 rounded px-3 py-3 text-sm"
-            >
-              <option>Optical</option>
-              <option>Radar</option>
-              <option>Thermal</option>
-              <option>MASINT</option>
-              <option>FMV</option>
-            </select>
-            <label className="bg-slate-900 border border-slate-700 rounded px-3 py-3 text-sm flex items-center gap-3">
+          <div className="p-4 space-y-3">
+            <div className="flex items-center gap-2 border border-slate-800 bg-slate-950 px-3 py-2 rounded">
+              <Search className="h-4 w-4 text-slate-500" />
               <input
-                type="checkbox"
-                checked={autoProcess}
-                onChange={(event) => setAutoProcess(event.target.checked)}
+                value={objectSearch}
+                onChange={(event) => setObjectSearch(event.target.value)}
+                placeholder="Search objects (e.g. tank, runway, decoy)"
+                className="min-w-0 flex-1 bg-transparent text-sm text-slate-200 outline-none placeholder:text-slate-600"
               />
-              Auto process
+            </div>
+            <div className="max-h-96 overflow-auto space-y-2 pr-1">
+              {DEFENCE_ONTOLOGY.map((branch) => renderBranch(branch))}
+            </div>
+            <label className="block">
+              <span className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-300">Custom Objects</span>
+              <textarea
+                value={customObjects}
+                onChange={(event) => setCustomObjects(event.target.value)}
+                placeholder="one object per line, or comma separated"
+                className="h-24 w-full resize-none border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-blue-500/70 rounded"
+              />
             </label>
-             <button
-               onClick={uploadImage}
-               disabled={!file || uploading}
-               className="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed rounded px-4 py-3 text-sm font-bold uppercase tracking-wider flex items-center justify-center gap-2"
-             >
-              <DatabaseZap className="w-4 h-4" /> Upload
-            </button>
-          </div>
-
-          <div className="border border-slate-800 bg-slate-900/70">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
-              <div className="flex items-center gap-3">
-                <ShieldCheck className="w-5 h-5 text-blue-400" />
-                <div>
-                  <div className="text-xs font-bold uppercase tracking-wider text-slate-200">Detection Objects</div>
-                  <div className="font-mono text-[10px] text-slate-500">Defence ontology + custom SAM3 prompts</div>
-                </div>
-              </div>
-              <div className="flex items-center gap-2 font-mono text-[10px]">
-                <span className={`border px-2 py-1 ${selectedPrompts.length > MAX_IMAGE_PROMPTS ? 'border-amber-500/50 bg-amber-500/10 text-amber-300' : 'border-blue-500/40 bg-blue-500/10 text-blue-300'}`}>
-                  {selectedPrompts.length} prompts
-                </span>
-                <button type="button" onClick={selectVisibleDefence} className="border border-slate-700 px-2 py-1 text-slate-300 hover:border-blue-400">
-                  <ListChecks className="inline h-3 w-3 mr-1" /> visible
-                </button>
-                <button type="button" onClick={clearAllPrompts} className="border border-slate-700 px-2 py-1 text-slate-300 hover:border-red-400">
-                  <X className="inline h-3 w-3 mr-1" /> clear
-                </button>
-              </div>
+            <div className="font-mono text-[10px] text-slate-500">
+              {selectedPrompts.length
+                ? `${selectedPrompts.length} prompts will override the default profile.`
+                : 'No object override selected. Upload will use the default satellite prompt profile.'}
             </div>
+          </div>
+        </div>
 
-            <div className="grid grid-cols-1 2xl:grid-cols-[minmax(0,1fr)_300px] gap-4 p-4">
+        {showProgressBar && (
+          <div className="border border-slate-800 bg-slate-900/80 rounded px-4 py-3 text-sm">
+            <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
-                <div className="mb-3 flex items-center gap-2 border border-slate-800 bg-slate-950 px-3 py-2">
-                  <Search className="h-4 w-4 text-slate-500" />
-                  <input
-                    value={objectSearch}
-                    onChange={(event) => setObjectSearch(event.target.value)}
-                    placeholder="Search defence objects"
-                    className="min-w-0 flex-1 bg-transparent text-sm text-slate-200 outline-none placeholder:text-slate-600"
-                  />
+                <div className="text-xs uppercase tracking-wider text-slate-400">
+                  {uploading ? 'transferring' : uploadStage(activeJob)}
                 </div>
-                <div className="max-h-80 overflow-auto space-y-2 pr-1">
-                  {DEFENCE_ONTOLOGY.map((branch) => renderBranch(branch))}
+                <div className="mt-1 font-mono text-xs text-slate-300 truncate">
+                  {uploading ? `${uploadTransferProgress}% uploaded` : uploadMessage(activeJob)}
                 </div>
               </div>
-
-              <div className="min-w-0 space-y-3">
-                <label className="block">
-                  <span className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-300">Custom Objects</span>
-                  <textarea
-                    value={customObjects}
-                    onChange={(event) => setCustomObjects(event.target.value)}
-                    placeholder="one object per line, or comma separated"
-                    className="h-40 w-full resize-none border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-blue-500/70"
-                  />
-                </label>
-                <div className="border border-slate-800 bg-slate-950/60 px-3 py-2 font-mono text-[10px] text-slate-500">
-                  {selectedPrompts.length > MAX_IMAGE_PROMPTS
-                    ? `Only the first ${MAX_IMAGE_PROMPTS} prompts will be used by the image inference service.`
-                    : selectedPrompts.length
-                    ? `Upload will override the default profile with ${selectedPrompts.length} selected text prompts.`
-                    : 'No object override selected. Upload will use the default satellite prompt profile.'}
-                </div>
+              <div className="font-mono text-xs text-slate-400">
+                {transferOrJobProgress}%
               </div>
             </div>
+            <div className="mt-3 h-2 w-full bg-slate-800 overflow-hidden rounded">
+              <div
+                className={`h-full transition-all duration-500 ${uploading ? 'bg-sky-400' : uploadProgressClass(activeJob)}`}
+                style={{ width: `${transferOrJobProgress}%` }}
+              />
+            </div>
+            {activeJob?.celery_task_id && (
+              <div className="mt-2 text-[10px] font-mono text-slate-500 truncate">task {activeJob.celery_task_id}</div>
+            )}
           </div>
+        )}
 
-          {uploadStatus && (
-            <div className="border border-slate-800 bg-slate-900 rounded px-4 py-3 text-sm font-mono text-blue-300">
-              {uploadStatus}
-            </div>
-          )}
-
-          {(uploading || activeJob) && (
-            <div className="border border-slate-800 bg-slate-900/80 rounded px-4 py-3 text-sm">
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-xs uppercase tracking-wider text-slate-400">
-                    {uploading ? 'upload transfer' : uploadStage(activeJob)}
-                  </div>
-                  <div className="mt-1 font-mono text-xs text-slate-300 truncate">
-                    {uploading ? `${uploadTransferProgress}% uploaded` : uploadMessage(activeJob)}
-                  </div>
-                </div>
-                <div className="font-mono text-xs text-slate-400">
-                  {uploading ? uploadTransferProgress : uploadProgress(activeJob)}%
-                </div>
-              </div>
-              <div className="mt-3 h-2 w-full bg-slate-800 overflow-hidden rounded">
-                <div
-                  className={`h-full transition-all duration-500 ${uploading ? 'bg-sky-400' : uploadProgressClass(activeJob)}`}
-                  style={{ width: `${uploading ? uploadTransferProgress : uploadProgress(activeJob)}%` }}
-                />
-              </div>
-              {activeJob?.celery_task_id && (
-                <div className="mt-2 text-[10px] font-mono text-slate-500 truncate">task {activeJob.celery_task_id}</div>
-              )}
-            </div>
-          )}
-        </section>
-
-        <section className="p-6 flex flex-col gap-5">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-            <div>
-              <h2 className="text-xl font-bold uppercase tracking-wider flex items-center gap-3">
-                <RadioTower className="w-6 h-6 text-emerald-400" /> Streaming Inputs
-              </h2>
-              <div className="text-xs text-slate-500 font-mono mt-1">AIS / ADS-B / RF / VIDEO / WEBHOOKS</div>
-            </div>
-            <div className="text-xs font-mono text-emerald-300 border border-emerald-500/40 px-3 py-1 rounded bg-emerald-500/10">
-              {feeds.filter(feed => feed.enabled).length} ACTIVE
-            </div>
+        {uploadStatus && !showProgressBar && (
+          <div className="border border-slate-800 bg-slate-900 rounded px-4 py-3 text-sm font-mono text-blue-300">
+            {uploadStatus}
           </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <input
-              value={feedForm.name}
-              onChange={(event) => setFeedForm(prev => ({ ...prev, name: event.target.value }))}
-              className="bg-slate-900 border border-slate-700 rounded px-3 py-3 text-sm"
-            />
-            <select
-              value={feedForm.feed_type}
-              onChange={(event) => setFeedForm(prev => ({ ...prev, feed_type: event.target.value }))}
-              className="bg-slate-900 border border-slate-700 rounded px-3 py-3 text-sm"
-            >
-              <option>AIS</option>
-              <option>ADS-B</option>
-              <option>RF/SIGINT</option>
-              <option>FMV</option>
-              <option>OSINT</option>
-              <option>Webhook</option>
-            </select>
-            <select
-              value={feedForm.protocol}
-              onChange={(event) => setFeedForm(prev => ({ ...prev, protocol: event.target.value }))}
-              className="bg-slate-900 border border-slate-700 rounded px-3 py-3 text-sm"
-            >
-              <option value="tcp">TCP</option>
-              <option value="udp">UDP</option>
-              <option value="http">HTTP</option>
-              <option value="https">HTTPS</option>
-              <option value="websocket">WebSocket</option>
-              <option value="file">File</option>
-              <option value="serial">Serial</option>
-            </select>
-            <select
-              value={feedForm.parser}
-              onChange={(event) => setFeedForm(prev => ({ ...prev, parser: event.target.value }))}
-              className="bg-slate-900 border border-slate-700 rounded px-3 py-3 text-sm"
-            >
-              <option value="nmea">NMEA</option>
-              <option value="json">JSON</option>
-              <option value="csv">CSV</option>
-              <option value="klv">MISB KLV</option>
-              <option value="raw">Raw</option>
-            </select>
-            <input
-              value={feedForm.endpoint}
-              onChange={(event) => setFeedForm(prev => ({ ...prev, endpoint: event.target.value }))}
-              className="md:col-span-2 bg-slate-900 border border-slate-700 rounded px-3 py-3 text-sm font-mono"
-            />
-            <button
-              onClick={connectFeed}
-              className="md:col-span-2 bg-emerald-600 hover:bg-emerald-500 rounded px-4 py-3 text-sm font-bold uppercase tracking-wider flex items-center justify-center gap-2"
-            >
-              <Cable className="w-4 h-4" /> Connect Source
-            </button>
-          </div>
-
-          {feedStatus && (
-            <div className="border border-slate-800 bg-slate-900 rounded px-4 py-3 text-sm font-mono text-emerald-300">
-              {feedStatus}
-            </div>
-          )}
-
-          <div className="flex-1 overflow-auto border border-slate-800 rounded bg-slate-900/40">
-            <table className="w-full text-left text-sm">
-              <thead className="text-xs uppercase text-slate-500 bg-slate-900 sticky top-0">
-                <tr>
-                  <th className="px-4 py-3">Source</th>
-                  <th className="px-4 py-3">Type</th>
-                  <th className="px-4 py-3">Endpoint</th>
-                  <th className="px-4 py-3">Status</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800">
-                {feeds.map(feed => (
-                  <tr key={feed.id} className="hover:bg-slate-800/40">
-                    <td className="px-4 py-3 font-semibold text-slate-200">{feed.name}</td>
-                    <td className="px-4 py-3 text-slate-400">{feed.feed_type}</td>
-                    <td className="px-4 py-3 font-mono text-xs text-slate-500">{feed.endpoint}</td>
-                    <td className="px-4 py-3">
-                      <span className={`inline-flex items-center gap-1 rounded border px-2 py-1 text-xs font-mono ${
-                        feed.enabled ? 'border-emerald-500/50 text-emerald-300 bg-emerald-500/10' : 'border-slate-700 text-slate-400 bg-slate-800'
-                      }`}>
-                        <CheckCircle2 className="w-3 h-3" /> {feed.status}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-                {feeds.length === 0 && (
-                  <tr>
-                    <td colSpan={4} className="px-4 py-10 text-center text-slate-500 font-mono">NO SOURCES</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
+        )}
       </div>
     </div>
   );

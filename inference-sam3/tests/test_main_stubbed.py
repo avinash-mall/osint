@@ -51,9 +51,3 @@ def test_rgb_text_prompt(monkeypatch):
     assert payload["detections"][0]["embedding"]["model"] == "disabled"
 
 
-def test_prompt_limit_defaults_and_clamps():
-    assert main._prompt_limit({}, "rgb") == main.SAM3_MAX_IMAGE_PROMPTS
-    assert main._prompt_limit({}, "fmv") == main.SAM3_MAX_VIDEO_PROMPTS
-    assert main._prompt_limit({"max_prompts": 2}, "rgb") == 2
-    assert main._prompt_limit({"max_prompts": 999999}, "rgb") == main.SAM3_MAX_IMAGE_PROMPTS
-    assert main._prompt_limit({"max_prompts": "bad"}, "fmv") == main.SAM3_MAX_VIDEO_PROMPTS

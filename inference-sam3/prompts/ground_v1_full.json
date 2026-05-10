@@ -1,6 +1,6 @@
 {
   "name": "ground_v1",
-  "description": "Open-vocabulary ground / oblique prompt union \u2014 COCO 2017 80-class set plus a curated extension drawn from the Objects365 v2 and LVIS v1 taxonomies. Capped per request at SAM3_MAX_PROMPTS_PER_REQUEST.",
+  "description": "Open-vocabulary ground / oblique prompt union \u2014 COCO 2017 80-class set plus a curated extension drawn from the Objects365 v2 and LVIS v1 taxonomies. SAM3 has no inherent prompt-count limit; latency scales linearly with prompt count.",
   "sources": [
     "coco-2017",
     "objects365-v2-curated",

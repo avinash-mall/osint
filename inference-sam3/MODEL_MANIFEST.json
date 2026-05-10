@@ -28,6 +28,26 @@
       "files": [
         {"path": "sam3.1_multiplex.pt", "lfs": true, "sha256": null}
       ]
+    },
+    "1038lab/sam3": {
+      "role": "image_grounding_mirror",
+      "gated": false,
+      "note": "Non-gated mirror of facebook/sam3 weights. Activated by SAM3_WEIGHTS_SOURCE=mirror. Tokenizer/processor configs are still loaded from the upstream sam3 Python package shipped in the container.",
+      "files": [
+        {"path": "sam3.safetensors", "lfs": true, "sha256": null}
+      ]
+    },
+    "IDEA-Research/grounding-dino-tiny": {
+      "role": "open_vocab_text_to_box_detector",
+      "gated": false,
+      "license": "Apache-2.0",
+      "note": "Generic open-vocabulary detector that runs alongside SAM 3 / DOTA-OBB / YOLOv8m_defence. Loaded via transformers AutoModelForZeroShotObjectDetection from the HF cache. Switch to grounding-dino-base for higher accuracy / larger model.",
+      "files": [
+        {"path": "model.safetensors", "lfs": true, "sha256": null},
+        {"path": "config.json", "oid": null},
+        {"path": "preprocessor_config.json", "oid": null},
+        {"path": "tokenizer.json", "oid": null}
+      ]
     }
   }
 }

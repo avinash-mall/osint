@@ -8,11 +8,12 @@ def test_select_default_profile():
     assert select_default_profile("sar") == "satellite_v1"
 
 
-def test_text_prompts_override_dedupe_and_cap():
-    prompts = resolve_prompts({"text_prompts": [" Ship ", "ship", "Airplane"]}, max_prompts=1)
-    assert prompts == ["ship"]
+def test_text_prompts_override_dedupes_and_normalizes():
+    prompts = resolve_prompts({"text_prompts": [" Ship ", "ship", "Airplane"]})
+    assert prompts == ["ship", "airplane"]
 
 
-def test_profile_resolution():
-    prompts = resolve_prompts({"modality": "sar"}, max_prompts=3)
-    assert prompts == ["airplane", "helicopter", "ship"]
+def test_profile_resolution_returns_full_profile():
+    prompts = resolve_prompts({"modality": "sar"})
+    assert prompts[:3] == ["airplane", "helicopter", "ship"]
+    assert len(prompts) == 25

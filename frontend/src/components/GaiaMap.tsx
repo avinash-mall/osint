@@ -5,50 +5,27 @@ import axios from 'axios';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
   Activity,
-  Anchor,
-  Building2,
-  BusFront,
-  Car,
   ChevronDown,
   ChevronRight,
   CircleHelp,
-  CircleParking,
-  Construction,
-  Container,
   Crosshair,
-  Dumbbell,
   Eye,
   EyeOff,
-  Factory,
-  FileText,
-  Fuel,
   GitBranch,
-  HardHat,
-  Helicopter,
-  Landmark,
   Layers,
   Minus,
   Navigation,
   Pause,
   Play,
-  Plane,
   Plus,
-  Package,
   RefreshCw,
-  Sailboat,
   Satellite,
   Search,
   Send,
   Shield,
-  Ship,
-  ShipWheel,
   Swords,
-  TrainFront,
-  Truck,
-  Waves,
-  Warehouse,
-  Wheat,
 } from 'lucide-react';
+import { BranchIcon as SharedBranchIcon, ObjectIcon as SharedObjectIcon, objectIconComponent } from '../utils/branchIcons';
 import 'leaflet/dist/leaflet.css';
 import { useEventStream } from '../hooks/useEventStream';
 import { type UploadJob, isUploadActive, uploadMessage, uploadProgress, uploadProgressClass, uploadStage } from '../utils/uploadProgress';
@@ -61,6 +38,12 @@ import {
   detectionClassSource,
   type DetectionCategoryId,
 } from '../utils/detectionTaxonomy';
+import { ALL_BRANCHES, type DefenceBranch } from '../utils/defenceOntology';
+
+const ALL_BRANCHES_BY_ID: Record<string, DefenceBranch> = ALL_BRANCHES.reduce((acc, branch) => {
+  acc[branch.id] = branch;
+  return acc;
+}, {} as Record<string, DefenceBranch>);
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 const TILE_PROXY_URL = import.meta.env.VITE_TILE_PROXY_URL || '/tiles';
@@ -183,17 +166,20 @@ interface DetectionTrack {
 }
 
 const TRACKER_CATEGORY_TO_CATEGORY_ID: Record<string, DetectionCategoryId> = {
-  maritime: 'sea',
-  ground: 'vehicle',
-  air: 'air',
-  combat: 'mil',
-  infrastructure: 'infra',
-  default: 'other',
-  unknown: 'other',
+  maritime: 'Naval_Maritime',
+  ground: 'Transportation_Terrain',
+  air: 'Airfield_Aviation',
+  combat: 'Military_Forces',
+  infrastructure: 'Industrial_Dual_Use',
+  facility: 'Urban_Tactical',
+  energy: 'Industrial_Dual_Use',
+  logistics: 'Logistics',
+  default: 'Other',
+  unknown: 'Other',
 };
 
 function trackColor(category: string): string {
-  const catId = TRACKER_CATEGORY_TO_CATEGORY_ID[category] ?? 'other';
+  const catId = TRACKER_CATEGORY_TO_CATEGORY_ID[category] ?? 'Other';
   return DETECTION_CATEGORIES[catId]?.color ?? '#727a83';
 }
 
@@ -254,16 +240,25 @@ function threatClass(level?: string) {
   }
 }
 
+const HEAVY_OUTLINE_CATEGORIES: ReadonlySet<DetectionCategoryId> = new Set([
+  'Military_Forces',
+  'Air_Defense_EW',
+  'Missile_Strategic',
+  'Battle_Damage',
+  'Industrial_Dual_Use',
+] as DetectionCategoryId[]);
+
 const getDetectionStyle = (feature: any) => {
   const category = detectionCategoryForFeature(feature);
   const color = DETECTION_CATEGORIES[category].color;
+  const isHeavy = HEAVY_OUTLINE_CATEGORIES.has(category);
   return {
     color,
-    weight: category === 'mil' || category === 'energy' ? 1.8 : 1.3,
+    weight: isHeavy ? 1.8 : 1.3,
     opacity: 0.92,
     fillColor: color,
     fillOpacity: confidenceValue(feature) > 0.85 ? 0.14 : 0.05,
-    dashArray: category === 'mil' ? '2, 3' : '3, 4',
+    dashArray: category === 'Military_Forces' ? '2, 3' : '3, 4',
   };
 };
 
@@ -280,54 +275,8 @@ type DetectionClassStat = {
   source: string;
 };
 
-const categoryIcons: Record<DetectionCategoryId, any> = {
-  air: Plane,
-  vehicle: Truck,
-  rail: TrainFront,
-  sea: Ship,
-  construction: HardHat,
-  structure: Building2,
-  mil: Shield,
-  energy: Fuel,
-  sport: Dumbbell,
-  infra: Navigation,
-  agri: Wheat,
-  water: Waves,
-  logistics: Package,
-  transit: BusFront,
-  other: CircleHelp,
-};
-
-function subclassIconComponent(value?: string | null, category?: DetectionCategoryId): any {
-  const raw = String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '_');
-  if (/helipad|helicopter/.test(raw)) return Helicopter;
-  if (/hangar/.test(raw)) return Warehouse;
-  if (/airport|airfield|runway|terminal/.test(raw)) return Landmark;
-  if (/aircraft|airplane|plane|boeing|a3\d\d|a2\d\d|arj21|c919|fixed_wing/.test(raw)) return Plane;
-  if (/warship|warcraft|destroyer|frigate|cruiser|aircraft_carrier|submarine|naval/.test(raw)) return Shield;
-  if (/sailboat|yacht/.test(raw)) return Sailboat;
-  if (/tugboat|barge|ferry|motorboat|fishing/.test(raw)) return Anchor;
-  if (/ship|vessel|tanker|harbor|harbour|port|shipyard|hovercraft/.test(raw)) return ShipWheel;
-  if (/bus/.test(raw)) return BusFront;
-  if (/truck|trailer|tractor|dump|hauler|mixer/.test(raw)) return Truck;
-  if (/car|van|passenger_vehicle|small_vehicle|vehicle_lot|parking/.test(raw)) return Car;
-  if (/locomotive|rail|train|tank_car|flat_car|cargo_car|passenger_car/.test(raw)) return TrainFront;
-  if (/crane|excavator|loader|grader|scraper|stacker|construction|engineering/.test(raw)) return Construction;
-  if (/container|shipping/.test(raw)) return Container;
-  if (/storage_?tank|oil|gas|fuel/.test(raw)) return Fuel;
-  if (/factory|powerplant|substation|solar|wind|chimney|smokestack/.test(raw)) return Factory;
-  if (/bridge|overpass|interchange|roundabout|toll|tunnel|road/.test(raw)) return Navigation;
-  if (/stadium|baseball|tennis|basketball|soccer|football|golf|race_track|swim|recreation|park/.test(raw)) return Dumbbell;
-  if (/crop|farm|aquaculture/.test(raw)) return Wheat;
-  if (/lake|pond|dam|flooded|water/.test(raw)) return Waves;
-  if (/facility|building|residential|office|mall|hospital|school|tower|shed|hut|barn/.test(raw)) return Building2;
-  if (category === 'transit') return CircleParking;
-  return category ? categoryIcons[category] || CircleHelp : CircleHelp;
-}
-
 function CategoryIcon({ category, className = 'h-3.5 w-3.5' }: { category: DetectionCategoryId; className?: string }) {
-  const Icon = categoryIcons[category] || CircleHelp;
-  return <Icon className={className} />;
+  return <SharedBranchIcon branchId={category} className={className} />;
 }
 
 function DetectionSubclassIcon({
@@ -339,15 +288,16 @@ function DetectionSubclassIcon({
   category: DetectionCategoryId;
   className?: string;
 }) {
-  const Icon = subclassIconComponent(label, category);
-  return <Icon className={className} />;
+  const branch = ALL_BRANCHES_BY_ID[category];
+  return <SharedObjectIcon prompt={label} branchIconKey={branch?.iconKey} className={className} />;
 }
 
 function detectionIcon(feature: any) {
   const category = detectionCategoryForFeature(feature);
   const color = DETECTION_CATEGORIES[category].color;
   const props = feature?.properties || {};
-  const Icon = subclassIconComponent(props.original_class || props.class || props.label, category);
+  const branch = ALL_BRANCHES_BY_ID[category];
+  const Icon = objectIconComponent(props.original_class || props.class || props.label, branch?.iconKey);
   const iconMarkup = renderToStaticMarkup(<Icon size={12} strokeWidth={2.2} />);
   return L.divIcon({
     className: '',
@@ -430,11 +380,10 @@ function MapFitToDetections({ geojson, filterKey }: { geojson: any; filterKey: s
 }
 
 type GaiaMapProps = {
-  onOpenWorkbench?: () => void;
   onOpenGraph?: () => void;
 };
 
-export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) {
+export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
   const [data, setData] = useState<{ static: any[]; tracks: any[] }>({ static: [], tracks: [] });
   const [imagery, setImagery] = useState<any[]>([]);
   const [detectionsGeoJSON, setDetectionsGeoJSON] = useState<any>({ type: 'FeatureCollection', features: [] });
@@ -750,26 +699,40 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
     }
   }, [focusTimeRange, selectedImagery, timeRange]);
 
-  const fetchDetections = useCallback(async () => {
+  const fetchDetectionClasses = useCallback(async () => {
     if (!mapBounds) return;
+    try {
+      const classParams = new URLSearchParams({
+        start_time: timeRange.start,
+        end_time: timeRange.end,
+        bbox: mapBounds,
+        llm: 'true',
+      });
+      const response = await axios.get(`${API_URL}/api/detections/classes?${classParams.toString()}`, { timeout: 10000 });
+      setDetectionClasses(response.data?.classes || []);
+    } catch (error) {
+      console.error('Error fetching detection classes:', error);
+    }
+  }, [mapBounds, timeRange]);
+
+  const fetchDetectionFeatures = useCallback(async () => {
+    if (!mapBounds || !detectionClassFilter) {
+      setDetectionsGeoJSON({ type: 'FeatureCollection', features: [] });
+      setDetectionsLayerVersion((version) => version + 1);
+      return;
+    }
     setIsLoading(true);
     try {
-      const classParams = new URLSearchParams({ start_time: timeRange.start, end_time: timeRange.end, llm: 'true' });
-      const geoParams = new URLSearchParams({ start_time: timeRange.start, end_time: timeRange.end });
-      classParams.set('bbox', mapBounds);
-      geoParams.set('bbox', mapBounds);
-      geoParams.set('limit', '20000');
-      const [geojsonResponse, classResponse] = await Promise.allSettled([
-        axios.get(`${API_URL}/api/detections/geojson?${geoParams.toString()}`, { timeout: 10000 }),
-        axios.get(`${API_URL}/api/detections/classes?${classParams.toString()}`, { timeout: 10000 }),
-      ]);
-      if (geojsonResponse.status === 'fulfilled') {
-        setDetectionsGeoJSON(geojsonResponse.value.data || { type: 'FeatureCollection', features: [] });
-        setDetectionsLayerVersion((version) => version + 1);
-      }
-      if (classResponse.status === 'fulfilled') {
-        setDetectionClasses(classResponse.value.data?.classes || []);
-      }
+      const geoParams = new URLSearchParams({
+        start_time: timeRange.start,
+        end_time: timeRange.end,
+        bbox: mapBounds,
+        det_class: detectionClassFilter,
+        limit: '20000',
+      });
+      const response = await axios.get(`${API_URL}/api/detections/geojson?${geoParams.toString()}`, { timeout: 10000 });
+      setDetectionsGeoJSON(response.data || { type: 'FeatureCollection', features: [] });
+      setDetectionsLayerVersion((version) => version + 1);
     } catch (error) {
       console.error('Error fetching detections:', error);
     } finally {
@@ -777,10 +740,15 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
     }
   }, [detectionClassFilter, mapBounds, timeRange]);
 
+  const fetchDetections = useCallback(async () => {
+    await Promise.all([fetchDetectionClasses(), fetchDetectionFeatures()]);
+  }, [fetchDetectionClasses, fetchDetectionFeatures]);
+
   useEffect(() => { fetchData(); }, [fetchData]);
   useEffect(() => { fetchUploadJobs(); }, [fetchUploadJobs]);
   useEffect(() => { fetchImagery(); }, [fetchImagery]);
-  useEffect(() => { fetchDetections(); }, [fetchDetections]);
+  useEffect(() => { fetchDetectionClasses(); }, [fetchDetectionClasses]);
+  useEffect(() => { fetchDetectionFeatures(); }, [fetchDetectionFeatures]);
   useEffect(() => { fetchDetectionTracks(); }, [fetchDetectionTracks]);
 
   useEffect(() => {
@@ -963,19 +931,6 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
     }
   }, [fetchCandidateLinks, selectedDetection]);
 
-  const openWorkbench = useCallback(async () => {
-    setIsActionBusy(true);
-    setActionStatus('Opening target workbench...');
-    try {
-      onOpenWorkbench?.();
-    } catch (error) {
-      console.error('Open workbench failed:', error);
-      setActionStatus('Open workbench failed.');
-    } finally {
-      setIsActionBusy(false);
-    }
-  }, [onOpenWorkbench]);
-
   const onEachDetection = (feature: any, layer: L.Layer) => {
     const props = feature.properties;
     const category = detectionCategoryForFeature(feature);
@@ -984,6 +939,9 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
     const originalClass = props.original_class || props.metadata?.original_class || props.class;
     const parentClass = props.parent_class || props.metadata?.parent_class || props.class;
     const hoverLabel = originalClass && originalClass !== props.class ? detectionClassLabel(originalClass) : props.label || props.class || 'Detection';
+    const rawClassStr = String(originalClass || props.class || '');
+    const source = rawClassStr.startsWith('prithvi:') ? 'Prithvi-EO'
+      : 'SAM 3 / Specialist';
     layer.bindPopup(`
       <div style="font-family: sans-serif; min-width: 210px;">
         <div style="font-weight: 700; font-size: 13px; margin-bottom: 8px; color: #e8ebee; border-bottom: 1px solid #373e46; padding-bottom: 4px;">
@@ -992,6 +950,7 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
         <div style="font-size: 12px; color: #aab2bb; line-height: 1.6;">
           <div>ID: <span style="color:#e8ebee">${props.id}</span></div>
           <div>Category: <span style="color:${categoryMeta.color}">${categoryMeta.label}</span></div>
+          <div>Source: <span style="color:#e8ebee">${source}</span></div>
           <div>Parent: <span style="color:#e8ebee">${parentClass}</span></div>
           <div>Original: <span style="color:#e8ebee">${originalClass}</span></div>
           <div>Confidence: <span style="color:#e8ebee">${(Number(props.confidence || 0) * 100).toFixed(1)}%</span></div>
@@ -1739,14 +1698,6 @@ export default function GaiaMap({ onOpenWorkbench, onOpenGraph }: GaiaMapProps) 
               className="sentinel-btn w-full justify-center disabled:cursor-not-allowed disabled:opacity-40"
             >
               <GitBranch className="h-3.5 w-3.5" /> Add To Link Graph
-            </button>
-            <button
-              type="button"
-              disabled={isActionBusy}
-              onClick={openWorkbench}
-              className="sentinel-btn w-full justify-center disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <FileText className="h-3.5 w-3.5" /> Open Workbench
             </button>
             <div className="min-h-8 border border-sentinel-line bg-sentinel-bg px-2 py-1 font-mono text-[10px] text-sentinel-muted">
               {actionStatus || (selectedDetection ? 'Detection action ready.' : 'Select a detection to enable actions.')}
