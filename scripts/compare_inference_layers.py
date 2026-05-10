@@ -866,7 +866,7 @@ def _iter_slice(
     elif slice_name == "sen1floods":
         yield from iter_sen1floods(labels_path=layers_path, max_chips=max_chips)
     else:
-        raise ValueError(f"Unknown slice: {slice_name!r}. Choices: dota, hls_burn, sen1floods, embedding")
+        raise ValueError(f"Unknown slice: {slice_name!r}. Choices: dota, hls_burn, sen1floods, embedding, all")
 
 
 # ---------------------------------------------------------------------------
@@ -1097,6 +1097,223 @@ def _build_markdown(
 
         lines.append("")
 
+    # ------------------------------------------------------------------
+    # Cumulative Pipeline section (only when all three slice types were run)
+    # ------------------------------------------------------------------
+    if all_results and segmenter_results is not None and embedding_results is not None:
+        lines.append("## Cumulative Pipeline")
+        lines.append("")
+        lines.append(
+            "Shows total latency as each layer is added on top of SAM3 base. "
+            "Detection count delta shows new detections added by each layer (vs. previous config)."
+        )
+        lines.append("")
+
+        cum_headers = [
+            "Layer added",
+            "Median Total ms",
+            "\u0394 ms added",
+            "Cumulative \u0394 ms",
+            "Det Count (avg)",
+            "Det \u0394",
+        ]
+        lines.append("| " + " | ".join(cum_headers) + " |")
+        lines.append("|" + "|".join(["---"] * len(cum_headers)) + "|")
+
+        # Extract median latency from results dicts
+        def _med(results, key):
+            r = next((x for x in results if x.get("config_name") == key), None)
+            if r is None:
+                return 0.0
+            return r.get("latency_ms", {}).get("median_total", r.get("median_total_ms", 0.0))
+
+        # Approximate detection count (TP+FP per chip) from box results
+        def _det_count(results, key):
+            r = next((x for x in results if x.get("config_name") == key), None)
+            if r is None:
+                return 0.0
+            chips = r.get("chips_evaluated", 1) or 1
+            per_class = r.get("metrics", {}).get("per_class", {})
+            total = sum(v.get("tp", 0) + v.get("fp", 0) for v in per_class.values())
+            return total / chips
+
+        # Box layer latencies
+        sam3_ms_cp     = _med(all_results, "sam3_only")
+        dota_ms_cp     = _med(all_results, "sam3+dota_obb")
+        yolo_ms_cp     = _med(all_results, "sam3+dota_obb+yolo_defence")
+        full_box_ms_cp = _med(all_results, "sam3+dota_obb+yolo_defence+grounding_dino")
+
+        # Segmenter (PRITHVI) latency delta vs its own baseline
+        prithvi_result_cp = next(
+            (r for r in segmenter_results if r.get("config_name") == "sam3+prithvi"), None
+        )
+        prithvi_delta_cp = 0.0
+        if prithvi_result_cp is not None:
+            seg_base_cp = next(
+                (r for r in segmenter_results if r.get("config_name") == "sam3_only"), None
+            )
+            seg_base_ms_cp = seg_base_cp["latency_ms"]["median_total"] if seg_base_cp else 0.0
+            prithvi_delta_cp = prithvi_result_cp["latency_ms"]["median_total"] - seg_base_ms_cp
+
+        # Embedding latency deltas vs embedding baseline
+        def _emb_delta_cp(name):
+            r = next((x for x in embedding_results if x.get("config_name") == name), None)
+            return r["delta_ms_vs_baseline"] if r else 0.0
+
+        dinov3_sat_delta_cp = _emb_delta_cp("sam3+dinov3_sat")
+        dinov3_lvd_delta_cp = _emb_delta_cp("sam3+dinov3_lvd")
+        terramind_delta_cp  = _emb_delta_cp("sam3+terramind")
+
+        # Detection counts (box layers only; embedding/segmenter don't change det count)
+        det_sam3_cp = _det_count(all_results, "sam3_only")
+        det_dota_cp = _det_count(all_results, "sam3+dota_obb")
+        det_yolo_cp = _det_count(all_results, "sam3+dota_obb+yolo_defence")
+        det_full_cp = _det_count(all_results, "sam3+dota_obb+yolo_defence+grounding_dino")
+
+        # Rows: (label, median_total_ms, delta_vs_prev, cumulative_delta, det_avg, det_delta)
+        cum_pipeline_rows = [
+            ("SAM3 (base)",      sam3_ms_cp, None, None, det_sam3_cp, None),
+            ("+ DOTA_OBB",       dota_ms_cp, dota_ms_cp - sam3_ms_cp,
+             dota_ms_cp - sam3_ms_cp, det_dota_cp, det_dota_cp - det_sam3_cp),
+            ("+ DEFENCE_YOLO",   yolo_ms_cp, yolo_ms_cp - dota_ms_cp,
+             yolo_ms_cp - sam3_ms_cp, det_yolo_cp, det_yolo_cp - det_dota_cp),
+            ("+ GROUNDING_DINO", full_box_ms_cp, full_box_ms_cp - yolo_ms_cp,
+             full_box_ms_cp - sam3_ms_cp, det_full_cp, det_full_cp - det_yolo_cp),
+        ]
+
+        cum_p  = full_box_ms_cp - sam3_ms_cp + prithvi_delta_cp
+        cum_ds = cum_p  + dinov3_sat_delta_cp
+        cum_dl = cum_ds + dinov3_lvd_delta_cp
+        cum_tm = cum_dl + terramind_delta_cp
+
+        cum_pipeline_rows += [
+            ("+ PRITHVI",
+             full_box_ms_cp + prithvi_delta_cp,
+             prithvi_delta_cp, cum_p, det_full_cp, 0),
+            ("+ DINOV3_SAT",
+             full_box_ms_cp + prithvi_delta_cp + dinov3_sat_delta_cp,
+             dinov3_sat_delta_cp, cum_ds, det_full_cp, 0),
+            ("+ DINOV3_LVD",
+             full_box_ms_cp + prithvi_delta_cp + dinov3_sat_delta_cp + dinov3_lvd_delta_cp,
+             dinov3_lvd_delta_cp, cum_dl, det_full_cp, 0),
+            ("+ TERRAMIND (SAR)",
+             full_box_ms_cp + prithvi_delta_cp + dinov3_sat_delta_cp + dinov3_lvd_delta_cp + terramind_delta_cp,
+             terramind_delta_cp, cum_tm, det_full_cp, 0),
+        ]
+
+        for label_cp, med_ms_cp, delta_ms_cp, cum_delta_cp, det_avg_cp, det_d_cp in cum_pipeline_rows:
+            if delta_ms_cp is None:
+                delta_str_cp = "\u2014"
+                cum_str_cp   = "\u2014"
+            else:
+                delta_str_cp = f"{delta_ms_cp:+.0f}"
+                cum_str_cp   = f"{cum_delta_cp:+.0f}"
+            if det_d_cp is None:
+                det_delta_str_cp = "\u2014"
+            elif det_d_cp == 0:
+                det_delta_str_cp = "0"
+            else:
+                det_delta_str_cp = f"{det_d_cp:+.1f}"
+            lines.append(
+                f"| {label_cp} | {med_ms_cp:.0f} | {delta_str_cp} | {cum_str_cp} "
+                f"| {det_avg_cp:.1f} | {det_delta_str_cp} |"
+            )
+
+        lines.append("")
+
+    # ------------------------------------------------------------------
+    # Recommendations section (always present)
+    # ------------------------------------------------------------------
+    lines.append("## Recommendations")
+    lines.append("")
+    lines.append("Based on the comparative analysis above.")
+    lines.append("")
+
+    rec_headers = ["Layer", "Verdict", "Quality impact", "Latency cost", "Notes"]
+    lines.append("| " + " | ".join(rec_headers) + " |")
+    lines.append("|" + "|".join(["---"] * len(rec_headers)) + "|")
+
+    def _box_map_delta_rec(config_name):
+        if not all_results:
+            return ""
+        bl = next((r for r in all_results if r["config_name"] == "sam3_only"), None)
+        rs = next((r for r in all_results if r["config_name"] == config_name), None)
+        if bl is None or rs is None:
+            return ""
+        return f"{rs['metrics']['map_50'] - bl['metrics']['map_50']:+.2f} mAP"
+
+    def _box_lat_delta_rec(config_name, baseline_name="sam3_only"):
+        if not all_results:
+            return "?"
+        bl = next((r for r in all_results if r["config_name"] == baseline_name), None)
+        rs = next((r for r in all_results if r["config_name"] == config_name), None)
+        if bl is None or rs is None:
+            return "?"
+        return f"{rs['latency_ms']['median_total'] - bl['latency_ms']['median_total']:+.0f} ms"
+
+    def _seg_lat_delta_rec():
+        if segmenter_results is None:
+            return "?"
+        bl = next((r for r in segmenter_results if r["config_name"] == "sam3_only"), None)
+        pr = next((r for r in segmenter_results if r["config_name"] == "sam3+prithvi"), None)
+        if bl is None or pr is None:
+            return "?"
+        return f"{pr['latency_ms']['median_total'] - bl['latency_ms']['median_total']:+.0f} ms"
+
+    def _emb_lat_rec(name):
+        if embedding_results is None:
+            return "?"
+        r = next((x for x in embedding_results if x.get("config_name") == name), None)
+        if r is None:
+            return "?"
+        return f"{r['delta_ms_vs_baseline']:+.0f} ms"
+
+    dota_map_rec = _box_map_delta_rec("sam3+dota_obb") or "+N.NN mAP"
+    dota_lat_rec = _box_lat_delta_rec("sam3+dota_obb")
+
+    dota_r_rec = next((r for r in all_results if r.get("config_name") == "sam3+dota_obb"), None)
+    yolo_r_rec = next((r for r in all_results if r.get("config_name") == "sam3+dota_obb+yolo_defence"), None)
+    yolo_map_rec = _box_map_delta_rec("sam3+dota_obb+yolo_defence") or "+N.NN mAP"
+    if dota_r_rec and yolo_r_rec:
+        yolo_lat_val_rec = (
+            yolo_r_rec["latency_ms"]["median_total"]
+            - dota_r_rec["latency_ms"]["median_total"]
+        )
+        yolo_lat_rec = f"+{yolo_lat_val_rec:.0f} ms"
+    else:
+        yolo_lat_rec = "?"
+
+    dino_map_rec       = _box_map_delta_rec("sam3+dota_obb+yolo_defence+grounding_dino") or "+N.NN mAP"
+    dino_lat_rec       = _box_lat_delta_rec("sam3+grounding_dino")
+    prithvi_lat_rec    = _seg_lat_delta_rec()
+    dinov3_sat_lat_rec = _emb_lat_rec("sam3+dinov3_sat")
+    dinov3_lvd_lat_rec = _emb_lat_rec("sam3+dinov3_lvd")
+    terramind_lat_rec  = _emb_lat_rec("sam3+terramind")
+
+    rec_rows = [
+        ("DOTA_OBB",       "\u2705 Keep",               dota_map_rec,              dota_lat_rec,
+         "Adds aerial vehicle/plane classes not in SAM3 vocab"),
+        ("DEFENCE_YOLO",   "\u26a0\ufe0f Make optional", yolo_map_rec,            yolo_lat_rec,
+         "Overlaps with DOTA classes; redundant on RGB; enable only for defence domain"),
+        ("GROUNDING_DINO", "\u2705 Keep",               dino_map_rec,              dino_lat_rec,
+         "Improves open-vocab recall; complements SAM3 prompts"),
+        ("PRITHVI",        "\u2705 Keep",               "\u2014 (segmentation)",  prithvi_lat_rec,
+         "Only specialist for multispectral flood/burn; no alternative"),
+        ("DINOV3_SAT",     "\u26a0\ufe0f Make optional", "\u2014 (embedding)",   dinov3_sat_lat_rec,
+         "Downstream retrieval value; disable if not using embedding search"),
+        ("DINOV3_LVD",     "\u26a0\ufe0f Make optional", "\u2014 (embedding)",   dinov3_lvd_lat_rec,
+         "FMV-specific; enable only for video/FMV workflows"),
+        ("TERRAMIND",      "\u26a0\ufe0f Make optional", "\u2014 (embedding)",   terramind_lat_rec,
+         "SAR-only; no impact on RGB/multispectral; enable only for SAR"),
+    ]
+
+    for layer_rec, verdict_rec, quality_rec, lat_cost_rec, notes_rec in rec_rows:
+        lines.append(
+            f"| {layer_rec} | {verdict_rec} | {quality_rec} | {lat_cost_rec} | {notes_rec} |"
+        )
+
+    lines.append("")
+
     return "\n".join(lines)
 
 
@@ -1119,6 +1336,7 @@ def run(args: argparse.Namespace) -> int:
     layers_path: str | None = args.layers_path
     dry_run: bool = args.dry_run
 
+    is_all_slice = slice_name == "all"
     is_segmenter_slice = slice_name in _SEGMENTER_SLICES
     is_embedding_slice = slice_name in _EMBEDDING_SLICES
 
@@ -1142,6 +1360,145 @@ def run(args: argparse.Namespace) -> int:
 
     log.info("Slice: %s | max_chips: %d | repeats: %d | dry_run: %s",
              slice_name, max_chips, repeats, dry_run)
+
+    # ------------------------------------------------------------------
+    # --slice all: run dota, hls_burn, and embedding sub-slices
+    # ------------------------------------------------------------------
+    if is_all_slice:
+        log.info("Running --slice all: dota + hls_burn + embedding")
+
+        # ---- dota (box detectors) ----
+        log.info("Loading chips from slice 'dota' ...")
+        dota_chips_all: list[tuple[bytes, str, list[str], Any]] = list(
+            _iter_slice("dota", max_chips, layers_path)
+        )
+        log.info("Loaded %d dota chip(s).", len(dota_chips_all))
+
+        all_results_sl: list[dict] = []
+        for cfg in LAYER_CONFIGS:
+            config_name = cfg["config_name"]
+            enabled_layers = cfg["enabled_layers"]
+            log.info("Evaluating config: %s  layers=%s", config_name, enabled_layers)
+            chip_results_box_sl: list[dict] = []
+            for chip_bytes_sl, modality_sl, prompts_sl, gt_sl in dota_chips_all:
+                result_sl = _evaluate_chip(
+                    url=url, chip_bytes=chip_bytes_sl, prompts=prompts_sl,
+                    ground_truth=gt_sl, enabled_layers=enabled_layers,
+                    repeats=repeats, dry_run=dry_run, modality=modality_sl,
+                )
+                if result_sl is not None:
+                    chip_results_box_sl.append(result_sl)
+            agg_sl = _aggregate_results(chip_results_box_sl)
+            agg_sl["config_name"] = config_name
+            agg_sl["enabled_layers"] = enabled_layers
+            all_results_sl.append(agg_sl)
+            log.info("  chips=%d  mAP=%.4f  ms=%.1f", agg_sl["chips_evaluated"],
+                     agg_sl["metrics"]["map_50"], agg_sl["latency_ms"]["median_total"])
+
+        # ---- hls_burn (segmenter) ----
+        log.info("Loading chips from slice 'hls_burn' ...")
+        seg_chips_sl: list[tuple[bytes, str, list[str], Any]] = list(
+            _iter_slice("hls_burn", max_chips, layers_path)
+        )
+        log.info("Loaded %d hls_burn chip(s).", len(seg_chips_sl))
+
+        sample_gt_sl = seg_chips_sl[0][3] if seg_chips_sl else {}
+        tasks_sl = list(sample_gt_sl.keys())
+        segmenter_results_sl: list[dict] = []
+        n_seg_chips_sl = 0
+        for cfg in SEGMENTER_CONFIGS:
+            config_name = cfg["config_name"]
+            enabled_layers = cfg["enabled_layers"]
+            log.info("Evaluating segmenter config: %s  layers=%s", config_name, enabled_layers)
+            chip_results_seg_sl: list[dict] = []
+            for chip_bytes_sl, modality_sl, prompts_sl, gt_sl in seg_chips_sl:
+                result_sl = _evaluate_segmenter_chip(
+                    url=url, chip_bytes=chip_bytes_sl, ground_truth=gt_sl,
+                    enabled_layers=enabled_layers, repeats=repeats, dry_run=dry_run,
+                )
+                if result_sl is not None:
+                    chip_results_seg_sl.append(result_sl)
+            agg_seg_sl = _aggregate_segmenter_results(chip_results_seg_sl, tasks_sl)
+            agg_seg_sl["config_name"] = config_name
+            agg_seg_sl["enabled_layers"] = enabled_layers
+            segmenter_results_sl.append(agg_seg_sl)
+            n_seg_chips_sl = max(n_seg_chips_sl, agg_seg_sl["chips_evaluated"])
+            log.info("  chips=%d  mean_iou=%.4f  ms=%.1f",
+                     agg_seg_sl["chips_evaluated"], agg_seg_sl["mean_iou"],
+                     agg_seg_sl["latency_ms"]["median_total"])
+
+        # ---- embedding ----
+        log.info("Loading chips from slice 'embedding' ...")
+        emb_chips_sl: list[tuple[bytes, str, list[str], Any]] = list(
+            _iter_slice("embedding", max_chips, layers_path)
+        )
+        log.info("Loaded %d embedding chip(s).", len(emb_chips_sl))
+
+        embedding_results_sl: list[dict] = []
+        n_emb_chips_sl = 0
+        baseline_emb_ms_sl: float | None = None
+        for cfg in EMBEDDING_CONFIGS:
+            config_name = cfg["name"]
+            enabled_layers = cfg["enabled_layers"]
+            log.info("Evaluating embedding config: %s  layers=%s", config_name, enabled_layers)
+            chip_results_emb_sl: list[dict] = []
+            for chip_bytes_sl, modality_sl, prompts_sl, gt_sl in emb_chips_sl:
+                result_sl = _evaluate_embedding_chip(
+                    url=url, chip_bytes=chip_bytes_sl, enabled_layers=enabled_layers,
+                    repeats=repeats, dry_run=dry_run, modality=modality_sl,
+                )
+                if result_sl is not None:
+                    chip_results_emb_sl.append(result_sl)
+            agg_emb_sl = _aggregate_embedding_results(
+                chip_results_emb_sl, config_name,
+                baseline_median_ms=baseline_emb_ms_sl,
+            )
+            embedding_results_sl.append(agg_emb_sl)
+            n_emb_chips_sl = max(n_emb_chips_sl, len(chip_results_emb_sl))
+            if config_name == "sam3_only":
+                baseline_emb_ms_sl = agg_emb_sl["median_total_ms"]
+
+        # ---- Write JSON ----
+        if json_output:
+            json_output.parent.mkdir(parents=True, exist_ok=True)
+            json_output.write_text(
+                json.dumps(
+                    {
+                        "generated_at": generated_at,
+                        "gpu": gpu,
+                        "slice": "all",
+                        "max_chips": max_chips,
+                        "repeats": repeats,
+                        "results": all_results_sl,
+                        "segmenter_results": segmenter_results_sl,
+                        "embedding_results": embedding_results_sl,
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            log.info("JSON artifact written to %s", json_output)
+
+        # ---- Write Markdown ----
+        n_chips_sl_actual = max(
+            (r["chips_evaluated"] for r in all_results_sl), default=0
+        )
+        markdown_sl = _build_markdown(
+            all_results=all_results_sl,
+            slice_name="dota",
+            n_chips=n_chips_sl_actual,
+            gpu=gpu,
+            generated_at=generated_at,
+            segmenter_results=segmenter_results_sl,
+            segmenter_slice="hls_burn",
+            n_segmenter_chips=n_seg_chips_sl,
+            embedding_results=embedding_results_sl,
+            n_embedding_chips=n_emb_chips_sl,
+        )
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(markdown_sl, encoding="utf-8")
+        log.info("Markdown report written to %s", output)
+        return 0
 
     # ------------------------------------------------------------------
     # Load chips once
@@ -1349,12 +1706,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--slice",
-        choices=["dota", "hls_burn", "sen1floods", "embedding"],
+        choices=["dota", "hls_burn", "sen1floods", "embedding", "all"],
         default="dota",
         help=(
             "Dataset slice to evaluate (default: dota). "
             "Choices: dota (box detectors), hls_burn / sen1floods (PRITHVI segmenter heads), "
-            "embedding (DINOV3_SAT / DINOV3_LVD / TERRAMIND embedding latency)."
+            "embedding (DINOV3_SAT / DINOV3_LVD / TERRAMIND embedding latency), "
+            "all (runs dota + hls_burn + embedding and combines into one full report)."
         ),
     )
     parser.add_argument(

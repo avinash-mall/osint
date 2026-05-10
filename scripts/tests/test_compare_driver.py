@@ -290,3 +290,54 @@ def test_dry_run_embedding_slice_produces_section(tmp_path: Path) -> None:
         assert config_name in emb_config_names, (
             f"Config '{config_name}' missing from embedding_results JSON"
         )
+
+
+def test_dry_run_all_slice_produces_full_report(tmp_path: Path) -> None:
+    """--dry-run --slice all produces all four report sections."""
+    report_path = tmp_path / "all_report.md"
+    json_path = tmp_path / "all_report.json"
+
+    exit_code = _run_main(
+        [
+            "--dry-run",
+            "--slice", "all",
+            "--max-chips", "3",
+            "--output", str(report_path),
+            "--json-output", str(json_path),
+        ]
+    )
+
+    assert exit_code == 0, f"main() returned non-zero exit code: {exit_code}"
+    assert report_path.exists(), f"Report file was not created at {report_path}"
+
+    content = report_path.read_text(encoding="utf-8")
+
+    assert "## Box Detectors" in content, (
+        "'## Box Detectors' section missing from report.\n"
+        f"Report content:\n{content[:500]}"
+    )
+    assert "## Semantic Segmenters" in content, (
+        "'## Semantic Segmenters' section missing from report.\n"
+        f"Report content:\n{content[:1000]}"
+    )
+    assert "## Embedding Models" in content, (
+        "'## Embedding Models' section missing from report.\n"
+        f"Report content:\n{content[:1000]}"
+    )
+    assert "## Cumulative Pipeline" in content, (
+        "'## Cumulative Pipeline' section missing from report.\n"
+        f"Report content:\n{content[:1500]}"
+    )
+    assert "## Recommendations" in content, (
+        "'## Recommendations' section missing from report.\n"
+        f"Report content:\n{content[:2000]}"
+    )
+
+    # JSON should have results, segmenter_results, embedding_results
+    import json as _json
+    assert json_path.exists(), f"JSON artifact was not created at {json_path}"
+    data = _json.loads(json_path.read_text(encoding="utf-8"))
+    assert "results" in data
+    assert "segmenter_results" in data
+    assert "embedding_results" in data
+    assert data["slice"] == "all"

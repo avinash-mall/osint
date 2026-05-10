@@ -600,6 +600,56 @@ def fetch_dota_val(real: bool = False) -> None:
     generate_synthetic_dota()
 
 
+def fetch_hls_burn(max_chips: int = MAX_CHIPS) -> None:
+    """
+    Idempotent HLS Burn Scars dataset fetcher.
+
+    Triggers the synthetic fallback inside ``eval_datasets.hls_burn`` so the
+    pipeline is ready without a network call.  Generation is skipped when
+    ``labels.json`` already exists with ≥ 5 entries.
+
+    Parameters
+    ----------
+    max_chips:
+        Ignored (the HLS synthetic generator always writes 10 chips).
+        Kept for API symmetry with ``fetch_dota``.
+    """
+    # Inserting scripts/ dir so eval_datasets is importable when running from
+    # any working directory.
+    _scripts_dir = Path(__file__).resolve().parent
+    if str(_scripts_dir) not in sys.path:
+        sys.path.insert(0, str(_scripts_dir))
+
+    from eval_datasets.hls_burn import _ensure_dataset, _DEFAULT_DATASET_DIR  # noqa: PLC0415
+    print("[fetch_eval_datasets] Ensuring HLS Burn Scars dataset …")
+    _ensure_dataset(_DEFAULT_DATASET_DIR)
+    print(f"[fetch_eval_datasets] HLS Burn Scars ready at {_DEFAULT_DATASET_DIR}")
+
+
+def fetch_sen1floods(max_chips: int = MAX_CHIPS) -> None:
+    """
+    Idempotent Sen1Floods11 dataset fetcher.
+
+    Triggers the synthetic fallback inside ``eval_datasets.sen1floods`` so the
+    pipeline is ready without a network call.  Generation is skipped when
+    ``labels.json`` already exists with ≥ 5 entries.
+
+    Parameters
+    ----------
+    max_chips:
+        Ignored (the Sen1Floods11 synthetic generator always writes 10 chips).
+        Kept for API symmetry with ``fetch_dota``.
+    """
+    _scripts_dir = Path(__file__).resolve().parent
+    if str(_scripts_dir) not in sys.path:
+        sys.path.insert(0, str(_scripts_dir))
+
+    from eval_datasets.sen1floods import _ensure_dataset, _DEFAULT_DATASET_DIR  # noqa: PLC0415
+    print("[fetch_eval_datasets] Ensuring Sen1Floods11 dataset …")
+    _ensure_dataset(_DEFAULT_DATASET_DIR)
+    print(f"[fetch_eval_datasets] Sen1Floods11 ready at {_DEFAULT_DATASET_DIR}")
+
+
 def main() -> None:
     """Entry point: run all fetchers."""
     parser = argparse.ArgumentParser(
@@ -627,6 +677,8 @@ def main() -> None:
         fetch_dota_val(real=True)
     else:
         fetch_dota(max_chips=args.max_chips)
+        fetch_hls_burn(max_chips=args.max_chips)
+        fetch_sen1floods(max_chips=args.max_chips)
     print("[fetch_eval_datasets] Done.")
 
 
