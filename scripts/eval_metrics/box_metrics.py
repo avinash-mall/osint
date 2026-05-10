@@ -233,7 +233,10 @@ def compute_box_metrics(
     # Aggregate metrics
     # ------------------------------------------------------------------
     # Only include classes that appear in GT for macro averages
-    gt_labels = set(gt_by_label.keys())
+    # NOTE: We must use set(g["label"] for g in ground_truth) instead of
+    # set(gt_by_label.keys()) because accessing gt_by_label[label] in the per-class
+    # loop above triggers defaultdict to auto-create empty lists for pred-only labels.
+    gt_labels = set(g["label"] for g in ground_truth)
     f1_values = [per_class[l]["f1"] for l in per_class if l in gt_labels]
     ap_values = [per_class[l]["ap"] for l in per_class if l in gt_labels]
 
