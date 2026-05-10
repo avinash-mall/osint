@@ -141,7 +141,11 @@ def iter_dota(
             break
 
         chip_rel: str = record["chip_file"]
-        chip_path: Path = base_dir / chip_rel
+        chip_path: Path = (base_dir / chip_rel).resolve()
+
+        # Prevent path traversal attacks
+        if not str(chip_path).startswith(str(base_dir.resolve())):
+            continue  # Skip path traversal attempts
 
         if not chip_path.exists():
             # Skip missing chips rather than crashing the whole iteration
