@@ -1083,11 +1083,11 @@ def _build_markdown(
                 embed_ms_str = "0"
                 coverage_str = "0%"
             elif cfg == "sam3+terramind":
-                delta_str = f"+{result['delta_ms_vs_baseline']:.1f}"
+                delta_str = f"{result['delta_ms_vs_baseline']:+.1f}"
                 embed_ms_str = "N/A"
                 coverage_str = "N/A (SAR)"
             else:
-                delta_str = f"+{result['delta_ms_vs_baseline']:.1f}"
+                delta_str = f"{result['delta_ms_vs_baseline']:+.1f}"
                 embed_ms_str = f"{embed_ms:.1f}"
                 coverage_str = f"{coverage * 100:.0f}%"
 
@@ -1206,8 +1206,8 @@ def _build_markdown(
                 delta_str_cp = "\u2014"
                 cum_str_cp   = "\u2014"
             else:
-                delta_str_cp = f"{delta_ms_cp:+.0f}"
-                cum_str_cp   = f"{cum_delta_cp:+.0f}"
+                delta_str_cp = f"{delta_ms_cp:+.0f} ms"
+                cum_str_cp   = f"{cum_delta_cp:+.0f} ms"
             if det_d_cp is None:
                 det_delta_str_cp = "\u2014"
             elif det_d_cp == 0:
@@ -1284,7 +1284,7 @@ def _build_markdown(
         yolo_lat_rec = "?"
 
     dino_map_rec       = _box_map_delta_rec("sam3+dota_obb+yolo_defence+grounding_dino") or "+N.NN mAP"
-    dino_lat_rec       = _box_lat_delta_rec("sam3+grounding_dino")
+    dino_lat_rec       = _box_lat_delta_rec("sam3+dota_obb+yolo_defence+grounding_dino")
     prithvi_lat_rec    = _seg_lat_delta_rec()
     dinov3_sat_lat_rec = _emb_lat_rec("sam3+dinov3_sat")
     dinov3_lvd_lat_rec = _emb_lat_rec("sam3+dinov3_lvd")
