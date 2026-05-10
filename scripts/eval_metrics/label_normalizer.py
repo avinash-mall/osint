@@ -129,25 +129,6 @@ def _build_prompt_lookup(
     except (OSError, json.JSONDecodeError):
         return exact, pairs
 
-    def _walk_branch(branch: dict, canonical: str) -> None:
-        # Collect objects at this level
-        for obj in branch.get("objects", []):
-            prompt_raw: Optional[str] = obj.get("prompt")
-            if not prompt_raw or prompt_raw.startswith("__prithvi_"):
-                continue
-            p = prompt_raw.lower().strip()
-            if p and p not in exact:
-                exact[p] = canonical
-                pairs.append((p, canonical))
-
-        # Recurse into children; children that have their own canonical name
-        # take priority.
-        for child in branch.get("children", []):
-            child_canonical = _BRANCH_ID_TO_CANONICAL.get(
-                child.get("id", ""), canonical
-            )
-            _walk_branch(child, child_canonical)
-
     for branch in data.get("branches", []):
         branch_id: str = branch.get("id", "")
         canonical = _BRANCH_ID_TO_CANONICAL.get(branch_id, "other")
