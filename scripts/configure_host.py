@@ -141,6 +141,13 @@ def generated_env_values(info: HostGpuInfo) -> dict[str, str]:
         values[f"{prefix}GPU_PROFILE"] = profile.name
     values.update(sam3_build_env(profile, info.driver_version))
 
+    # Build flash-attn-3 + cc_torch into the inference image by default.
+    # The runtime has a torch-SDPA fallback in sam3_runner.py if these
+    # are missing, but fa3 is meaningfully faster on Ampere/Ada/Hopper
+    # and SAM3's vitdet path expects it. Operators on memory-constrained
+    # build hosts can override to 0 after running configure_host.py.
+    values["SAM3_INSTALL_FAST_DEPS"] = "1"
+
     return values
 
 

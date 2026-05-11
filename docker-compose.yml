@@ -146,7 +146,7 @@ services:
         TORCH_VERSION: ${SAM3_TORCH_VERSION:?Run python scripts/configure_host.py first}
         TORCHVISION_VERSION: ${SAM3_TORCHVISION_VERSION:?Run python scripts/configure_host.py first}
         TORCH_CUDA_ARCH_LIST: ${SAM3_TORCH_CUDA_ARCH_LIST:?Run python scripts/configure_host.py first}
-        SAM3_INSTALL_FAST_DEPS: ${SAM3_INSTALL_FAST_DEPS:-0}
+        SAM3_INSTALL_FAST_DEPS: ${SAM3_INSTALL_FAST_DEPS:-1}
         HF_TOKEN: ${HF_TOKEN:-}
     image: sentinel-inference-sam3:gpu
     gpus: all

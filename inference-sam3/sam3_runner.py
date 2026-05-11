@@ -172,6 +172,7 @@ def _resolve_mirror_checkpoint() -> str:
 
 def build_video(device: str):
     _patch_pkg_resources_py312()
+    _install_flash_attn_fallback()
     from sam3.model_builder import build_sam3_multiplex_video_predictor, build_sam3_video_predictor
 
     if SAM3_USE_MULTIPLEX:
@@ -182,6 +183,58 @@ def build_video(device: str):
         _patch_multiplex_init_state(predictor)
         return predictor
     return build_sam3_video_predictor()
+
+
+def _install_flash_attn_fallback() -> None:
+    """Provide a torch SDPA fallback for SAM3's flash-attn-3 dependency.
+
+    SAM3's vitdet backbone calls ``sam3.perflib.fa3.flash_attn_func`` which
+    in turn invokes a custom op that imports ``flash_attn_interface``
+    (flash-attn-3) at call time. When the image is built with
+    ``SAM3_INSTALL_FAST_DEPS=0`` that wheel isn't present and inference
+    crashes inside the attention block with::
+
+        ModuleNotFoundError: No module named 'flash_attn_interface'
+
+    Replace ``flash_attn_func`` with a wrapper around
+    ``torch.nn.functional.scaled_dot_product_attention``. PyTorch's SDPA
+    transparently uses Flash Attention 2 on Ampere+, so the perf hit vs
+    flash-attn-3 is modest. The patch is a no-op if the real wheel is
+    available, and silent if the sam3 modules can't be imported (e.g. the
+    image-only path).
+    """
+    try:
+        import flash_attn_interface  # noqa: F401
+        return  # real flash-attn-3 is installed; nothing to do
+    except ImportError:
+        pass
+
+    try:
+        import torch.nn.functional as F
+        from sam3.perflib import fa3 as _fa3
+    except Exception as exc:  # noqa: BLE001
+        print(f"[sam3_runner] flash-attn fallback patch skipped: {exc}")
+        return
+
+    def _sdpa_fallback(q, k, v, *_, **__):
+        # SAM3's flash_attn_func uses [B, S, H, D] (head-second-to-last);
+        # torch SDPA expects [B, H, S, D]. Transpose, compute, transpose back.
+        q_t = q.transpose(1, 2)
+        k_t = k.transpose(1, 2)
+        v_t = v.transpose(1, 2)
+        out = F.scaled_dot_product_attention(q_t, k_t, v_t)
+        return out.transpose(1, 2)
+
+    _fa3.flash_attn_func = _sdpa_fallback
+    # vitdet did `from sam3.perflib.fa3 import flash_attn_func` at import
+    # time, so its module-level reference also needs replacing.
+    try:
+        from sam3.model import vitdet as _vitdet
+        if hasattr(_vitdet, "flash_attn_func"):
+            _vitdet.flash_attn_func = _sdpa_fallback
+    except Exception:
+        pass
+    print("[sam3_runner] installed torch SDPA fallback for flash_attn_func")
 
 
 def _patch_multiplex_init_state(predictor: Any) -> None:

@@ -47,14 +47,14 @@ RUN git clone https://github.com/facebookresearch/sam3.git /opt/sam3 \
     && cd /opt/sam3 && python -m pip install --no-cache-dir einops pycocotools psutil . \
     && python -m pip install --no-cache-dir --upgrade --ignore-installed "setuptools<82"
 
-ARG SAM3_INSTALL_FAST_DEPS=0
+ARG SAM3_INSTALL_FAST_DEPS=1
 RUN if [ "${SAM3_INSTALL_FAST_DEPS}" = "1" ]; then \
         python -m pip install --no-cache-dir ninja einops \
         && python -m pip install --no-cache-dir flash-attn-3 --no-deps --index-url ${TORCH_INDEX_URL} \
         && python -m pip install --no-cache-dir git+https://github.com/ronghanghu/cc_torch.git \
         && python -c "import importlib.util; missing = [name for name in ('flash_attn_interface', 'cc_torch') if importlib.util.find_spec(name) is None]; raise SystemExit(f'Missing SAM3 fast dependency import(s): {missing}' if missing else 0)"; \
     else \
-        echo "Skipping optional SAM3 fast inference dependencies. Set SAM3_INSTALL_FAST_DEPS=1 to install flash-attn-3 and cc_torch."; \
+        echo "Skipping optional SAM3 fast inference dependencies. The runtime will fall back to torch SDPA (Flash-Attention 2) via sam3_runner._install_flash_attn_fallback()."; \
     fi
 
 WORKDIR /app
