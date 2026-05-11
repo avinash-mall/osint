@@ -18,6 +18,7 @@ import uvicorn
 from database import db, postgis_db
 from ai import AIUnavailable, ai_status, get_ai_response, get_llm_json
 from imagery_metadata import extract_raster_metadata
+from video_metadata import extract_telemetry
 from detection_policy import active_detection_policy, detection_decision, parent_class_for_label
 from threat_assessment import assess_detection_threat, category_for_class, clean_detection_class, conservative_detection_ontology
 from worker import celery_app, process_fmv, process_satellite_imagery
@@ -1732,7 +1733,11 @@ def list_tracks(limit: int = 200):
 
 
 @app.post("/api/fmv/clips")
-def upload_fmv_clip(file: UploadFile = File(...), name: Optional[str] = Form(None)):
+def upload_fmv_clip(
+    file: UploadFile = File(...),
+    name: Optional[str] = Form(None),
+    srt: Optional[UploadFile] = File(None),
+):
     ensure_platform_tables()
     filename = safe_filename(file.filename or "clip.mp4")
     media_type, _handler = classify_upload(filename)
@@ -1749,6 +1754,15 @@ def upload_fmv_clip(file: UploadFile = File(...), name: Optional[str] = Form(Non
     if size == 0:
         local_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="Uploaded video is empty")
+
+    sidecar_path: Optional[Path] = None
+    if srt is not None and srt.filename:
+        sidecar_path = clip_dir / safe_filename(srt.filename)
+        save_upload_file(srt, sidecar_path)
+    else:
+        # Some upload UIs ship the .srt as a co-named file in the same form;
+        # also auto-detect any .srt that ffmpeg may have written.
+        sidecar_path = next(iter(clip_dir.glob("*.srt")), None) or next(iter(clip_dir.glob("*.SRT")), None)
 
     metadata = probe_video(local_path)
     hls_path = transcode_hls(local_path, clip_dir)
@@ -1771,7 +1785,13 @@ def upload_fmv_clip(file: UploadFile = File(...), name: Optional[str] = Form(Non
             json.dumps({**metadata, "bytes": size, "upload_id": upload_id}),
         ))
         clip = dict(cursor.fetchone())
-        rows = telemetry_rows_for_clip(clip["id"], clip["duration_seconds"], clip["fps"])
+        rows = extract_telemetry(
+            local_path,
+            clip["id"],
+            clip["duration_seconds"],
+            clip["fps"],
+            sidecar_srt=sidecar_path,
+        )
         cursor.executemany("""
             INSERT INTO fmv_frames (clip_id, frame_index, timestamp_seconds, telemetry, footprint)
             VALUES (%s, %s, %s, %s, ST_GeomFromText(%s, 4326))

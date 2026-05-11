@@ -211,8 +211,12 @@ services:
       XDG_CACHE_HOME: /models/cache
       # First-run: allow online HF downloads into /models (sam3_models volume).
       # Flip both to "1" once the volume is populated to enforce offline.
-      HF_HUB_OFFLINE: ${SAM3_HF_HUB_OFFLINE:-0}
-      TRANSFORMERS_OFFLINE: ${SAM3_TRANSFORMERS_OFFLINE:-0}
+      # Default to offline mode: the image build bakes every model under
+      # /models/hf, so the runtime should never need to reach the network.
+      # Override with SAM3_HF_HUB_OFFLINE=0 only in dev when iterating on
+      # the model list.
+      HF_HUB_OFFLINE: ${SAM3_HF_HUB_OFFLINE:-1}
+      TRANSFORMERS_OFFLINE: ${SAM3_TRANSFORMERS_OFFLINE:-1}
       # HF_TOKEN is required for the official gated facebook/sam3* weights and
       # DINOv3 (also gated). Pass an empty string when SAM3_WEIGHTS_SOURCE=mirror
       # AND SAM3_LOAD_DINOV3_*=0 to run fully un-tokened.
@@ -220,7 +224,9 @@ services:
     volumes:
       - ./inference-sam3:/app
       - ./backend/detection_policy.py:/app/detection_policy.py:ro
-      - sam3_models:/models
+      # Model weights are baked into the image under /models/hf during build.
+      # For dev iteration, re-add `- sam3_models:/models` via a compose
+      # override file to share an incremental cache between builds.
       - imagery_data:/data/imagery:ro
       - fmv_data:/data/fmv:ro
     working_dir: /app
@@ -291,12 +297,15 @@ services:
       retries: 3
 
   nginx:
-    image: nginx:alpine
+    build:
+      context: ./nginx
+      additional_contexts:
+        assets: ./offline-assets
+    image: sentinel-nginx:offline
     restart: unless-stopped
     ports:
       - "3000:80"
     volumes:
-      - ./nginx/tile-proxy.conf:/etc/nginx/conf.d/default.conf
       - fmv_data:/data/fmv:ro
     depends_on:
       frontend:
@@ -319,4 +328,3 @@ volumes:
   imagery_data:
   fmv_data:
   dataset_data:
-  sam3_models:

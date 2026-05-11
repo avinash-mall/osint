@@ -3,11 +3,13 @@ import axios from 'axios';
 import {
   Clock3,
   Crosshair,
+  Film,
   Map as MapIcon,
   Settings,
   UploadCloud,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import FmvPlayer from './components/FmvPlayer';
 import GaiaMap from './components/GaiaMap';
 import GraphExplorer from './components/GraphExplorer';
 import IngestConnect from './components/IngestConnect';
@@ -15,7 +17,7 @@ import OntologyAdmin from './components/OntologyAdmin';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
-type WorkspaceKey = 'map' | 'graph' | 'ingest' | 'admin';
+type WorkspaceKey = 'map' | 'graph' | 'ingest' | 'fmv' | 'admin';
 
 type HealthStatus = {
   healthy: boolean;
@@ -33,6 +35,7 @@ const workspaces: Array<{
   { key: 'map', title: 'GEOINT / Map Common Operating Picture', short: 'GEO', tooltip: 'GEOINT Map', icon: MapIcon },
   { key: 'graph', title: 'Link Analysis / Entity Graph', short: 'LINK', tooltip: 'Ontology Explorer', icon: Crosshair },
   { key: 'ingest', title: 'Ingest / Feeds & Pipelines', short: 'FEEDS', tooltip: 'Ingest & Streams', icon: UploadCloud },
+  { key: 'fmv', title: 'FMV / Full-Motion Video', short: 'FMV', tooltip: 'Drone FMV Player', icon: Film },
   { key: 'admin', title: 'Ontology Admin', short: 'ADMIN', tooltip: 'Ontology Admin', icon: Settings },
 ];
 
@@ -94,6 +97,8 @@ function App() {
         return <GraphExplorer />;
       case 'ingest':
         return <IngestConnect />;
+      case 'fmv':
+        return <FmvPlayer />;
       case 'admin':
         return <OntologyAdmin />;
       case 'map':

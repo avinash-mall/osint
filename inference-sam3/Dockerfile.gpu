@@ -62,12 +62,49 @@ COPY requirements.txt /tmp/requirements.txt
 RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt \
     && python -m pip install --no-cache-dir --upgrade --ignore-installed "setuptools<82" \
     && python -c "import pkg_resources; print(pkg_resources.__file__)"
+
+# --- Pre-bake AI model weights for air-gap deployments. -------------------
+# Total payload ≈ 15-20 GB. Operators must pass the build secret
+# `HF_TOKEN` for the gated repos (facebook/sam3, facebook/dinov3-*). The
+# non-gated mirror `1038lab/sam3` is enough to run SAM3 itself if no token
+# is available; set SAM3_WEIGHTS_SOURCE=mirror at runtime in that case.
+#
+# Every command tolerates failure so the build still succeeds when a single
+# optional head is unreachable. The runbook lists which ones are required.
+ARG HF_TOKEN
+ENV HF_TOKEN=${HF_TOKEN} \
+    YOLO_CONFIG_DIR=/models/torch/ultralytics
+RUN mkdir -p /models/hf/hub /models/torch/ultralytics && \
+    set -u; \
+    : "--- SAM3 (gated) ---"; \
+    huggingface-cli download facebook/sam3 || echo "[bake] facebook/sam3 skipped (no HF_TOKEN?)"; \
+    : "--- SAM3 mirror (non-gated fallback) ---"; \
+    huggingface-cli download 1038lab/sam3 sam3.safetensors; \
+    : "--- DINOv3-SAT (gated) ---"; \
+    huggingface-cli download facebook/dinov3-vitl16-pretrain-sat493m || echo "[bake] dinov3-sat skipped"; \
+    : "--- Prithvi backbone + task heads ---"; \
+    huggingface-cli download ibm-nasa-geospatial/Prithvi-EO-2.0-600M-TL || echo "[bake] prithvi backbone skipped"; \
+    huggingface-cli download ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL-Sen1Floods11 || echo "[bake] prithvi flood skipped"; \
+    huggingface-cli download ibm-nasa-geospatial/Prithvi-EO-2.0-300M-BurnScars || echo "[bake] prithvi burn skipped"; \
+    huggingface-cli download ibm-nasa-geospatial/Prithvi-EO-1.0-100M-multi-temporal-crop-classification || echo "[bake] prithvi crop (optional) skipped"; \
+    : "--- GroundingDINO ---"; \
+    huggingface-cli download IDEA-Research/grounding-dino-tiny || echo "[bake] grounding-dino skipped"; \
+    : "--- DOTA-OBB (Ultralytics auto-fetch into YOLO_CONFIG_DIR) ---"; \
+    cd /models/torch/ultralytics && \
+    python -c "from ultralytics import YOLO; YOLO('yolo11n-obb.pt')" || echo "[bake] dota-obb skipped"; \
+    : "--- TerraMind (terratorch registry pulls weights to HF cache) ---"; \
+    python -c "from terratorch.registry import BACKBONE_REGISTRY; BACKBONE_REGISTRY.build('terramind_v1_large', pretrained=True, modalities=['S1GRD'])" || echo "[bake] terramind skipped"; \
+    : "--- Scrub token traces from the layer ---"; \
+    rm -rf /root/.cache/huggingface/token /root/.huggingface
+ENV HF_TOKEN=
+
 COPY . /app
 
 ENV PORT=8001 \
     PYTHONUNBUFFERED=1
 # HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE are decided by the compose service
-# (see docker-compose.yml). First-run downloads land in the sam3_models volume
-# at /models/hf/hub; flip the env vars to "1" once populated.
+# (see docker-compose.yml). Models are baked into /models/hf during build;
+# at runtime the defaults force offline mode so the container never reaches
+# the network.
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "1"]

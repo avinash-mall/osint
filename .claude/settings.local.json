@@ -39,7 +39,29 @@
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('backend/worker.py'\\).read\\(\\)\\); print\\('worker.py OK'\\)\")",
       "Bash(python3 -c \"import yaml; yaml.safe_load\\(open\\('docker-compose.yml'\\)\\); yaml.safe_load\\(open\\('docker-compose.gpu.yml'\\)\\); print\\('compose OK'\\)\")",
       "Bash(python -m rasterio info sample/chicago16.tif)",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "PowerShell(cd d:\\\\osint\\\\frontend; $proc = Start-Process -FilePath \"npm\" -ArgumentList \"run\",\"dev\" -RedirectStandardOutput \"fmv-dev.log\" -RedirectStandardError \"fmv-dev.err.log\" -PassThru -NoNewWindow; Start-Sleep -Seconds 8; Get-Content fmv-dev.log -Tail 30; Write-Host \"---STDERR---\"; Get-Content fmv-dev.err.log -Tail 30; Write-Host \"---PID---\"; Write-Host $proc.Id)",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" http://localhost:3001/)",
+      "Bash(curl -s http://localhost:3001/src/components/FmvPlayer.tsx -o /dev/null -w \"FmvPlayer %{http_code}\\\\n\")",
+      "Bash(curl -s \"http://localhost:3001/src/components/FmvPlayer.tsx\")",
+      "Bash(curl -s \"http://localhost:3001/node_modules/.vite/deps/hls__js.js?v=\" -o /dev/null -w \"hls bundle: %{http_code}\\\\n\")",
+      "Bash(pkill -f \"vite\")",
+      "Bash(npx tsc *)",
+      "Bash(mkdir -p offline-assets/basemap)",
+      "Bash(touch offline-assets/basemap/.placeholder)",
+      "Bash(rm -f offline-assets/basemap/.placeholder)",
+      "Bash(touch offline-assets/basemap/.gitkeep)",
+      "Bash(rm -rf .pytest_cache)",
+      "Bash(rm -f frontend/dev-server.log frontend/dev-server.err.log frontend/vite-3002.log backend/celerybeat-schedule)",
+      "Bash(ls frontend/*.log)",
+      "Bash(pkill -f vite)",
+      "Bash(pkill -f \"node.*vite\")",
+      "Bash(rm -f frontend/dev-server.log frontend/dev-server.err.log frontend/vite-3002.log)",
+      "PowerShell(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -eq 'node' -or $_.ProcessName -eq 'npm' } | Select-Object Id, ProcessName; Write-Output \"---\"; try { Remove-Item -Force d:\\\\osint\\\\frontend\\\\dev-server.log,d:\\\\osint\\\\frontend\\\\dev-server.err.log,d:\\\\osint\\\\frontend\\\\vite-3002.log -ErrorAction Stop; Write-Output \"removed\" } catch { Write-Output \"lock-held: $_\" })",
+      "Bash(:)",
+      "Bash(du -sh sample frontend/node_modules inference-sam3 backend)",
+      "Bash(du -sh .)",
+      "Bash(git check-ignore *)"
     ]
   }
 }

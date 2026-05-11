@@ -44,7 +44,7 @@ import type { OntologyBranch } from '../utils/useOntology';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 const TILE_PROXY_URL = import.meta.env.VITE_TILE_PROXY_URL || '/tiles';
-const CARTO_BASEMAP_URL = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+const CARTO_BASEMAP_URL = '/basemap/{z}/{x}/{y}.png';
 const DETECTION_CENTER_MARKER_LIMIT = 800;
 const CanvasGeoJSON = GeoJSON as any;
 
