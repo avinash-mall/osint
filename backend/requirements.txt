@@ -21,5 +21,5 @@ requests
 scipy>=1.11
 pyproj>=3.6
 docker>=7.0
-klvdata>=0.1.0
+klvdata
 construct>=2.10
