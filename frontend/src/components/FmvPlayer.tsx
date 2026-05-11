@@ -411,12 +411,29 @@ export default function FmvPlayer() {
         ctx.strokeStyle = color;
         ctx.fillStyle = color;
         const { xyxy, obb } = normalizeBbox(d);
+        // SAM3 video emits obb in `yolo_obb_normalized_xyxyxyxy` form (0..1).
+        // Scale by image dimensions; sx/sy then map image px → canvas px.
+        const obbNormalized = (d.metadata?.obb_format || '').includes('normalized');
+        const obbScaleX = obbNormalized ? videoWidth * sx : sx;
+        const obbScaleY = obbNormalized ? videoHeight * sy : sy;
         if (obb && obb.length >= 3) {
           ctx.beginPath();
-          ctx.moveTo(obb[0][0] * sx, obb[0][1] * sy);
-          for (let i = 1; i < obb.length; i++) ctx.lineTo(obb[i][0] * sx, obb[i][1] * sy);
+          ctx.moveTo(obb[0][0] * obbScaleX, obb[0][1] * obbScaleY);
+          for (let i = 1; i < obb.length; i++) ctx.lineTo(obb[i][0] * obbScaleX, obb[i][1] * obbScaleY);
           ctx.closePath();
           ctx.stroke();
+          // Label anchored at the top-most OBB vertex so it stays inside the canvas.
+          const top = obb.reduce((acc, p) => (p[1] < acc[1] ? p : acc), obb[0]);
+          const lx = top[0] * obbScaleX;
+          const ly = top[1] * obbScaleY;
+          const label = `${detectionClassLabel(d.class)} ${Math.round((d.confidence || 0) * 100)}%`;
+          const m = ctx.measureText(label);
+          ctx.globalAlpha = 0.85;
+          ctx.fillRect(lx, ly - 14, m.width + 6, 14);
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = '#000';
+          ctx.fillText(label, lx + 3, ly - 3);
+          ctx.fillStyle = color;
         } else if (xyxy) {
           const [x1, y1, x2, y2] = xyxy;
           ctx.strokeRect(x1 * sx, y1 * sy, (x2 - x1) * sx, (y2 - y1) * sy);
@@ -427,6 +444,7 @@ export default function FmvPlayer() {
           ctx.globalAlpha = 1;
           ctx.fillStyle = '#000';
           ctx.fillText(label, x1 * sx + 3, y1 * sy - 3);
+          ctx.fillStyle = color;
         }
       }
       rafRef.current = requestAnimationFrame(draw);
@@ -717,7 +735,11 @@ export default function FmvPlayer() {
               )}
               {selectedClip.status === 'ready' && !hasRealTelemetry && frames.length > 0 && (
                 <div style={{ position: 'absolute', top: 8, left: 8 }}>
-                  <span className="sentinel-tag warn" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  <span
+                    className="sentinel-tag warn"
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'help' }}
+                    title="No MISB-0601 KLV, MP4 GPMD, or co-uploaded .srt sidecar was detected in this clip. The map is showing a synthetic sine-wave path for demo. Upload an FMV clip with embedded telemetry or a matching .srt to see real coordinates."
+                  >
                     <AlertTriangle size={11} /> SYNTHETIC TELEMETRY
                   </span>
                 </div>
@@ -729,6 +751,24 @@ export default function FmvPlayer() {
         {/* Timeline + transport */}
         {selectedClip && (
           <div className="sentinel-panel" style={{ padding: 8 }}>
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                fontSize: 9,
+                color: 'var(--muted)',
+                letterSpacing: '0.05em',
+                marginBottom: 3,
+                fontFamily: 'ui-monospace, monospace',
+              }}
+            >
+              <span title="Bars show the number of detections in each time bucket — taller = busier frames">
+                ◧ DETECTION DENSITY
+              </span>
+              <span title="Drag the bar to scrub. ←/→ step one frame. Space toggles play.">
+                SCRUB ◨
+              </span>
+            </div>
             <div
               id="fmv-timeline-strip"
               onMouseDown={onTimelineDown}
@@ -817,7 +857,21 @@ export default function FmvPlayer() {
           <div style={{ height: 280, position: 'relative' }}>
             <div className="sentinel-panel-header" style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 500 }}>
               <span>TELEMETRY MAP</span>
-              <span className="sentinel-tag info" style={{ marginLeft: 'auto' }}>
+              <span
+                className="sentinel-tag info"
+                style={{ marginLeft: 'auto' }}
+                title={
+                  currentFrame?.telemetry?.source === 'misb-klv'
+                    ? 'Real telemetry parsed from MISB ST 0601 KLV stream'
+                    : currentFrame?.telemetry?.source === 'srt'
+                      ? 'Real telemetry parsed from co-uploaded .srt sidecar (DJI/Autel format)'
+                      : currentFrame?.telemetry?.source === 'gpmd'
+                        ? 'Real telemetry parsed from MP4 GPMD track (GoPro/DJI)'
+                        : currentFrame?.telemetry?.source === 'fixture'
+                          ? 'No real KLV/SRT/GPMD detected — showing synthetic sine-wave coords for demo'
+                          : 'Telemetry source'
+                }
+              >
                 {currentFrame?.telemetry?.source?.toUpperCase() || 'TELEMETRY'}
               </span>
             </div>
@@ -842,6 +896,42 @@ export default function FmvPlayer() {
                 />
               )}
             </MapContainer>
+            {/* Compact legend — what each glyph on the map represents. */}
+            <div
+              style={{
+                position: 'absolute',
+                left: 6,
+                bottom: 6,
+                zIndex: 500,
+                background: 'rgba(16, 19, 22, 0.85)',
+                border: '1px solid var(--line)',
+                borderRadius: 3,
+                padding: '6px 8px',
+                fontSize: 10,
+                lineHeight: '14px',
+                color: 'var(--sentinel-text, #cfd6dc)',
+                pointerEvents: 'none',
+                fontFamily: 'ui-monospace, monospace',
+              }}
+              title="Live map overlay — updates every frame from telemetry"
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ display: 'inline-block', width: 18, height: 0, borderTop: '2px solid #7cf' }} />
+                <span>Platform track</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ display: 'inline-block', width: 10, height: 10, background: '#fdb44b', border: '1px solid #001' }} />
+                <span>Platform (current)</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 5, background: '#7cf', border: '1px solid #001' }} />
+                <span>Frame center</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ display: 'inline-block', width: 14, height: 8, border: '1px solid #7cf', background: 'rgba(124,204,255,0.18)' }} />
+                <span>Sensor footprint</span>
+              </div>
+            </div>
           </div>
         )}
         {!showMap && (
@@ -850,7 +940,10 @@ export default function FmvPlayer() {
             <span className="sentinel-tag warn" style={{ marginLeft: 'auto' }}>NO TELEMETRY</span>
           </div>
         )}
-        <div className="sentinel-panel-header">
+        <div
+          className="sentinel-panel-header"
+          title="Each row groups consecutive frames where the same track (or class) was detected. Click to jump to the first frame of that track. The highlighted row contains the current frame."
+        >
           <span>DETECTED OBJECTS</span>
           <span className="sentinel-tag info" style={{ marginLeft: 'auto' }}>{detectionGroups.length}</span>
         </div>

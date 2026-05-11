@@ -175,11 +175,51 @@ def build_video(device: str):
     from sam3.model_builder import build_sam3_multiplex_video_predictor, build_sam3_video_predictor
 
     if SAM3_USE_MULTIPLEX:
-        return build_sam3_multiplex_video_predictor(
+        predictor = build_sam3_multiplex_video_predictor(
             compile=SAM3_COMPILE_VIDEO,
             warm_up=SAM3_COMPILE_VIDEO and SAM3_WARM_UP_VIDEO,
         )
+        _patch_multiplex_init_state(predictor)
+        return predictor
     return build_sam3_video_predictor()
+
+
+def _patch_multiplex_init_state(predictor: Any) -> None:
+    """Drop unsupported kwargs from ``Sam3MultiplexTrackingWithInteractivity.init_state``.
+
+    The upstream ``sam3.model.sam3_base_predictor.start_session`` builds an
+    ``init_kwargs`` dict that includes ``offload_state_to_cpu`` and passes it
+    to ``self.model.init_state(**init_kwargs)``. The multiplex tracker's
+    signature doesn't list that argument, so the call raises
+    ``TypeError: ... got an unexpected keyword argument 'offload_state_to_cpu'``.
+    Filter unknown kwargs through inspect so the call succeeds (and so future
+    upstream additions don't surprise us either).
+    """
+    import functools
+    import inspect
+
+    model = getattr(predictor, "model", None)
+    if model is None or not hasattr(model, "init_state"):
+        return
+    try:
+        sig = inspect.signature(model.init_state)
+    except (TypeError, ValueError):
+        return
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+        return  # already accepts **kwargs; nothing to do
+    accepted = {name for name, p in sig.parameters.items()
+                if p.kind != inspect.Parameter.VAR_POSITIONAL}
+    original = model.init_state
+
+    @functools.wraps(original)
+    def safe_init_state(*args, **kwargs):
+        dropped = [k for k in kwargs if k not in accepted]
+        if dropped:
+            print(f"[sam3_runner] init_state kwargs dropped: {dropped}")
+        filtered = {k: v for k, v in kwargs.items() if k in accepted}
+        return original(*args, **filtered)
+
+    model.init_state = safe_init_state
 
 
 def versions() -> dict[str, str]:
