@@ -101,11 +101,30 @@ function fmt(seconds: number | null | undefined): string {
 }
 
 function normalizeBbox(det: Detection): { xyxy?: [number, number, number, number]; obb?: number[][] } {
-  const b = det.bbox || det.metadata?.bbox || {};
-  const xyxy = b.bbox_xyxy || b.xyxy || (Array.isArray(b) && b.length === 4 ? b : undefined);
-  const obb = b.obb || det.metadata?.obb;
+  // The worker stores fmv_detections.bbox as a 4-element pixel array
+  // [x, y, w, h] (see backend/worker.py:_xyxy_to_normalized_cxcywh called
+  // without width/height). Other ingest paths may use the SAM3-native
+  // {bbox_xyxy: [x1, y1, x2, y2]} object form, so support both.
+  const raw = det.bbox ?? det.metadata?.bbox ?? null;
+  let xyxy: [number, number, number, number] | undefined;
+  if (Array.isArray(raw) && raw.length === 4) {
+    const [x, y, w, h] = raw.map(Number);
+    xyxy = [x, y, x + w, y + h];
+  } else if (raw && typeof raw === 'object') {
+    const arr = (raw as any).bbox_xyxy || (raw as any).xyxy;
+    if (Array.isArray(arr) && arr.length === 4) {
+      xyxy = arr.map(Number) as [number, number, number, number];
+    } else {
+      const cx = Number((raw as any).cx), cy = Number((raw as any).cy);
+      const w = Number((raw as any).w), h = Number((raw as any).h);
+      if ([cx, cy, w, h].every(Number.isFinite)) {
+        xyxy = [cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2];
+      }
+    }
+  }
+  const obb = (raw && typeof raw === 'object' ? (raw as any).obb : null) || det.metadata?.obb;
   return {
-    xyxy: Array.isArray(xyxy) ? (xyxy.map(Number) as [number, number, number, number]) : undefined,
+    xyxy,
     obb: Array.isArray(obb) ? obb.map((pt: any) => pt.map(Number)) : undefined,
   };
 }
@@ -204,7 +223,9 @@ export default function FmvPlayer() {
         fetchFrames(selectedId);
         fetchDetections(selectedId);
       }
-      if (msg?.type === 'fmv_detection') fetchDetections(selectedId);
+      if (msg?.type === 'fmv_detection' || msg?.type === 'fmv_detections_complete') {
+        fetchDetections(selectedId);
+      }
     },
     [selectedId, fetchFrames, fetchDetections],
   );
@@ -217,6 +238,15 @@ export default function FmvPlayer() {
     const id = window.setInterval(fetchClips, 3000);
     return () => window.clearInterval(id);
   }, [selectedClip, fetchClips]);
+
+  // Poll detections every 5s while we have a selected ready clip with zero
+  // detections — covers the gap before SAM3 finishes / WS reconnects.
+  useEffect(() => {
+    if (!selectedId || !selectedClip || detections.length > 0) return;
+    if (selectedClip.status !== 'ready' && selectedClip.status !== 'queued') return;
+    const id = window.setInterval(() => fetchDetections(selectedId), 5000);
+    return () => window.clearInterval(id);
+  }, [selectedId, selectedClip, detections.length, fetchDetections]);
 
   // -------------------- Derived structures --------------------
 

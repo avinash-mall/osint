@@ -18,17 +18,6 @@ def decode_hls6(payload: bytes) -> np.ndarray:
     return arr * PRITHVI_CONSTANT_SCALE if float(np.nanmean(arr)) > 1.0 else arr
 
 
-def decode_hls6_temporal_3(payload: bytes) -> np.ndarray | None:
-    with rasterio.open(io.BytesIO(payload)) as src:
-        if src.count < 18:
-            return None
-        flat = src.read(indexes=list(range(1, 19))).astype(np.float32)
-    if float(np.nanmean(flat)) > 1.0:
-        flat *= PRITHVI_CONSTANT_SCALE
-    h, w = flat.shape[-2:]
-    return flat.reshape(3, 6, h, w).transpose(1, 0, 2, 3)
-
-
 def hls_to_rgb_preview(arr_reflectance: np.ndarray) -> np.ndarray:
     rgb = np.nan_to_num(arr_reflectance[[2, 1, 0]].astype(np.float32), nan=0.0)
     p2, p98 = np.percentile(rgb, [2, 98], axis=(1, 2), keepdims=True)

@@ -146,6 +146,30 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 The volume shadows the image's `/models` directory, restoring the old
 "first run downloads, subsequent runs reuse" loop.
 
+## Strict air-gap variant
+
+By default `nginx/tile-proxy.conf` includes an `@basemap_fallback` location
+that proxies missing tiles from `a.basemaps.cartocdn.com`. This means a
+deployment without pre-baked tiles still renders maps (useful during build
+or in connected QA environments). For a deployment that **must not** reach
+the public internet, edit `nginx/tile-proxy.conf` before `docker compose
+build`:
+
+1. Delete the `location @basemap_fallback { ... }` block.
+2. Change `try_files $uri @basemap_fallback;` to `try_files $uri =404;`.
+
+After rebuilding the nginx image, any tile not in the baked pyramid 404s
+instead of attempting an outbound HTTPS request. Verify with:
+
+```bash
+docker compose logs nginx | grep -i carto    # should be empty
+```
+
+A belt-and-braces approach for extra-strict environments: block outbound
+DNS at the host firewall. The `@basemap_fallback` block's
+`resolver 1.1.1.1 8.8.8.8` line will fail to resolve, and the fallback
+short-circuits to a 502 rather than reaching out.
+
 ## Known limitations
 
 - **LLM features**: ontology auto-update and any chat-model-driven flow

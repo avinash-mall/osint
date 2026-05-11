@@ -10,42 +10,17 @@ import numpy as np
 
 PRITHVI_FLOOD_ID = "ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL-Sen1Floods11"
 PRITHVI_BURN_ID = "ibm-nasa-geospatial/Prithvi-EO-2.0-300M-BurnScars"
-PRITHVI_CROP_ID = "ibm-nasa-geospatial/Prithvi-EO-1.0-100M-multi-temporal-crop-classification"
 PRITHVI_WINDOW_SIZE = 512
-CROP_CLASS_NAMES = [
-    "natural_vegetation",
-    "forest",
-    "corn",
-    "soybeans",
-    "wetlands",
-    "developed_barren",
-    "open_water",
-    "winter_wheat",
-    "alfalfa",
-    "fallow_idle_cropland",
-    "cotton",
-    "sorghum",
-    "other",
-]
 
 
 def load_all(device: str):
     bundle = {
         "flood": _load_task_model(PRITHVI_FLOOD_ID, device, "PRITHVI_FLOOD"),
         "burn": _load_task_model(PRITHVI_BURN_ID, device, "PRITHVI_BURN"),
-        "crop": _load_optional_task_model(PRITHVI_CROP_ID, device, "PRITHVI_CROP"),
         "device": device,
     }
-    bundle["loaded_heads"] = sorted(key for key in ("flood", "burn", "crop") if bundle.get(key) is not None)
+    bundle["loaded_heads"] = sorted(key for key in ("flood", "burn") if bundle.get(key) is not None)
     return bundle
-
-
-def _load_optional_task_model(repo_id: str, device: str, env_prefix: str):
-    try:
-        return _load_task_model(repo_id, device, env_prefix)
-    except (Exception, SystemExit) as exc:
-        print(f"[prithvi_heads] Optional Prithvi head skipped for {repo_id}: {exc}")
-        return None
 
 
 def _load_task_model(repo_id: str, device: str, env_prefix: str):
@@ -128,7 +103,7 @@ def _to_eval_device(model, device: str):
     return model
 
 
-def run_all(prithvi_bundle, chip6_full: np.ndarray, target_hw: tuple[int, int], chip6_temporal_3: np.ndarray | None = None) -> dict[str, np.ndarray]:
+def run_all(prithvi_bundle, chip6_full: np.ndarray, target_hw: tuple[int, int]) -> dict[str, np.ndarray]:
     if prithvi_bundle is None:
         return {}
 
@@ -136,8 +111,6 @@ def run_all(prithvi_bundle, chip6_full: np.ndarray, target_hw: tuple[int, int], 
     overlays: dict[str, np.ndarray] = {}
     overlays["water"] = _run_binary_windowed(prithvi_bundle, "flood", chip6_full, (h, w))
     overlays["burn_scar"] = _run_binary_windowed(prithvi_bundle, "burn", chip6_full, (h, w))
-    if chip6_temporal_3 is not None and prithvi_bundle.get("crop") is not None:
-        overlays["crop"] = _run_crop_windowed(prithvi_bundle, chip6_temporal_3, (h, w))
     return overlays
 
 
@@ -145,15 +118,6 @@ def _run_binary_windowed(prithvi_bundle, model_key: str, chip6_full: np.ndarray,
     h, w = target_hw
     class_map = _run_windowed(prithvi_bundle, model_key, chip6_full, (h, w))
     return class_map == 1
-
-
-def _run_crop_windowed(prithvi_bundle, chip6_temporal_3: np.ndarray, target_hw: tuple[int, int]) -> np.ndarray:
-    h, w = target_hw
-    stitched = np.zeros((h, w), dtype=np.int16)
-    for y1, y2, x1, x2 in _windows(h, w):
-        window = chip6_temporal_3[:, :, y1:y2, x1:x2]
-        stitched[y1:y2, x1:x2] = _predict_crop_window(prithvi_bundle, window, (y2 - y1, x2 - x1))
-    return stitched
 
 
 def _run_windowed(prithvi_bundle, model_key: str, chip6_full: np.ndarray, target_hw: tuple[int, int]) -> np.ndarray:
@@ -194,22 +158,6 @@ def _predict_single_window(prithvi_bundle, model_key: str, window: np.ndarray, o
     return cv2.resize(pred, (output_hw[1], output_hw[0]), interpolation=cv2.INTER_NEAREST)
 
 
-def _predict_crop_window(prithvi_bundle, window: np.ndarray, output_hw: tuple[int, int]) -> np.ndarray:
-    import cv2
-    import torch
-    import multispectral
-
-    stacked = np.stack(
-        [multispectral.resize_to_prithvi(window[:, t]) for t in range(3)],
-        axis=1,
-    )
-    x = torch.from_numpy(stacked).unsqueeze(0).to(prithvi_bundle["device"])
-    with torch.inference_mode():
-        logits = _extract_logits(_invoke_prithvi(prithvi_bundle["crop"], x))
-    pred = logits.argmax(1)[0].detach().cpu().numpy().astype(np.int16)
-    return cv2.resize(pred, (output_hw[1], output_hw[0]), interpolation=cv2.INTER_NEAREST)
-
-
 def _extract_logits(output):
     # terratorch's SemanticSegmentationTask returns a ModelOutput with .output;
     # other backends return a tensor, dict, or tuple/list.
@@ -223,12 +171,3 @@ def _extract_logits(output):
     if isinstance(output, (tuple, list)):
         return output[0]
     return output
-
-
-def crop_class_name(label_map: np.ndarray, bbox_xyxy: list[float]) -> str:
-    x1, y1, x2, y2 = (int(round(v)) for v in bbox_xyxy)
-    region = label_map[max(0, y1):y2, max(0, x1):x2]
-    if region.size == 0:
-        return "unknown"
-    cls_id = int(np.bincount(region.flatten().astype(np.int64)).argmax())
-    return CROP_CLASS_NAMES[cls_id] if 0 <= cls_id < len(CROP_CLASS_NAMES) else "unknown"

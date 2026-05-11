@@ -655,19 +655,15 @@ def _emit_chip_payload(window: Window, src: rasterio.io.DatasetReader, *, valid_
         return _geotiff_window_file(src, window, [1, 2]), meta
 
     if src.count >= 6:
-        hls_timesteps = 3 if src.count >= 18 else None
         meta = {
             "modality": "multispectral",
             "filename": "chip.tif",
             "content_type": "image/tiff",
             "geo": geo_meta,
         }
-        if hls_timesteps:
-            meta["hls_timesteps"] = hls_timesteps
         if valid_mask_meta:
             meta["valid_mask"] = valid_mask_meta
-        indexes = list(range(1, 19 if hls_timesteps else 7))
-        return _geotiff_window_file(src, window, indexes), meta
+        return _geotiff_window_file(src, window, list(range(1, 7))), meta
 
     chip = src.read(window=window)
     chip_rgb = chip_to_uint8_rgb(chip)
@@ -1303,6 +1299,14 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
                 )
                 inserted += 1
         provider_lifecycle.mark_active()
+        publish_event(
+            f"fmv:{clip_id}",
+            {"type": "fmv_detections_complete", "clip_id": clip_id, "count": inserted},
+        )
+        publish_event(
+            "ops",
+            {"type": "fmv_detections_complete", "clip_id": clip_id, "count": inserted},
+        )
         return inserted
     finally:
         session.close()

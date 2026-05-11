@@ -1732,11 +1732,21 @@ def list_tracks(limit: int = 200):
     return {"tracks": rows}
 
 
+# Default open-vocabulary prompt set for drone aerial FMV. SAM3's text-prompted
+# tracker takes these and reports a track per matching object across frames.
+# Override by passing a comma-separated `prompts` form field on upload.
+FMV_DEFAULT_PROMPTS = [
+    "vehicle", "truck", "car", "bus", "motorcycle",
+    "person", "boat", "aircraft", "helicopter",
+]
+
+
 @app.post("/api/fmv/clips")
 def upload_fmv_clip(
     file: UploadFile = File(...),
     name: Optional[str] = Form(None),
     srt: Optional[UploadFile] = File(None),
+    prompts: Optional[str] = Form(None),
 ):
     ensure_platform_tables()
     filename = safe_filename(file.filename or "clip.mp4")
@@ -1802,6 +1812,18 @@ def upload_fmv_clip(
         """, rows)
 
     clip["stream_url"] = fmv_public_url(clip.get("hls_path"), clip["file_path"])
+
+    # Queue SAM3 video tracking. Detections stream back into fmv_detections
+    # asynchronously; the frontend subscribes to fmv:{clip_id} and refetches
+    # when the worker publishes `fmv_detections_complete`.
+    prompt_list = [p.strip() for p in (prompts or "").split(",") if p.strip()] or FMV_DEFAULT_PROMPTS
+    try:
+        task = process_fmv.delay(clip["id"], str(local_path), prompt_list)
+        clip["task_id"] = task.id
+        clip["status"] = "queued"
+    except Exception as exc:
+        logger.warning("Failed to queue process_fmv for clip %s: %s", clip["id"], exc)
+
     publish_event("ops", {"type": "fmv_clip_ready", "clip": clip})
     publish_event(f"fmv:{clip['id']}", {"type": "fmv_clip_ready", "clip": clip})
     return {"success": True, "clip": clip}

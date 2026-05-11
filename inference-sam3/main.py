@@ -319,20 +319,15 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
             if modality == "multispectral":
                 chip6 = await run_in_threadpool(multispectral.decode_hls6, raw)
                 chip3 = multispectral.hls_to_rgb_preview(chip6)
-                chip6_temporal_3 = (
-                    await run_in_threadpool(multispectral.decode_hls6_temporal_3, raw)
-                    if int(meta.get("hls_timesteps") or 0) == 3
-                    else None
-                )
                 chip2 = None
             elif modality == "sar":
                 chip2 = await run_in_threadpool(sar.decode_s1grd, raw)
                 chip3 = await run_in_threadpool(terramind.s1_to_s2_rgb, bundle.get("terramind"), chip2, chip2.shape[-2:])
-                chip6 = chip6_temporal_3 = None
+                chip6 = None
             else:
                 modality = "rgb"
                 chip3 = await run_in_threadpool(_decode_rgb, raw)
-                chip6 = chip6_temporal_3 = chip2 = None
+                chip6 = chip2 = None
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Unable to decode {modality} chip: {exc}") from exc
         t0 = mark("decode", t0)
@@ -399,7 +394,7 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
         overlays: dict[str, np.ndarray] = {}
         if modality == "multispectral":
             if _layer_active("prithvi"):
-                overlays = await run_in_threadpool(prithvi_heads.run_all, bundle.get("prithvi"), chip6, (height, width), chip6_temporal_3)
+                overlays = await run_in_threadpool(prithvi_heads.run_all, bundle.get("prithvi"), chip6, (height, width))
             else:
                 overlays = {}
         t0 = mark("overlays", t0)

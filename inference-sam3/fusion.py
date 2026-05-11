@@ -114,11 +114,6 @@ def overlay_labels(mask_bool, overlays, *, threshold) -> list[str]:
         labels.append("water")
     if "burn_scar" in overlays and _iou(mask, overlays["burn_scar"]) >= threshold:
         labels.append("burn_scar")
-    if "crop" in overlays and mask.any():
-        from prithvi_heads import crop_class_name
-
-        ys, xs = np.where(mask)
-        labels.append(f"crop:{crop_class_name(overlays['crop'], [xs.min(), ys.min(), xs.max() + 1, ys.max() + 1])}")
     return labels
 
 

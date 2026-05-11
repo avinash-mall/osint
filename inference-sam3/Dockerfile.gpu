@@ -86,7 +86,6 @@ RUN mkdir -p /models/hf/hub /models/torch/ultralytics && \
     huggingface-cli download ibm-nasa-geospatial/Prithvi-EO-2.0-600M-TL || echo "[bake] prithvi backbone skipped"; \
     huggingface-cli download ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL-Sen1Floods11 || echo "[bake] prithvi flood skipped"; \
     huggingface-cli download ibm-nasa-geospatial/Prithvi-EO-2.0-300M-BurnScars || echo "[bake] prithvi burn skipped"; \
-    huggingface-cli download ibm-nasa-geospatial/Prithvi-EO-1.0-100M-multi-temporal-crop-classification || echo "[bake] prithvi crop (optional) skipped"; \
     : "--- GroundingDINO ---"; \
     huggingface-cli download IDEA-Research/grounding-dino-tiny || echo "[bake] grounding-dino skipped"; \
     : "--- DOTA-OBB (Ultralytics auto-fetch into YOLO_CONFIG_DIR) ---"; \
