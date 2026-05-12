@@ -206,25 +206,30 @@ def build_video(device: str):
         # activations per /detect_video; if the GPU total is too small the
         # weights load successfully but the *first* inference OOMs. Refuse
         # multiplex early when there isn't enough headroom so we can fall
-        # back cleanly to the base predictor.
+        # back cleanly to the base predictor. Both thresholds are env-
+        # driven (`SAM3_MULTIPLEX_MIN_VRAM_MIB` total, default 20480 MiB;
+        # `SAM3_MULTIPLEX_MIN_FREE_VRAM_MIB` free, default 14336 MiB) so
+        # configure_host.py / operators can dial them per hardware class.
+        min_total_mib = int(os.getenv("SAM3_MULTIPLEX_MIN_VRAM_MIB", "20480"))
+        min_free_mib = int(os.getenv("SAM3_MULTIPLEX_MIN_FREE_VRAM_MIB", "14336"))
         try:
             import torch
             if torch.cuda.is_available():
                 free, total = torch.cuda.mem_get_info()
-                free_gib = free / (1024 ** 3)
-                total_gib = total / (1024 ** 3)
-                if total_gib < 20.0:
+                free_mib = free // (1024 * 1024)
+                total_mib = total // (1024 * 1024)
+                if total_mib < min_total_mib:
                     logger.warning(
-                        "GPU total VRAM is %.1f GiB (< 20 GiB needed for SAM3.1 multiplex inference); "
+                        "GPU total VRAM is %d MiB (< %d MiB required for SAM3.1 multiplex inference); "
                         "falling back to non-multiplex base predictor",
-                        total_gib,
+                        total_mib, min_total_mib,
                     )
                     return build_sam3_video_predictor()
-                if free_gib < 14.0:
+                if free_mib < min_free_mib:
                     logger.warning(
-                        "GPU free VRAM is %.1f GiB but multiplex needs ~14 GiB of weights; "
+                        "GPU free VRAM is %d MiB (< %d MiB headroom needed for multiplex weights); "
                         "falling back to non-multiplex base predictor",
-                        free_gib,
+                        free_mib, min_free_mib,
                     )
                     return build_sam3_video_predictor()
         except Exception:
@@ -756,7 +761,22 @@ def run_video(bundle, video_path, prompts, *, frame_stride, start_frame, end_fra
             def _add_prompts_at(frame_idx: int) -> None:
                 """Issue one add_prompt per text prompt against the given
                 frame, with a unique obj_id per call. Updates
-                obj_id_to_prompt for the worker to map detections back."""
+                obj_id_to_prompt for the worker to map detections back.
+
+                Note on the often-suggested 'inject SAHI boxes as visual
+                prompts with one obj_id per box' pattern: it does NOT
+                compose on the installed SAM3 build. Both
+                ``Sam3VideoInference.add_prompt`` (`sam3_video_inference.py:865`)
+                and ``Sam3MultiplexTrackingWithInteractivity.add_prompt``
+                (`sam3_multiplex_tracking.py:1697`) call
+                ``self.reset_state(inference_state)`` on every invocation,
+                so a loop of 16 boxes / 16 obj_ids collapses to 'only the
+                last one tracks'. Round-4 instead emits Grounding-DINO
+                detections as an independent stream alongside the SAM3
+                tracker (`_grounding_dino_keyframe` below) — that keeps
+                box-level recall high without depending on a tracker API
+                that doesn't actually accumulate multi-object prompts.
+                """
                 nonlocal next_obj_id
                 for prompt in sam3_prompts:
                     obj_id = next_obj_id

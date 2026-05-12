@@ -37,6 +37,23 @@ import terramind
 cv2.setNumThreads(0)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
+# TF32 matmul defaults per GPU profile (sm_80 and above: enabled; sm_75: off).
+# `scripts/gpu_profiles.GpuBuildProfile.enable_tf32` -> .env via
+# `scripts/configure_host.py` -> here. Operators can force it via env.
+if os.getenv("SAM3_ENABLE_TF32", "1").strip().lower() in {"1", "true", "yes", "on"}:
+    try:
+        import torch as _tf32_torch
+        _tf32_torch.backends.cuda.matmul.allow_tf32 = True
+        _tf32_torch.backends.cudnn.allow_tf32 = True
+        _tf32_torch.set_float32_matmul_precision("high")
+        logging.getLogger("inference-sam3").info(
+            "TF32 matmul enabled (allow_tf32=%s, precision=%s)",
+            _tf32_torch.backends.cuda.matmul.allow_tf32,
+            _tf32_torch.get_float32_matmul_precision(),
+        )
+    except Exception as _tf32_exc:
+        logging.getLogger("inference-sam3").warning("Could not enable TF32: %s", _tf32_exc)
+
 # Silence known upstream deprecation chatter that floods logs at startup. The
 # source libraries can't be changed from here; the warnings are non-actionable
 # and bury the actually-useful "session started/ended" messages.

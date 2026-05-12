@@ -21,6 +21,30 @@ class GpuBuildProfile:
     compute_capability: str
     min_driver_version: str
 
+    # ------------------------------------------------------------------
+    # Runtime-tuning defaults for the inference / worker containers.
+    # These get written into the generated `.env` block by
+    # `scripts/configure_host.py` so each host (T4, RTX 5070 Ti, H100, …)
+    # picks up the appropriate values without code changes. Operators can
+    # still override any of them per-host in `.env` after generation.
+    # ------------------------------------------------------------------
+    # TF32 matmul: supported sm_80 and above (Ampere/Ada/Hopper/Blackwell).
+    enable_tf32: bool = True
+    # Object Multiplex: requires both the profile to permit it AND the live
+    # VRAM headroom check at runtime to pass (~20 GiB free at model-load
+    # time on the installed SAM3 build). The profile flag is the *policy*;
+    # the runtime VRAM gate is the *measurement*.
+    use_multiplex: bool = False
+    # torch.compile() of the video predictor — risky default-on because
+    # SAM3's branchy text/box paths sometimes trip the compiler; only
+    # enable on datacenter cards where the win is worth the failure mode.
+    compile_video: bool = False
+    # SAM3 video session sizing — the prep-clip height (px) and the max
+    # number of frames per SAM3 session. Smaller GPUs need smaller windows
+    # to fit decoded-frame tensors + activations during propagation.
+    fmv_track_height: int = 540
+    fmv_track_frames_per_window: int = 48
+
     def build_env(self, prefix: str = "SAM3_") -> dict[str, str]:
         return {
             f"{prefix}CUDA_VERSION": self.cuda_version,
@@ -30,6 +54,26 @@ class GpuBuildProfile:
             f"{prefix}TORCHAUDIO_VERSION": self.torchaudio_version,
             f"{prefix}TORCH_CUDA_ARCH_LIST": self.torch_cuda_arch_list,
         }
+
+    def runtime_env(self, vram_mib: int | None = None) -> dict[str, str]:
+        """Profile-driven runtime knobs, written into .env by configure_host.
+
+        ``vram_mib`` is the live `nvidia-smi --query-gpu=memory.total` value;
+        passed in so we can gate multiplex on actual hardware regardless of
+        what the profile permits (e.g. a profile that says
+        ``use_multiplex=True`` will still emit ``SAM3_USE_MULTIPLEX=0`` on
+        an undersized card)."""
+        multiplex_ok = self.use_multiplex and (vram_mib is None or vram_mib >= 20_000)
+        env: dict[str, str] = {
+            "SAM3_ENABLE_TF32": "1" if self.enable_tf32 else "0",
+            "SAM3_USE_MULTIPLEX": "1" if multiplex_ok else "0",
+            "SAM3_COMPILE_VIDEO": "1" if self.compile_video else "0",
+            "FMV_TRACK_HEIGHT": str(self.fmv_track_height),
+            "FMV_TRACK_FRAMES_PER_WINDOW": str(self.fmv_track_frames_per_window),
+        }
+        if vram_mib is not None:
+            env["SAM3_GPU_VRAM_GIB"] = f"{vram_mib / 1024:.1f}"
+        return env
 
 
 GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
@@ -43,6 +87,12 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         torch_cuda_arch_list="7.5;8.0;8.6;8.9;9.0+PTX",
         compute_capability="7.5",
         min_driver_version="550.54.14",
+        # sm_75 has no native TF32 tensor cores; smaller working set fits 16 GiB T4.
+        enable_tf32=False,
+        use_multiplex=False,
+        compile_video=False,
+        fmv_track_height=360,
+        fmv_track_frames_per_window=24,
     ),
     "ampere_sm80_86": GpuBuildProfile(
         name="ampere_sm80_86",
@@ -54,6 +104,14 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         torch_cuda_arch_list="8.0;8.6;8.9;9.0+PTX",
         compute_capability="8.x",
         min_driver_version="550.54.14",
+        # Ampere = TF32 capable. Multiplex permitted at profile level; the
+        # runtime VRAM gate in configure_host downgrades to base predictor
+        # on Ampere cards with < 20 GiB (e.g. RTX 3080/3090 16-24 GiB).
+        enable_tf32=True,
+        use_multiplex=True,
+        compile_video=False,
+        fmv_track_height=540,
+        fmv_track_frames_per_window=48,
     ),
     "ada_sm89": GpuBuildProfile(
         name="ada_sm89",
@@ -65,6 +123,11 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         torch_cuda_arch_list="8.9;9.0+PTX",
         compute_capability="8.9",
         min_driver_version="550.54.14",
+        enable_tf32=True,
+        use_multiplex=True,
+        compile_video=False,
+        fmv_track_height=540,
+        fmv_track_frames_per_window=48,
     ),
     "hopper_sm90": GpuBuildProfile(
         name="hopper_sm90",
@@ -76,6 +139,12 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         torch_cuda_arch_list="9.0+PTX",
         compute_capability="9.0",
         min_driver_version="550.54.14",
+        # H100 / H200: 80 GiB+ datacenter cards; multiplex + compile pay off.
+        enable_tf32=True,
+        use_multiplex=True,
+        compile_video=True,
+        fmv_track_height=720,
+        fmv_track_frames_per_window=96,
     ),
     "blackwell_sm100": GpuBuildProfile(
         name="blackwell_sm100",
@@ -87,6 +156,12 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         torch_cuda_arch_list="9.0;10.0;12.0+PTX",
         compute_capability="10.0",
         min_driver_version="570.26",
+        # B100 / B200 datacenter Blackwell — same generous budget as Hopper.
+        enable_tf32=True,
+        use_multiplex=True,
+        compile_video=True,
+        fmv_track_height=720,
+        fmv_track_frames_per_window=96,
     ),
     "blackwell_sm120": GpuBuildProfile(
         name="blackwell_sm120",
@@ -98,6 +173,16 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         torch_cuda_arch_list="8.0;8.6;8.9;9.0;12.0+PTX",
         compute_capability="12.0",
         min_driver_version="570.26",
+        # Consumer Blackwell (RTX 5070/5080/5090). TF32 = yes. Multiplex
+        # permitted at profile level but the runtime VRAM check will gate
+        # off on 16 GiB cards (RTX 5070 Ti) and gate on for 24+ GiB cards.
+        # compile_video stays off — SAM3's branchy paths still trip the
+        # compiler on this arch in the installed build.
+        enable_tf32=True,
+        use_multiplex=True,
+        compile_video=False,
+        fmv_track_height=540,
+        fmv_track_frames_per_window=48,
     ),
 }
 

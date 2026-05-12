@@ -28,6 +28,7 @@ SAM3_CU126_ENV = {
 @dataclass(frozen=True)
 class HostGpu:
     name: str
+    memory_mib: int = 0
 
 
 @dataclass(frozen=True)
@@ -62,9 +63,19 @@ def parse_gpu_query(output: str) -> tuple[HostGpu, ...]:
         if not line:
             continue
         parts = [part.strip() for part in line.split(",")]
-        if len(parts) != 1:
+        # New query format: "name, memory_mib" (two columns); fall back to
+        # name-only for older recordings/tests so this stays compatible.
+        if len(parts) == 1:
+            gpus.append(HostGpu(name=parts[0]))
+        elif len(parts) == 2:
+            mem_mib = 0
+            try:
+                mem_mib = int(re.sub(r"[^0-9]", "", parts[1]) or "0")
+            except ValueError:
+                mem_mib = 0
+            gpus.append(HostGpu(name=parts[0], memory_mib=mem_mib))
+        else:
             raise RuntimeError(f"Unexpected nvidia-smi GPU query row: {line!r}")
-        gpus.append(HostGpu(name=parts[0]))
     if not gpus:
         raise RuntimeError("nvidia-smi did not report any GPUs.")
     return tuple(gpus)
@@ -81,7 +92,7 @@ def detect_host_gpu_info() -> HostGpuInfo:
         query = subprocess.run(
             [
                 "nvidia-smi",
-                "--query-gpu=name",
+                "--query-gpu=name,memory.total",
                 "--format=csv,noheader,nounits",
             ],
             check=True,
@@ -140,6 +151,12 @@ def generated_env_values(info: HostGpuInfo) -> dict[str, str]:
     for prefix in SERVICE_PREFIXES:
         values[f"{prefix}GPU_PROFILE"] = profile.name
     values.update(sam3_build_env(profile, info.driver_version))
+
+    # Runtime tuning knobs derived from the GPU profile + live VRAM.
+    # Multiplex / TF32 / compile_video / FMV window sizing all flow from
+    # `gpu_profiles.GpuBuildProfile.runtime_env(...)` so every host gets a
+    # baseline matched to its architecture without code edits.
+    values.update(profile.runtime_env(vram_mib=primary_gpu.memory_mib or None))
 
     # Build flash-attn-3 + cc_torch into the inference image by default.
     # The runtime has a torch-SDPA fallback in sam3_runner.py if these

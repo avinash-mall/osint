@@ -171,6 +171,14 @@ services:
       SAM3_WARM_UP_VIDEO: ${SAM3_WARM_UP_VIDEO:-1}
       SAM3_PRELOAD_MODELS: ${SAM3_PRELOAD_MODELS:-0}
       SAM3_PRELOAD_PROFILE: ${SAM3_PRELOAD_PROFILE:-}
+      # Runtime tuning generated per-host by scripts/configure_host.py
+      # (defaults below are safe fallbacks; the .env block overrides on
+      # any machine where configure_host.py has run).
+      SAM3_ENABLE_TF32: ${SAM3_ENABLE_TF32:-1}
+      SAM3_GPU_VRAM_GIB: ${SAM3_GPU_VRAM_GIB:-}
+      SAM3_MULTIPLEX_MIN_VRAM_MIB: ${SAM3_MULTIPLEX_MIN_VRAM_MIB:-20480}
+      FMV_TRACK_HEIGHT: ${FMV_TRACK_HEIGHT:-540}
+      FMV_TRACK_FRAMES_PER_WINDOW: ${FMV_TRACK_FRAMES_PER_WINDOW:-48}
       PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
       SAM3_BATCHED_TEXT: ${SAM3_BATCHED_TEXT:-1}
       SAM3_BATCHED_TEXT_CHUNK_SIZE: ${SAM3_BATCHED_TEXT_CHUNK_SIZE:-8}
