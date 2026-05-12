@@ -28,22 +28,79 @@ class GpuBuildProfile:
     # picks up the appropriate values without code changes. Operators can
     # still override any of them per-host in `.env` after generation.
     # ------------------------------------------------------------------
+
+    # --- Precision & compilation ---
     # TF32 matmul: supported sm_80 and above (Ampere/Ada/Hopper/Blackwell).
     enable_tf32: bool = True
-    # Object Multiplex: requires both the profile to permit it AND the live
-    # VRAM headroom check at runtime to pass (~20 GiB free at model-load
-    # time on the installed SAM3 build). The profile flag is the *policy*;
-    # the runtime VRAM gate is the *measurement*.
-    use_multiplex: bool = False
+    # torch.compile() of the image model: datacenter cards only; consumer
+    # Blackwell/Ada leave this off because branchy paths trip the compiler.
+    compile_image: bool = False
     # torch.compile() of the video predictor — risky default-on because
     # SAM3's branchy text/box paths sometimes trip the compiler; only
     # enable on datacenter cards where the win is worth the failure mode.
     compile_video: bool = False
+
+    # --- Video session sizing ---
     # SAM3 video session sizing — the prep-clip height (px) and the max
     # number of frames per SAM3 session. Smaller GPUs need smaller windows
     # to fit decoded-frame tensors + activations during propagation.
     fmv_track_height: int = 540
     fmv_track_frames_per_window: int = 48
+
+    # --- Object Multiplex (SAM3.1 multi-frame predictor) ---
+    # Profile flag is the *policy*; the runtime VRAM gate (below) is the
+    # *measurement*. Both must be true for multiplex to activate.
+    use_multiplex: bool = False
+    # Minimum total GPU VRAM (MiB) required to activate multiplex.
+    # SAM3.1 multiplex weights are ~14 GiB; 20 GiB leaves headroom for
+    # session activations. Tune down for cards with fast HBM bandwidth.
+    sam3_multiplex_min_vram_mib: int = 20_480
+
+    # --- Optional satellite-intelligence models ---
+    # Master switch; individual flags below are only honoured when this is True.
+    # Disabling saves ~3.5 GiB VRAM and ~290 ms/chip (sum of all three heads).
+    sam3_load_optional_models: bool = True
+    # DINOv3-SAT: satellite-tuned visual embeddings for detection re-ID.
+    # +1.5 GiB VRAM, +217 ms/chip. Off on Turing to preserve headroom.
+    sam3_load_dinov3_sat: bool = True
+    # Prithvi EO-2.0: flood + burn semantic segmentation heads.
+    # +0.8 GiB VRAM, +20 ms/chip (multispectral imagery only).
+    sam3_load_prithvi: bool = True
+    # Terramind: SAR-to-RGB synthesis backbone for SAR imagery.
+    # +1.2 GiB VRAM, ~0 ms overhead on RGB (SAR-only pipeline).
+    sam3_load_terramind: bool = True
+
+    # --- Specialist open-set detectors (run alongside SAM3 on every chip) ---
+    # DOTA-OBB: oriented-bbox aerial vehicle detector (yolo11n ≈ 0.1 GiB, +50 ms/chip).
+    sam3_load_dota_obb: bool = True
+    # Grounding-DINO: open-vocab text-to-box detector (tiny ≈ 0.6 GiB, +241 ms/chip).
+    sam3_load_grounding_dino: bool = True
+
+    # --- Detection embedding (DINOv3-SAT re-ID) ---
+    # Generates a 768-d embedding for every detection crop; enables track
+    # re-identification across imagery sessions. Requires sam3_load_dinov3_sat.
+    sam3_embed_detections: bool = True
+
+    # --- Batching & startup ---
+    # Number of text prompts sent to SAM3 in a single batched inference call.
+    # Larger values reduce round-trips but consume more VRAM per call.
+    sam3_batched_text_chunk_size: int = 8
+    # Which model profile to warm at container startup.
+    # "" = lazy (load on first /load call), "fmv" or "imagery" = eager.
+    sam3_preload_profile: str = ""
+
+    # --- Memory allocator ---
+    # expandable_segments avoids fragmentation on long-running inference
+    # servers; safe for all supported GPU architectures.
+    pytorch_cuda_alloc_conf: str = "expandable_segments:True"
+
+    # --- Backend worker: chip pipeline ---
+    # "fast_review" caps at 256 chips with 1 concurrent thread (safe default).
+    # "recall_review" is unlimited chips with 2 concurrent threads (Hopper+).
+    inference_speed_profile: str = "fast_review"
+    # Parallel chip POST threads. Scales throughput on GPUs with headroom for
+    # overlapping decode + encode while inference is running.
+    inference_chip_concurrency: int = 1
 
     def build_env(self, prefix: str = "SAM3_") -> dict[str, str]:
         return {
@@ -63,13 +120,37 @@ class GpuBuildProfile:
         what the profile permits (e.g. a profile that says
         ``use_multiplex=True`` will still emit ``SAM3_USE_MULTIPLEX=0`` on
         an undersized card)."""
-        multiplex_ok = self.use_multiplex and (vram_mib is None or vram_mib >= 20_000)
+        multiplex_ok = self.use_multiplex and (
+            vram_mib is None or vram_mib >= self.sam3_multiplex_min_vram_mib
+        )
         env: dict[str, str] = {
+            # Precision & compilation
             "SAM3_ENABLE_TF32": "1" if self.enable_tf32 else "0",
-            "SAM3_USE_MULTIPLEX": "1" if multiplex_ok else "0",
+            "SAM3_COMPILE_IMAGE": "1" if self.compile_image else "0",
             "SAM3_COMPILE_VIDEO": "1" if self.compile_video else "0",
+            # Video session sizing
             "FMV_TRACK_HEIGHT": str(self.fmv_track_height),
             "FMV_TRACK_FRAMES_PER_WINDOW": str(self.fmv_track_frames_per_window),
+            # Multiplex
+            "SAM3_USE_MULTIPLEX": "1" if multiplex_ok else "0",
+            "SAM3_MULTIPLEX_MIN_VRAM_MIB": str(self.sam3_multiplex_min_vram_mib),
+            # Optional satellite models
+            "SAM3_LOAD_OPTIONAL_MODELS": "1" if self.sam3_load_optional_models else "0",
+            "SAM3_LOAD_DINOV3_SAT": "1" if self.sam3_load_dinov3_sat else "0",
+            "SAM3_LOAD_PRITHVI": "1" if self.sam3_load_prithvi else "0",
+            "SAM3_LOAD_TERRAMIND": "1" if self.sam3_load_terramind else "0",
+            # Specialist detectors
+            "SAM3_LOAD_DOTA_OBB": "1" if self.sam3_load_dota_obb else "0",
+            "SAM3_LOAD_GROUNDING_DINO": "1" if self.sam3_load_grounding_dino else "0",
+            # Embedding & batching
+            "SAM3_EMBED_DETECTIONS": "1" if self.sam3_embed_detections else "0",
+            "SAM3_BATCHED_TEXT_CHUNK_SIZE": str(self.sam3_batched_text_chunk_size),
+            "SAM3_PRELOAD_PROFILE": self.sam3_preload_profile,
+            # Memory allocator
+            "PYTORCH_CUDA_ALLOC_CONF": self.pytorch_cuda_alloc_conf,
+            # Backend chip pipeline
+            "INFERENCE_SPEED_PROFILE": self.inference_speed_profile,
+            "INFERENCE_CHIP_CONCURRENCY": str(self.inference_chip_concurrency),
         }
         if vram_mib is not None:
             env["SAM3_GPU_VRAM_GIB"] = f"{vram_mib / 1024:.1f}"
@@ -87,12 +168,28 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         torch_cuda_arch_list="7.5;8.0;8.6;8.9;9.0+PTX",
         compute_capability="7.5",
         min_driver_version="550.54.14",
-        # sm_75 has no native TF32 tensor cores; smaller working set fits 16 GiB T4.
+        # sm_75 has no native TF32 tensor cores; smaller 16 GiB working set.
         enable_tf32=False,
-        use_multiplex=False,
+        compile_image=False,
         compile_video=False,
         fmv_track_height=360,
         fmv_track_frames_per_window=24,
+        use_multiplex=False,
+        # Optional satellite models disabled: SAM3 base (~8 GiB) + DOTA-OBB
+        # + GD-tiny leaves only ~7 GiB headroom on a 16 GiB T4, which is
+        # consumed by video session activations. Enable per-model overrides
+        # in .env once VRAM budget is measured on the specific workload.
+        sam3_load_optional_models=False,
+        sam3_load_dinov3_sat=False,
+        sam3_load_prithvi=False,
+        sam3_load_terramind=False,
+        sam3_load_dota_obb=True,
+        sam3_load_grounding_dino=True,
+        sam3_embed_detections=False,
+        sam3_batched_text_chunk_size=4,
+        sam3_preload_profile="",
+        inference_speed_profile="fast_review",
+        inference_chip_concurrency=1,
     ),
     "ampere_sm80_86": GpuBuildProfile(
         name="ampere_sm80_86",
@@ -106,12 +203,24 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         min_driver_version="550.54.14",
         # Ampere = TF32 capable. Multiplex permitted at profile level; the
         # runtime VRAM gate in configure_host downgrades to base predictor
-        # on Ampere cards with < 20 GiB (e.g. RTX 3080/3090 16-24 GiB).
+        # on Ampere cards with < 20 GiB (e.g. RTX 3080 10/12 GiB).
         enable_tf32=True,
-        use_multiplex=True,
+        compile_image=False,
         compile_video=False,
         fmv_track_height=540,
         fmv_track_frames_per_window=48,
+        use_multiplex=True,
+        sam3_load_optional_models=True,
+        sam3_load_dinov3_sat=True,
+        sam3_load_prithvi=True,
+        sam3_load_terramind=True,
+        sam3_load_dota_obb=True,
+        sam3_load_grounding_dino=True,
+        sam3_embed_detections=True,
+        sam3_batched_text_chunk_size=8,
+        sam3_preload_profile="",
+        inference_speed_profile="fast_review",
+        inference_chip_concurrency=1,
     ),
     "ada_sm89": GpuBuildProfile(
         name="ada_sm89",
@@ -124,10 +233,22 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         compute_capability="8.9",
         min_driver_version="550.54.14",
         enable_tf32=True,
-        use_multiplex=True,
+        compile_image=False,
         compile_video=False,
         fmv_track_height=540,
         fmv_track_frames_per_window=48,
+        use_multiplex=True,
+        sam3_load_optional_models=True,
+        sam3_load_dinov3_sat=True,
+        sam3_load_prithvi=True,
+        sam3_load_terramind=True,
+        sam3_load_dota_obb=True,
+        sam3_load_grounding_dino=True,
+        sam3_embed_detections=True,
+        sam3_batched_text_chunk_size=8,
+        sam3_preload_profile="",
+        inference_speed_profile="fast_review",
+        inference_chip_concurrency=1,
     ),
     "hopper_sm90": GpuBuildProfile(
         name="hopper_sm90",
@@ -139,12 +260,25 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         torch_cuda_arch_list="9.0+PTX",
         compute_capability="9.0",
         min_driver_version="550.54.14",
-        # H100 / H200: 80 GiB+ datacenter cards; multiplex + compile pay off.
+        # H100 / H200: 80 GiB+ datacenter cards — full stack + compilation.
         enable_tf32=True,
-        use_multiplex=True,
+        compile_image=True,
         compile_video=True,
         fmv_track_height=720,
         fmv_track_frames_per_window=96,
+        use_multiplex=True,
+        sam3_load_optional_models=True,
+        sam3_load_dinov3_sat=True,
+        sam3_load_prithvi=True,
+        sam3_load_terramind=True,
+        sam3_load_dota_obb=True,
+        sam3_load_grounding_dino=True,
+        sam3_embed_detections=True,
+        # Larger batch fits in 80 GiB HBM; reduces total prompt round-trips.
+        sam3_batched_text_chunk_size=16,
+        sam3_preload_profile="imagery",
+        inference_speed_profile="recall_review",
+        inference_chip_concurrency=2,
     ),
     "blackwell_sm100": GpuBuildProfile(
         name="blackwell_sm100",
@@ -158,10 +292,22 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         min_driver_version="570.26",
         # B100 / B200 datacenter Blackwell — same generous budget as Hopper.
         enable_tf32=True,
-        use_multiplex=True,
+        compile_image=True,
         compile_video=True,
         fmv_track_height=720,
         fmv_track_frames_per_window=96,
+        use_multiplex=True,
+        sam3_load_optional_models=True,
+        sam3_load_dinov3_sat=True,
+        sam3_load_prithvi=True,
+        sam3_load_terramind=True,
+        sam3_load_dota_obb=True,
+        sam3_load_grounding_dino=True,
+        sam3_embed_detections=True,
+        sam3_batched_text_chunk_size=16,
+        sam3_preload_profile="imagery",
+        inference_speed_profile="recall_review",
+        inference_chip_concurrency=2,
     ),
     "blackwell_sm120": GpuBuildProfile(
         name="blackwell_sm120",
@@ -173,16 +319,28 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         torch_cuda_arch_list="8.0;8.6;8.9;9.0;12.0+PTX",
         compute_capability="12.0",
         min_driver_version="570.26",
-        # Consumer Blackwell (RTX 5070/5080/5090). TF32 = yes. Multiplex
-        # permitted at profile level but the runtime VRAM check will gate
-        # off on 16 GiB cards (RTX 5070 Ti) and gate on for 24+ GiB cards.
-        # compile_video stays off — SAM3's branchy paths still trip the
-        # compiler on this arch in the installed build.
+        # Consumer Blackwell (RTX 5060/5070/5080/5090). TF32 = yes. Multiplex
+        # permitted at profile level; the runtime VRAM gate gates it off on
+        # 16 GiB cards (RTX 5070 Ti: 15.9 GiB < 20 GiB threshold) and on for
+        # 24+ GiB cards (RTX 5090: 32 GiB). compile_video stays off —
+        # SAM3's branchy paths still trip the compiler on this arch.
         enable_tf32=True,
-        use_multiplex=True,
+        compile_image=False,
         compile_video=False,
         fmv_track_height=540,
         fmv_track_frames_per_window=48,
+        use_multiplex=True,
+        sam3_load_optional_models=True,
+        sam3_load_dinov3_sat=True,
+        sam3_load_prithvi=True,
+        sam3_load_terramind=True,
+        sam3_load_dota_obb=True,
+        sam3_load_grounding_dino=True,
+        sam3_embed_detections=True,
+        sam3_batched_text_chunk_size=8,
+        sam3_preload_profile="",
+        inference_speed_profile="fast_review",
+        inference_chip_concurrency=1,
     ),
 }
 
