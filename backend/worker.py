@@ -1297,16 +1297,52 @@ def _probe_source(src_path: str) -> tuple[float, float]:
     return fps or 30.0, duration
 
 
+# Smallest plausible 540p libx264 single-frame mp4 is several KiB. A 261-byte
+# ftyp-only stub (the failure mode we're guarding against — see the
+# Truck.win01 incident 2026-05-12) is well below this. The threshold is
+# conservative: well above any legitimate output, well below the smallest
+# real clip we'd produce.
+_FMV_WINDOW_MIN_BYTES = 4 * 1024
+
+
+def _window_output_is_valid(path: Path) -> bool:
+    """True iff `path` is a non-empty mp4 with at least one video stream.
+
+    Guards against ffmpeg's "exit 0 with no streams" failure mode where
+    `-ss` lands past the last keyframe or the filter graph emits zero
+    frames. Cheap size check first, then ffprobe stream-type check."""
+    try:
+        if not path.is_file() or path.stat().st_size < _FMV_WINDOW_MIN_BYTES:
+            return False
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=codec_type",
+             "-of", "default=nw=1:nk=1", str(path)],
+            capture_output=True, text=True, check=False, timeout=10,
+        )
+        return bool((proc.stdout or "").strip())
+    except Exception:
+        return False
+
+
 def _prepare_tracking_window(src_path: str, window_idx: int, start_s: float, duration_s: float) -> Path | None:
     """Extract a single sliding-window track clip from the source.
 
-    Returns the output Path, or None on ffmpeg failure. Each window is a
-    short low-fps low-res mp4 sized so the entire decoded frame stack fits
-    in GPU memory at SAM3 video session-init time."""
+    Returns the output Path, or None on ffmpeg failure or zero-stream
+    output. Each window is a short low-fps low-res mp4 sized so the
+    entire decoded frame stack fits in GPU memory at SAM3 video
+    session-init time."""
     src = Path(src_path)
     out = src.with_name(f"{src.stem}.win{window_idx:02d}.track.mp4")
     if out.exists() and out.stat().st_mtime >= src.stat().st_mtime:
-        return out
+        if _window_output_is_valid(out):
+            return out
+        # Cached file exists but is a stub (e.g. produced by an older
+        # build that didn't validate). Unlink so we re-extract below.
+        logger.warning("FMV window %d cached output at %s is invalid; re-extracting", window_idx, out)
+        out.unlink(missing_ok=True)
+    tmp = out.with_suffix(out.suffix + ".tmp")
+    tmp.unlink(missing_ok=True)
     cmd = [
         "ffmpeg", "-y", "-v", "error",
         "-ss", f"{start_s:.3f}",
@@ -1316,12 +1352,21 @@ def _prepare_tracking_window(src_path: str, window_idx: int, start_s: float, dur
         "-vf", f"fps={FMV_TRACK_FPS},scale=-2:{FMV_TRACK_HEIGHT}",
         "-frames:v", str(FMV_TRACK_FRAMES_PER_WINDOW),
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast",
-        str(out),
+        str(tmp),
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
         logger.warning("FMV window %d prep failed for %s: %s", window_idx, src, proc.stderr[:300])
+        tmp.unlink(missing_ok=True)
         return None
+    if not _window_output_is_valid(tmp):
+        logger.warning(
+            "FMV window %d produced zero-stream output for %s (start=%.3fs len=%.3fs) — deleting and skipping",
+            window_idx, src, start_s, duration_s,
+        )
+        tmp.unlink(missing_ok=True)
+        return None
+    os.replace(tmp, out)
     return out
 
 

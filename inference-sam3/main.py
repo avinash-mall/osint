@@ -685,6 +685,30 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        # Pre-flight the video file. SAM3's `start_session` raises
+        # ValueError("Could not open video: ...") from inside the
+        # StreamingResponse generator if the file is missing or has no
+        # decodable streams (e.g. an FMV chunker wrote a 261-byte stub
+        # containing only the `ftyp` box — see Truck.win01 incident
+        # 2026-05-12). Catching it here returns a clean 4xx body
+        # instead of the 500 + ASGI traceback once the stream has
+        # started.
+        if not os.path.isfile(video_path):
+            if cleanup_path is not None:
+                cleanup_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=404, detail=f"video not found: {video_path}")
+        _probe_cap = cv2.VideoCapture(video_path)
+        _probe_ok = _probe_cap.isOpened()
+        _probe_cap.release()
+        if not _probe_ok:
+            if cleanup_path is not None:
+                cleanup_path.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=422,
+                detail=f"Could not open video: {video_path} (file exists but has no decodable streams)",
+            )
+
         frame_stride = max(1, int(meta.get("frame_stride", 1)))
         start_frame = int(meta.get("start_frame", 0))
         end_frame = meta.get("end_frame")
