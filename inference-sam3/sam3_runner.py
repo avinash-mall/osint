@@ -136,6 +136,11 @@ def resolve_devices(value: str) -> list[str]:
 
 
 def build_image(device: str) -> dict[str, Any]:
+    _disable_flash_sdp_for_fp32_text_encoder()
+    return _build_image_impl(device)
+
+
+def _build_image_impl(device: str) -> dict[str, Any]:
     """Load the SAM3 image model via the native upstream API.
 
     SAM 3.1 ships only as a multiplex video checkpoint
@@ -283,7 +288,7 @@ _flash_sdp_disabled = False
 
 
 def _disable_flash_sdp_for_fp32_text_encoder() -> None:
-    """Disable PyTorch's Flash SDP backend so fp32 attention paths work.
+    """Route fp32 attention paths off PyTorch's bundled flash-attention.
 
     SAM3's CLIP text encoder ([text_encoder_ve.py]) ships fp32 weights
     and its `nn.MultiheadAttention` path does not honour the ambient
@@ -291,21 +296,46 @@ def _disable_flash_sdp_for_fp32_text_encoder() -> None:
     2.10 + cu130 on sm_80 (A100), MHA dispatches to the bundled
     flash-attention-3 kernel which raises
     ``FlashAttention on Ampere/Ada cards only supports fp16 and bf16
-    data type``. Disabling the flash SDP backend causes PyTorch to fall
-    back to memory-efficient / math SDPA which accepts fp32. Negligible
-    end-to-end impact (only the text-encoder attention slows; vitdet
-    self-attention is already handled by `_install_flash_attn_fallback`
-    or the real flash-attn-3 wheel)."""
+    data type``.
+
+    Two knobs are needed because `nn.MultiheadAttention` has a *native*
+    fast path (`_native_multi_head_attention` → `mha_fwd`) that bypasses
+    the SDPA backend toggle:
+
+    1. `torch.backends.mha.set_fastpath_enabled(False)` — forces MHA to
+       run through `multi_head_attention_forward` which calls
+       `scaled_dot_product_attention`, which is the only path that
+       honours the SDPA backend selection.
+    2. `torch.backends.cuda.enable_flash_sdp(False)` — once the call
+       reaches SDPA, picks memory-efficient or math backend instead of
+       flash (both accept fp32).
+    """
     global _flash_sdp_disabled
     if _flash_sdp_disabled:
         return
     try:
         import torch
-        # Flash SDP is the only backend that rejects fp32; the other two
-        # (memory-efficient, math) accept it. Keep cudnn enabled because
-        # the image path may benefit from it on bf16.
+        # Knob 1: route MHA through SDPA in the first place. Without
+        # this, the SDPA backend selection below is unreachable from
+        # nn.MultiheadAttention's forward path.
+        try:
+            torch.backends.mha.set_fastpath_enabled(False)
+        except AttributeError:
+            # Older PyTorch — the API isn't there, so the fast path
+            # can't be disabled this way. Fall back to monkey-patching
+            # so the SDPA backend selection still applies.
+            import torch.nn as nn
+            _orig_forward = nn.MultiheadAttention.forward
+
+            def _no_fastpath_forward(self, *args, **kwargs):
+                self._disable_fastpath = True
+                return _orig_forward(self, *args, **kwargs)
+
+            nn.MultiheadAttention.forward = _no_fastpath_forward
+        # Knob 2: prefer memory-efficient / math SDPA over flash.
         torch.backends.cuda.enable_flash_sdp(False)
         _flash_sdp_disabled = True
+        logger.info("Disabled MHA fastpath + Flash SDP backend for fp32 text encoder compatibility")
     except Exception as exc:  # noqa: BLE001
         logger.warning("could not disable flash SDP backend: %s", exc)
 

@@ -335,13 +335,21 @@ def _unload_pool_locked() -> None:
 
 def _load_profile(profile: str) -> None:
     """Idempotent: if already loaded, no-op. If a different profile is
-    loaded, unload it first."""
+    loaded, unload it first. If the "all" superset is loaded, any
+    single-profile request whose components are a subset is served as a
+    no-op (datacenter GPUs keep both fmv and imagery resident)."""
     global _model_error, _current_profile
     if profile not in PROFILE_COMPONENTS:
         raise HTTPException(status_code=400, detail=f"unknown profile: {profile}")
     components = PROFILE_COMPONENTS[profile]
     with _load_lock:
         if _current_profile == profile and _pool:
+            return
+        if (
+            _current_profile == "all"
+            and _pool
+            and set(components).issubset(PROFILE_COMPONENTS["all"])
+        ):
             return
         if _pool:
             _unload_pool_locked()
