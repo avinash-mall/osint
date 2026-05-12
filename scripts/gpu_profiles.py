@@ -20,6 +20,7 @@ class GpuBuildProfile:
     torch_cuda_arch_list: str
     compute_capability: str
     min_driver_version: str
+    ubuntu_version: str  # "22.04" for cu126, "24.04" for cu130+
 
     # ------------------------------------------------------------------
     # Runtime-tuning defaults for the inference / worker containers.
@@ -105,6 +106,7 @@ class GpuBuildProfile:
     def build_env(self, prefix: str = "SAM3_") -> dict[str, str]:
         return {
             f"{prefix}CUDA_VERSION": self.cuda_version,
+            f"{prefix}UBUNTU_VERSION": self.ubuntu_version,
             f"{prefix}TORCH_INDEX_URL": self.torch_index_url,
             f"{prefix}TORCH_VERSION": self.torch_version,
             f"{prefix}TORCHVISION_VERSION": self.torchvision_version,
@@ -160,14 +162,15 @@ class GpuBuildProfile:
 GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
     "turing_sm75": GpuBuildProfile(
         name="turing_sm75",
-        cuda_version="12.4.1",
-        torch_index_url="https://download.pytorch.org/whl/cu124",
-        torch_version="2.6.0+cu124",
-        torchvision_version="0.21.0+cu124",
-        torchaudio_version="2.6.0+cu124",
+        cuda_version="12.6.3",
+        torch_index_url="https://download.pytorch.org/whl/cu126",
+        torch_version="2.7.1+cu126",
+        torchvision_version="0.22.1+cu126",
+        torchaudio_version="2.7.1+cu126",
         torch_cuda_arch_list="7.5;8.0;8.6;8.9;9.0+PTX",
         compute_capability="7.5",
-        min_driver_version="550.54.14",
+        min_driver_version="560.28.03",
+        ubuntu_version="22.04",
         # sm_75 has no native TF32 tensor cores; smaller 16 GiB working set.
         enable_tf32=False,
         compile_image=False,
@@ -193,14 +196,15 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
     ),
     "ampere_sm80_86": GpuBuildProfile(
         name="ampere_sm80_86",
-        cuda_version="12.4.1",
-        torch_index_url="https://download.pytorch.org/whl/cu124",
-        torch_version="2.6.0+cu124",
-        torchvision_version="0.21.0+cu124",
-        torchaudio_version="2.6.0+cu124",
+        cuda_version="12.6.3",
+        torch_index_url="https://download.pytorch.org/whl/cu126",
+        torch_version="2.7.1+cu126",
+        torchvision_version="0.22.1+cu126",
+        torchaudio_version="2.7.1+cu126",
         torch_cuda_arch_list="8.0;8.6;8.9;9.0+PTX",
         compute_capability="8.x",
-        min_driver_version="550.54.14",
+        min_driver_version="560.28.03",
+        ubuntu_version="22.04",
         # Ampere = TF32 capable. Multiplex permitted at profile level; the
         # runtime VRAM gate in configure_host downgrades to base predictor
         # on Ampere cards with < 20 GiB (e.g. RTX 3080 10/12 GiB).
@@ -224,14 +228,15 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
     ),
     "ada_sm89": GpuBuildProfile(
         name="ada_sm89",
-        cuda_version="12.4.1",
-        torch_index_url="https://download.pytorch.org/whl/cu124",
-        torch_version="2.6.0+cu124",
-        torchvision_version="0.21.0+cu124",
-        torchaudio_version="2.6.0+cu124",
+        cuda_version="12.6.3",
+        torch_index_url="https://download.pytorch.org/whl/cu126",
+        torch_version="2.7.1+cu126",
+        torchvision_version="0.22.1+cu126",
+        torchaudio_version="2.7.1+cu126",
         torch_cuda_arch_list="8.9;9.0+PTX",
         compute_capability="8.9",
-        min_driver_version="550.54.14",
+        min_driver_version="560.28.03",
+        ubuntu_version="22.04",
         enable_tf32=True,
         compile_image=False,
         compile_video=False,
@@ -252,14 +257,15 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
     ),
     "hopper_sm90": GpuBuildProfile(
         name="hopper_sm90",
-        cuda_version="12.4.1",
-        torch_index_url="https://download.pytorch.org/whl/cu124",
-        torch_version="2.6.0+cu124",
-        torchvision_version="0.21.0+cu124",
-        torchaudio_version="2.6.0+cu124",
+        cuda_version="13.2.0",
+        torch_index_url="https://download.pytorch.org/whl/cu130",
+        torch_version="2.10.0+cu130",
+        torchvision_version="0.25.0+cu130",
+        torchaudio_version="2.10.0+cu130",
         torch_cuda_arch_list="9.0+PTX",
         compute_capability="9.0",
-        min_driver_version="550.54.14",
+        min_driver_version="575.51",
+        ubuntu_version="24.04",
         # H100 / H200: 80 GiB+ datacenter cards — full stack + compilation.
         enable_tf32=True,
         compile_image=True,
@@ -282,14 +288,15 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
     ),
     "blackwell_sm100": GpuBuildProfile(
         name="blackwell_sm100",
-        cuda_version="12.8.1",
-        torch_index_url="https://download.pytorch.org/whl/cu128",
-        torch_version="2.7.1+cu128",
-        torchvision_version="0.22.1+cu128",
-        torchaudio_version="2.7.1+cu128",
+        cuda_version="13.2.0",
+        torch_index_url="https://download.pytorch.org/whl/cu130",
+        torch_version="2.10.0+cu130",
+        torchvision_version="0.25.0+cu130",
+        torchaudio_version="2.10.0+cu130",
         torch_cuda_arch_list="9.0;10.0;12.0+PTX",
         compute_capability="10.0",
-        min_driver_version="570.26",
+        min_driver_version="575.51",
+        ubuntu_version="24.04",
         # B100 / B200 datacenter Blackwell — same generous budget as Hopper.
         enable_tf32=True,
         compile_image=True,
@@ -311,14 +318,15 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
     ),
     "blackwell_sm120": GpuBuildProfile(
         name="blackwell_sm120",
-        cuda_version="12.8.1",
-        torch_index_url="https://download.pytorch.org/whl/cu128",
-        torch_version="2.7.1+cu128",
-        torchvision_version="0.22.1+cu128",
-        torchaudio_version="2.7.1+cu128",
+        cuda_version="13.2.0",
+        torch_index_url="https://download.pytorch.org/whl/cu130",
+        torch_version="2.10.0+cu130",
+        torchvision_version="0.25.0+cu130",
+        torchaudio_version="2.10.0+cu130",
         torch_cuda_arch_list="8.0;8.6;8.9;9.0;12.0+PTX",
         compute_capability="12.0",
-        min_driver_version="570.26",
+        min_driver_version="575.51",
+        ubuntu_version="24.04",
         # Consumer Blackwell (RTX 5060/5070/5080/5090). TF32 = yes. Multiplex
         # permitted at profile level; the runtime VRAM gate gates it off on
         # 16 GiB cards (RTX 5070 Ti: 15.9 GiB < 20 GiB threshold) and on for

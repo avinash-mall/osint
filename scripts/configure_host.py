@@ -17,12 +17,6 @@ BEGIN_MARKER = "# BEGIN SENTINEL GENERATED GPU CONFIG"
 END_MARKER = "# END SENTINEL GENERATED GPU CONFIG"
 
 SERVICE_PREFIXES = ("SAM3_",)
-SAM3_CU126_ENV = {
-    "SAM3_UBUNTU_VERSION": "22.04",
-    "SAM3_TORCH_INDEX_URL": "https://download.pytorch.org/whl/cu126",
-    "SAM3_TORCH_VERSION": "2.7.1",
-    "SAM3_TORCHVISION_VERSION": "0.22.1",
-}
 
 
 @dataclass(frozen=True)
@@ -120,21 +114,8 @@ def validate_driver(profile: GpuBuildProfile, driver_version: str) -> None:
         )
 
 
-def sam3_build_env(profile: GpuBuildProfile, driver_version: str) -> dict[str, str]:
-    if profile.torch_index_url.endswith("/cu128"):
-        return {
-            "SAM3_CUDA_VERSION": profile.cuda_version,
-            "SAM3_TORCH_INDEX_URL": profile.torch_index_url,
-            "SAM3_TORCH_VERSION": profile.torch_version,
-            "SAM3_TORCHVISION_VERSION": profile.torchvision_version,
-            "SAM3_TORCH_CUDA_ARCH_LIST": profile.torch_cuda_arch_list,
-            "SAM3_UBUNTU_VERSION": "24.04",
-        }
-    return {
-        **SAM3_CU126_ENV,
-        "SAM3_CUDA_VERSION": profile.cuda_version,
-        "SAM3_TORCH_CUDA_ARCH_LIST": profile.torch_cuda_arch_list,
-    }
+def sam3_build_env(profile: GpuBuildProfile) -> dict[str, str]:
+    return profile.build_env(prefix="SAM3_")
 
 
 def generated_env_values(info: HostGpuInfo) -> dict[str, str]:
@@ -150,7 +131,7 @@ def generated_env_values(info: HostGpuInfo) -> dict[str, str]:
 
     for prefix in SERVICE_PREFIXES:
         values[f"{prefix}GPU_PROFILE"] = profile.name
-    values.update(sam3_build_env(profile, info.driver_version))
+    values.update(sam3_build_env(profile))
 
     # Runtime tuning knobs derived from the GPU profile + live VRAM.
     # Multiplex / TF32 / compile_video / FMV window sizing all flow from
