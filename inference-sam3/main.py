@@ -97,11 +97,21 @@ SAM3_LOAD_GROUNDING_DINO  = _flag("SAM3_LOAD_GROUNDING_DINO",  _DEFAULT)
 # Profile -> component set. "fmv" keeps VRAM small for video tracking;
 # "imagery" loads the full geospatial stack for satellite detection.
 PROFILE_COMPONENTS: dict[str, tuple[str, ...]] = {
-    # sam3_video shares preprocessing layers initialised by sam3_image — without
-    # the image model loaded first, run_video crashes with a BFloat16/Float
-    # linear-layer dtype mismatch. So FMV keeps both, but excludes the optional
-    # geospatial models that the imagery profile needs.
-    "fmv": ("sam3_image", "sam3_video"),
+    # FMV hybrid pipeline (per the SAM 3.1 drone-FMV survey paper):
+    #   sam3_image  — preprocessing layers shared with sam3_video
+    #   sam3_video  — temporal mask propagation (Object Multiplex when it fits)
+    #   grounding_dino — open-vocabulary box detector used at keyframes to
+    #                    re-seed the tracker (text-grounded video alone misses
+    #                    later-clip objects once the camera moves)
+    #   dota_obb    — aerial-trained oriented-bbox detector for vehicles
+    # DINOv3-SAT / Prithvi / Terramind stay out (they're satellite-imagery
+    # specific and would tip the 16 GiB GPU over budget).
+    "fmv": tuple(c for c in (
+        "sam3_image",
+        "sam3_video",
+        "grounding_dino" if SAM3_LOAD_GROUNDING_DINO else None,
+        "dota_obb" if SAM3_LOAD_DOTA_OBB else None,
+    ) if c),
     "imagery": (
         "sam3_image",
         "dinov3_sat" if SAM3_LOAD_DINOV3_SAT else None,

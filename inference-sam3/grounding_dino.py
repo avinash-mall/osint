@@ -28,8 +28,8 @@ GROUNDING_DINO_REPO_ID = os.getenv("GROUNDING_DINO_REPO_ID", "IDEA-Research/grou
 # returns short token fragments (e.g. "oil" extracted from "oil or gas facility"
 # at conf 0.31) that we want to suppress on absent concepts, matching the
 # behaviour of SAM 3's internal presence-gate at 0.30 multiplied by 1.0.
-GROUNDING_DINO_THR = float(os.getenv("GROUNDING_DINO_THRESHOLD", "0.35"))
-GROUNDING_DINO_TEXT_THR = float(os.getenv("GROUNDING_DINO_TEXT_THRESHOLD", "0.25"))
+GROUNDING_DINO_THR = float(os.getenv("GROUNDING_DINO_THRESHOLD", "0.20"))
+GROUNDING_DINO_TEXT_THR = float(os.getenv("GROUNDING_DINO_TEXT_THRESHOLD", "0.15"))
 GROUNDING_DINO_IMGSZ = int(os.getenv("GROUNDING_DINO_IMGSZ", "1024"))
 
 

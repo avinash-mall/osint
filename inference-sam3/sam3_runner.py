@@ -25,6 +25,25 @@ SAM3_USE_MULTIPLEX = os.getenv("SAM3_USE_MULTIPLEX", "1").strip().lower() in {"1
 # Re-prompt every N emitted frames inside a video session to recover tracks
 # that have drifted off-target. 0 disables. Default 12 ≈ every 3 s at 4 fps.
 SAM3_REPROMPT_EVERY_N_FRAMES = max(0, int(os.getenv("SAM3_REPROMPT_EVERY_N_FRAMES", "12")))
+# SAM3 video's add_prompt calls reset_state every invocation (verified in
+# sam3_video_inference.py:864 and sam3_multiplex_tracking.py:1697), so each
+# extra prompt wastes a ~3 s session-reset only to be overwritten by the
+# next one. Cap how many prompts seed the SAM3 tracker — Grounding-DINO
+# keyframes (which run *one* multi-class call) still see the full list.
+SAM3_VIDEO_MAX_PROMPTS = max(1, int(os.getenv("SAM3_VIDEO_MAX_PROMPTS", "3")))
+# Grounding-DINO's text encoder caps at 256 BERT-like tokens; with ~3 tokens
+# per prompt + delimiter that's ~50 prompts per batch. Chunk smaller so
+# multi-word prompts (e.g. "aircraft carrier") still fit.
+GROUNDING_DINO_PROMPT_CHUNK = max(1, int(os.getenv("GROUNDING_DINO_PROMPT_CHUNK", "30")))
+# Hybrid FMV pipeline: every N emitted frames, decode the same source frame
+# from the prep clip and run Grounding-DINO (with optional SAHI tile slicing)
+# on it. Emits those detections as an independent stream alongside SAM3's
+# tracker output. 0 disables the keyframe detector.
+FMV_KEYFRAME_EVERY_N_FRAMES = max(0, int(os.getenv("FMV_KEYFRAME_EVERY_N_FRAMES", "8")))
+# Number of SAHI tiles per keyframe (2×2 grid with overlap when ≥ 4). 0 or 1
+# disables slicing (Grounding-DINO sees the whole frame).
+FMV_KEYFRAME_SAHI_TILES = max(0, int(os.getenv("FMV_KEYFRAME_SAHI_TILES", "4")))
+FMV_KEYFRAME_SAHI_OVERLAP = float(os.getenv("FMV_KEYFRAME_SAHI_OVERLAP", "0.20"))
 SAM3_COMPILE_IMAGE = os.getenv("SAM3_COMPILE_IMAGE", "0").strip().lower() in {"1", "true", "yes", "on"}
 SAM3_COMPILE_VIDEO = os.getenv("SAM3_COMPILE_VIDEO", "0").strip().lower() in {"1", "true", "yes", "on"}
 SAM3_WARM_UP_VIDEO = os.getenv("SAM3_WARM_UP_VIDEO", "1").strip().lower() in {"1", "true", "yes", "on"}
@@ -540,8 +559,182 @@ def run_box_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompt_
     return candidates
 
 
+def _sahi_tile_rects(width: int, height: int, n_tiles: int, overlap: float) -> list[tuple[int, int, int, int]]:
+    """Compute (x1, y1, x2, y2) rectangles for an n-tile SAHI grid with the
+    requested overlap. For n_tiles <= 1 returns a single full-frame rect."""
+    if n_tiles <= 1:
+        return [(0, 0, width, height)]
+    # Use 2×2 (4 tiles) or 3×3 (9 tiles) layouts; fall through to nearest grid.
+    grid = 2 if n_tiles <= 4 else 3 if n_tiles <= 9 else 4
+    tile_w = int(width / grid * (1.0 + overlap))
+    tile_h = int(height / grid * (1.0 + overlap))
+    step_x = max(1, int((width - tile_w) / max(1, grid - 1))) if grid > 1 else width
+    step_y = max(1, int((height - tile_h) / max(1, grid - 1))) if grid > 1 else height
+    rects: list[tuple[int, int, int, int]] = []
+    for gy in range(grid):
+        for gx in range(grid):
+            x1 = min(width - tile_w, gx * step_x) if grid > 1 else 0
+            y1 = min(height - tile_h, gy * step_y) if grid > 1 else 0
+            x1 = max(0, x1)
+            y1 = max(0, y1)
+            x2 = min(width, x1 + tile_w)
+            y2 = min(height, y1 + tile_h)
+            rects.append((x1, y1, x2, y2))
+    return rects
+
+
+def _grounding_dino_keyframe(
+    bundle: dict[str, Any],
+    frame_rgb: np.ndarray,
+    prompts: list[str],
+    score_threshold: float,
+    *,
+    n_tiles: int,
+    overlap: float,
+    iou_merge: float = 0.5,
+) -> list[dict[str, Any]]:
+    """Run Grounding-DINO on the frame (and optionally on SAHI tiles), merge
+    per-class via simple greedy IoU NMS, and return detections shaped like
+    SAM3's tracker output (normalised bbox, class, score, axis-aligned OBB
+    points derived from the bbox).
+
+    Each detection is independent (no track_id) — the worker stores them
+    alongside SAM3 tracks; the FmvPlayer renders both."""
+    gd_bundle = bundle.get("grounding_dino") if isinstance(bundle, dict) else None
+    if not gd_bundle or gd_bundle.get("model") is None:
+        return []
+    import grounding_dino  # local import: optional dependency
+    H, W = frame_rgb.shape[:2]
+    tile_rects = _sahi_tile_rects(W, H, max(1, n_tiles), overlap)
+
+    all_dets: list[tuple[str, float, float, float, float, float]] = []  # (label, x1n, y1n, x2n, y2n, score)
+    for (tx1, ty1, tx2, ty2) in tile_rects:
+        if tx2 <= tx1 or ty2 <= ty1:
+            continue
+        crop = frame_rgb[ty1:ty2, tx1:tx2]
+        if crop.size == 0:
+            continue
+        # Grounding-DINO's text encoder caps at 256 tokens; chunk the
+        # prompt list so a 130-entry admin ontology fits across multiple
+        # encoder passes.
+        results: list = []
+        for chunk_start in range(0, len(prompts), GROUNDING_DINO_PROMPT_CHUNK):
+            chunk = prompts[chunk_start:chunk_start + GROUNDING_DINO_PROMPT_CHUNK]
+            if not chunk:
+                continue
+            try:
+                chunk_results = grounding_dino.run(gd_bundle, crop, chunk, score_threshold=score_threshold)
+            except Exception as exc:
+                logger.debug(
+                    "grounding_dino tile (%d,%d,%d,%d) chunk %d failed: %s",
+                    tx1, ty1, tx2, ty2, chunk_start, exc,
+                )
+                continue
+            results.extend(chunk_results)
+        # Each result is (mask, [x1,y1,x2,y2], score, canonical_label) in tile-local pixels.
+        for (_mask, box_px, score, label) in results:
+            x1t, y1t, x2t, y2t = box_px
+            # Map back to global pixel coords, then normalise.
+            x1g = (tx1 + x1t) / W
+            y1g = (ty1 + y1t) / H
+            x2g = (tx1 + x2t) / W
+            y2g = (ty1 + y2t) / H
+            all_dets.append((label, float(x1g), float(y1g), float(x2g), float(y2g), float(score)))
+
+    if not all_dets:
+        return []
+
+    # Per-class greedy IoU NMS to dedupe across tile boundaries.
+    by_class: dict[str, list[tuple[float, float, float, float, float]]] = {}
+    for label, x1, y1, x2, y2, sc in all_dets:
+        by_class.setdefault(label, []).append((x1, y1, x2, y2, sc))
+
+    def _iou(a, b) -> float:
+        ax1, ay1, ax2, ay2, _ = a
+        bx1, by1, bx2, by2, _ = b
+        ix1 = max(ax1, bx1); iy1 = max(ay1, by1)
+        ix2 = min(ax2, bx2); iy2 = min(ay2, by2)
+        iw = max(0.0, ix2 - ix1); ih = max(0.0, iy2 - iy1)
+        inter = iw * ih
+        if inter <= 0.0:
+            return 0.0
+        area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+        area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+        union = area_a + area_b - inter
+        return inter / union if union > 0 else 0.0
+
+    merged: list[dict[str, Any]] = []
+    for label, boxes in by_class.items():
+        boxes.sort(key=lambda b: b[4], reverse=True)
+        keep: list[tuple[float, float, float, float, float]] = []
+        for cand in boxes:
+            if any(_iou(cand, k) >= iou_merge for k in keep):
+                continue
+            keep.append(cand)
+        for (x1n, y1n, x2n, y2n, sc) in keep:
+            # Axis-aligned 4-corner polygon as the "OBB" so the frontend's
+            # canvas overlay can draw it (Grounding-DINO doesn't give rotated
+            # boxes; the UI's normalizeBbox accepts the flat 8-number form).
+            obb_norm = [
+                x1n, y1n,
+                x2n, y1n,
+                x2n, y2n,
+                x1n, y2n,
+            ]
+            merged.append({
+                "bbox_xyxy_norm": [x1n, y1n, x2n, y2n],
+                "class": label,
+                "score": sc,
+                "obb": obb_norm,
+                "obb_format": "yolo_obb_normalized_xyxyxyxy",
+                "obb_source": "grounding_dino",
+                "edge_truncated": False,
+            })
+    return merged
+
+
+def _decode_prep_frame(video_path: str, frame_idx: int) -> np.ndarray | None:
+    """Decode a single frame from the prep clip via OpenCV. Returns an
+    RGB uint8 ndarray (H, W, 3), or None on failure."""
+    import cv2 as _cv2
+    cap = _cv2.VideoCapture(str(video_path))
+    try:
+        if not cap.isOpened():
+            return None
+        cap.set(_cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ok, frame_bgr = cap.read()
+        if not ok or frame_bgr is None:
+            return None
+        return _cv2.cvtColor(frame_bgr, _cv2.COLOR_BGR2RGB)
+    finally:
+        cap.release()
+
+
 def run_video(bundle, video_path, prompts, *, frame_stride, start_frame, end_frame, max_frames, dinov3, score_threshold):
     predictor = bundle["sam3_video"]
+    # Full prompt list (e.g. 130 admin-managed prompts) drives the
+    # Grounding-DINO keyframe pass; SAM3's video tracker only uses a small
+    # subset because each add_prompt resets state and dominates wall time.
+    # Bias the SAM3 subset toward generic FMV-friendly tokens (vehicle /
+    # person / building) when present in the admin list so the tracker
+    # latches onto things it can actually see, regardless of admin order.
+    _clean_prompts = [p for p in prompts if p and not p.startswith("__")]
+    _preferred = ("vehicle", "person", "building", "car", "truck", "aircraft")
+    sam3_prompts: list[str] = []
+    _seen: set[str] = set()
+    for pref in _preferred:
+        for p in _clean_prompts:
+            pl = p.lower()
+            if pref in pl and pl not in _seen:
+                sam3_prompts.append(p); _seen.add(pl)
+                break
+        if len(sam3_prompts) >= SAM3_VIDEO_MAX_PROMPTS:
+            break
+    for p in _clean_prompts:
+        if len(sam3_prompts) >= SAM3_VIDEO_MAX_PROMPTS:
+            break
+        if p.lower() not in _seen:
+            sam3_prompts.append(p); _seen.add(p.lower())
     # Autocast: the multiplex predictor casts decoded frames to bfloat16
     # internally but ships its weights as float32. Without the ambient cuda
     # autocast context the vitdet linear layers raise
@@ -565,7 +758,7 @@ def run_video(bundle, video_path, prompts, *, frame_stride, start_frame, end_fra
                 frame, with a unique obj_id per call. Updates
                 obj_id_to_prompt for the worker to map detections back."""
                 nonlocal next_obj_id
-                for prompt in prompts:
+                for prompt in sam3_prompts:
                     obj_id = next_obj_id
                     next_obj_id += 1
                     obj_id_to_prompt[obj_id] = prompt
@@ -659,6 +852,48 @@ def run_video(bundle, video_path, prompts, *, frame_stride, start_frame, end_fra
                             "mask_rle": None,
                         })
                     yield json.dumps(entry, separators=(",", ":"))
+
+                # Hybrid keyframe pass: every N emitted frames, decode the
+                # raw frame and run Grounding-DINO (with optional SAHI
+                # tiles) on it. Emits each detection as an independent
+                # entry — no track_id, mask_rle=None, axis-aligned OBB
+                # synthesised from the bbox. Drone-FMV survey paper
+                # prescribes this as the canonical recall booster when
+                # SAM3's text-grounded tracker loses targets after camera
+                # motion.
+                if (
+                    FMV_KEYFRAME_EVERY_N_FRAMES
+                    and bundle is not None
+                    and bundle.get("grounding_dino") is not None
+                    and (emitted_frames == 1 or emitted_frames % FMV_KEYFRAME_EVERY_N_FRAMES == 0)
+                ):
+                    try:
+                        gd_frame = _decode_prep_frame(video_path, frame_idx)
+                        if gd_frame is not None:
+                            gd_dets = _grounding_dino_keyframe(
+                                bundle, gd_frame, list(prompts), score_threshold,
+                                n_tiles=FMV_KEYFRAME_SAHI_TILES,
+                                overlap=FMV_KEYFRAME_SAHI_OVERLAP,
+                            )
+                            for det in gd_dets:
+                                entry = {
+                                    "frame_index": frame_idx,
+                                    "track_id": None,
+                                    "class": det["class"],
+                                    "original_class": det["class"],
+                                    "parent_class": "track",
+                                    "score": det["score"],
+                                    "bbox_xyxy_norm": det["bbox_xyxy_norm"],
+                                    "obb": det["obb"],
+                                    "obb_format": det["obb_format"],
+                                    "obb_source": det["obb_source"],
+                                    "edge_truncated": det["edge_truncated"],
+                                    "mask_rle": None,
+                                    "prompt_text": det["class"],
+                                }
+                                yield json.dumps(entry, separators=(",", ":"))
+                    except Exception as exc:
+                        logger.warning("Grounding-DINO keyframe at frame %s failed: %s", frame_idx, exc)
 
                 # Periodic re-prompt: every N emitted frames, re-issue the
                 # prompts on the current frame as new obj_ids. SAM3
