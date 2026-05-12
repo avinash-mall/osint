@@ -140,6 +140,17 @@ PROFILE_COMPONENTS: dict[str, tuple[str, ...]] = {
 }
 PROFILE_COMPONENTS["imagery"] = tuple(c for c in PROFILE_COMPONENTS["imagery"] if c)
 
+# "all" is the union of every other profile's components — used by big GPUs
+# (40-80 GiB datacenter cards) that want both fmv and imagery served without
+# the unload/reload pause on profile switch. `_ensure_profile` treats "all"
+# as satisfying any single-profile request whose components are a subset.
+PROFILE_COMPONENTS["all"] = tuple(sorted({
+    component
+    for profile_name, components in PROFILE_COMPONENTS.items()
+    if profile_name != "all"
+    for component in components
+}))
+
 _pool: list[dict[str, Any]] = []
 _pool_lock = threading.Lock()
 _pool_idx = 0
@@ -352,8 +363,19 @@ def _load_profile(profile: str) -> None:
 
 
 def _ensure_profile(profile: str) -> None:
-    """Wrapper used by request handlers: load the profile if missing."""
+    """Wrapper used by request handlers: load the profile if missing.
+
+    If the pool is currently loaded as "all" (the multi-profile superset
+    used by big GPUs to skip /load latency), any single-profile request
+    whose components are a subset is served without a reload."""
     if _current_profile == profile and _pool:
+        return
+    if (
+        _current_profile == "all"
+        and _pool
+        and profile in PROFILE_COMPONENTS
+        and set(PROFILE_COMPONENTS[profile]).issubset(PROFILE_COMPONENTS["all"])
+    ):
         return
     _load_profile(profile)
 

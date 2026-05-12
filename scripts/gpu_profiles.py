@@ -275,10 +275,14 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_embed_detections=True,
         # Larger batch fits comfortably in 40-80 GiB HBM.
         sam3_batched_text_chunk_size=16,
-        # Preload imagery profile — datacenter servers are typically
-        # always-on so eager warmup pays off.
+        # Preload the "all" superset profile — 40-80 GiB cards have room
+        # to keep both fmv and imagery components resident, so requests
+        # of either kind serve immediately with no /load unload+reload
+        # pause. `_ensure_profile` in main.py recognises "all" as
+        # satisfying any single-profile request whose components are a
+        # subset.
         sam3_preload_models=True,
-        sam3_preload_profile="imagery",
+        sam3_preload_profile="all",
         # Full-coverage chip sweep + parallel chip threads.
         inference_speed_profile="recall_review",
         inference_chip_concurrency=2,

@@ -199,6 +199,7 @@ def _resolve_mirror_checkpoint() -> str:
 def build_video(device: str):
     _patch_pkg_resources_py312()
     _install_flash_attn_fallback()
+    _disable_flash_sdp_for_fp32_text_encoder()
     from sam3.model_builder import build_sam3_multiplex_video_predictor, build_sam3_video_predictor
 
     if SAM3_USE_MULTIPLEX:
@@ -278,6 +279,35 @@ def build_video(device: str):
 
 
 _flash_attn_patched = False
+_flash_sdp_disabled = False
+
+
+def _disable_flash_sdp_for_fp32_text_encoder() -> None:
+    """Disable PyTorch's Flash SDP backend so fp32 attention paths work.
+
+    SAM3's CLIP text encoder ([text_encoder_ve.py]) ships fp32 weights
+    and its `nn.MultiheadAttention` path does not honour the ambient
+    `torch.autocast(bf16)` context used in `run_video`. Under PyTorch
+    2.10 + cu130 on sm_80 (A100), MHA dispatches to the bundled
+    flash-attention-3 kernel which raises
+    ``FlashAttention on Ampere/Ada cards only supports fp16 and bf16
+    data type``. Disabling the flash SDP backend causes PyTorch to fall
+    back to memory-efficient / math SDPA which accepts fp32. Negligible
+    end-to-end impact (only the text-encoder attention slows; vitdet
+    self-attention is already handled by `_install_flash_attn_fallback`
+    or the real flash-attn-3 wheel)."""
+    global _flash_sdp_disabled
+    if _flash_sdp_disabled:
+        return
+    try:
+        import torch
+        # Flash SDP is the only backend that rejects fp32; the other two
+        # (memory-efficient, math) accept it. Keep cudnn enabled because
+        # the image path may benefit from it on bf16.
+        torch.backends.cuda.enable_flash_sdp(False)
+        _flash_sdp_disabled = True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("could not disable flash SDP backend: %s", exc)
 
 
 def _install_flash_attn_fallback() -> None:
