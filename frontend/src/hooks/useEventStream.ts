@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -11,6 +11,16 @@ function toWsUrl(httpUrl: string, topic: string): string {
 }
 
 export function useEventStream(topic: string, onMessage: (message: any) => void) {
+  // Keep the handler in a ref so the socket effect only re-runs when `topic`
+  // changes. Without this, every parent re-render that produces a new
+  // onMessage identity (common when callback deps update) tears down the
+  // WebSocket mid-handshake — the browser logs that as "closed before
+  // connection established".
+  const onMessageRef = useRef(onMessage);
+  useEffect(() => {
+    onMessageRef.current = onMessage;
+  }, [onMessage]);
+
   useEffect(() => {
     let closed = false;
     let socket: WebSocket | null = null;
@@ -20,9 +30,9 @@ export function useEventStream(topic: string, onMessage: (message: any) => void)
       socket = new WebSocket(toWsUrl(API_URL, topic));
       socket.onmessage = (event) => {
         try {
-          onMessage(JSON.parse(event.data));
+          onMessageRef.current(JSON.parse(event.data));
         } catch {
-          onMessage({ type: 'message', payload: event.data });
+          onMessageRef.current({ type: 'message', payload: event.data });
         }
       };
       socket.onclose = () => {
@@ -40,5 +50,5 @@ export function useEventStream(topic: string, onMessage: (message: any) => void)
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
       socket?.close();
     };
-  }, [topic, onMessage]);
+  }, [topic]);
 }
