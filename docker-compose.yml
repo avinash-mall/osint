@@ -180,6 +180,15 @@ services:
       FMV_TRACK_HEIGHT: ${FMV_TRACK_HEIGHT:-540}
       FMV_TRACK_FRAMES_PER_WINDOW: ${FMV_TRACK_FRAMES_PER_WINDOW:-48}
       PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
+      # Force PyTorch's `nn.Linear` / `addmm` off cuBLAS-Lt. The cuBLAS-Lt
+      # context gets stateful corruption in the long-running service after
+      # the model load sequence (multiplex + image + optional models) and
+      # then every subsequent `cublasLtMatmulAlgoGetHeuristic` returns
+      # NOT_INITIALIZED — even on otherwise healthy A100 80GB / driver
+      # 595.71.05 / torch 2.10.0+cu130. Routing addmm through plain
+      # cuBLAS sidesteps it. ~5–15% throughput hit on text encoder.
+      # Revisit when the upstream PyTorch / cu130 cuBLAS-Lt bug is fixed.
+      DISABLE_ADDMM_CUDA_LT: ${DISABLE_ADDMM_CUDA_LT:-1}
       SAM3_BATCHED_TEXT: ${SAM3_BATCHED_TEXT:-1}
       SAM3_BATCHED_TEXT_CHUNK_SIZE: ${SAM3_BATCHED_TEXT_CHUNK_SIZE:-8}
       DINOV3_SAT_MODEL_ID: ${DINOV3_SAT_MODEL_ID:-facebook/dinov3-vitl16-pretrain-sat493m}
