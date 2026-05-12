@@ -86,8 +86,13 @@ class GpuBuildProfile:
     # Number of text prompts sent to SAM3 in a single batched inference call.
     # Larger values reduce round-trips but consume more VRAM per call.
     sam3_batched_text_chunk_size: int = 8
-    # Which model profile to warm at container startup.
-    # "" = lazy (load on first /load call), "fmv" or "imagery" = eager.
+    # Master switch for startup preloading. When True, sam3_preload_profile
+    # is loaded eagerly during container boot (~30-60 s init cost) so the
+    # first inference request doesn't pay model-load latency. Datacenter
+    # servers want this on; dev boxes typically leave it off.
+    sam3_preload_models: bool = False
+    # Which model profile to warm at container startup. Only takes effect
+    # when sam3_preload_models=True. "fmv" / "imagery" / "".
     sam3_preload_profile: str = ""
 
     # --- Memory allocator ---
@@ -147,6 +152,7 @@ class GpuBuildProfile:
             # Embedding & batching
             "SAM3_EMBED_DETECTIONS": "1" if self.sam3_embed_detections else "0",
             "SAM3_BATCHED_TEXT_CHUNK_SIZE": str(self.sam3_batched_text_chunk_size),
+            "SAM3_PRELOAD_MODELS": "1" if self.sam3_preload_models else "0",
             "SAM3_PRELOAD_PROFILE": self.sam3_preload_profile,
             # Memory allocator
             "PYTORCH_CUDA_ALLOC_CONF": self.pytorch_cuda_alloc_conf,
@@ -266,6 +272,7 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_batched_text_chunk_size=16,
         # Preload imagery profile — datacenter servers are typically
         # always-on so eager warmup pays off.
+        sam3_preload_models=True,
         sam3_preload_profile="imagery",
         # Full-coverage chip sweep + parallel chip threads.
         inference_speed_profile="recall_review",
@@ -327,6 +334,7 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_embed_detections=True,
         # Larger batch fits in 80 GiB HBM; reduces total prompt round-trips.
         sam3_batched_text_chunk_size=16,
+        sam3_preload_models=True,
         sam3_preload_profile="imagery",
         inference_speed_profile="recall_review",
         inference_chip_concurrency=2,
@@ -357,6 +365,7 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_load_grounding_dino=True,
         sam3_embed_detections=True,
         sam3_batched_text_chunk_size=16,
+        sam3_preload_models=True,
         sam3_preload_profile="imagery",
         inference_speed_profile="recall_review",
         inference_chip_concurrency=2,
