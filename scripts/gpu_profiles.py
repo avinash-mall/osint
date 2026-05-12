@@ -196,18 +196,21 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
     ),
     "ampere_sm80_86": GpuBuildProfile(
         name="ampere_sm80_86",
-        cuda_version="12.6.3",
-        torch_index_url="https://download.pytorch.org/whl/cu126",
-        torch_version="2.7.1+cu126",
-        torchvision_version="0.22.1+cu126",
-        torchaudio_version="2.7.1+cu126",
+        # Consumer / workstation Ampere (RTX 30-series, RTX A-series).
+        # CUDA 13.2 + cu130. Conservative runtime defaults — 10-24 GiB
+        # cards can't carry the same workload as datacenter A100s.
+        cuda_version="13.2.0",
+        torch_index_url="https://download.pytorch.org/whl/cu130",
+        torch_version="2.10.0+cu130",
+        torchvision_version="0.25.0+cu130",
+        torchaudio_version="2.10.0+cu130",
         torch_cuda_arch_list="8.0;8.6;8.9;9.0+PTX",
         compute_capability="8.x",
-        min_driver_version="560.28.03",
-        ubuntu_version="22.04",
-        # Ampere = TF32 capable. Multiplex permitted at profile level; the
-        # runtime VRAM gate in configure_host downgrades to base predictor
-        # on Ampere cards with < 20 GiB (e.g. RTX 3080 10/12 GiB).
+        min_driver_version="575.51",
+        ubuntu_version="24.04",
+        # TF32 capable. Multiplex permitted at profile level; runtime VRAM
+        # gate downgrades to base predictor on cards with < 20 GiB (RTX
+        # 3080 10/12 GiB, RTX A4000 16 GiB).
         enable_tf32=True,
         compile_image=False,
         compile_video=False,
@@ -225,6 +228,48 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_preload_profile="",
         inference_speed_profile="fast_review",
         inference_chip_concurrency=1,
+    ),
+    "ampere_sm80_86_datacenter": GpuBuildProfile(
+        name="ampere_sm80_86_datacenter",
+        # Datacenter Ampere (A100 40/80GB, A40, A30, A10, A10G). Same
+        # build stack as consumer Ampere but aggressive runtime defaults:
+        # 40-80 GiB VRAM, full memory bandwidth, multi-GPU racks. Worth
+        # paying the compile JIT cost on long-running servers.
+        cuda_version="13.2.0",
+        torch_index_url="https://download.pytorch.org/whl/cu130",
+        torch_version="2.10.0+cu130",
+        torchvision_version="0.25.0+cu130",
+        torchaudio_version="2.10.0+cu130",
+        torch_cuda_arch_list="8.0;8.6;8.9;9.0+PTX",
+        compute_capability="8.x",
+        min_driver_version="575.51",
+        ubuntu_version="24.04",
+        enable_tf32=True,
+        # Compile both models — datacenter servers warm up once and serve
+        # for hours, so the JIT cost amortises. Risk of compiler tripping
+        # on SAM3 branchy paths is the same as Hopper here.
+        compile_image=True,
+        compile_video=True,
+        # 720p prep clip + 96 frames/window: ~7.5 GiB per video session,
+        # trivial against 40-80 GiB cards.
+        fmv_track_height=720,
+        fmv_track_frames_per_window=96,
+        use_multiplex=True,
+        sam3_load_optional_models=True,
+        sam3_load_dinov3_sat=True,
+        sam3_load_prithvi=True,
+        sam3_load_terramind=True,
+        sam3_load_dota_obb=True,
+        sam3_load_grounding_dino=True,
+        sam3_embed_detections=True,
+        # Larger batch fits comfortably in 40-80 GiB HBM.
+        sam3_batched_text_chunk_size=16,
+        # Preload imagery profile — datacenter servers are typically
+        # always-on so eager warmup pays off.
+        sam3_preload_profile="imagery",
+        # Full-coverage chip sweep + parallel chip threads.
+        inference_speed_profile="recall_review",
+        inference_chip_concurrency=2,
     ),
     "ada_sm89": GpuBuildProfile(
         name="ada_sm89",
@@ -368,18 +413,27 @@ GPU_MODELS: Mapping[str, str] = {
     "nvidia geforce rtx 2080": "turing_sm75",
     "nvidia geforce rtx 2080 super": "turing_sm75",
     "nvidia geforce rtx 2080 ti": "turing_sm75",
-    # NVIDIA Ampere.
-    "nvidia a10": "ampere_sm80_86",
-    "nvidia a10g": "ampere_sm80_86",
-    "nvidia a30": "ampere_sm80_86",
-    "nvidia a40": "ampere_sm80_86",
-    "nvidia a100": "ampere_sm80_86",
-    "nvidia a100 40gb pcie": "ampere_sm80_86",
-    "nvidia a100 80gb pcie": "ampere_sm80_86",
-    "nvidia a100-pcie-40gb": "ampere_sm80_86",
-    "nvidia a100-pcie-80gb": "ampere_sm80_86",
-    "nvidia a100-sxm4-40gb": "ampere_sm80_86",
-    "nvidia a100-sxm4-80gb": "ampere_sm80_86",
+    # NVIDIA Ampere — datacenter (A100, A40, A30, A10): passive-cooled,
+    # NVLink/HBM2e, 24-80 GiB. Routed to the aggressive runtime profile.
+    "nvidia a10": "ampere_sm80_86_datacenter",
+    "nvidia a10g": "ampere_sm80_86_datacenter",
+    "nvidia a30": "ampere_sm80_86_datacenter",
+    "nvidia a40": "ampere_sm80_86_datacenter",
+    "nvidia a100": "ampere_sm80_86_datacenter",
+    "nvidia a100 40gb pcie": "ampere_sm80_86_datacenter",
+    "nvidia a100 80gb pcie": "ampere_sm80_86_datacenter",
+    "nvidia a100-pcie-40gb": "ampere_sm80_86_datacenter",
+    "nvidia a100-pcie-80gb": "ampere_sm80_86_datacenter",
+    "nvidia a100-sxm4-40gb": "ampere_sm80_86_datacenter",
+    "nvidia a100-sxm4-80gb": "ampere_sm80_86_datacenter",
+    # NVIDIA Ampere — pro workstation (RTX A4000/A5000/A6000): 16/24/48 GiB,
+    # ECC, NVLink on A6000. Treated as datacenter-class for runtime tuning.
+    # (A4000's 16 GiB falls below the 20 GiB multiplex gate — VRAM gate
+    # automatically downgrades it to base predictor.)
+    "nvidia rtx a4000": "ampere_sm80_86_datacenter",
+    "nvidia rtx a5000": "ampere_sm80_86_datacenter",
+    "nvidia rtx a6000": "ampere_sm80_86_datacenter",
+    # NVIDIA Ampere — consumer (RTX 30-series) + low-end workstation.
     "nvidia geforce rtx 3050": "ampere_sm80_86",
     "nvidia geforce rtx 3060": "ampere_sm80_86",
     "nvidia geforce rtx 3060 ti": "ampere_sm80_86",
@@ -390,10 +444,7 @@ GPU_MODELS: Mapping[str, str] = {
     "nvidia geforce rtx 3090": "ampere_sm80_86",
     "nvidia geforce rtx 3090 ti": "ampere_sm80_86",
     "nvidia rtx a2000": "ampere_sm80_86",
-    "nvidia rtx a4000": "ampere_sm80_86",
     "nvidia rtx a4500": "ampere_sm80_86",
-    "nvidia rtx a5000": "ampere_sm80_86",
-    "nvidia rtx a6000": "ampere_sm80_86",
     # NVIDIA Ada.
     "nvidia l4": "ada_sm89",
     "nvidia l40": "ada_sm89",
