@@ -340,6 +340,18 @@ def _disable_flash_sdp_for_fp32_text_encoder() -> None:
         logger.warning("could not disable flash SDP backend: %s", exc)
 
 
+def _is_hopper_or_newer() -> bool:
+    """True if the first visible CUDA device is sm_90 (Hopper) or newer."""
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return False
+        major, _ = torch.cuda.get_device_capability(0)
+        return major >= 9
+    except Exception:
+        return False
+
+
 def _install_flash_attn_fallback() -> None:
     """Provide a torch SDPA fallback for SAM3's flash-attn-3 dependency.
 
@@ -363,8 +375,22 @@ def _install_flash_attn_fallback() -> None:
         return
     try:
         import flash_attn_interface  # noqa: F401
-        _flash_attn_patched = True
-        return  # real flash-attn-3 is installed; nothing to do
+        # The flash-attn-3 wheel is built for Hopper (sm_90). On sm_90+
+        # it works and we should leave SAM3's perflib alone. On sm < 90
+        # (Ampere/Ada/older), the wheel's `mha_fwd` rejects fp32 with
+        # "FlashAttention on Ampere/Ada cards only supports fp16 and
+        # bf16 data type" — and SAM3's `sam3.perflib.fa3` casts q/k/v
+        # to a module-level `dtype` that isn't bf16 under our autocast
+        # context, so q/k/v arrive at the kernel as fp32. Force the
+        # SDPA fallback in that case.
+        if _is_hopper_or_newer():
+            _flash_attn_patched = True
+            return
+        logger.info(
+            "flash_attn_interface installed but running on sm<9.0; "
+            "the Hopper-built kernel rejects fp32 here. Forcing SDPA "
+            "fallback for sam3.perflib.fa3.flash_attn_func"
+        )
     except ImportError:
         pass
 
