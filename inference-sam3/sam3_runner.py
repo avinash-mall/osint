@@ -242,6 +242,28 @@ def build_video(device: str):
             _patch_multiplex_init_state(predictor)
             return predictor
         except Exception as exc:
+            # cuBLAS-Lt state can't be reset within a Python process: once
+            # the warmup hits CUBLAS_STATUS_NOT_INITIALIZED or any CUDA
+            # error, every subsequent matmul in this process — including
+            # in the non-multiplex base predictor — fails with the same
+            # error. The only clean recovery is process restart, mirroring
+            # the `/unload` kill-and-respawn pattern in
+            # main.py (`os._exit(1)` under `restart: unless-stopped`).
+            exc_text = str(exc)
+            cuda_poisoned = isinstance(exc, RuntimeError) and (
+                "CUBLAS_STATUS" in exc_text
+                or "CUDA error" in exc_text
+                or "CUDA out of memory" in exc_text
+                or "cuDNN error" in exc_text
+            )
+            if cuda_poisoned:
+                logger.error(
+                    "SAM3 multiplex video predictor crashed CUDA context (%s); "
+                    "process state is unrecoverable, exiting so docker-compose "
+                    "respawns the container",
+                    exc,
+                )
+                os._exit(1)
             logger.warning(
                 "SAM3 multiplex video predictor failed to load (%s); falling back to non-multiplex base predictor",
                 exc,
