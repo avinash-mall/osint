@@ -251,11 +251,16 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         min_driver_version="575.51",
         ubuntu_version="24.04",
         enable_tf32=True,
-        # Compile both models — datacenter servers warm up once and serve
-        # for hours, so the JIT cost amortises. Risk of compiler tripping
-        # on SAM3 branchy paths is the same as Hopper here.
+        # Image compile is safe. Video compile is OFF on this stack: the
+        # cu130 + sm_80 + multiplex-warmup matmul shape trips
+        # `cublasLtMatmulAlgoGetHeuristic → CUBLAS_STATUS_NOT_INITIALIZED`
+        # on torch 2.10.0+cu130 (observed 2026-05-12 on A100 80GB,
+        # driver ≥575.51). Multiplex still runs in eager mode — only the
+        # torch.compile JIT path is disabled. Revisit when upstream
+        # PyTorch / SAM3 releases the fix; flip back to True and verify
+        # warmup completes.
         compile_image=True,
-        compile_video=True,
+        compile_video=False,
         # 720p prep clip + 96 frames/window: ~7.5 GiB per video session,
         # trivial against 40-80 GiB cards.
         fmv_track_height=720,

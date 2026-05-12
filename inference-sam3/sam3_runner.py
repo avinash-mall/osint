@@ -215,7 +215,10 @@ def build_video(device: str):
         try:
             import torch
             if torch.cuda.is_available():
-                free, total = torch.cuda.mem_get_info()
+                # Query the device this predictor is being built for, not
+                # whichever cuda happens to be current — matters on
+                # heterogenous multi-GPU hosts.
+                free, total = torch.cuda.mem_get_info(torch.device(device))
                 free_mib = free // (1024 * 1024)
                 total_mib = total // (1024 * 1024)
                 if total_mib < min_total_mib:
@@ -232,8 +235,11 @@ def build_video(device: str):
                         free_mib, min_free_mib,
                     )
                     return build_sam3_video_predictor()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "multiplex VRAM preflight failed (%s); will still attempt load",
+                exc,
+            )
         try:
             predictor = build_sam3_multiplex_video_predictor(
                 compile=SAM3_COMPILE_VIDEO,
