@@ -1352,6 +1352,11 @@ def _prepare_tracking_window(src_path: str, window_idx: int, start_s: float, dur
         "-vf", f"fps={FMV_TRACK_FPS},scale=-2:{FMV_TRACK_HEIGHT}",
         "-frames:v", str(FMV_TRACK_FRAMES_PER_WINDOW),
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast",
+        # Force mp4 container explicitly: the tmp filename ends in
+        # `.mp4.tmp`, which defeats ffmpeg's extension-based format
+        # auto-detection. The final `os.replace(tmp, out)` lands at
+        # `.mp4`, so the container we write here must be mp4.
+        "-f", "mp4",
         str(tmp),
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True)
