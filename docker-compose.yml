@@ -150,6 +150,11 @@ services:
         HF_TOKEN: ${HF_TOKEN:-}
     image: sentinel-inference-sam3:gpu
     gpus: all
+    # Kill-and-respawn is how /unload reliably frees SAM3's VRAM (Python
+    # refs inside the upstream library survive del+empty_cache). The hot
+    # path is: backend POST /unload → main.py kills the process via
+    # os._exit(1) → docker compose respawns within ~5 s.
+    restart: unless-stopped
     environment:
       GPU_MODEL: ${GPU_MODEL:?Run python scripts/configure_host.py first}
       SAM3_GPU_PROFILE: ${SAM3_GPU_PROFILE:?Run python scripts/configure_host.py first}
@@ -164,7 +169,8 @@ services:
       SAM3_COMPILE_IMAGE: ${SAM3_COMPILE_IMAGE:-0}
       SAM3_COMPILE_VIDEO: ${SAM3_COMPILE_VIDEO:-0}
       SAM3_WARM_UP_VIDEO: ${SAM3_WARM_UP_VIDEO:-1}
-      SAM3_PRELOAD_MODELS: ${SAM3_PRELOAD_MODELS:-1}
+      SAM3_PRELOAD_MODELS: ${SAM3_PRELOAD_MODELS:-0}
+      SAM3_PRELOAD_PROFILE: ${SAM3_PRELOAD_PROFILE:-}
       PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
       SAM3_BATCHED_TEXT: ${SAM3_BATCHED_TEXT:-1}
       SAM3_BATCHED_TEXT_CHUNK_SIZE: ${SAM3_BATCHED_TEXT_CHUNK_SIZE:-8}
@@ -198,7 +204,7 @@ services:
       # Category-level presence gate (SegEarth-OV-3 idea). 0.0 disables.
       # 0.40 suppresses prompts whose best mask still has weak presence,
       # which is what produces hallucinated detections on absent concepts.
-      SAM3_CATEGORY_THRESHOLD: ${SAM3_CATEGORY_THRESHOLD:-0.40}
+      SAM3_CATEGORY_THRESHOLD: ${SAM3_CATEGORY_THRESHOLD:-0.20}
       # SAM 3 weights source: "official" → gated facebook/sam3 (needs HF_TOKEN),
       # "mirror" → 1038lab/sam3 non-gated mirror (HF_TOKEN optional).
       SAM3_WEIGHTS_SOURCE:  ${SAM3_WEIGHTS_SOURCE:-official}

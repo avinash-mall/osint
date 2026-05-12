@@ -1,4 +1,5 @@
 import os
+import time
 import sys
 import json
 import requests
@@ -1247,58 +1248,338 @@ def _xyxy_to_normalized_cxcywh(box: list[float], width: float | None = None, hei
     return [x1, y1, max(0.0, x2 - x1), max(0.0, y2 - y1)]
 
 
+FMV_TRACK_FPS = float(os.getenv("FMV_TRACK_FPS", "4"))
+# 540p prep clip: at 10 km slant range a person ≈22 px on the prep clip (vs
+# ~6 px at 270p), which puts the target inside SAM3's small-object band.
+FMV_TRACK_HEIGHT = int(os.getenv("FMV_TRACK_HEIGHT", "540"))
+# SAM3's video predictor pins every decoded frame as a single CUDA tensor at
+# session start (~80 MiB/frame at 540p once letterboxed to 1024² on a 16 GiB
+# GPU also holding the SAM3 image+video weights). 48 frames keeps peak VRAM
+# under ~5 GiB and lets a 12 s window run at 4 fps in a single session.
+FMV_TRACK_FRAMES_PER_WINDOW = int(os.getenv("FMV_TRACK_FRAMES_PER_WINDOW", "48"))
+# Window slicing of the source clip. Each window is its own SAM3 video
+# session, so the tracker gets a fresh re-detection every WINDOW_SECONDS of
+# source content, avoiding the "tracker loses target after 7 s" behaviour
+# observed on Day Flight.mpg.
+FMV_TRACK_WINDOW_SECONDS = float(os.getenv("FMV_TRACK_WINDOW_SECONDS", "12"))
+FMV_TRACK_WINDOW_OVERLAP_SECONDS = float(os.getenv("FMV_TRACK_WINDOW_OVERLAP_SECONDS", "2"))
+
+
+def _probe_source(src_path: str) -> tuple[float, float]:
+    """Return `(source_fps, duration_s)` via ffprobe (best-effort)."""
+    fps = 30.0
+    duration = 0.0
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=r_frame_rate,duration:format=duration",
+             "-of", "default=nw=1", src_path],
+            capture_output=True, text=True, check=False, timeout=10,
+        )
+        for line in (proc.stdout or "").splitlines():
+            key, _, val = line.partition("=")
+            val = val.strip()
+            if key == "r_frame_rate" and val:
+                if "/" in val:
+                    num, den = val.split("/", 1)
+                    den_f = float(den)
+                    if den_f > 0:
+                        fps = float(num) / den_f
+                else:
+                    fps = float(val)
+            elif key == "duration" and val and val != "N/A":
+                try:
+                    duration = float(val)
+                except ValueError:
+                    pass
+    except Exception:
+        pass
+    return fps or 30.0, duration
+
+
+def _prepare_tracking_window(src_path: str, window_idx: int, start_s: float, duration_s: float) -> Path | None:
+    """Extract a single sliding-window track clip from the source.
+
+    Returns the output Path, or None on ffmpeg failure. Each window is a
+    short low-fps low-res mp4 sized so the entire decoded frame stack fits
+    in GPU memory at SAM3 video session-init time."""
+    src = Path(src_path)
+    out = src.with_name(f"{src.stem}.win{window_idx:02d}.track.mp4")
+    if out.exists() and out.stat().st_mtime >= src.stat().st_mtime:
+        return out
+    cmd = [
+        "ffmpeg", "-y", "-v", "error",
+        "-ss", f"{start_s:.3f}",
+        "-i", str(src),
+        "-t", f"{duration_s:.3f}",
+        "-an",
+        "-vf", f"fps={FMV_TRACK_FPS},scale=-2:{FMV_TRACK_HEIGHT}",
+        "-frames:v", str(FMV_TRACK_FRAMES_PER_WINDOW),
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast",
+        str(out),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        logger.warning("FMV window %d prep failed for %s: %s", window_idx, src, proc.stderr[:300])
+        return None
+    return out
+
+
+def _slice_windows(duration_s: float) -> list[tuple[float, float]]:
+    """Compute `[(start_s, length_s)]` slices that overlap by
+    FMV_TRACK_WINDOW_OVERLAP_SECONDS. The final window may be shorter if
+    the duration doesn't divide evenly. Returns at least one window."""
+    if duration_s <= 0:
+        return [(0.0, FMV_TRACK_WINDOW_SECONDS)]
+    step = max(0.5, FMV_TRACK_WINDOW_SECONDS - FMV_TRACK_WINDOW_OVERLAP_SECONDS)
+    windows: list[tuple[float, float]] = []
+    start = 0.0
+    while start < duration_s:
+        length = min(FMV_TRACK_WINDOW_SECONDS, duration_s - start)
+        windows.append((start, length))
+        if start + length >= duration_s:
+            break
+        start += step
+    return windows or [(0.0, duration_s)]
+
+
+def _ensure_fmv_profile(session: requests.Session, clip_id: int, max_wait_s: float = 600.0) -> dict:
+    """Load the FMV inference profile, retrying on 409 (other request in flight)
+    so two consecutive FMV tasks don't fight over the same swap. Returns the
+    /health JSON so the caller knows which video backend is active."""
+    deadline = time.time() + max_wait_s
+    last_err: str | None = None
+    while time.time() < deadline:
+        try:
+            resp = session.post(
+                f"{INFERENCE_SAM3_URL}/load",
+                params={"profile": "fmv"},
+                timeout=600,
+            )
+            if resp.status_code == 200:
+                break
+            if resp.status_code == 409:
+                publish_event(
+                    f"fmv:{clip_id}",
+                    {"type": "fmv_detections_progress", "clip_id": clip_id,
+                     "stage": "waiting_for_inference", "detail": "another request in flight"},
+                )
+                last_err = "inference busy (409)"
+                time.sleep(2)
+                continue
+            last_err = f"{resp.status_code}: {resp.text[:200]}"
+            time.sleep(2)
+        except requests.RequestException as exc:
+            last_err = f"connection error: {exc}"
+            time.sleep(2)
+    else:
+        raise RuntimeError(f"could not load FMV inference profile: {last_err or 'timeout'}")
+    # Read /health to learn whether the multiplex or base predictor came up.
+    health = session.get(f"{INFERENCE_SAM3_URL}/health", timeout=10).json()
+    return health
+
+
+def _update_clip_tracking(clip_id: int, **fields) -> None:
+    """Merge tracking_* fields into fmv_clips.metadata jsonb. Best-effort —
+    failures here shouldn't kill the tracking task."""
+    if not fields:
+        return
+    try:
+        with postgis_db.get_cursor(commit=True) as cur:
+            cur.execute(
+                """
+                UPDATE fmv_clips
+                   SET metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb,
+                       updated_at = NOW()
+                 WHERE id = %s
+                """,
+                (json.dumps(fields), clip_id),
+            )
+    except Exception:
+        logger.exception("failed to update fmv_clips.metadata for clip %s", clip_id)
+
+
+def _insert_detection_rows(cur, clip_id: int, source_fps: float, window_idx: int, window_start_frame: int,
+                            prompts_for_request: list[str], resp, next_track_id: int) -> tuple[int, int]:
+    """Drain one /detect_video streaming response into fmv_detections.
+    Returns (rows_inserted, new_next_track_id)."""
+    multiplier = source_fps / FMV_TRACK_FPS if FMV_TRACK_FPS > 0 else 1.0
+    inserted = 0
+    local_to_global: dict[tuple, int] = {}
+    # For multi-prompt multiplex calls we can't always tell which prompt
+    # a track came from; fall back to the prompt the entry claims, then
+    # to the first prompt we sent.
+    fallback_prompt = prompts_for_request[0] if prompts_for_request else "track"
+    for line in resp.iter_lines(decode_unicode=True):
+        if not line:
+            continue
+        entry = json.loads(line)
+        prep_idx = int(entry["frame_index"])
+        source_frame = window_start_frame + int(round(prep_idx * multiplier))
+        # SAM3 now emits ``bbox_xyxy_norm`` (already in [0,1] relative to
+        # the prep clip). Convert directly to cxcywh-normalised without
+        # re-normalising — the previous _xyxy_to_normalized_cxcywh path
+        # treated normalised values as pixel xywh and produced offset
+        # boxes. Empty/heartbeat frames carry None — store as [] so the
+        # frontend's normalizeBbox falls through to the OBB (if any) or
+        # skips drawing for that frame.
+        bbox_norm = entry.get("bbox_xyxy_norm")
+        if bbox_norm and len(bbox_norm) == 4:
+            x1n, y1n, x2n, y2n = (float(v) for v in bbox_norm)
+            wn = max(0.0, x2n - x1n)
+            hn = max(0.0, y2n - y1n)
+            cxcywh_norm = [(x1n + x2n) / 2.0, (y1n + y2n) / 2.0, wn, hn]
+            bbox_json = json.dumps(cxcywh_norm)
+        else:
+            # Heartbeat / lost-track frame.
+            bbox_json = json.dumps([])
+        raw_cls = entry.get("original_class") or entry.get("class")
+        # SAM3 emits the placeholder "track" when an obj_id wasn't seeded
+        # by add_prompt; treat it as unlabeled and use the requested prompt.
+        cls = raw_cls if (raw_cls and raw_cls != "track") else fallback_prompt
+        prompt_text = entry.get("prompt_text") or cls
+        local_tid = entry.get("track_id")
+        if local_tid is not None:
+            try:
+                ltid = int(local_tid)
+                key = (window_idx, prompt_text, ltid)
+                if key not in local_to_global:
+                    local_to_global[key] = next_track_id
+                    next_track_id += 1
+                global_tid = local_to_global[key]
+            except (TypeError, ValueError):
+                global_tid = local_tid
+        else:
+            global_tid = None
+        meta_json = json.dumps({
+            "track_id": global_tid,
+            "mask_rle": entry.get("mask_rle"),
+            "obb": entry.get("obb"),
+            "obb_format": entry.get("obb_format"),
+            "obb_source": entry.get("obb_source"),
+            "obb_angle_deg": entry.get("obb_angle_deg"),
+            "edge_truncated": entry.get("edge_truncated"),
+            "embedding": entry.get("embedding"),
+            "prompt_text": prompt_text,
+            "window_index": window_idx,
+            "provider": "sam3",
+        })
+        conf = float(entry.get("score") or 0.0)
+        cur.execute(
+            """
+            INSERT INTO fmv_detections (clip_id, frame_index, class, confidence, bbox, metadata)
+            VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb)
+            """,
+            (clip_id, source_frame, cls, conf, bbox_json, meta_json),
+        )
+        inserted += 1
+    return inserted, next_track_id
+
+
 @celery_app.task(name="worker.process_fmv", queue="imagery")
-def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = None, frame_stride: int = 1, max_frames: int | None = None) -> int:
-    """Run SAM3 FMV tracking and persist one row per frame/track detection."""
+def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = None, frame_stride: int | None = None, max_frames: int | None = None) -> int:
+    """Run SAM3 FMV tracking over the full clip via sliding-window sessions.
+
+    Per-window flow:
+      1. Slice source into overlapping windows (so SAM3's tracker is
+         re-seeded every WINDOW_SECONDS; gives full-clip coverage on top
+         of a predictor that loses targets within ~30 frames).
+      2. For each window, extract a low-fps/low-res working clip with
+         ffmpeg (caps VRAM at SAM3 session-init time).
+      3. Call inference. With the multiplex predictor (sam3.1-multiplex)
+         we batch all prompts into one /detect_video request; with the
+         base predictor we iterate prompts one-per-session (multiplex
+         supports multi-prompt sessions, base does not).
+      4. Commit detections to PostGIS *per window*, then publish progress
+         so the FmvPlayer sees boxes appear within seconds of the first
+         window finishing — not 4 minutes after the whole clip processes.
+    """
     provider_lifecycle.ensure_running()
-    payload = json.dumps({
-        "video_path": video_path,
-        "text_prompts": text_prompts or None,
-        "frame_stride": frame_stride,
-        "max_frames": max_frames,
-        "modality": "fmv",
-    })
+    source_fps, duration_s = _probe_source(video_path)
+    if duration_s <= 0:
+        duration_s = FMV_TRACK_WINDOW_SECONDS
+    windows = _slice_windows(duration_s)
+    prompts = list(text_prompts or [])
+    if not prompts:
+        prompts = ["object"]
+
+    _update_clip_tracking(
+        clip_id,
+        tracking_status="running",
+        tracking_started_at=datetime.now(timezone.utc).isoformat(),
+        tracking_windows=len(windows),
+        tracking_prompts=prompts,
+        tracking_count=0,
+        tracking_error=None,
+    )
+    publish_event(
+        f"fmv:{clip_id}",
+        {"type": "fmv_detections_progress", "clip_id": clip_id,
+         "window": 0, "windows": len(windows), "stage": "starting"},
+    )
+
     session = requests.Session()
     try:
-        resp = session.post(
-            f"{INFERENCE_SAM3_URL}/detect_video",
-            data={"metadata": payload},
-            stream=True,
-            timeout=INFERENCE_CHIP_TIMEOUT_S * 60,
-        )
-        resp.raise_for_status()
+        health = _ensure_fmv_profile(session, clip_id)
+        video_backend = (health.get("model_versions") or {}).get("sam3_video", "")
+        multiplex = "multiplex" in str(video_backend).lower()
+        logger.info("FMV tracking clip=%s windows=%d backend=%s multiplex=%s",
+                    clip_id, len(windows), video_backend, multiplex)
+
         inserted = 0
-        with postgis_db.get_cursor(commit=True) as cur:
-            for line in resp.iter_lines(decode_unicode=True):
-                if not line:
-                    continue
-                entry = json.loads(line)
-                cur.execute(
-                    """
-                    INSERT INTO fmv_detections (clip_id, frame_index, class, confidence, bbox, metadata)
-                    VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb)
-                    """,
-                    (
-                        clip_id,
-                        int(entry["frame_index"]),
-                        entry.get("original_class") or entry.get("class") or "track",
-                        float(entry.get("score") or 0.0),
-                        json.dumps(_xyxy_to_normalized_cxcywh(entry.get("bbox_xyxy") or [0, 0, 0, 0])),
-                        json.dumps({
-                            "track_id": entry.get("track_id"),
-                            "mask_rle": entry.get("mask_rle"),
-                            "obb": entry.get("obb"),
-                            "obb_format": entry.get("obb_format"),
-                            "obb_source": entry.get("obb_source"),
-                            "obb_angle_deg": entry.get("obb_angle_deg"),
-                            "edge_truncated": entry.get("edge_truncated"),
-                            "embedding": entry.get("embedding"),
-                            "provider": "sam3",
-                        }),
-                    ),
+        next_track_id = 0
+        for window_idx, (start_s, length_s) in enumerate(windows):
+            win_path = _prepare_tracking_window(video_path, window_idx, start_s, length_s)
+            if win_path is None:
+                continue
+            window_start_frame = int(round(start_s * source_fps))
+
+            window_inserted = 0
+            with postgis_db.get_cursor(commit=True) as cur:
+                # Single session per window with all prompts. The base
+                # predictor now accepts multi-prompt sessions because
+                # sam3_runner passes an explicit obj_id per add_prompt
+                # (instead of letting it auto-allocate obj_id=0 and
+                # overwrite). Multiplex was already multi-prompt; merging
+                # the two branches cuts inference time by ~3× when the
+                # GPU falls back to base.
+                payload = json.dumps({
+                    "video_path": str(win_path),
+                    "text_prompts": prompts,
+                    "frame_stride": 1,
+                    "max_frames": FMV_TRACK_FRAMES_PER_WINDOW,
+                    "modality": "fmv",
+                })
+                resp = session.post(
+                    f"{INFERENCE_SAM3_URL}/detect_video",
+                    data={"metadata": payload},
+                    stream=True,
+                    timeout=INFERENCE_CHIP_TIMEOUT_S * 60,
                 )
-                inserted += 1
+                resp.raise_for_status()
+                n, next_track_id = _insert_detection_rows(
+                    cur, clip_id, source_fps, window_idx, window_start_frame,
+                    prompts, resp, next_track_id,
+                )
+                window_inserted += n
+                resp.close()
+            # Per-window DB commit is done by the `with` block above.
+            inserted += window_inserted
+            _update_clip_tracking(clip_id, tracking_count=inserted)
+            publish_event(
+                f"fmv:{clip_id}",
+                {"type": "fmv_detections_progress", "clip_id": clip_id,
+                 "window": window_idx + 1, "windows": len(windows),
+                 "inserted": window_inserted, "total_inserted": inserted},
+            )
+
         provider_lifecycle.mark_active()
+        _update_clip_tracking(
+            clip_id,
+            tracking_status="complete",
+            tracking_completed_at=datetime.now(timezone.utc).isoformat(),
+            tracking_count=inserted,
+        )
         publish_event(
             f"fmv:{clip_id}",
             {"type": "fmv_detections_complete", "clip_id": clip_id, "count": inserted},
@@ -1308,6 +1589,24 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
             {"type": "fmv_detections_complete", "clip_id": clip_id, "count": inserted},
         )
         return inserted
+    except Exception as exc:
+        logger.exception("FMV processing failed for clip %s", clip_id)
+        message = str(exc)[:500] or exc.__class__.__name__
+        _update_clip_tracking(
+            clip_id,
+            tracking_status="failed",
+            tracking_completed_at=datetime.now(timezone.utc).isoformat(),
+            tracking_error=message,
+        )
+        publish_event(
+            f"fmv:{clip_id}",
+            {"type": "fmv_detections_failed", "clip_id": clip_id, "error": message},
+        )
+        publish_event(
+            "ops",
+            {"type": "fmv_detections_failed", "clip_id": clip_id, "error": message},
+        )
+        raise
     finally:
         session.close()
 

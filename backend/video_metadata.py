@@ -94,6 +94,7 @@ def _extract_klv(video_path: Path) -> list[dict]:
     container has no KLV track or klvdata is not installed.
     """
     try:
+        from klvdata.klvparser import KLVParser  # type: ignore
         from klvdata.misb0601 import UASLocalMetadataSet  # type: ignore
     except Exception:
         logger.debug("klvdata not available; skipping KLV extraction")
@@ -127,28 +128,40 @@ def _extract_klv(video_path: Path) -> list[dict]:
         return []
 
     samples: list[dict] = []
-    try:
-        for packet in UASLocalMetadataSet.parsers(proc.stdout):
-            row: dict = {}
-            for element in packet:
-                key = getattr(element, "key", None)
-                if key is None:
-                    continue
-                tag_byte = key[-1] if isinstance(key, (bytes, bytearray)) else key
-                name = MISB_KEY_MAP.get(int(tag_byte))
-                if not name:
-                    continue
-                try:
-                    row[name] = float(element.value)
-                except (TypeError, ValueError):
-                    row[name] = element.value
-            ts_us = row.pop("unix_timestamp_us", None)
-            if ts_us is not None:
-                row["unix_timestamp"] = float(ts_us) / 1e6
-            samples.append(row)
-    except Exception as exc:
-        logger.warning("klvdata parse failure: %s", exc)
-        return []
+    # MISB ST 0601 uses 16-byte UDS keys. Iterate KLV packets and decode each as
+    # a UASLocalMetadataSet; skip any packet whose decode raises (unknown tags,
+    # truncation, checksum drift) rather than abandoning the whole stream.
+    for _packet_key, packet_value in KLVParser(proc.stdout, 16):
+        try:
+            packet = UASLocalMetadataSet(packet_value)
+        except Exception as exc:
+            logger.debug("KLV packet decode failure: %s", exc)
+            continue
+        row: dict = {}
+        for element in packet.items.values():
+            element_key = getattr(element, "key", None)
+            if element_key is None:
+                continue
+            tag_byte = element_key[-1] if isinstance(element_key, (bytes, bytearray)) else element_key
+            name = MISB_KEY_MAP.get(int(tag_byte))
+            if not name:
+                continue
+            raw = getattr(element, "value", None)
+            value = raw.value if hasattr(raw, "value") else raw
+            # MISB tag 2 (PrecisionTimeStamp) decodes to a datetime; convert.
+            if hasattr(value, "timestamp") and callable(getattr(value, "timestamp", None)):
+                ts = value.timestamp()
+                value = ts * 1e6 if name == "unix_timestamp_us" else ts
+            try:
+                row[name] = float(value)
+            except (TypeError, ValueError):
+                row[name] = value
+        if not row:
+            continue
+        ts_us = row.pop("unix_timestamp_us", None)
+        if ts_us is not None:
+            row["unix_timestamp"] = float(ts_us) / 1e6
+        samples.append(row)
 
     # Resolve relative timestamps: prefer unix_timestamp deltas, else
     # spread evenly across the stream.

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import itertools
 from typing import Any, Iterable
 
 import numpy as np
 from PIL import Image
+
+
+logger = logging.getLogger("sam3_runner")
 
 
 SAM3_IMAGE_MODEL_ID = os.getenv("SAM3_IMAGE_MODEL_ID", "facebook/sam3")
@@ -18,6 +22,9 @@ SAM3_WEIGHTS_SOURCE = os.getenv("SAM3_WEIGHTS_SOURCE", "official").strip().lower
 SAM3_MIRROR_REPO_ID = os.getenv("SAM3_MIRROR_REPO_ID", "1038lab/sam3")
 SAM3_MIRROR_FILENAME = os.getenv("SAM3_MIRROR_FILENAME", "sam3.safetensors")
 SAM3_USE_MULTIPLEX = os.getenv("SAM3_USE_MULTIPLEX", "1").strip().lower() in {"1", "true", "yes", "on"}
+# Re-prompt every N emitted frames inside a video session to recover tracks
+# that have drifted off-target. 0 disables. Default 12 ≈ every 3 s at 4 fps.
+SAM3_REPROMPT_EVERY_N_FRAMES = max(0, int(os.getenv("SAM3_REPROMPT_EVERY_N_FRAMES", "12")))
 SAM3_COMPILE_IMAGE = os.getenv("SAM3_COMPILE_IMAGE", "0").strip().lower() in {"1", "true", "yes", "on"}
 SAM3_COMPILE_VIDEO = os.getenv("SAM3_COMPILE_VIDEO", "0").strip().lower() in {"1", "true", "yes", "on"}
 SAM3_WARM_UP_VIDEO = os.getenv("SAM3_WARM_UP_VIDEO", "1").strip().lower() in {"1", "true", "yes", "on"}
@@ -176,13 +183,49 @@ def build_video(device: str):
     from sam3.model_builder import build_sam3_multiplex_video_predictor, build_sam3_video_predictor
 
     if SAM3_USE_MULTIPLEX:
-        predictor = build_sam3_multiplex_video_predictor(
-            compile=SAM3_COMPILE_VIDEO,
-            warm_up=SAM3_COMPILE_VIDEO and SAM3_WARM_UP_VIDEO,
-        )
-        _patch_multiplex_init_state(predictor)
-        return predictor
+        # Multiplex needs ≈14 GiB of weights + ≈2-3 GiB of session
+        # activations per /detect_video; if the GPU total is too small the
+        # weights load successfully but the *first* inference OOMs. Refuse
+        # multiplex early when there isn't enough headroom so we can fall
+        # back cleanly to the base predictor.
+        try:
+            import torch
+            if torch.cuda.is_available():
+                free, total = torch.cuda.mem_get_info()
+                free_gib = free / (1024 ** 3)
+                total_gib = total / (1024 ** 3)
+                if total_gib < 20.0:
+                    logger.warning(
+                        "GPU total VRAM is %.1f GiB (< 20 GiB needed for SAM3.1 multiplex inference); "
+                        "falling back to non-multiplex base predictor",
+                        total_gib,
+                    )
+                    return build_sam3_video_predictor()
+                if free_gib < 14.0:
+                    logger.warning(
+                        "GPU free VRAM is %.1f GiB but multiplex needs ~14 GiB of weights; "
+                        "falling back to non-multiplex base predictor",
+                        free_gib,
+                    )
+                    return build_sam3_video_predictor()
+        except Exception:
+            pass
+        try:
+            predictor = build_sam3_multiplex_video_predictor(
+                compile=SAM3_COMPILE_VIDEO,
+                warm_up=SAM3_COMPILE_VIDEO and SAM3_WARM_UP_VIDEO,
+            )
+            _patch_multiplex_init_state(predictor)
+            return predictor
+        except Exception as exc:
+            logger.warning(
+                "SAM3 multiplex video predictor failed to load (%s); falling back to non-multiplex base predictor",
+                exc,
+            )
     return build_sam3_video_predictor()
+
+
+_flash_attn_patched = False
 
 
 def _install_flash_attn_fallback() -> None:
@@ -203,8 +246,12 @@ def _install_flash_attn_fallback() -> None:
     available, and silent if the sam3 modules can't be imported (e.g. the
     image-only path).
     """
+    global _flash_attn_patched
+    if _flash_attn_patched:
+        return
     try:
         import flash_attn_interface  # noqa: F401
+        _flash_attn_patched = True
         return  # real flash-attn-3 is installed; nothing to do
     except ImportError:
         pass
@@ -234,7 +281,8 @@ def _install_flash_attn_fallback() -> None:
             _vitdet.flash_attn_func = _sdpa_fallback
     except Exception:
         pass
-    print("[sam3_runner] installed torch SDPA fallback for flash_attn_func")
+    logger.info("flash_attn_3 not installed; using torch SDPA fallback (no accuracy impact, ~10%% slower attention)")
+    _flash_attn_patched = True
 
 
 def _patch_multiplex_init_state(predictor: Any) -> None:
@@ -494,52 +542,139 @@ def run_box_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompt_
 
 def run_video(bundle, video_path, prompts, *, frame_stride, start_frame, end_frame, max_frames, dinov3, score_threshold):
     predictor = bundle["sam3_video"]
-    session = predictor.handle_request(request={"type": "start_session", "resource_path": video_path})
-    session_id = session["session_id"]
-    try:
-        for prompt in prompts:
-            predictor.handle_request(request={"type": "add_prompt", "session_id": session_id, "frame_index": start_frame, "text": prompt})
+    # Autocast: the multiplex predictor casts decoded frames to bfloat16
+    # internally but ships its weights as float32. Without the ambient cuda
+    # autocast context the vitdet linear layers raise
+    # "mat1 BFloat16 / mat2 Float". The image detection paths in this file
+    # already wrap forward passes in `_autocast_ctx`; mirror that here.
+    with _autocast_ctx(bundle["device"]):
+        session = predictor.handle_request(request={"type": "start_session", "resource_path": video_path})
+        session_id = session["session_id"]
+        try:
+            # Track which obj_id maps to which prompt so the non-multiplex
+            # predictor (which returns only obj_ids/masks) can still label
+            # detections back to the prompting text. We pass an explicit
+            # obj_id per add_prompt so the base predictor accepts multiple
+            # prompts in one session (the auto-allocated obj_id=0 path was
+            # making each call overwrite the previous one).
+            obj_id_to_prompt: dict[int, str] = {}
+            next_obj_id = 0
 
-        emitted_frames = 0
-        for resp in predictor.handle_stream_request(request={"type": "propagate_in_video", "session_id": session_id}):
-            frame_idx = int(resp["frame_index"])
-            if frame_idx < start_frame:
-                continue
-            if end_frame is not None and frame_idx > int(end_frame):
-                break
-            if (frame_idx - start_frame) % frame_stride:
-                continue
-            if max_frames is not None and emitted_frames >= int(max_frames):
-                break
-            emitted_frames += 1
-            for track in _iter_sam3_video_tracks(resp.get("outputs") or []):
-                score = float(track.get("score") or 0.0)
-                if score < score_threshold:
+            def _add_prompts_at(frame_idx: int) -> None:
+                """Issue one add_prompt per text prompt against the given
+                frame, with a unique obj_id per call. Updates
+                obj_id_to_prompt for the worker to map detections back."""
+                nonlocal next_obj_id
+                for prompt in prompts:
+                    obj_id = next_obj_id
+                    next_obj_id += 1
+                    obj_id_to_prompt[obj_id] = prompt
+                    try:
+                        add_resp = predictor.handle_request(request={
+                            "type": "add_prompt",
+                            "session_id": session_id,
+                            "frame_index": frame_idx,
+                            "text": prompt,
+                            "obj_id": obj_id,
+                        })
+                    except TypeError:
+                        # Older multiplex builds don't accept obj_id; fall
+                        # back to auto-assigned ids and learn them from the
+                        # response.
+                        add_resp = predictor.handle_request(request={
+                            "type": "add_prompt",
+                            "session_id": session_id,
+                            "frame_index": frame_idx,
+                            "text": prompt,
+                        })
+                    outs = add_resp.get("outputs") if isinstance(add_resp, dict) else None
+                    if isinstance(outs, dict):
+                        obj_ids = outs.get("out_obj_ids")
+                        if obj_ids is not None:
+                            for oid in obj_ids:
+                                try:
+                                    obj_id_to_prompt[int(oid)] = prompt
+                                except (TypeError, ValueError):
+                                    pass
+
+            _add_prompts_at(start_frame)
+
+            emitted_frames = 0
+            for resp in predictor.handle_stream_request(request={"type": "propagate_in_video", "session_id": session_id}):
+                frame_idx = int(resp["frame_index"])
+                if frame_idx < start_frame:
                     continue
-                import fusion
+                if end_frame is not None and frame_idx > int(end_frame):
+                    break
+                if (frame_idx - start_frame) % frame_stride:
+                    continue
+                if max_frames is not None and emitted_frames >= int(max_frames):
+                    break
+                emitted_frames += 1
+                _resp_outs = resp.get("outputs")
+                if _resp_outs is None:
+                    _resp_outs = []
+                for track in _iter_sam3_video_tracks(_resp_outs, obj_id_to_prompt=obj_id_to_prompt):
+                    score = float(track.get("score") or 0.0)
+                    if score < score_threshold:
+                        continue
+                    import fusion
 
-                mask = np.asarray(track["mask"], dtype=bool)
-                height, width = mask.shape[-2:]
-                bbox_xyxy = [float(v) for v in track["bbox_xyxy"]]
-                obb = fusion.mask_to_obb_record(mask, bbox_xyxy, width, height)
-                entry = {
-                    "frame_index": frame_idx,
-                    "track_id": int(track["track_id"]),
-                    "class": track["prompt_text"],
-                    "original_class": track["prompt_text"],
-                    "parent_class": "track",
-                    "bbox_xyxy": bbox_xyxy,
-                    "obb": obb["points"],
-                    "obb_format": "yolo_obb_normalized_xyxyxyxy",
-                    "obb_source": obb["source"],
-                    "obb_angle_deg": obb["angle_deg"],
-                    "edge_truncated": obb["edge_truncated"],
-                    "score": score,
-                    "mask_rle": fusion.coco_rle(mask),
-                }
-                yield json.dumps(entry, separators=(",", ":"))
-    finally:
-        predictor.handle_request(request={"type": "close_session", "session_id": session_id})
+                    mask = track.get("mask")
+                    bbox_xyxy_norm = track.get("bbox_xyxy_norm")
+                    entry: dict[str, Any] = {
+                        "frame_index": frame_idx,
+                        "track_id": int(track["track_id"]),
+                        "class": track["prompt_text"],
+                        "original_class": track["prompt_text"],
+                        "parent_class": "track",
+                        "score": score,
+                    }
+                    if mask is not None and bbox_xyxy_norm is not None:
+                        mask_arr = np.asarray(mask, dtype=bool)
+                        height, width = mask_arr.shape[-2:]
+                        # _hbb_fallback wants pixel xyxy; reconstruct from normalised.
+                        x1n, y1n, x2n, y2n = bbox_xyxy_norm
+                        bbox_xyxy_px = [x1n * width, y1n * height, x2n * width, y2n * height]
+                        obb = fusion.mask_to_obb_record(mask_arr, bbox_xyxy_px, width, height)
+                        entry.update({
+                            "bbox_xyxy_norm": bbox_xyxy_norm,
+                            "obb": obb["points"],
+                            "obb_format": "yolo_obb_normalized_xyxyxyxy",
+                            "obb_source": obb["source"],
+                            "obb_angle_deg": obb["angle_deg"],
+                            "edge_truncated": obb["edge_truncated"],
+                            "mask_rle": fusion.coco_rle(mask_arr),
+                        })
+                    else:
+                        # Heartbeat — the tracker still owns this id but
+                        # has no visible mask this frame. Worker stores it
+                        # with empty bbox; UI just doesn't draw a box this
+                        # frame but the per-track timeline stays intact.
+                        entry.update({
+                            "bbox_xyxy_norm": None,
+                            "obb": None,
+                            "obb_format": None,
+                            "obb_source": "tracker_lost",
+                            "mask_rle": None,
+                        })
+                    yield json.dumps(entry, separators=(",", ":"))
+
+                # Periodic re-prompt: every N emitted frames, re-issue the
+                # prompts on the current frame as new obj_ids. SAM3
+                # propagates each set forward; the worker dedupes via the
+                # per-prompt class label so the timeline doesn't fork.
+                if (
+                    SAM3_REPROMPT_EVERY_N_FRAMES
+                    and emitted_frames > 0
+                    and emitted_frames % SAM3_REPROMPT_EVERY_N_FRAMES == 0
+                ):
+                    try:
+                        _add_prompts_at(frame_idx)
+                    except Exception as exc:
+                        logger.warning("re-prompt at frame %s failed: %s", frame_idx, exc)
+        finally:
+            predictor.handle_request(request={"type": "close_session", "session_id": session_id})
 
 
 def _inference_mode():
@@ -615,23 +750,87 @@ def _clamp01(value: float) -> float:
     return value
 
 
-def _iter_sam3_video_tracks(outputs):
-    for item in outputs:
+def _iter_sam3_video_tracks(outputs, obj_id_to_prompt: dict[int, str] | None = None):
+    # Multiplex tracker yields a list of per-track dicts; the non-multiplex
+    # base predictor yields a single dict with parallel ``out_obj_ids`` /
+    # ``out_boxes_xywh`` / ``out_binary_masks`` arrays. Handle both shapes.
+    #
+    # Bbox normalization: always derive from the mask's own pixel space.
+    # SAM3's ``out_boxes_xywh`` is already divided by W_video/H_video
+    # (sam3/model/sam3_multiplex_tracking.py:736-738), so re-treating it
+    # as pixel xywh produced the off-target rectangles the user reported.
+    # We always emit ``bbox_xyxy_norm`` in [0, 1] now.
+    if isinstance(outputs, dict):
+        obj_ids = outputs.get("out_obj_ids")
+        masks = outputs.get("out_binary_masks")
+        # The non-multiplex predictor uses ``out_probs``; some forks emit
+        # ``out_scores``. Prefer probs since that's what the upstream model
+        # actually returns for SAM3 video.
+        scores = outputs.get("out_probs")
+        if scores is None:
+            scores = outputs.get("out_scores")
+        if obj_ids is None or masks is None:
+            return
+        for idx in range(len(obj_ids)):
+            mask_arr = np.asarray(masks[idx], dtype=bool)
+            track_id = int(obj_ids[idx])
+            prompt = (obj_id_to_prompt or {}).get(track_id, "track")
+            score = float(scores[idx]) if scores is not None and idx < len(scores) else 1.0
+            if not mask_arr.any():
+                # Heartbeat: the tracker still owns this track but it has
+                # no visible mask this frame. Emit so the per-track timeline
+                # stays continuous; the worker stores it with empty bbox.
+                yield {
+                    "track_id": track_id,
+                    "prompt_text": prompt,
+                    "score": score,
+                    "mask": None,
+                    "bbox_xyxy_norm": None,
+                }
+                continue
+            H, W = mask_arr.shape[-2:]
+            ys, xs = np.where(mask_arr)
+            x1, y1 = float(xs.min()), float(ys.min())
+            x2, y2 = float(xs.max() + 1), float(ys.max() + 1)
+            bbox_xyxy_norm = [x1 / W, y1 / H, x2 / W, y2 / H]
+            yield {
+                "track_id": track_id,
+                "prompt_text": prompt,
+                "score": score,
+                "mask": mask_arr,
+                "bbox_xyxy_norm": bbox_xyxy_norm,
+            }
+        return
+
+    for item in outputs or []:
         if not isinstance(item, dict):
             continue
         mask = item.get("mask") or item.get("segmentation")
         if mask is None:
             continue
-        bbox = item.get("bbox_xyxy") or item.get("box") or item.get("bbox")
-        if bbox is None:
-            ys, xs = np.where(np.asarray(mask, dtype=bool))
-            if len(xs) == 0:
-                continue
-            bbox = [xs.min(), ys.min(), xs.max() + 1, ys.max() + 1]
+        mask_arr = np.asarray(mask, dtype=bool)
+        track_id = item.get("obj_id") or item.get("track_id") or item.get("id") or 0
+        prompt = (obj_id_to_prompt or {}).get(int(track_id) if isinstance(track_id, int) else 0)
+        prompt_text = item.get("prompt_text") or item.get("text") or item.get("label") or prompt or "track"
+        score = item.get("score", 1.0)
+        if not mask_arr.any():
+            yield {
+                "track_id": track_id,
+                "prompt_text": prompt_text,
+                "score": score,
+                "mask": None,
+                "bbox_xyxy_norm": None,
+            }
+            continue
+        H, W = mask_arr.shape[-2:]
+        ys, xs = np.where(mask_arr)
+        x1, y1 = float(xs.min()), float(ys.min())
+        x2, y2 = float(xs.max() + 1), float(ys.max() + 1)
+        bbox_xyxy_norm = [x1 / W, y1 / H, x2 / W, y2 / H]
         yield {
-            "track_id": item.get("obj_id") or item.get("track_id") or item.get("id") or 0,
-            "prompt_text": item.get("prompt_text") or item.get("text") or item.get("label") or "track",
-            "score": item.get("score", 1.0),
-            "mask": mask,
-            "bbox_xyxy": bbox,
+            "track_id": track_id,
+            "prompt_text": prompt_text,
+            "score": score,
+            "mask": mask_arr,
+            "bbox_xyxy_norm": bbox_xyxy_norm,
         }

@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -15,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, List
 import uvicorn
+import requests
 from database import db, postgis_db
 from ai import AIUnavailable, ai_status, get_ai_response, get_llm_json
 from imagery_metadata import extract_raster_metadata
@@ -1262,6 +1264,65 @@ def health():
     return status
 
 
+INFERENCE_SAM3_URL = os.getenv("INFERENCE_SAM3_URL", "http://inference-sam3:8001")
+
+
+@app.post("/api/inference/load")
+def inference_load(profile: str = Query(...)):
+    """Proxy: ask the inference service to load a named model profile."""
+    try:
+        resp = requests.post(
+            f"{INFERENCE_SAM3_URL}/load",
+            params={"profile": profile},
+            timeout=600,
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"inference unreachable: {exc}") from exc
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    return resp.json()
+
+
+@app.post("/api/inference/unload")
+def inference_unload():
+    """Proxy: ask the inference service to free GPU memory.
+
+    The inference container exits on /unload so docker compose can respawn
+    it with a clean CUDA context (SAM3 model refs cannot be released
+    in-process). We block until /health responds again so the next
+    /load call from the frontend doesn't race against startup."""
+    try:
+        resp = requests.post(f"{INFERENCE_SAM3_URL}/unload", timeout=120)
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"inference unreachable: {exc}") from exc
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    body = resp.json()
+    if body.get("restarting"):
+        # Wait up to 30 s for the inference container to come back up.
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            time.sleep(0.5)
+            try:
+                h = requests.get(f"{INFERENCE_SAM3_URL}/health", timeout=2)
+                if h.status_code == 200:
+                    return body
+            except requests.RequestException:
+                continue
+        # Don't fail the request — container may still be loading. The
+        # next /load call will retry against /health.
+    return body
+
+
+@app.get("/api/inference/health")
+def inference_health():
+    """Proxy: return inference service health, useful for the frontend."""
+    try:
+        resp = requests.get(f"{INFERENCE_SAM3_URL}/health", timeout=10)
+        return resp.json()
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"inference unreachable: {exc}") from exc
+
 
 @app.get("/api/observations")
 def list_observations(
@@ -1735,10 +1796,11 @@ def list_tracks(limit: int = 200):
 # Default open-vocabulary prompt set for drone aerial FMV. SAM3's text-prompted
 # tracker takes these and reports a track per matching object across frames.
 # Override by passing a comma-separated `prompts` form field on upload.
-FMV_DEFAULT_PROMPTS = [
-    "vehicle", "truck", "car", "bus", "motorcycle",
-    "person", "boat", "aircraft", "helicopter",
-]
+# Trimmed for aerial drone footage: each prompt costs ~5 s of inference per
+# tracking window and most of the prior longer list (boat, motorcycle, bus,
+# truck, helicopter) produces zero detections on typical FMV scenes. Users
+# can pass `prompts=` on the upload to override.
+FMV_DEFAULT_PROMPTS = ["vehicle", "person", "building"]
 
 
 @app.post("/api/fmv/clips")

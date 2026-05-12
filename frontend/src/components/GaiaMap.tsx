@@ -418,6 +418,11 @@ type GaiaMapProps = {
 };
 
 export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
+  // Map view no longer triggers an imagery-profile load on mount: that would
+  // race the FMV tab and force a container restart (which loses any
+  // in-flight FMV tracking). The /detect endpoint already calls
+  // _ensure_profile("imagery") internally, so the load happens lazily on
+  // the first satellite detection request instead.
   const [data, setData] = useState<{ static: any[]; tracks: any[] }>({ static: [], tracks: [] });
   const [imagery, setImagery] = useState<any[]>([]);
   const [detectionsGeoJSON, setDetectionsGeoJSON] = useState<any>({ type: 'FeatureCollection', features: [] });

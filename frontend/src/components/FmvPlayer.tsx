@@ -122,11 +122,24 @@ function normalizeBbox(det: Detection): { xyxy?: [number, number, number, number
       }
     }
   }
-  const obb = (raw && typeof raw === 'object' ? (raw as any).obb : null) || det.metadata?.obb;
-  return {
-    xyxy,
-    obb: Array.isArray(obb) ? obb.map((pt: any) => pt.map(Number)) : undefined,
-  };
+  const obbRaw = (raw && typeof raw === 'object' ? (raw as any).obb : null) || det.metadata?.obb;
+  // SAM3 video (and the DOTA-OBB head) emit OBB as a flat 8-number list
+  // [x1,y1,x2,y2,x3,y3,x4,y4] (format `yolo_obb_normalized_xyxyxyxy`).
+  // Some legacy paths produce a nested [[x,y],…] form. Accept both and
+  // always return nested pairs to the renderer below.
+  let obb: number[][] | undefined;
+  if (Array.isArray(obbRaw) && obbRaw.length > 0) {
+    if (typeof obbRaw[0] === 'number') {
+      const pairs: number[][] = [];
+      for (let i = 0; i + 1 < obbRaw.length; i += 2) {
+        pairs.push([Number(obbRaw[i]), Number(obbRaw[i + 1])]);
+      }
+      obb = pairs;
+    } else if (Array.isArray(obbRaw[0])) {
+      obb = (obbRaw as any[]).map((pt: any) => [Number(pt[0]), Number(pt[1])]);
+    }
+  }
+  return { xyxy, obb };
 }
 
 function trackIdOf(det: Detection): string | null {
@@ -141,6 +154,9 @@ export default function FmvPlayer() {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [trackingError, setTrackingError] = useState<string | null>(null);
+  const [trackingProgress, setTrackingProgress] = useState<{ window: number; windows: number } | null>(null);
+  const [inferenceStatus, setInferenceStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -197,6 +213,27 @@ export default function FmvPlayer() {
     fetchClips();
   }, [fetchClips]);
 
+  // Load the FMV inference profile on mount. The backend swaps profiles on
+  // demand; unmount should not call /unload because that endpoint restarts the
+  // inference container and can interrupt queued or in-flight FMV tracking.
+  useEffect(() => {
+    let cancelled = false;
+    setInferenceStatus('loading');
+    axios
+      .post(`${API_URL}/api/inference/load`, null, { params: { profile: 'fmv' }, timeout: 600_000 })
+      .then(() => { if (!cancelled) setInferenceStatus('ready'); })
+      .catch((err) => {
+        if (cancelled) return;
+        setInferenceStatus('error');
+        setTrackingError(
+          err?.response?.data?.detail || err?.message || 'inference profile load failed',
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     if (selectedId == null) {
       setFrames([]);
@@ -224,7 +261,18 @@ export default function FmvPlayer() {
         fetchDetections(selectedId);
       }
       if (msg?.type === 'fmv_detection' || msg?.type === 'fmv_detections_complete') {
+        setTrackingError(null);
+        if (msg?.type === 'fmv_detections_complete') setTrackingProgress(null);
         fetchDetections(selectedId);
+      }
+      if (msg?.type === 'fmv_detections_progress') {
+        setTrackingError(null);
+        setTrackingProgress({ window: msg.window || 0, windows: msg.windows || 0 });
+        fetchDetections(selectedId);
+      }
+      if (msg?.type === 'fmv_detections_failed') {
+        setTrackingError(msg.error || 'tracking failed');
+        setTrackingProgress(null);
       }
     },
     [selectedId, fetchFrames, fetchDetections],
@@ -254,15 +302,50 @@ export default function FmvPlayer() {
   const videoWidth = selectedClip?.width || 1920;
   const videoHeight = selectedClip?.height || 1080;
 
-  const detectionsByFrame = useMemo(() => {
-    const map = new Map<number, Detection[]>();
+  // Per-track sorted timeline so the canvas draw loop can find the
+  // nearest-prior detection at any source frame (the worker only stores
+  // sampled frames now — interpolation happens here).
+  const trackTimelines = useMemo(() => {
+    const map = new Map<string, Detection[]>();
     for (const d of detections) {
-      const arr = map.get(d.frame_index);
+      const tid = (d.metadata?.track_id ?? null);
+      // Composite key so different prompts with the same numeric track_id
+      // (a coincidence across separate inference sessions) stay separate.
+      const key = `${d.class}#${tid ?? `f${d.frame_index}`}`;
+      const arr = map.get(key);
       if (arr) arr.push(d);
-      else map.set(d.frame_index, [d]);
+      else map.set(key, [d]);
     }
+    for (const arr of map.values()) arr.sort((a, b) => a.frame_index - b.frame_index);
     return map;
   }, [detections]);
+
+  // Max source-frame staleness before we stop drawing a track. At native
+  // fps this is roughly the window stride, beyond which the box would
+  // misrepresent where the object actually is.
+  const detectionMaxAgeFrames = useMemo(() => Math.max(1, Math.round(fps * 1.5)), [fps]);
+
+  // Per-frame lookup used by the canvas. Returns the most recent
+  // detection for each track within `detectionMaxAgeFrames` of the
+  // requested frame index.
+  const detectionsForFrame = useCallback((frameIdx: number): Array<{ det: Detection; ageFrames: number }> => {
+    const out: Array<{ det: Detection; ageFrames: number }> = [];
+    for (const arr of trackTimelines.values()) {
+      // Binary search for the last detection with frame_index <= frameIdx.
+      let lo = 0, hi = arr.length - 1, best = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (arr[mid].frame_index <= frameIdx) { best = mid; lo = mid + 1; }
+        else hi = mid - 1;
+      }
+      if (best < 0) continue;
+      const det = arr[best];
+      const age = frameIdx - det.frame_index;
+      if (age > detectionMaxAgeFrames) continue;
+      out.push({ det, ageFrames: age });
+    }
+    return out;
+  }, [trackTimelines, detectionMaxAgeFrames]);
 
   const sortedFrames = useMemo(
     () => [...frames].sort((a, b) => a.frame_index - b.frame_index),
@@ -400,14 +483,20 @@ export default function FmvPlayer() {
       if (!ctx) return;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       const frameIdx = Math.round(v.currentTime * fps);
-      const dets = detectionsByFrame.get(frameIdx) || [];
+      const dets = detectionsForFrame(frameIdx);
       const sx = canvas.width / videoWidth;
       const sy = canvas.height / videoHeight;
       ctx.lineWidth = 2;
       ctx.font = '12px ui-monospace, monospace';
-      for (const d of dets) {
+      for (const { det: d, ageFrames } of dets) {
         const cat = categoryFor((d.metadata?.branch_id as string) || 'Other', categories);
         const color = cat.color;
+        // Dim the box when the most recent detection for this track is
+        // more than half-a-second stale — visual cue that the tracker
+        // hasn't seen this object recently.
+        const aged = ageFrames > Math.max(1, Math.round(fps * 0.5));
+        const strokeAlpha = aged ? 0.5 : 1.0;
+        ctx.globalAlpha = strokeAlpha;
         ctx.strokeStyle = color;
         ctx.fillStyle = color;
         const { xyxy, obb } = normalizeBbox(d);
@@ -422,13 +511,12 @@ export default function FmvPlayer() {
           for (let i = 1; i < obb.length; i++) ctx.lineTo(obb[i][0] * obbScaleX, obb[i][1] * obbScaleY);
           ctx.closePath();
           ctx.stroke();
-          // Label anchored at the top-most OBB vertex so it stays inside the canvas.
           const top = obb.reduce((acc, p) => (p[1] < acc[1] ? p : acc), obb[0]);
           const lx = top[0] * obbScaleX;
           const ly = top[1] * obbScaleY;
           const label = `${detectionClassLabel(d.class)} ${Math.round((d.confidence || 0) * 100)}%`;
           const m = ctx.measureText(label);
-          ctx.globalAlpha = 0.85;
+          ctx.globalAlpha = aged ? 0.5 : 0.85;
           ctx.fillRect(lx, ly - 14, m.width + 6, 14);
           ctx.globalAlpha = 1;
           ctx.fillStyle = '#000';
@@ -439,13 +527,14 @@ export default function FmvPlayer() {
           ctx.strokeRect(x1 * sx, y1 * sy, (x2 - x1) * sx, (y2 - y1) * sy);
           const label = `${detectionClassLabel(d.class)} ${Math.round((d.confidence || 0) * 100)}%`;
           const m = ctx.measureText(label);
-          ctx.globalAlpha = 0.85;
+          ctx.globalAlpha = aged ? 0.5 : 0.85;
           ctx.fillRect(x1 * sx, y1 * sy - 14, m.width + 6, 14);
           ctx.globalAlpha = 1;
           ctx.fillStyle = '#000';
           ctx.fillText(label, x1 * sx + 3, y1 * sy - 3);
           ctx.fillStyle = color;
         }
+        ctx.globalAlpha = 1;
       }
       rafRef.current = requestAnimationFrame(draw);
     };
@@ -454,7 +543,7 @@ export default function FmvPlayer() {
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
-  }, [detectionsByFrame, categories, fps, videoWidth, videoHeight]);
+  }, [detectionsForFrame, categories, fps, videoWidth, videoHeight]);
 
   // Resize canvas to match the video element's rendered size.
   useEffect(() => {
@@ -668,6 +757,19 @@ export default function FmvPlayer() {
           )}
           {uploadError && (
             <div className="sentinel-tag crit" style={{ marginTop: 8, display: 'block' }}>{uploadError}</div>
+          )}
+          {inferenceStatus === 'loading' && (
+            <div className="sentinel-tag" style={{ marginTop: 8, display: 'block' }}>Loading FMV models…</div>
+          )}
+          {trackingProgress && trackingProgress.windows > 0 && (
+            <div className="sentinel-tag" style={{ marginTop: 8, display: 'block' }}>
+              Tracking window {trackingProgress.window}/{trackingProgress.windows}…
+            </div>
+          )}
+          {trackingError && (
+            <div className="sentinel-tag crit" style={{ marginTop: 8, display: 'block' }}>
+              <AlertTriangle size={11} /> Tracking: {trackingError}
+            </div>
           )}
         </div>
         <div className="sentinel-scroll" style={{ flex: 1, padding: '0 8px 8px' }}>

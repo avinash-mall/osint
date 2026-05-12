@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import io
 import json
 import logging
@@ -13,12 +14,13 @@ from typing import Any
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from PIL import Image
 from starlette.concurrency import run_in_threadpool
 
 import requests
+import torch
 
 import dota_obb
 import embedding
@@ -34,6 +36,23 @@ import terramind
 
 cv2.setNumThreads(0)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+
+# Silence known upstream deprecation chatter that floods logs at startup. The
+# source libraries can't be changed from here; the warnings are non-actionable
+# and bury the actually-useful "session started/ended" messages.
+import warnings as _warnings
+_warnings.filterwarnings(
+    "ignore",
+    message=r"pkg_resources is deprecated as an API.*",
+)
+_warnings.filterwarnings(
+    "ignore",
+    message=r"Importing from timm\.models\.layers is deprecated.*",
+)
+_warnings.filterwarnings(
+    "ignore",
+    message=r".*torch_dtype.*is deprecated.*",
+)
 
 app = FastAPI(title="Sentinel SAM3 Inference")
 logger = logging.getLogger("inference-sam3")
@@ -52,7 +71,10 @@ def _flag(name: str, default: str = "1") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
-SAM3_PRELOAD_MODELS = _flag("SAM3_PRELOAD_MODELS", "1")
+SAM3_PRELOAD_MODELS = _flag("SAM3_PRELOAD_MODELS", "0")
+# Optional explicit preload profile (fmv|imagery). Empty = no preload, models
+# load on first /load call or first request.
+SAM3_PRELOAD_PROFILE = (os.getenv("SAM3_PRELOAD_PROFILE", "") or "").strip().lower()
 
 # Master switch — when 0, individual flags below also default to 0 (kept for compatibility).
 SAM3_LOAD_OPTIONAL_MODELS = _flag("SAM3_LOAD_OPTIONAL_MODELS", "1")
@@ -72,6 +94,25 @@ SAM3_LOAD_TERRAMIND  = _flag("SAM3_LOAD_TERRAMIND",  _DEFAULT)
 SAM3_LOAD_DOTA_OBB        = _flag("SAM3_LOAD_DOTA_OBB",        _DEFAULT)
 SAM3_LOAD_GROUNDING_DINO  = _flag("SAM3_LOAD_GROUNDING_DINO",  _DEFAULT)
 
+# Profile -> component set. "fmv" keeps VRAM small for video tracking;
+# "imagery" loads the full geospatial stack for satellite detection.
+PROFILE_COMPONENTS: dict[str, tuple[str, ...]] = {
+    # sam3_video shares preprocessing layers initialised by sam3_image — without
+    # the image model loaded first, run_video crashes with a BFloat16/Float
+    # linear-layer dtype mismatch. So FMV keeps both, but excludes the optional
+    # geospatial models that the imagery profile needs.
+    "fmv": ("sam3_image", "sam3_video"),
+    "imagery": (
+        "sam3_image",
+        "dinov3_sat" if SAM3_LOAD_DINOV3_SAT else None,
+        "prithvi" if SAM3_LOAD_PRITHVI else None,
+        "terramind" if SAM3_LOAD_TERRAMIND else None,
+        "dota_obb" if SAM3_LOAD_DOTA_OBB else None,
+        "grounding_dino" if SAM3_LOAD_GROUNDING_DINO else None,
+    ),
+}
+PROFILE_COMPONENTS["imagery"] = tuple(c for c in PROFILE_COMPONENTS["imagery"] if c)
+
 _pool: list[dict[str, Any]] = []
 _pool_lock = threading.Lock()
 _pool_idx = 0
@@ -79,6 +120,7 @@ _load_lock = threading.Lock()
 _active_lock = threading.Lock()
 _active_requests = 0
 _model_error: str | None = None
+_current_profile: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -182,58 +224,119 @@ def resolve_prompts(meta: dict[str, Any] | None) -> list[str]:
 
 @app.on_event("startup")
 def preload_models_on_startup() -> None:
-    if not SAM3_PRELOAD_MODELS:
-        logger.info("SAM3 model preload disabled; models will load on first request")
+    profile = SAM3_PRELOAD_PROFILE or ("imagery" if SAM3_PRELOAD_MODELS else "")
+    if not profile:
+        logger.info("SAM3 preload disabled; models load on demand via POST /load")
+        return
+    if profile not in PROFILE_COMPONENTS:
+        logger.error("Unknown SAM3_PRELOAD_PROFILE=%s — skipping preload", profile)
         return
     started = time.perf_counter()
-    logger.info("Preloading SAM3 model bundle during service startup")
-    _load_pool()
+    logger.info("Preloading SAM3 profile=%s on startup", profile)
+    _load_profile(profile)
     elapsed = time.perf_counter() - started
     if _pool:
-        logger.info("Preloaded SAM3 model bundle in %.3fs", elapsed)
+        logger.info("Preloaded SAM3 profile=%s in %.3fs", profile, elapsed)
     else:
-        logger.error("SAM3 model preload failed in %.3fs: %s", elapsed, _model_error or "unknown error")
+        logger.error("SAM3 preload failed in %.3fs: %s", elapsed, _model_error or "unknown error")
 
 
-def _load_pool() -> None:
-    global _model_error
-    if _pool:
+def _build_component(name: str, device: str) -> Any:
+    """Build a single component on the given device. Centralised so the
+    profile loader and any future hot-add code share one path."""
+    if name == "sam3_image":
+        return sam3_runner.build_image(device)
+    if name == "sam3_video":
+        return sam3_runner.build_video(device)
+    if name == "dinov3_sat":
+        return embedding.load_sat(device)
+    if name == "prithvi":
+        return prithvi_heads.load_all(device)
+    if name == "terramind":
+        return terramind.load(device)
+    if name == "dota_obb":
+        return dota_obb.load(device)
+    if name == "grounding_dino":
+        return grounding_dino.load(device)
+    raise ValueError(f"unknown component: {name}")
+
+
+def _empty_bundle(device: str) -> dict[str, Any]:
+    return {
+        "device": device,
+        "lock": threading.Lock(),
+        "sam3_image": None,
+        "sam3_video": None,
+        "dinov3_sat": None,
+        "prithvi": None,
+        "terramind": None,
+        "dota_obb": None,
+        "grounding_dino": None,
+    }
+
+
+def _unload_pool_locked() -> None:
+    """Drop every model in every bundle and free CUDA memory.
+    Must be called while holding _load_lock."""
+    global _pool, _current_profile
+    if not _pool:
+        _current_profile = None
         return
+    for bundle in _pool:
+        for key in list(bundle.keys()):
+            if key in ("device", "lock"):
+                continue
+            bundle[key] = None
+    _pool = []
+    _current_profile = None
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+
+
+def _load_profile(profile: str) -> None:
+    """Idempotent: if already loaded, no-op. If a different profile is
+    loaded, unload it first."""
+    global _model_error, _current_profile
+    if profile not in PROFILE_COMPONENTS:
+        raise HTTPException(status_code=400, detail=f"unknown profile: {profile}")
+    components = PROFILE_COMPONENTS[profile]
     with _load_lock:
-        if _pool:
+        if _current_profile == profile and _pool:
             return
+        if _pool:
+            _unload_pool_locked()
         _model_error = None
         try:
             for device in sam3_runner.resolve_devices(os.getenv("DEVICE", "auto")):
-                bundle = {
-                    "device": device,
-                    "lock": threading.Lock(),
-                    "sam3_image": sam3_runner.build_image(device),
-                    "sam3_video": None,
-                    "dinov3_sat": None,
-                    "prithvi": None,
-                    "terramind": None,
-                }
-                if SAM3_LOAD_DINOV3_SAT:
-                    bundle["dinov3_sat"] = embedding.load_sat(device)
-                if SAM3_LOAD_PRITHVI:
-                    bundle["prithvi"] = prithvi_heads.load_all(device)
-                if SAM3_LOAD_TERRAMIND:
-                    bundle["terramind"] = terramind.load(device)
-                bundle["dota_obb"] = dota_obb.load(device) if SAM3_LOAD_DOTA_OBB else None
-                bundle["grounding_dino"] = grounding_dino.load(device) if SAM3_LOAD_GROUNDING_DINO else None
+                bundle = _empty_bundle(device)
+                for name in components:
+                    bundle[name] = _build_component(name, device)
                 _pool.append(bundle)
-                logger.info("Loaded model bundle on %s with components=%s", device, _bundle_components(bundle))
+                logger.info("Loaded profile=%s on %s components=%s", profile, device, _bundle_components(bundle))
+            _current_profile = profile
         except (Exception, SystemExit) as exc:
             _model_error = str(exc)
-            logger.exception("Failed to load SAM3 model pool")
+            logger.exception("Failed to load SAM3 profile=%s", profile)
+            # Roll back partial state so the next attempt starts clean.
+            _unload_pool_locked()
+            raise HTTPException(status_code=503, detail=f"Failed to load profile {profile}: {exc}") from exc
+
+
+def _ensure_profile(profile: str) -> None:
+    """Wrapper used by request handlers: load the profile if missing."""
+    if _current_profile == profile and _pool:
+        return
+    _load_profile(profile)
 
 
 def _next_bundle() -> dict[str, Any]:
     if not _pool:
-        _load_pool()
-    if not _pool:
-        raise HTTPException(status_code=503, detail=f"Models not loaded: {_model_error or 'unknown error'}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Models not loaded: {_model_error or 'no profile loaded; call POST /load?profile=fmv|imagery'}",
+        )
     global _pool_idx
     with _pool_lock:
         bundle = _pool[_pool_idx % len(_pool)]
@@ -241,23 +344,13 @@ def _next_bundle() -> dict[str, Any]:
     return bundle
 
 
-def _ensure_video_model(bundle: dict[str, Any]) -> None:
-    if bundle.get("sam3_video") is not None:
-        return
-    with bundle["lock"]:
-        if bundle.get("sam3_video") is None:
-            try:
-                bundle["sam3_video"] = sam3_runner.build_video(bundle["device"])
-            except Exception as exc:
-                logger.exception("Failed to load SAM3 video model")
-                raise HTTPException(status_code=503, detail=f"Video model not loaded: {exc}") from exc
-
-
 @app.get("/health")
 def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "model_loaded": bool(_pool),
+        "current_profile": _current_profile,
+        "available_profiles": list(PROFILE_COMPONENTS.keys()),
         "model_error": _model_error,
         "device": os.getenv("DEVICE", "auto"),
         "replicas": [{"device": b["device"], "components": _bundle_components(b)} for b in _pool],
@@ -274,6 +367,44 @@ def health() -> dict[str, Any]:
             "grounding_dino": SAM3_LOAD_GROUNDING_DINO,
         },
     }
+
+
+@app.post("/load")
+def load_profile(profile: str = Query(...)) -> dict[str, Any]:
+    """Load a named model profile, unloading any other profile first.
+
+    Idempotent: if the requested profile is already loaded, returns the
+    current state without rebuilding."""
+    profile = (profile or "").strip().lower()
+    if _active_requests > 0:
+        raise HTTPException(status_code=409, detail=f"{_active_requests} request(s) in flight; retry after they finish")
+    _load_profile(profile)
+    return {"loaded": True, "current_profile": _current_profile, "replicas": [_bundle_components(b) for b in _pool]}
+
+
+@app.post("/unload")
+def unload_models() -> dict[str, Any]:
+    """Release all loaded models and free CUDA memory.
+
+    `_unload_pool_locked` can't reliably free SAM3's VRAM because upstream
+    library code retains references (model caches, torch.compile artifacts,
+    dynamo state) that survive `del + gc.collect + torch.cuda.empty_cache`.
+    The only reliable way to give every byte back to the driver is to kill
+    the process and let docker compose's restart policy bring it back
+    fresh. We respond first, then exit after a short delay so the HTTP
+    body is flushed."""
+    if _active_requests > 0:
+        raise HTTPException(status_code=409, detail=f"{_active_requests} request(s) in flight; retry after they finish")
+    # Tear down soft state for callers that immediately read /health.
+    with _load_lock:
+        _unload_pool_locked()
+    def _bye():
+        time.sleep(0.5)
+        # Non-zero exit so any restart policy (on-failure, unless-stopped)
+        # treats this as a death worth respawning.
+        os._exit(1)
+    threading.Thread(target=_bye, daemon=True).start()
+    return {"loaded": False, "current_profile": None, "restarting": True}
 
 
 @app.post("/detect")
@@ -309,6 +440,10 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
         raw = await image.read()
         t0 = mark("read_upload", started)
         modality = str(meta.get("modality") or "rgb").lower()
+        # Auto-heal: if no profile is loaded (or the wrong one is loaded),
+        # swap to imagery before this request runs. The frontend normally
+        # calls /load on tab switch; this is the safety net.
+        _ensure_profile("imagery")
         bundle = _next_bundle()
         t0 = mark("model_queue", t0)
 
@@ -466,57 +601,71 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
 
 @app.post("/detect_video")
 async def detect_video(video: UploadFile | None = File(None), metadata: str = Form("{}")):
-    try:
-        meta = json.loads(metadata or "{}")
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid metadata JSON: {exc}") from exc
-    bundle = _next_bundle()
-    _ensure_video_model(bundle)
+    queue_depth = _enter_request()
     cleanup_path: Path | None = None
-    if video is not None:
-        suffix = Path(video.filename or "clip.mp4").suffix or ".mp4"
-        fd, tmp_name = tempfile.mkstemp(prefix=f"sam3_{int(time.time() * 1000)}_", suffix=suffix)
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(await video.read())
-        video_path = tmp_name
-        cleanup_path = Path(tmp_name)
-    else:
-        video_path = meta.get("video_path")
-        if not video_path:
-            raise HTTPException(status_code=400, detail="video upload or metadata.video_path required")
-
     try:
-        prompts = resolve_prompts({**meta, "modality": "fmv"})
-    except OntologyBackendUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    frame_stride = max(1, int(meta.get("frame_stride", 1)))
-    start_frame = int(meta.get("start_frame", 0))
-    end_frame = meta.get("end_frame")
-    max_frames = meta.get("max_frames")
-
-    def stream():
         try:
-            yield from (
-                line + "\n"
-                for line in sam3_runner.run_video(
-                    bundle,
-                    video_path,
-                    prompts,
-                    frame_stride=frame_stride,
-                    start_frame=start_frame,
-                    end_frame=end_frame,
-                    max_frames=max_frames,
-                    dinov3=None,  # DINOV3_LVD removed (NaN on real video crops)
-                    score_threshold=SAM3_TEXT_THR,
-                )
-            )
-        finally:
-            if cleanup_path is not None:
-                cleanup_path.unlink(missing_ok=True)
+            meta = json.loads(metadata or "{}")
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid metadata JSON: {exc}") from exc
+        _ensure_profile("fmv")
+        bundle = _next_bundle()
+        if video is not None:
+            suffix = Path(video.filename or "clip.mp4").suffix or ".mp4"
+            fd, tmp_name = tempfile.mkstemp(prefix=f"sam3_{int(time.time() * 1000)}_", suffix=suffix)
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(await video.read())
+            video_path = tmp_name
+            cleanup_path = Path(tmp_name)
+        else:
+            video_path = meta.get("video_path")
+            if not video_path:
+                raise HTTPException(status_code=400, detail="video upload or metadata.video_path required")
 
-    return StreamingResponse(stream(), media_type="application/x-ndjson")
+        try:
+            prompts = resolve_prompts({**meta, "modality": "fmv"})
+        except OntologyBackendUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        frame_stride = max(1, int(meta.get("frame_stride", 1)))
+        start_frame = int(meta.get("start_frame", 0))
+        end_frame = meta.get("end_frame")
+        max_frames = meta.get("max_frames")
+
+        def stream():
+            try:
+                yield from (
+                    line + "\n"
+                    for line in sam3_runner.run_video(
+                        bundle,
+                        video_path,
+                        prompts,
+                        frame_stride=frame_stride,
+                        start_frame=start_frame,
+                        end_frame=end_frame,
+                        max_frames=max_frames,
+                        dinov3=None,  # DINOV3_LVD removed (NaN on real video crops)
+                        score_threshold=SAM3_TEXT_THR,
+                    )
+                )
+            finally:
+                if cleanup_path is not None:
+                    cleanup_path.unlink(missing_ok=True)
+                _leave_request()
+
+        logger.info(
+            "sam3_detect_video_start prompts=%s queue_depth=%s path=%s",
+            len(prompts),
+            queue_depth,
+            video_path,
+        )
+        return StreamingResponse(stream(), media_type="application/x-ndjson")
+    except Exception:
+        if cleanup_path is not None:
+            cleanup_path.unlink(missing_ok=True)
+        _leave_request()
+        raise
 
 
 def _decode_rgb(raw: bytes) -> np.ndarray:
