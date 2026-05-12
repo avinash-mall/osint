@@ -76,7 +76,7 @@ logger = logging.getLogger("inference-sam3")
 
 MODEL_VERSION = os.getenv("MODEL_VERSION", "sam3-image+sam3.1-video+dinov3-sat-l+prithvi+terramind")
 GPU_MODEL = os.getenv("GPU_MODEL", "unknown")
-SAM3_TEXT_THR = float(os.getenv("SAM3_TEXT_THRESHOLD", "0.30"))
+SAM3_TEXT_THR = float(os.getenv("SAM3_TEXT_THRESHOLD", "0.50"))
 SAM3_BOX_THR = float(os.getenv("SAM3_BOX_THRESHOLD", "0.25"))
 SAM3_PRITHVI_OVERLAY_THR = float(os.getenv("SAM3_PRITHVI_OVERLAY_THRESHOLD", "0.30"))
 SAM3_SAR_CONF_CAP = float(os.getenv("SAM3_SAR_CONF_CAP", "0.85"))

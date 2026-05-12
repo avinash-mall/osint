@@ -1449,17 +1449,50 @@ def _update_clip_tracking(clip_id: int, **fields) -> None:
         logger.exception("failed to update fmv_clips.metadata for clip %s", clip_id)
 
 
+def _bbox_iou(a: list[float], b: list[float]) -> float:
+    """IoU between two cxcywh-normalised bboxes; returns 0 for empty inputs."""
+    if not a or not b or len(a) < 4 or len(b) < 4:
+        return 0.0
+    acx, acy, aw, ah = a[:4]
+    bcx, bcy, bw, bh = b[:4]
+    if aw <= 0 or ah <= 0 or bw <= 0 or bh <= 0:
+        return 0.0
+    ax1, ay1 = acx - aw / 2, acy - ah / 2
+    ax2, ay2 = acx + aw / 2, acy + ah / 2
+    bx1, by1 = bcx - bw / 2, bcy - bh / 2
+    bx2, by2 = bcx + bw / 2, bcy + bh / 2
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
+    inter = iw * ih
+    union = aw * ah + bw * bh - inter
+    return inter / union if union > 0 else 0.0
+
+
 def _insert_detection_rows(cur, clip_id: int, source_fps: float, window_idx: int, window_start_frame: int,
-                            prompts_for_request: list[str], resp, next_track_id: int) -> tuple[int, int]:
+                            session_prompt: str, resp, next_track_id: int,
+                            overlap_index: dict[tuple[int, str], list[list[float]]] | None = None,
+                            overlap_iou: float = 0.5) -> tuple[int, int]:
     """Drain one /detect_video streaming response into fmv_detections.
-    Returns (rows_inserted, new_next_track_id)."""
+
+    Each call corresponds to exactly one (window, prompt) session — the
+    upstream SAM3 API (`sam3_video_inference.py:656` / `sam3_multiplex_tracking.py:1934`)
+    resets state on every text `add_prompt`, so one session can only track
+    one concept. `session_prompt` is the prompt this session was launched
+    with; we trust it over any prompt_text the runner emits.
+
+    `overlap_index`, if provided, maps `(source_frame, class)` to the list
+    of cxcywh-normalised bboxes already inserted in *earlier* windows. Any
+    incoming detection with IoU >= `overlap_iou` against an existing entry
+    in that key is skipped to suppress the window-overlap duplicates that
+    sliding-window tracking produces by construction.
+
+    Returns (rows_inserted, new_next_track_id).
+    """
     multiplier = source_fps / FMV_TRACK_FPS if FMV_TRACK_FPS > 0 else 1.0
     inserted = 0
     local_to_global: dict[tuple, int] = {}
-    # For multi-prompt multiplex calls we can't always tell which prompt
-    # a track came from; fall back to the prompt the entry claims, then
-    # to the first prompt we sent.
-    fallback_prompt = prompts_for_request[0] if prompts_for_request else "track"
+    fallback_prompt = session_prompt or "track"
     for line in resp.iter_lines(decode_unicode=True):
         if not line:
             continue
@@ -1483,11 +1516,11 @@ def _insert_detection_rows(cur, clip_id: int, source_fps: float, window_idx: int
         else:
             # Heartbeat / lost-track frame.
             bbox_json = json.dumps([])
-        raw_cls = entry.get("original_class") or entry.get("class")
-        # SAM3 emits the placeholder "track" when an obj_id wasn't seeded
-        # by add_prompt; treat it as unlabeled and use the requested prompt.
-        cls = raw_cls if (raw_cls and raw_cls != "track") else fallback_prompt
-        prompt_text = entry.get("prompt_text") or cls
+        # Each call corresponds to one prompt's session, so the session
+        # prompt is authoritative — runner-emitted class/prompt_text are
+        # only a sanity check.
+        cls = fallback_prompt
+        prompt_text = fallback_prompt
         local_tid = entry.get("track_id")
         if local_tid is not None:
             try:
@@ -1501,6 +1534,16 @@ def _insert_detection_rows(cur, clip_id: int, source_fps: float, window_idx: int
                 global_tid = local_tid
         else:
             global_tid = None
+
+        # Cross-window overlap dedup: windows overlap by 2 s by design so
+        # the tracker has continuity across the seam. Without dedup every
+        # overlap frame produces two rows for the same object.
+        if overlap_index is not None and bbox_norm and len(bbox_norm) == 4:
+            cxcywh_for_check = json.loads(bbox_json)
+            existing_boxes = overlap_index.get((source_frame, cls), [])
+            if any(_bbox_iou(cxcywh_for_check, prev) >= overlap_iou for prev in existing_boxes):
+                continue
+
         meta_json = json.dumps({
             "track_id": global_tid,
             "mask_rle": entry.get("mask_rle"),
@@ -1523,6 +1566,8 @@ def _insert_detection_rows(cur, clip_id: int, source_fps: float, window_idx: int
             (clip_id, source_frame, cls, conf, bbox_json, meta_json),
         )
         inserted += 1
+        if overlap_index is not None and bbox_norm and len(bbox_norm) == 4:
+            overlap_index.setdefault((source_frame, cls), []).append(json.loads(bbox_json))
     return inserted, next_track_id
 
 
@@ -1578,6 +1623,11 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
 
         inserted = 0
         next_track_id = 0
+        # Per (source_frame, class) → list of cxcywh-normalised bboxes
+        # already inserted in earlier windows. Threaded into
+        # `_insert_detection_rows` so cross-window overlap duplicates are
+        # suppressed at IoU >= 0.5.
+        overlap_index: dict[tuple[int, str], list[list[float]]] = {}
         for window_idx, (start_s, length_s) in enumerate(windows):
             win_path = _prepare_tracking_window(video_path, window_idx, start_s, length_s)
             if win_path is None:
@@ -1586,33 +1636,40 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
 
             window_inserted = 0
             with postgis_db.get_cursor(commit=True) as cur:
-                # Single session per window with all prompts. The base
-                # predictor now accepts multi-prompt sessions because
-                # sam3_runner passes an explicit obj_id per add_prompt
-                # (instead of letting it auto-allocate obj_id=0 and
-                # overwrite). Multiplex was already multi-prompt; merging
-                # the two branches cuts inference time by ~3× when the
-                # GPU falls back to base.
-                payload = json.dumps({
-                    "video_path": str(win_path),
-                    "text_prompts": prompts,
-                    "frame_stride": 1,
-                    "max_frames": FMV_TRACK_FRAMES_PER_WINDOW,
-                    "modality": "fmv",
-                })
-                resp = session.post(
-                    f"{INFERENCE_SAM3_URL}/detect_video",
-                    data={"metadata": payload},
-                    stream=True,
-                    timeout=INFERENCE_CHIP_TIMEOUT_S * 60,
-                )
-                resp.raise_for_status()
-                n, next_track_id = _insert_detection_rows(
-                    cur, clip_id, source_fps, window_idx, window_start_frame,
-                    prompts, resp, next_track_id,
-                )
-                window_inserted += n
-                resp.close()
+                # One /detect_video call per (window, prompt). The
+                # upstream SAM3 video predictor — both
+                # `Sam3VideoInference` and the multiplex
+                # `Sam3MultiplexTrackingWithInteractivity` — calls
+                # `reset_state(inference_state)` inside `add_prompt` for
+                # every text prompt (see `sam3_video_inference.py:656`,
+                # `sam3_multiplex_tracking.py:1934`), so a session can
+                # only track one text concept at a time. N concepts
+                # require N sequential sessions per window. The earlier
+                # single-call multi-prompt path collapsed to "only the
+                # last prompt is tracked, all other detections are
+                # mis-labeled" — fixing it is what this loop is for.
+                for prompt in prompts:
+                    payload = json.dumps({
+                        "video_path": str(win_path),
+                        "text_prompts": [prompt],
+                        "frame_stride": 1,
+                        "max_frames": FMV_TRACK_FRAMES_PER_WINDOW,
+                        "modality": "fmv",
+                    })
+                    resp = session.post(
+                        f"{INFERENCE_SAM3_URL}/detect_video",
+                        data={"metadata": payload},
+                        stream=True,
+                        timeout=INFERENCE_CHIP_TIMEOUT_S * 60,
+                    )
+                    resp.raise_for_status()
+                    n, next_track_id = _insert_detection_rows(
+                        cur, clip_id, source_fps, window_idx, window_start_frame,
+                        prompt, resp, next_track_id,
+                        overlap_index=overlap_index,
+                    )
+                    window_inserted += n
+                    resp.close()
             # Per-window DB commit is done by the `with` block above.
             inserted += window_inserted
             _update_clip_tracking(clip_id, tracking_count=inserted)

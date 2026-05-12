@@ -22,28 +22,6 @@ SAM3_WEIGHTS_SOURCE = os.getenv("SAM3_WEIGHTS_SOURCE", "official").strip().lower
 SAM3_MIRROR_REPO_ID = os.getenv("SAM3_MIRROR_REPO_ID", "1038lab/sam3")
 SAM3_MIRROR_FILENAME = os.getenv("SAM3_MIRROR_FILENAME", "sam3.safetensors")
 SAM3_USE_MULTIPLEX = os.getenv("SAM3_USE_MULTIPLEX", "1").strip().lower() in {"1", "true", "yes", "on"}
-# Re-prompt every N emitted frames inside a video session to recover tracks
-# that have drifted off-target. 0 disables. Default 12 ≈ every 3 s at 4 fps.
-SAM3_REPROMPT_EVERY_N_FRAMES = max(0, int(os.getenv("SAM3_REPROMPT_EVERY_N_FRAMES", "12")))
-# SAM3 video's add_prompt calls reset_state every invocation (verified in
-# sam3_video_inference.py:864 and sam3_multiplex_tracking.py:1697), so each
-# extra prompt wastes a ~3 s session-reset only to be overwritten by the
-# next one. Cap how many prompts seed the SAM3 tracker — Grounding-DINO
-# keyframes (which run *one* multi-class call) still see the full list.
-SAM3_VIDEO_MAX_PROMPTS = max(1, int(os.getenv("SAM3_VIDEO_MAX_PROMPTS", "3")))
-# Grounding-DINO's text encoder caps at 256 BERT-like tokens; with ~3 tokens
-# per prompt + delimiter that's ~50 prompts per batch. Chunk smaller so
-# multi-word prompts (e.g. "aircraft carrier") still fit.
-GROUNDING_DINO_PROMPT_CHUNK = max(1, int(os.getenv("GROUNDING_DINO_PROMPT_CHUNK", "30")))
-# Hybrid FMV pipeline: every N emitted frames, decode the same source frame
-# from the prep clip and run Grounding-DINO (with optional SAHI tile slicing)
-# on it. Emits those detections as an independent stream alongside SAM3's
-# tracker output. 0 disables the keyframe detector.
-FMV_KEYFRAME_EVERY_N_FRAMES = max(0, int(os.getenv("FMV_KEYFRAME_EVERY_N_FRAMES", "8")))
-# Number of SAHI tiles per keyframe (2×2 grid with overlap when ≥ 4). 0 or 1
-# disables slicing (Grounding-DINO sees the whole frame).
-FMV_KEYFRAME_SAHI_TILES = max(0, int(os.getenv("FMV_KEYFRAME_SAHI_TILES", "4")))
-FMV_KEYFRAME_SAHI_OVERLAP = float(os.getenv("FMV_KEYFRAME_SAHI_OVERLAP", "0.20"))
 SAM3_COMPILE_IMAGE = os.getenv("SAM3_COMPILE_IMAGE", "0").strip().lower() in {"1", "true", "yes", "on"}
 SAM3_COMPILE_VIDEO = os.getenv("SAM3_COMPILE_VIDEO", "0").strip().lower() in {"1", "true", "yes", "on"}
 SAM3_WARM_UP_VIDEO = os.getenv("SAM3_WARM_UP_VIDEO", "1").strip().lower() in {"1", "true", "yes", "on"}
@@ -56,8 +34,17 @@ SAM3_BATCHED_TEXT_CHUNK_SIZE = max(1, int(os.getenv("SAM3_BATCHED_TEXT_CHUNK_SIZ
 # presence signal. A high `category_threshold` value forces the model to
 # return zero detections for prompts whose concept is absent from the scene
 # (which is what produced the false-positive "Oil Refinery Complex" hits in
-# central Vienna). Setting this to 0.0 disables the gate.
+# central Vienna). Setting this to 0.0 disables the gate. The same gate is
+# applied to video sessions: emissions are buffered through the hotstart
+# window (15 frames) and suppressed entirely if the best-seen track score
+# never exceeds the threshold.
 SAM3_CATEGORY_THR = float(os.getenv("SAM3_CATEGORY_THRESHOLD", "0.40"))
+# Number of frames the SAM3 multiplex tracker buffers internally before its
+# hotstart unmatched/duplicate suppression activates. Mirror this on the
+# emit-side so the video category gate has at least this many scores to
+# evaluate before deciding whether the prompt's concept is present in the
+# scene. Matches the upstream Sam3VideoConfig default.
+SAM3_HOTSTART_DELAY_FRAMES = max(1, int(os.getenv("SAM3_HOTSTART_DELAY_FRAMES", "15")))
 PROMPT_TEMPLATE = os.getenv("SAM3_PROMPT_TEMPLATE", "{label}")
 _QUERY_IDS = itertools.count(1)
 
@@ -678,182 +665,31 @@ def run_box_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompt_
     return candidates
 
 
-def _sahi_tile_rects(width: int, height: int, n_tiles: int, overlap: float) -> list[tuple[int, int, int, int]]:
-    """Compute (x1, y1, x2, y2) rectangles for an n-tile SAHI grid with the
-    requested overlap. For n_tiles <= 1 returns a single full-frame rect."""
-    if n_tiles <= 1:
-        return [(0, 0, width, height)]
-    # Use 2×2 (4 tiles) or 3×3 (9 tiles) layouts; fall through to nearest grid.
-    grid = 2 if n_tiles <= 4 else 3 if n_tiles <= 9 else 4
-    tile_w = int(width / grid * (1.0 + overlap))
-    tile_h = int(height / grid * (1.0 + overlap))
-    step_x = max(1, int((width - tile_w) / max(1, grid - 1))) if grid > 1 else width
-    step_y = max(1, int((height - tile_h) / max(1, grid - 1))) if grid > 1 else height
-    rects: list[tuple[int, int, int, int]] = []
-    for gy in range(grid):
-        for gx in range(grid):
-            x1 = min(width - tile_w, gx * step_x) if grid > 1 else 0
-            y1 = min(height - tile_h, gy * step_y) if grid > 1 else 0
-            x1 = max(0, x1)
-            y1 = max(0, y1)
-            x2 = min(width, x1 + tile_w)
-            y2 = min(height, y1 + tile_h)
-            rects.append((x1, y1, x2, y2))
-    return rects
-
-
-def _grounding_dino_keyframe(
-    bundle: dict[str, Any],
-    frame_rgb: np.ndarray,
-    prompts: list[str],
-    score_threshold: float,
-    *,
-    n_tiles: int,
-    overlap: float,
-    iou_merge: float = 0.5,
-) -> list[dict[str, Any]]:
-    """Run Grounding-DINO on the frame (and optionally on SAHI tiles), merge
-    per-class via simple greedy IoU NMS, and return detections shaped like
-    SAM3's tracker output (normalised bbox, class, score, axis-aligned OBB
-    points derived from the bbox).
-
-    Each detection is independent (no track_id) — the worker stores them
-    alongside SAM3 tracks; the FmvPlayer renders both."""
-    gd_bundle = bundle.get("grounding_dino") if isinstance(bundle, dict) else None
-    if not gd_bundle or gd_bundle.get("model") is None:
-        return []
-    import grounding_dino  # local import: optional dependency
-    H, W = frame_rgb.shape[:2]
-    tile_rects = _sahi_tile_rects(W, H, max(1, n_tiles), overlap)
-
-    all_dets: list[tuple[str, float, float, float, float, float]] = []  # (label, x1n, y1n, x2n, y2n, score)
-    for (tx1, ty1, tx2, ty2) in tile_rects:
-        if tx2 <= tx1 or ty2 <= ty1:
-            continue
-        crop = frame_rgb[ty1:ty2, tx1:tx2]
-        if crop.size == 0:
-            continue
-        # Grounding-DINO's text encoder caps at 256 tokens; chunk the
-        # prompt list so a 130-entry admin ontology fits across multiple
-        # encoder passes.
-        results: list = []
-        for chunk_start in range(0, len(prompts), GROUNDING_DINO_PROMPT_CHUNK):
-            chunk = prompts[chunk_start:chunk_start + GROUNDING_DINO_PROMPT_CHUNK]
-            if not chunk:
-                continue
-            try:
-                chunk_results = grounding_dino.run(gd_bundle, crop, chunk, score_threshold=score_threshold)
-            except Exception as exc:
-                logger.debug(
-                    "grounding_dino tile (%d,%d,%d,%d) chunk %d failed: %s",
-                    tx1, ty1, tx2, ty2, chunk_start, exc,
-                )
-                continue
-            results.extend(chunk_results)
-        # Each result is (mask, [x1,y1,x2,y2], score, canonical_label) in tile-local pixels.
-        for (_mask, box_px, score, label) in results:
-            x1t, y1t, x2t, y2t = box_px
-            # Map back to global pixel coords, then normalise.
-            x1g = (tx1 + x1t) / W
-            y1g = (ty1 + y1t) / H
-            x2g = (tx1 + x2t) / W
-            y2g = (ty1 + y2t) / H
-            all_dets.append((label, float(x1g), float(y1g), float(x2g), float(y2g), float(score)))
-
-    if not all_dets:
-        return []
-
-    # Per-class greedy IoU NMS to dedupe across tile boundaries.
-    by_class: dict[str, list[tuple[float, float, float, float, float]]] = {}
-    for label, x1, y1, x2, y2, sc in all_dets:
-        by_class.setdefault(label, []).append((x1, y1, x2, y2, sc))
-
-    def _iou(a, b) -> float:
-        ax1, ay1, ax2, ay2, _ = a
-        bx1, by1, bx2, by2, _ = b
-        ix1 = max(ax1, bx1); iy1 = max(ay1, by1)
-        ix2 = min(ax2, bx2); iy2 = min(ay2, by2)
-        iw = max(0.0, ix2 - ix1); ih = max(0.0, iy2 - iy1)
-        inter = iw * ih
-        if inter <= 0.0:
-            return 0.0
-        area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
-        area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
-        union = area_a + area_b - inter
-        return inter / union if union > 0 else 0.0
-
-    merged: list[dict[str, Any]] = []
-    for label, boxes in by_class.items():
-        boxes.sort(key=lambda b: b[4], reverse=True)
-        keep: list[tuple[float, float, float, float, float]] = []
-        for cand in boxes:
-            if any(_iou(cand, k) >= iou_merge for k in keep):
-                continue
-            keep.append(cand)
-        for (x1n, y1n, x2n, y2n, sc) in keep:
-            # Axis-aligned 4-corner polygon as the "OBB" so the frontend's
-            # canvas overlay can draw it (Grounding-DINO doesn't give rotated
-            # boxes; the UI's normalizeBbox accepts the flat 8-number form).
-            obb_norm = [
-                x1n, y1n,
-                x2n, y1n,
-                x2n, y2n,
-                x1n, y2n,
-            ]
-            merged.append({
-                "bbox_xyxy_norm": [x1n, y1n, x2n, y2n],
-                "class": label,
-                "score": sc,
-                "obb": obb_norm,
-                "obb_format": "yolo_obb_normalized_xyxyxyxy",
-                "obb_source": "grounding_dino",
-                "edge_truncated": False,
-            })
-    return merged
-
-
-def _decode_prep_frame(video_path: str, frame_idx: int) -> np.ndarray | None:
-    """Decode a single frame from the prep clip via OpenCV. Returns an
-    RGB uint8 ndarray (H, W, 3), or None on failure."""
-    import cv2 as _cv2
-    cap = _cv2.VideoCapture(str(video_path))
-    try:
-        if not cap.isOpened():
-            return None
-        cap.set(_cv2.CAP_PROP_POS_FRAMES, frame_idx)
-        ok, frame_bgr = cap.read()
-        if not ok or frame_bgr is None:
-            return None
-        return _cv2.cvtColor(frame_bgr, _cv2.COLOR_BGR2RGB)
-    finally:
-        cap.release()
-
-
 def run_video(bundle, video_path, prompts, *, frame_stride, start_frame, end_frame, max_frames, dinov3, score_threshold):
+    """Run a SAM3 video tracking session for a single text concept.
+
+    The upstream API (`Sam3VideoInference.add_prompt` and
+    `Sam3MultiplexTrackingWithInteractivity.add_prompt`) unconditionally
+    calls `self.reset_state(inference_state)` for any text prompt, so the
+    tracker can only persist one text concept per session. Callers that
+    need N concepts must run N sequential sessions (one per prompt).
+    Anything that re-prompts mid-session would reset the inference state
+    and destroy SAM3's built-in hotstart unmatched/duplicate suppression
+    (`hotstart_delay=15`, `hotstart_unmatch_thresh=8`,
+    `hotstart_dup_thresh=8`), so re-prompting is intentionally absent.
+    """
     predictor = bundle["sam3_video"]
-    # Full prompt list (e.g. 130 admin-managed prompts) drives the
-    # Grounding-DINO keyframe pass; SAM3's video tracker only uses a small
-    # subset because each add_prompt resets state and dominates wall time.
-    # Bias the SAM3 subset toward generic FMV-friendly tokens (vehicle /
-    # person / building) when present in the admin list so the tracker
-    # latches onto things it can actually see, regardless of admin order.
-    _clean_prompts = [p for p in prompts if p and not p.startswith("__")]
-    _preferred = ("vehicle", "person", "building", "car", "truck", "aircraft")
-    sam3_prompts: list[str] = []
-    _seen: set[str] = set()
-    for pref in _preferred:
-        for p in _clean_prompts:
-            pl = p.lower()
-            if pref in pl and pl not in _seen:
-                sam3_prompts.append(p); _seen.add(pl)
-                break
-        if len(sam3_prompts) >= SAM3_VIDEO_MAX_PROMPTS:
-            break
-    for p in _clean_prompts:
-        if len(sam3_prompts) >= SAM3_VIDEO_MAX_PROMPTS:
-            break
-        if p.lower() not in _seen:
-            sam3_prompts.append(p); _seen.add(p.lower())
+    clean_prompts = [p for p in prompts if p and not p.startswith("__")]
+    if not clean_prompts:
+        return
+    if len(clean_prompts) > 1:
+        logger.warning(
+            "run_video received %d prompts; only the first (%r) will be tracked. "
+            "Caller should iterate sessions per prompt to track multiple concepts.",
+            len(clean_prompts), clean_prompts[0],
+        )
+    prompt_text = clean_prompts[0]
+
     # Autocast: the multiplex predictor casts decoded frames to bfloat16
     # internally but ships its weights as float32. Without the ambient cuda
     # autocast context the vitdet linear layers raise
@@ -862,69 +698,21 @@ def run_video(bundle, video_path, prompts, *, frame_stride, start_frame, end_fra
     with _autocast_ctx(bundle["device"]):
         session = predictor.handle_request(request={"type": "start_session", "resource_path": video_path})
         session_id = session["session_id"]
+        # Buffer emissions through the hotstart window so the category
+        # presence gate has enough scores to decide. After the window
+        # closes we either flush the buffer (gate passes) or drop it
+        # entirely (gate fails) and continue streaming live.
+        gate_active = SAM3_CATEGORY_THR > 0.0
+        gate_passed = not gate_active
+        gate_buffer: list[str] = []
+        gate_max_score = 0.0
         try:
-            # Track which obj_id maps to which prompt so the non-multiplex
-            # predictor (which returns only obj_ids/masks) can still label
-            # detections back to the prompting text. We pass an explicit
-            # obj_id per add_prompt so the base predictor accepts multiple
-            # prompts in one session (the auto-allocated obj_id=0 path was
-            # making each call overwrite the previous one).
-            obj_id_to_prompt: dict[int, str] = {}
-            next_obj_id = 0
-
-            def _add_prompts_at(frame_idx: int) -> None:
-                """Issue one add_prompt per text prompt against the given
-                frame, with a unique obj_id per call. Updates
-                obj_id_to_prompt for the worker to map detections back.
-
-                Note on the often-suggested 'inject SAHI boxes as visual
-                prompts with one obj_id per box' pattern: it does NOT
-                compose on the installed SAM3 build. Both
-                ``Sam3VideoInference.add_prompt`` (`sam3_video_inference.py:865`)
-                and ``Sam3MultiplexTrackingWithInteractivity.add_prompt``
-                (`sam3_multiplex_tracking.py:1697`) call
-                ``self.reset_state(inference_state)`` on every invocation,
-                so a loop of 16 boxes / 16 obj_ids collapses to 'only the
-                last one tracks'. Round-4 instead emits Grounding-DINO
-                detections as an independent stream alongside the SAM3
-                tracker (`_grounding_dino_keyframe` below) — that keeps
-                box-level recall high without depending on a tracker API
-                that doesn't actually accumulate multi-object prompts.
-                """
-                nonlocal next_obj_id
-                for prompt in sam3_prompts:
-                    obj_id = next_obj_id
-                    next_obj_id += 1
-                    obj_id_to_prompt[obj_id] = prompt
-                    try:
-                        add_resp = predictor.handle_request(request={
-                            "type": "add_prompt",
-                            "session_id": session_id,
-                            "frame_index": frame_idx,
-                            "text": prompt,
-                            "obj_id": obj_id,
-                        })
-                    except TypeError:
-                        # Older multiplex builds don't accept obj_id; fall
-                        # back to auto-assigned ids and learn them from the
-                        # response.
-                        add_resp = predictor.handle_request(request={
-                            "type": "add_prompt",
-                            "session_id": session_id,
-                            "frame_index": frame_idx,
-                            "text": prompt,
-                        })
-                    outs = add_resp.get("outputs") if isinstance(add_resp, dict) else None
-                    if isinstance(outs, dict):
-                        obj_ids = outs.get("out_obj_ids")
-                        if obj_ids is not None:
-                            for oid in obj_ids:
-                                try:
-                                    obj_id_to_prompt[int(oid)] = prompt
-                                except (TypeError, ValueError):
-                                    pass
-
-            _add_prompts_at(start_frame)
+            predictor.handle_request(request={
+                "type": "add_prompt",
+                "session_id": session_id,
+                "frame_index": start_frame,
+                "text": prompt_text,
+            })
 
             emitted_frames = 0
             for resp in predictor.handle_stream_request(request={"type": "propagate_in_video", "session_id": session_id}):
@@ -941,10 +729,12 @@ def run_video(bundle, video_path, prompts, *, frame_stride, start_frame, end_fra
                 _resp_outs = resp.get("outputs")
                 if _resp_outs is None:
                     _resp_outs = []
-                for track in _iter_sam3_video_tracks(_resp_outs, obj_id_to_prompt=obj_id_to_prompt):
+                for track in _iter_sam3_video_tracks(_resp_outs, prompt_text=prompt_text):
                     score = float(track.get("score") or 0.0)
                     if score < score_threshold:
                         continue
+                    if gate_active and not gate_passed:
+                        gate_max_score = max(gate_max_score, score)
                     import fusion
 
                     mask = track.get("mask")
@@ -952,15 +742,14 @@ def run_video(bundle, video_path, prompts, *, frame_stride, start_frame, end_fra
                     entry: dict[str, Any] = {
                         "frame_index": frame_idx,
                         "track_id": int(track["track_id"]),
-                        "class": track["prompt_text"],
-                        "original_class": track["prompt_text"],
+                        "class": prompt_text,
+                        "original_class": prompt_text,
                         "parent_class": "track",
                         "score": score,
                     }
                     if mask is not None and bbox_xyxy_norm is not None:
                         mask_arr = np.asarray(mask, dtype=bool)
                         height, width = mask_arr.shape[-2:]
-                        # _hbb_fallback wants pixel xyxy; reconstruct from normalised.
                         x1n, y1n, x2n, y2n = bbox_xyxy_norm
                         bbox_xyxy_px = [x1n * width, y1n * height, x2n * width, y2n * height]
                         obb = fusion.mask_to_obb_record(mask_arr, bbox_xyxy_px, width, height)
@@ -985,63 +774,51 @@ def run_video(bundle, video_path, prompts, *, frame_stride, start_frame, end_fra
                             "obb_source": "tracker_lost",
                             "mask_rle": None,
                         })
-                    yield json.dumps(entry, separators=(",", ":"))
-
-                # Hybrid keyframe pass: every N emitted frames, decode the
-                # raw frame and run Grounding-DINO (with optional SAHI
-                # tiles) on it. Emits each detection as an independent
-                # entry — no track_id, mask_rle=None, axis-aligned OBB
-                # synthesised from the bbox. Drone-FMV survey paper
-                # prescribes this as the canonical recall booster when
-                # SAM3's text-grounded tracker loses targets after camera
-                # motion.
-                if (
-                    FMV_KEYFRAME_EVERY_N_FRAMES
-                    and bundle is not None
-                    and bundle.get("grounding_dino") is not None
-                    and (emitted_frames == 1 or emitted_frames % FMV_KEYFRAME_EVERY_N_FRAMES == 0)
-                ):
-                    try:
-                        gd_frame = _decode_prep_frame(video_path, frame_idx)
-                        if gd_frame is not None:
-                            gd_dets = _grounding_dino_keyframe(
-                                bundle, gd_frame, list(prompts), score_threshold,
-                                n_tiles=FMV_KEYFRAME_SAHI_TILES,
-                                overlap=FMV_KEYFRAME_SAHI_OVERLAP,
-                            )
-                            for det in gd_dets:
-                                entry = {
-                                    "frame_index": frame_idx,
-                                    "track_id": None,
-                                    "class": det["class"],
-                                    "original_class": det["class"],
-                                    "parent_class": "track",
-                                    "score": det["score"],
-                                    "bbox_xyxy_norm": det["bbox_xyxy_norm"],
-                                    "obb": det["obb"],
-                                    "obb_format": det["obb_format"],
-                                    "obb_source": det["obb_source"],
-                                    "edge_truncated": det["edge_truncated"],
-                                    "mask_rle": None,
-                                    "prompt_text": det["class"],
-                                }
-                                yield json.dumps(entry, separators=(",", ":"))
-                    except Exception as exc:
-                        logger.warning("Grounding-DINO keyframe at frame %s failed: %s", frame_idx, exc)
-
-                # Periodic re-prompt: every N emitted frames, re-issue the
-                # prompts on the current frame as new obj_ids. SAM3
-                # propagates each set forward; the worker dedupes via the
-                # per-prompt class label so the timeline doesn't fork.
-                if (
-                    SAM3_REPROMPT_EVERY_N_FRAMES
-                    and emitted_frames > 0
-                    and emitted_frames % SAM3_REPROMPT_EVERY_N_FRAMES == 0
-                ):
-                    try:
-                        _add_prompts_at(frame_idx)
-                    except Exception as exc:
-                        logger.warning("re-prompt at frame %s failed: %s", frame_idx, exc)
+                    serialised = json.dumps(entry, separators=(",", ":"))
+                    if gate_active and not gate_passed:
+                        gate_buffer.append(serialised)
+                        if emitted_frames >= SAM3_HOTSTART_DELAY_FRAMES:
+                            if gate_max_score >= SAM3_CATEGORY_THR:
+                                gate_passed = True
+                                for buffered in gate_buffer:
+                                    yield buffered
+                                gate_buffer.clear()
+                            else:
+                                # Concept absent from the scene — drop this
+                                # session's emissions entirely and close.
+                                logger.info(
+                                    "video category gate dropped prompt %r (max score %.3f < %.2f)",
+                                    prompt_text, gate_max_score, SAM3_CATEGORY_THR,
+                                )
+                                return
+                    else:
+                        yield serialised
+            # Stream ended before the hotstart window closed; flush the
+            # buffer only if the gate would have passed.
+            if gate_active and not gate_passed:
+                if gate_max_score >= SAM3_CATEGORY_THR:
+                    for buffered in gate_buffer:
+                        yield buffered
+                else:
+                    logger.info(
+                        "video category gate dropped prompt %r (max score %.3f < %.2f, partial window)",
+                        prompt_text, gate_max_score, SAM3_CATEGORY_THR,
+                    )
+        except RuntimeError as exc:
+            # Multiplex tracker raises `RuntimeError("No points are
+            # provided; please add points first")` mid-propagation from
+            # `video_tracking_multiplex_demo.py:3410` when the detector
+            # found nothing on the previous frame and the tracker has no
+            # anchor (point/mask prompt) to continue from. Treat this
+            # as graceful end-of-tracking for this window — every
+            # detection we already yielded above is valid and stays in
+            # the response. The finally block still closes the session.
+            if "No points are provided" not in str(exc):
+                raise
+            logger.warning(
+                "SAM3 propagation ended early in session %s: %s",
+                session_id, exc,
+            )
         finally:
             predictor.handle_request(request={"type": "close_session", "session_id": session_id})
 
@@ -1119,39 +896,30 @@ def _clamp01(value: float) -> float:
     return value
 
 
-def _iter_sam3_video_tracks(outputs, obj_id_to_prompt: dict[int, str] | None = None):
-    # Multiplex tracker yields a list of per-track dicts; the non-multiplex
-    # base predictor yields a single dict with parallel ``out_obj_ids`` /
-    # ``out_boxes_xywh`` / ``out_binary_masks`` arrays. Handle both shapes.
-    #
-    # Bbox normalization: always derive from the mask's own pixel space.
-    # SAM3's ``out_boxes_xywh`` is already divided by W_video/H_video
-    # (sam3/model/sam3_multiplex_tracking.py:736-738), so re-treating it
-    # as pixel xywh produced the off-target rectangles the user reported.
-    # We always emit ``bbox_xyxy_norm`` in [0, 1] now.
+def _iter_sam3_video_tracks(outputs, prompt_text: str = "track"):
+    """Iterate tracks from a `propagate_in_video` stream response.
+
+    The multiplex predictor returns a dict with parallel arrays (`out_obj_ids`,
+    `out_probs`, `out_binary_masks`); the non-multiplex base predictor yields a
+    list of per-track dicts. Handle both shapes. Bbox is always derived from
+    the mask's pixel space (upstream `out_boxes_xywh` is pre-normalised, so
+    re-treating it as pixel xywh produced off-target rectangles previously —
+    see `sam3_multiplex_tracking.py:1203-1206`).
+    """
     if isinstance(outputs, dict):
         obj_ids = outputs.get("out_obj_ids")
         masks = outputs.get("out_binary_masks")
-        # The non-multiplex predictor uses ``out_probs``; some forks emit
-        # ``out_scores``. Prefer probs since that's what the upstream model
-        # actually returns for SAM3 video.
         scores = outputs.get("out_probs")
-        if scores is None:
-            scores = outputs.get("out_scores")
         if obj_ids is None or masks is None:
             return
         for idx in range(len(obj_ids)):
             mask_arr = np.asarray(masks[idx], dtype=bool)
             track_id = int(obj_ids[idx])
-            prompt = (obj_id_to_prompt or {}).get(track_id, "track")
             score = float(scores[idx]) if scores is not None and idx < len(scores) else 1.0
             if not mask_arr.any():
-                # Heartbeat: the tracker still owns this track but it has
-                # no visible mask this frame. Emit so the per-track timeline
-                # stays continuous; the worker stores it with empty bbox.
                 yield {
                     "track_id": track_id,
-                    "prompt_text": prompt,
+                    "prompt_text": prompt_text,
                     "score": score,
                     "mask": None,
                     "bbox_xyxy_norm": None,
@@ -1164,7 +932,7 @@ def _iter_sam3_video_tracks(outputs, obj_id_to_prompt: dict[int, str] | None = N
             bbox_xyxy_norm = [x1 / W, y1 / H, x2 / W, y2 / H]
             yield {
                 "track_id": track_id,
-                "prompt_text": prompt,
+                "prompt_text": prompt_text,
                 "score": score,
                 "mask": mask_arr,
                 "bbox_xyxy_norm": bbox_xyxy_norm,
@@ -1179,8 +947,6 @@ def _iter_sam3_video_tracks(outputs, obj_id_to_prompt: dict[int, str] | None = N
             continue
         mask_arr = np.asarray(mask, dtype=bool)
         track_id = item.get("obj_id") or item.get("track_id") or item.get("id") or 0
-        prompt = (obj_id_to_prompt or {}).get(int(track_id) if isinstance(track_id, int) else 0)
-        prompt_text = item.get("prompt_text") or item.get("text") or item.get("label") or prompt or "track"
         score = item.get("score", 1.0)
         if not mask_arr.any():
             yield {
