@@ -7,6 +7,7 @@ import subprocess
 import uuid
 import logging
 import math
+import threading
 import concurrent.futures
 import tempfile
 import base64
@@ -1263,6 +1264,11 @@ FMV_TRACK_FRAMES_PER_WINDOW = int(os.getenv("FMV_TRACK_FRAMES_PER_WINDOW", "48")
 # observed on Day Flight.mpg.
 FMV_TRACK_WINDOW_SECONDS = float(os.getenv("FMV_TRACK_WINDOW_SECONDS", "12"))
 FMV_TRACK_WINDOW_OVERLAP_SECONDS = float(os.getenv("FMV_TRACK_WINDOW_OVERLAP_SECONDS", "2"))
+# In-flight cap for /detect_video fan-out. Defaults to the inference-sam3
+# pool size discovered at /health (i.e. one slot per GPU), so each parallel
+# task lands on a distinct multiplex predictor replica. The env override
+# is a hard ceiling — if /health reports a smaller pool we use that.
+FMV_INFLIGHT_REQUESTS = max(1, int(os.getenv("FMV_INFLIGHT_REQUESTS", "4")))
 
 
 def _probe_source(src_path: str) -> tuple[float, float]:
@@ -1469,17 +1475,37 @@ def _bbox_iou(a: list[float], b: list[float]) -> float:
     return inter / union if union > 0 else 0.0
 
 
+def _drain_response_entries(resp) -> list[dict]:
+    """Drain one /detect_video streaming response to a list of parsed
+    JSON dicts. Pure I/O — safe to run outside any DB / dedup lock so
+    parallel fan-out tasks don't serialize on each other while their
+    GPU sessions are still streaming. The caller passes the resulting
+    list to `_insert_detection_rows` under a lock to do the DB inserts
+    and dedup updates."""
+    entries: list[dict] = []
+    for line in resp.iter_lines(decode_unicode=True):
+        if not line:
+            continue
+        entries.append(json.loads(line))
+    return entries
+
+
 def _insert_detection_rows(cur, clip_id: int, source_fps: float, window_idx: int, window_start_frame: int,
-                            session_prompt: str, resp, next_track_id: int,
+                            session_prompt: str, entries: list[dict], next_track_id: int,
                             overlap_index: dict[tuple[int, str], list[list[float]]] | None = None,
                             overlap_iou: float = 0.5) -> tuple[int, int]:
-    """Drain one /detect_video streaming response into fmv_detections.
+    """Insert one (window, prompt) session's parsed entries into fmv_detections.
 
     Each call corresponds to exactly one (window, prompt) session — the
     upstream SAM3 API (`sam3_video_inference.py:656` / `sam3_multiplex_tracking.py:1934`)
     resets state on every text `add_prompt`, so one session can only track
     one concept. `session_prompt` is the prompt this session was launched
     with; we trust it over any prompt_text the runner emits.
+
+    `entries` is the result of `_drain_response_entries(resp)` — split so
+    the HTTP drain can happen unlocked while this function runs under the
+    worker's shared lock to mutate `next_track_id` and `overlap_index`
+    without races.
 
     `overlap_index`, if provided, maps `(source_frame, class)` to the list
     of cxcywh-normalised bboxes already inserted in *earlier* windows. Any
@@ -1493,10 +1519,7 @@ def _insert_detection_rows(cur, clip_id: int, source_fps: float, window_idx: int
     inserted = 0
     local_to_global: dict[tuple, int] = {}
     fallback_prompt = session_prompt or "track"
-    for line in resp.iter_lines(decode_unicode=True):
-        if not line:
-            continue
-        entry = json.loads(line)
+    for entry in entries:
         prep_idx = int(entry["frame_index"])
         source_frame = window_start_frame + int(round(prep_idx * multiplier))
         # SAM3 now emits ``bbox_xyxy_norm`` (already in [0,1] relative to
@@ -1618,67 +1641,116 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
         health = _ensure_fmv_profile(session, clip_id)
         video_backend = (health.get("model_versions") or {}).get("sam3_video", "")
         multiplex = "multiplex" in str(video_backend).lower()
-        logger.info("FMV tracking clip=%s windows=%d backend=%s multiplex=%s",
-                    clip_id, len(windows), video_backend, multiplex)
+        # Bound concurrency by the inference-sam3 pool size. Each multiplex
+        # replica accepts one in-flight session at a time (enforced by its
+        # per-bundle lock on the server); going beyond pool_size just
+        # bounces with 503 and forces us to wait, so right-size it here.
+        pool_size = int(health.get("pool_size") or 1)
+        inflight_cap = max(1, min(FMV_INFLIGHT_REQUESTS, pool_size))
+        logger.info(
+            "FMV tracking clip=%s windows=%d backend=%s multiplex=%s "
+            "pool_size=%d inflight_cap=%d",
+            clip_id, len(windows), video_backend, multiplex, pool_size, inflight_cap,
+        )
 
-        inserted = 0
-        next_track_id = 0
-        # Per (source_frame, class) → list of cxcywh-normalised bboxes
-        # already inserted in earlier windows. Threaded into
-        # `_insert_detection_rows` so cross-window overlap duplicates are
-        # suppressed at IoU >= 0.5.
-        overlap_index: dict[tuple[int, str], list[list[float]]] = {}
+        # Build the (window, prompt) task list. ffmpeg slicing runs
+        # sequentially up front because it's cheap (~500 ms/window) and
+        # parallel ffmpeg processes would just contend for disk anyway.
+        # Each window appears in the task list as its (win_path,
+        # window_start_frame); inference fan-out happens across the
+        # cartesian product with prompts.
+        sliced: list[tuple[int, int, Any]] = []  # (window_idx, window_start_frame, win_path)
         for window_idx, (start_s, length_s) in enumerate(windows):
             win_path = _prepare_tracking_window(video_path, window_idx, start_s, length_s)
             if win_path is None:
                 continue
-            window_start_frame = int(round(start_s * source_fps))
+            sliced.append((window_idx, int(round(start_s * source_fps)), win_path))
 
-            window_inserted = 0
-            with postgis_db.get_cursor(commit=True) as cur:
-                # One /detect_video call per (window, prompt). The
-                # upstream SAM3 video predictor — both
-                # `Sam3VideoInference` and the multiplex
-                # `Sam3MultiplexTrackingWithInteractivity` — calls
-                # `reset_state(inference_state)` inside `add_prompt` for
-                # every text prompt (see `sam3_video_inference.py:656`,
-                # `sam3_multiplex_tracking.py:1934`), so a session can
-                # only track one text concept at a time. N concepts
-                # require N sequential sessions per window. The earlier
-                # single-call multi-prompt path collapsed to "only the
-                # last prompt is tracked, all other detections are
-                # mis-labeled" — fixing it is what this loop is for.
-                for prompt in prompts:
-                    payload = json.dumps({
-                        "video_path": str(win_path),
-                        "text_prompts": [prompt],
-                        "frame_stride": 1,
-                        "max_frames": FMV_TRACK_FRAMES_PER_WINDOW,
-                        "modality": "fmv",
-                    })
+        tasks = [(win_idx, win_start_frame, win_path, prompt)
+                 for (win_idx, win_start_frame, win_path) in sliced
+                 for prompt in prompts]
+        total_tasks = len(tasks)
+
+        # Shared state guarded by `shared_lock`. `next_track_id` is the
+        # rolling allocator for global track IDs; `overlap_index` is the
+        # cross-window dedup table from the FP-suppression round. Both
+        # are touched per-row in `_insert_detection_rows`, so the lock
+        # also wraps the row insertion itself (otherwise two threads can
+        # race the same (source_frame, class) key).
+        shared_lock = threading.Lock()
+        state = {"next_track_id": 0, "inserted": 0, "completed": 0}
+        overlap_index: dict[tuple[int, str], list[list[float]]] = {}
+
+        def _run_one(args: tuple[int, int, Any, str]) -> int:
+            win_idx, win_start_frame, win_path, prompt = args
+            payload = json.dumps({
+                "video_path": str(win_path),
+                "text_prompts": [prompt],
+                "frame_stride": 1,
+                "max_frames": FMV_TRACK_FRAMES_PER_WINDOW,
+                "modality": "fmv",
+            })
+            # Retry transient 503s — the server returns 503 when every
+            # GPU bundle is busy, so this is the natural backpressure
+            # signal under fan-out. Linear backoff capped at 30 s; the
+            # full session timeout still bounds the wait.
+            attempt = 0
+            while True:
+                attempt += 1
+                try:
                     resp = session.post(
                         f"{INFERENCE_SAM3_URL}/detect_video",
                         data={"metadata": payload},
                         stream=True,
                         timeout=INFERENCE_CHIP_TIMEOUT_S * 60,
                     )
+                    if resp.status_code == 503 and attempt < 20:
+                        resp.close()
+                        time.sleep(min(0.5 + 0.5 * attempt, 5.0))
+                        continue
                     resp.raise_for_status()
-                    n, next_track_id = _insert_detection_rows(
-                        cur, clip_id, source_fps, window_idx, window_start_frame,
-                        prompt, resp, next_track_id,
+                    break
+                except requests.RequestException:
+                    if attempt >= 5:
+                        raise
+                    time.sleep(min(1.0 * attempt, 5.0))
+            try:
+                # Drain the HTTP stream OUTSIDE the lock — this is the
+                # long-running part (mirrors the GPU's per-frame emit
+                # cadence). Holding the lock here would serialize every
+                # task on the slowest GPU, killing the fan-out.
+                entries = _drain_response_entries(resp)
+            finally:
+                resp.close()
+            with shared_lock:
+                with postgis_db.get_cursor(commit=True) as cur:
+                    n, new_next = _insert_detection_rows(
+                        cur, clip_id, source_fps, win_idx, win_start_frame,
+                        prompt, entries, state["next_track_id"],
                         overlap_index=overlap_index,
                     )
-                    window_inserted += n
-                    resp.close()
-            # Per-window DB commit is done by the `with` block above.
-            inserted += window_inserted
-            _update_clip_tracking(clip_id, tracking_count=inserted)
+                    state["next_track_id"] = new_next
+                    state["inserted"] += n
+                    state["completed"] += 1
+                    completed = state["completed"]
+                    running_total = state["inserted"]
             publish_event(
                 f"fmv:{clip_id}",
                 {"type": "fmv_detections_progress", "clip_id": clip_id,
-                 "window": window_idx + 1, "windows": len(windows),
-                 "inserted": window_inserted, "total_inserted": inserted},
+                 "window": win_idx + 1, "windows": len(windows),
+                 "inserted": n, "total_inserted": running_total,
+                 "completed_tasks": completed, "total_tasks": total_tasks,
+                 "prompt": prompt},
             )
+            _update_clip_tracking(clip_id, tracking_count=running_total)
+            return n
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=inflight_cap) as pool:
+            futures = [pool.submit(_run_one, t) for t in tasks]
+            for fut in concurrent.futures.as_completed(futures):
+                fut.result()  # re-raise any task exception
+
+        inserted = state["inserted"]
 
         provider_lifecycle.mark_active()
         _update_clip_tracking(

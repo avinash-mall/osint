@@ -401,6 +401,40 @@ def _next_bundle() -> dict[str, Any]:
     return bundle
 
 
+def _acquire_video_bundle() -> dict[str, Any]:
+    """Return a bundle whose per-bundle lock has been acquired non-blocking.
+
+    Each multiplex predictor allocates ~3 GiB of session activations the
+    first time a session starts; running two concurrent sessions on the
+    same GPU OOMs the second one. By gating on the bundle's existing
+    `threading.Lock` (non-blocking) we ensure at most one in-flight video
+    session per GPU. The caller must release the lock when its stream
+    finishes (success or error).
+
+    Returns 503 when every bundle is busy — the worker's bounded
+    ThreadPoolExecutor sees this as backpressure and retries.
+    """
+    if not _pool:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Models not loaded: {_model_error or 'no profile loaded; call POST /load?profile=fmv|imagery'}",
+        )
+    global _pool_idx
+    with _pool_lock:
+        start = _pool_idx % len(_pool)
+        _pool_idx += 1
+    # Scan from `start` so subsequent callers prefer different bundles
+    # under load (round-robin fairness when multiple slots are free).
+    for offset in range(len(_pool)):
+        bundle = _pool[(start + offset) % len(_pool)]
+        if bundle["lock"].acquire(blocking=False):
+            return bundle
+    raise HTTPException(
+        status_code=503,
+        detail=f"All {len(_pool)} video bundles busy; retry after current sessions finish",
+    )
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     return {
@@ -410,6 +444,7 @@ def health() -> dict[str, Any]:
         "available_profiles": list(PROFILE_COMPONENTS.keys()),
         "model_error": _model_error,
         "device": os.getenv("DEVICE", "auto"),
+        "pool_size": len(_pool),
         "replicas": [{"device": b["device"], "components": _bundle_components(b)} for b in _pool],
         "model_versions": sam3_runner.versions(),
         "model_version": MODEL_VERSION,
@@ -660,13 +695,18 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
 async def detect_video(video: UploadFile | None = File(None), metadata: str = Form("{}")):
     queue_depth = _enter_request()
     cleanup_path: Path | None = None
+    bundle: dict[str, Any] | None = None
     try:
         try:
             meta = json.loads(metadata or "{}")
         except json.JSONDecodeError as exc:
             raise HTTPException(status_code=400, detail=f"Invalid metadata JSON: {exc}") from exc
         _ensure_profile("fmv")
-        bundle = _next_bundle()
+        # Reserve a free bundle for the duration of this video session.
+        # Released in the stream's `finally` (success) or the outer except
+        # (early failure). The worker fan-out relies on the 503 backpressure
+        # when all bundles are busy.
+        bundle = _acquire_video_bundle()
         if video is not None:
             suffix = Path(video.filename or "clip.mp4").suffix or ".mp4"
             fd, tmp_name = tempfile.mkstemp(prefix=f"sam3_{int(time.time() * 1000)}_", suffix=suffix)
@@ -714,12 +754,14 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
         end_frame = meta.get("end_frame")
         max_frames = meta.get("max_frames")
 
+        reserved = bundle
+
         def stream():
             try:
                 yield from (
                     line + "\n"
                     for line in sam3_runner.run_video(
-                        bundle,
+                        reserved,
                         video_path,
                         prompts,
                         frame_stride=frame_stride,
@@ -733,18 +775,27 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
             finally:
                 if cleanup_path is not None:
                     cleanup_path.unlink(missing_ok=True)
+                reserved["lock"].release()
                 _leave_request()
 
         logger.info(
-            "sam3_detect_video_start prompts=%s queue_depth=%s path=%s",
+            "sam3_detect_video_start prompts=%s queue_depth=%s path=%s device=%s",
             len(prompts),
             queue_depth,
             video_path,
+            reserved.get("device"),
         )
+        # From here on, the stream owns the bundle lock and the
+        # _leave_request counter. Mark the outer bundle as "transferred"
+        # so the except branch below doesn't double-release on any path
+        # after this point.
+        bundle = None
         return StreamingResponse(stream(), media_type="application/x-ndjson")
     except Exception:
         if cleanup_path is not None:
             cleanup_path.unlink(missing_ok=True)
+        if bundle is not None:
+            bundle["lock"].release()
         _leave_request()
         raise
 

@@ -23,7 +23,23 @@ SAM3_MIRROR_REPO_ID = os.getenv("SAM3_MIRROR_REPO_ID", "1038lab/sam3")
 SAM3_MIRROR_FILENAME = os.getenv("SAM3_MIRROR_FILENAME", "sam3.safetensors")
 SAM3_USE_MULTIPLEX = os.getenv("SAM3_USE_MULTIPLEX", "1").strip().lower() in {"1", "true", "yes", "on"}
 SAM3_COMPILE_IMAGE = os.getenv("SAM3_COMPILE_IMAGE", "0").strip().lower() in {"1", "true", "yes", "on"}
-SAM3_COMPILE_VIDEO = os.getenv("SAM3_COMPILE_VIDEO", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _default_compile_video() -> str:
+    """torch.compile pays off on Ampere+ where bf16/TF32 + Triton fusion is
+    well-supported; on older GPUs or CPU it costs cold-start without the
+    speedup. Detect sm_80 (A100) and newer at import time."""
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return "0"
+        major, _ = torch.cuda.get_device_capability(0)
+        return "1" if major >= 8 else "0"
+    except Exception:
+        return "0"
+
+
+SAM3_COMPILE_VIDEO = os.getenv("SAM3_COMPILE_VIDEO", _default_compile_video()).strip().lower() in {"1", "true", "yes", "on"}
 SAM3_WARM_UP_VIDEO = os.getenv("SAM3_WARM_UP_VIDEO", "1").strip().lower() in {"1", "true", "yes", "on"}
 SAM3_BATCHED_TEXT = os.getenv("SAM3_BATCHED_TEXT", "1").strip().lower() in {"1", "true", "yes", "on"}
 SAM3_BATCHED_TEXT_CHUNK_SIZE = max(1, int(os.getenv("SAM3_BATCHED_TEXT_CHUNK_SIZE", "8")))
@@ -188,6 +204,22 @@ def _resolve_mirror_checkpoint() -> str:
     return pt_path
 
 
+def _device_context(device: str):
+    """`torch.cuda.device(device)` if device is CUDA, else a no-op context.
+
+    Critical for multi-GPU: the upstream `build_sam3_multiplex_video_predictor`
+    ends with `demo_model.cuda()` which uses `torch.cuda.current_device()` —
+    without wrapping the build in this context, every replica lands on
+    cuda:0 regardless of the `device` argument, collapsing a 4-GPU pool
+    onto one GPU.
+    """
+    from contextlib import nullcontext
+    if not device.startswith("cuda"):
+        return nullcontext()
+    import torch
+    return torch.cuda.device(torch.device(device))
+
+
 def build_video(device: str):
     _patch_pkg_resources_py312()
     _install_flash_attn_fallback()
@@ -220,25 +252,33 @@ def build_video(device: str):
                         "falling back to non-multiplex base predictor",
                         total_mib, min_total_mib,
                     )
-                    return build_sam3_video_predictor()
+                    with _device_context(device):
+                        predictor = build_sam3_video_predictor()
+                    predictor._sentinel_device = device
+                    return predictor
                 if free_mib < min_free_mib:
                     logger.warning(
                         "GPU free VRAM is %d MiB (< %d MiB headroom needed for multiplex weights); "
                         "falling back to non-multiplex base predictor",
                         free_mib, min_free_mib,
                     )
-                    return build_sam3_video_predictor()
+                    with _device_context(device):
+                        predictor = build_sam3_video_predictor()
+                    predictor._sentinel_device = device
+                    return predictor
         except Exception as exc:
             logger.warning(
                 "multiplex VRAM preflight failed (%s); will still attempt load",
                 exc,
             )
         try:
-            predictor = build_sam3_multiplex_video_predictor(
-                compile=SAM3_COMPILE_VIDEO,
-                warm_up=SAM3_COMPILE_VIDEO and SAM3_WARM_UP_VIDEO,
-            )
+            with _device_context(device):
+                predictor = build_sam3_multiplex_video_predictor(
+                    compile=SAM3_COMPILE_VIDEO,
+                    warm_up=SAM3_COMPILE_VIDEO and SAM3_WARM_UP_VIDEO,
+                )
             _patch_multiplex_init_state(predictor)
+            predictor._sentinel_device = device
             return predictor
         except Exception as exc:
             # cuBLAS-Lt state can't be reset within a Python process: once
@@ -267,7 +307,10 @@ def build_video(device: str):
                 "SAM3 multiplex video predictor failed to load (%s); falling back to non-multiplex base predictor",
                 exc,
             )
-    return build_sam3_video_predictor()
+    with _device_context(device):
+        predictor = build_sam3_video_predictor()
+    predictor._sentinel_device = device
+    return predictor
 
 
 _flash_attn_patched = False
@@ -695,7 +738,13 @@ def run_video(bundle, video_path, prompts, *, frame_stride, start_frame, end_fra
     # autocast context the vitdet linear layers raise
     # "mat1 BFloat16 / mat2 Float". The image detection paths in this file
     # already wrap forward passes in `_autocast_ctx`; mirror that here.
-    with _autocast_ctx(bundle["device"]):
+    # Device pinning: the multiplex predictor's weights are on
+    # `_sentinel_device` (set by build_video). Wrap the session lifecycle
+    # in `torch.cuda.device(...)` so any internal `.cuda()` calls land on
+    # the right GPU. Without this, anyio/threadpool dispatch may pick up
+    # `cuda:0` regardless of which bundle was selected.
+    target_device = getattr(predictor, "_sentinel_device", bundle["device"])
+    with _device_context(target_device), _autocast_ctx(target_device):
         session = predictor.handle_request(request={"type": "start_session", "resource_path": video_path})
         session_id = session["session_id"]
         # Buffer emissions through the hotstart window so the category
