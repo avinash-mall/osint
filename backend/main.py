@@ -1592,9 +1592,8 @@ def get_graph_neighborhood(req: GraphActionRequest):
 def get_geotime_features():
     with db.get_session() as session:
         schema_labels = set(session.run("""
-            SHOW LABELS
-            YIELD name
-            RETURN collect(name) AS labels
+            CALL db.labels() YIELD label
+            RETURN collect(label) AS labels
         """).single()["labels"] or [])
 
         static_features = []
@@ -1613,9 +1612,8 @@ def get_geotime_features():
             return {"static": static_features, "tracks": tracks}
 
         result_static = session.run("""
-            SHOW RELATIONSHIP TYPES
-            YIELD name
-            RETURN collect(name) AS relationship_types
+            CALL db.relationshipTypes() YIELD relationshipType
+            RETURN collect(relationshipType) AS relationship_types
         """)
         relationship_types = set(result_static.single()["relationship_types"] or [])
         if "OBSERVED_AT" not in relationship_types:
