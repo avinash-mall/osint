@@ -1490,6 +1490,12 @@ def _drain_response_entries(resp) -> list[dict]:
     return entries
 
 
+# Session prompts that are bookkeeping sentinels, not real concept labels.
+# AMG and YOLOE modes fan out one session per window with a placeholder
+# prompt; the runner emits the per-detection class inside the NDJSON.
+_SENTINEL_PROMPTS = frozenset({"_amg", "_yoloe"})
+
+
 def _insert_detection_rows(cur, clip_id: int, source_fps: float, window_idx: int, window_start_frame: int,
                             session_prompt: str, entries: list[dict], next_track_id: int,
                             overlap_index: dict[tuple[int, str], list[list[float]]] | None = None,
@@ -1539,16 +1545,20 @@ def _insert_detection_rows(cur, clip_id: int, source_fps: float, window_idx: int
         else:
             # Heartbeat / lost-track frame.
             bbox_json = json.dumps([])
-        # Class resolution: for PCS mode, each session corresponds to one
-        # text prompt → trust the session_prompt over runner output. For
-        # AMG mode, the runner assigns a per-detection class via the
-        # Grounding-DINO labelling pass, so honour the entry's class when
-        # it differs from the AMG sentinel ("_amg"). Fallback chain:
-        # entry["class"] if non-empty and not the AMG sentinel →
-        # session_prompt otherwise.
+        # Class resolution: PCS mode runs one session per concept, so the
+        # session prompt IS the class — trust it over runner output. AMG
+        # and YOLOE modes use a single sentinel session prompt
+        # ("_amg" / "_yoloe") and the runner assigns a real class per
+        # detection (AMG via Grounding-DINO labels; YOLOE from its
+        # built-in vocab or text-prompt set_classes). For those modes,
+        # honour entry["class"] whenever it's set and not itself a
+        # sentinel; fall back only when the runner couldn't label it.
         entry_class = entry.get("class")
-        if entry_class and entry_class != "_amg" and fallback_prompt == "_amg":
-            cls = str(entry_class)
+        if fallback_prompt in _SENTINEL_PROMPTS:
+            if entry_class and entry_class not in _SENTINEL_PROMPTS:
+                cls = str(entry_class)
+            else:
+                cls = fallback_prompt
         else:
             cls = fallback_prompt
         prompt_text = fallback_prompt
