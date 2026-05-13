@@ -108,6 +108,21 @@ class GpuBuildProfile:
     # overlapping decode + encode while inference is running.
     inference_chip_concurrency: int = 1
 
+    # --- AMG (Automatic Mask Generation) promptless FMV path ---
+    # Dense n×n point grid sampled on each seed frame; larger n = more recall
+    # but quadratic VRAM/latency growth. 32 ≈ 1024 candidate prompts/seed —
+    # the SAM 3 paper's default. Consumer cards drop to 24 (576 prompts) and
+    # T4 to 16 (256 prompts) to stay under the per-window VRAM budget.
+    sam3_amg_grid_size: int = 32
+    # Cadence for re-seeding the grid within a window. Lower = fresher
+    # detections of objects entering frame, higher = cheaper. Datacenter
+    # cards reseed every 2 frames (~very frequent); consumer every 6.
+    sam3_amg_reseed_frames: int = 4
+    # Master switch. Off on profiles that can't fit AMG's working set;
+    # operators can flip it on per-host in .env to override (the runner
+    # will refuse if the VRAM headroom is actually insufficient).
+    sam3_amg_enabled: bool = True
+
     def build_env(self, prefix: str = "SAM3_") -> dict[str, str]:
         return {
             f"{prefix}CUDA_VERSION": self.cuda_version,
@@ -156,9 +171,48 @@ class GpuBuildProfile:
             "SAM3_PRELOAD_PROFILE": self.sam3_preload_profile,
             # Memory allocator
             "PYTORCH_CUDA_ALLOC_CONF": self.pytorch_cuda_alloc_conf,
+            # PyTorch 2.8+ renamed PYTORCH_CUDA_ALLOC_CONF → PYTORCH_ALLOC_CONF
+            # (the new variable applies to all allocators, not just CUDA).
+            # Keep both for backward compat across the 2.7→2.10 transition.
+            "PYTORCH_ALLOC_CONF": self.pytorch_cuda_alloc_conf,
             # Backend chip pipeline
             "INFERENCE_SPEED_PROFILE": self.inference_speed_profile,
             "INFERENCE_CHIP_CONCURRENCY": str(self.inference_chip_concurrency),
+            # AMG promptless FMV path
+            "SAM3_AMG_GRID_SIZE": str(self.sam3_amg_grid_size),
+            "SAM3_AMG_RESEED_FRAMES": str(self.sam3_amg_reseed_frames),
+            "SAM3_AMG_ENABLED": "1" if self.sam3_amg_enabled else "0",
+            # Phase 3 quality knobs. Profile-agnostic defaults: the quality
+            # trade-off doesn't depend on GPU class the way grid density does.
+            # Operators can override any of these per-host in .env after the
+            # generated block.
+            "SAM3_AMG_PRED_IOU_THRESH": "0.50",
+            "SAM3_AMG_MIN_AREA_PX": "200",
+            "SAM3_AMG_MAX_AREA_FRAC": "0.50",
+            "SAM3_AMG_EDGE_FRAC_MAX": "0.80",
+            "SAM3_AMG_NMS_IOU": "0.5",
+            "SAM3_AMG_STABILITY_THRESH": "0.0",
+            "SAM3_AMG_MIN_CONSECUTIVE_FRAMES": "2",
+            "SAM3_AMG_LABEL_VIA_GD": "1",
+            "SAM3_AMG_LABEL_IOU_MIN": "0.20",
+            # Phase 5: GD-tiny hallucinates at low thresholds on out-of-domain
+            # FMV footage; 0.25 trims the worst hallucinations while keeping
+            # enough recall for tracking. Combined with the HUD filter this
+            # eliminates the top-row Sign and bottom-dial Pole false positives
+            # without over-suppressing legitimate scene content.
+            "SAM3_AMG_LABEL_GD_THRESH": "0.25",
+            # Phase 5: drone-HUD overlay auto-detection. The default 1
+            # enables detection across all GPU profiles. Set 0 in .env per
+            # host if HUD detection ever misfires on a non-HUD clip type.
+            "SAM3_AMG_HUD_MASK_ENABLED": "1",
+            "SAM3_AMG_HUD_STD_THRESH": "3.0",
+            "SAM3_AMG_HUD_SAMPLES": "5",
+            "SAM3_AMG_HUD_OVERLAP_MAX": "0.5",
+            # Phase 4: GD-first detection is default ("gd"). Operators on
+            # hosts where the broad GD vocab misses domain-specific objects
+            # can override to "grid" in .env to fall back to the dense
+            # 16×16 point-grid AMG path (slower but vocab-free).
+            "SAM3_AMG_DETECTOR": "gd",
         }
         if vram_mib is not None:
             env["SAM3_GPU_VRAM_GIB"] = f"{vram_mib / 1024:.1f}"
@@ -199,6 +253,15 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_preload_profile="",
         inference_speed_profile="fast_review",
         inference_chip_concurrency=1,
+        # AMG off by default on T4: 16 GiB minus base SAM3 + DOTA-OBB + GD-tiny
+        # leaves ~6 GiB headroom — not enough for a 16² grid + propagation
+        # buffers. Operators can flip SAM3_AMG_ENABLED=1 in .env after
+        # measuring per-workload. Tuned for hybrid AMG-seeded path (Phase 2):
+        # grid 16 = 256 prompts on seed frame; reseed every 12 frames (≤ 4
+        # seeds per 48-frame window).
+        sam3_amg_grid_size=16,
+        sam3_amg_reseed_frames=12,
+        sam3_amg_enabled=False,
     ),
     "ampere_sm80_86": GpuBuildProfile(
         name="ampere_sm80_86",
@@ -226,7 +289,15 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_load_optional_models=True,
         sam3_load_dinov3_sat=True,
         sam3_load_prithvi=True,
-        sam3_load_terramind=True,
+        # Terramind (~6 GiB SAR→optical synthesis) is OFF by default on
+        # consumer Ampere because this profile covers 8-12 GiB cards
+        # (RTX 3050 8 GiB, RTX 3060 12 GiB, RTX 3070 8 GiB, RTX 3080
+        # 10/12 GiB, RTX A2000 6/12 GiB). SAM3 base + DINOv3-SAT + Prithvi
+        # + heads + Terramind overruns the budget on /detect calls. Same
+        # rationale as blackwell_sm120. Operators on 24 GiB consumer
+        # Ampere (RTX 3090/3090 Ti, RTX A4500 20 GiB) can override
+        # SAM3_LOAD_TERRAMIND=1 in .env after configure_host.py.
+        sam3_load_terramind=False,
         sam3_load_dota_obb=True,
         sam3_load_grounding_dino=True,
         sam3_embed_detections=True,
@@ -234,6 +305,14 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_preload_profile="",
         inference_speed_profile="fast_review",
         inference_chip_concurrency=1,
+        # AMG on for consumer Ampere (RTX 3080/3090/A4000/A5000). Phase 2
+        # hybrid path runs image AMG once per reseed_frames then propagates
+        # in one video session, so a smaller grid (16² = 256 prompts) and
+        # less frequent reseed (every 12 frames) cuts wall-clock ~5× vs
+        # Phase 1 defaults without measurable recall loss on FMV fixtures.
+        sam3_amg_grid_size=16,
+        sam3_amg_reseed_frames=12,
+        sam3_amg_enabled=True,
     ),
     "ampere_sm80_86_datacenter": GpuBuildProfile(
         name="ampere_sm80_86_datacenter",
@@ -286,6 +365,13 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         # Full-coverage chip sweep + parallel chip threads.
         inference_speed_profile="recall_review",
         inference_chip_concurrency=2,
+        # AMG dense + frequent reseed: A100 40-80 GiB headroom makes the
+        # 32² grid (1024 prompts/seed) and every-4-frames reseed cheap.
+        # Phase 2 hybrid path needs only one image-AMG per reseed window,
+        # so density matters more than per-frame frequency.
+        sam3_amg_grid_size=32,
+        sam3_amg_reseed_frames=4,
+        sam3_amg_enabled=True,
     ),
     "ada_sm89": GpuBuildProfile(
         name="ada_sm89",
@@ -307,7 +393,13 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_load_optional_models=True,
         sam3_load_dinov3_sat=True,
         sam3_load_prithvi=True,
-        sam3_load_terramind=True,
+        # Terramind (~6 GiB) is OFF by default on Ada: this profile covers
+        # 8-12 GiB consumer cards (RTX 4060 8 GiB, RTX 4060 Ti 8/16 GiB,
+        # RTX 4070 12 GiB) where the full satellite-model stack OOMs. The
+        # higher-VRAM members of this profile (RTX 4090 24 GiB, L40/L40s
+        # 48 GiB, RTX 6000 Ada 48 GiB) can override SAM3_LOAD_TERRAMIND=1
+        # in .env after configure_host.py.
+        sam3_load_terramind=False,
         sam3_load_dota_obb=True,
         sam3_load_grounding_dino=True,
         sam3_embed_detections=True,
@@ -315,6 +407,12 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_preload_profile="",
         inference_speed_profile="fast_review",
         inference_chip_concurrency=1,
+        # Ada (RTX 4090 / L40) is sm_89 with 24-48 GiB. Phase 2 hybrid path:
+        # 16² grid + reseed-every-12 matches consumer Blackwell wall-clock
+        # while leaving headroom for parallel chip+video sessions.
+        sam3_amg_grid_size=16,
+        sam3_amg_reseed_frames=12,
+        sam3_amg_enabled=True,
     ),
     "hopper_sm90": GpuBuildProfile(
         name="hopper_sm90",
@@ -344,9 +442,18 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         # Larger batch fits in 80 GiB HBM; reduces total prompt round-trips.
         sam3_batched_text_chunk_size=16,
         sam3_preload_models=True,
-        sam3_preload_profile="imagery",
+        # H100/H200 carry 80 GiB+ HBM3 — keep the "all" superset resident
+        # so requests of either kind serve immediately. `_ensure_profile`
+        # in main.py treats "all" as satisfying any single-profile request.
+        sam3_preload_profile="all",
         inference_speed_profile="recall_review",
         inference_chip_concurrency=2,
+        # H100/H200 80 GiB: dense AMG sweep, frequent reseed. Phase 2 hybrid
+        # path needs fewer image-AMG passes; 32² grid = 1024 prompts/seed
+        # remains within ~2 s on Hopper.
+        sam3_amg_grid_size=32,
+        sam3_amg_reseed_frames=4,
+        sam3_amg_enabled=True,
     ),
     "blackwell_sm100": GpuBuildProfile(
         name="blackwell_sm100",
@@ -375,9 +482,16 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_embed_detections=True,
         sam3_batched_text_chunk_size=16,
         sam3_preload_models=True,
-        sam3_preload_profile="imagery",
+        # B100/B200 datacenter Blackwell — 80-192 GiB HBM3e. Preload the
+        # full superset like Hopper / Ampere datacenter so profile switches
+        # are zero-pause.
+        sam3_preload_profile="all",
         inference_speed_profile="recall_review",
         inference_chip_concurrency=2,
+        # B100/B200 datacenter Blackwell mirrors Hopper (Phase 2: 32²/4f).
+        sam3_amg_grid_size=32,
+        sam3_amg_reseed_frames=4,
+        sam3_amg_enabled=True,
     ),
     "blackwell_sm120": GpuBuildProfile(
         name="blackwell_sm120",
@@ -395,6 +509,14 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         # 16 GiB cards (RTX 5070 Ti: 15.9 GiB < 20 GiB threshold) and on for
         # 24+ GiB cards (RTX 5090: 32 GiB). compile_video stays off —
         # SAM3's branchy paths still trip the compiler on this arch.
+        # Terramind (~6 GiB) is disabled by default: it's a SAR→optical
+        # synthesis model only used on Sentinel-1 SAR ingest, and loading
+        # it alongside sam3_image+dinov3_sat+prithvi+heads exhausts the
+        # 16 GiB budget on /detect calls (measured OOM 2026-05-12 on an
+        # austin1.tif Optical chip when all 6 models were resident).
+        # Operators on 24+ GiB consumer Blackwells (RTX 5090 32 GiB) can
+        # override SAM3_LOAD_TERRAMIND=1 in .env after running
+        # configure_host.py.
         enable_tf32=True,
         compile_image=False,
         compile_video=False,
@@ -404,7 +526,7 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_load_optional_models=True,
         sam3_load_dinov3_sat=True,
         sam3_load_prithvi=True,
-        sam3_load_terramind=True,
+        sam3_load_terramind=False,
         sam3_load_dota_obb=True,
         sam3_load_grounding_dino=True,
         sam3_embed_detections=True,
@@ -412,6 +534,12 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_preload_profile="",
         inference_speed_profile="fast_review",
         inference_chip_concurrency=1,
+        # AMG conservative on consumer Blackwell (RTX 5070/5080/5090): 16-32 GiB.
+        # Phase 2 hybrid path: grid 16 + reseed-every-12 takes ~30 s per 48-frame
+        # window on the RTX 5070 Ti (measured) — ~5× faster than Phase 1.
+        sam3_amg_grid_size=16,
+        sam3_amg_reseed_frames=12,
+        sam3_amg_enabled=True,
     ),
 }
 

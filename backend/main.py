@@ -1267,6 +1267,106 @@ def health():
 INFERENCE_SAM3_URL = os.getenv("INFERENCE_SAM3_URL", "http://inference-sam3:8001")
 
 
+@app.get("/api/alerts")
+def alerts():
+    """Operator-facing health alerts derived from the same checks /api/health runs.
+
+    Returns a list of `{id, severity, title, source, at}` so the Admin · Alerts
+    panel can render a unified feed without duplicating the health probes.
+    """
+    items: list[dict] = []
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Neo4j status -> alert
+    try:
+        with db.get_session() as session:
+            session.run("RETURN 1 AS ok").single()
+    except Exception as exc:  # noqa: BLE001
+        items.append({
+            "id": "neo4j-down",
+            "severity": "high",
+            "title": "Neo4j (ontology graph) unreachable",
+            "source": "service:neo4j",
+            "detail": str(exc)[:200],
+            "at": now_iso,
+        })
+
+    # Postgis status -> alert
+    try:
+        with postgis_db.get_cursor() as cursor:
+            cursor.execute("SELECT 1 AS ok")
+            cursor.fetchone()
+    except Exception as exc:  # noqa: BLE001
+        items.append({
+            "id": "postgis-down",
+            "severity": "high",
+            "title": "PostGIS (detections / tracks) unreachable",
+            "source": "service:postgis",
+            "detail": str(exc)[:200],
+            "at": now_iso,
+        })
+
+    # Inference service status -> alert
+    try:
+        resp = requests.get(f"{INFERENCE_SAM3_URL}/health", timeout=2)
+        if resp.status_code >= 400:
+            items.append({
+                "id": "inference-error",
+                "severity": "medium",
+                "title": f"Inference service responded {resp.status_code}",
+                "source": "service:sam3",
+                "detail": resp.text[:200],
+                "at": now_iso,
+            })
+    except requests.RequestException as exc:
+        items.append({
+            "id": "inference-unreachable",
+            "severity": "medium",
+            "title": "Inference service unreachable",
+            "source": "service:sam3",
+            "detail": str(exc)[:200],
+            "at": now_iso,
+        })
+
+    # Failed ingest tasks in the last 24 h surface as alerts.  upload_jobs is
+    # created at startup by ensure_platform_tables(); we read it with explicit
+    # column names so dict_row drivers and tuple drivers both work.
+    try:
+        with postgis_db.get_cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT upload_id, filename, status, updated_at
+                FROM upload_jobs
+                WHERE status IN ('failed', 'error')
+                  AND updated_at > NOW() - INTERVAL '24 hours'
+                ORDER BY updated_at DESC
+                LIMIT 25
+                """
+            )
+            rows = cursor.fetchall() or []
+            for row in rows:
+                # dict_row gives RealDictRow, default tuple driver gives a tuple.
+                if hasattr(row, "get"):
+                    upload_id = row.get("upload_id")
+                    filename = row.get("filename")
+                    updated_at = row.get("updated_at")
+                else:
+                    upload_id, filename, _status, updated_at = row
+                items.append({
+                    "id": f"upload-failed-{upload_id}",
+                    "severity": "medium",
+                    "title": f"Ingest failed · {filename or upload_id}",
+                    "source": f"upload:{upload_id}",
+                    "detail": "Ingest pipeline failed within the last 24 h",
+                    "at": (updated_at.isoformat() if hasattr(updated_at, "isoformat") else now_iso),
+                })
+    except Exception:
+        # upload_jobs query is best-effort; absence shouldn't itself alert.
+        pass
+
+    return {"alerts": items, "count": len(items), "generated_at": now_iso}
+
+
 @app.post("/api/inference/load")
 def inference_load(profile: str = Query(...)):
     """Proxy: ask the inference service to load a named model profile."""
@@ -1808,6 +1908,7 @@ def upload_fmv_clip(
     name: Optional[str] = Form(None),
     srt: Optional[UploadFile] = File(None),
     prompts: Optional[str] = Form(None),
+    prompt_mode: Optional[str] = Form(None),
 ):
     ensure_platform_tables()
     filename = safe_filename(file.filename or "clip.mp4")
@@ -1882,19 +1983,30 @@ def upload_fmv_clip(
     # fallback. `ontology_default_prompts(None)` returns ALL prompts in the
     # admin tree (across all sensors); admin edits to /admin propagate live
     # since the tree is cache-invalidated on every `/api/ontology/update`.
-    explicit_prompts = [p.strip() for p in (prompts or "").split(",") if p.strip()]
-    if explicit_prompts:
-        prompt_list = explicit_prompts
+    mode = (prompt_mode or "amg").strip().lower()
+    if mode not in {"pcs", "amg"}:
+        raise HTTPException(status_code=400, detail=f"prompt_mode must be 'pcs' or 'amg', got {prompt_mode!r}")
+    if mode == "amg":
+        # Promptless path — prompts/ontology defaults are ignored. Worker
+        # synthesises a single "_amg" sentinel prompt so the per-window task
+        # fan-out yields exactly one inference call per window.
+        prompt_list: list[str] = []
     else:
-        try:
-            prompt_list = ontology_default_prompts(None) or list(FMV_FALLBACK_PROMPTS)
-        except Exception as exc:
-            logger.warning("ontology_default_prompts failed for FMV upload: %s", exc)
-            prompt_list = list(FMV_FALLBACK_PROMPTS)
+        explicit_prompts = [p.strip() for p in (prompts or "").split(",") if p.strip()]
+        if explicit_prompts:
+            prompt_list = explicit_prompts
+        else:
+            try:
+                prompt_list = ontology_default_prompts(None) or list(FMV_FALLBACK_PROMPTS)
+            except Exception as exc:
+                logger.warning("ontology_default_prompts failed for FMV upload: %s", exc)
+                prompt_list = list(FMV_FALLBACK_PROMPTS)
     try:
-        task = process_fmv.delay(clip["id"], str(local_path), prompt_list)
+        task = process_fmv.delay(clip["id"], str(local_path), prompt_list,
+                                 None, None, mode)
         clip["task_id"] = task.id
         clip["status"] = "queued"
+        clip["prompt_mode"] = mode
     except Exception as exc:
         logger.warning("Failed to queue process_fmv for clip %s: %s", clip["id"], exc)
 
@@ -2095,6 +2207,19 @@ def list_model_datasets():
             ORDER BY created_at DESC
         """)
         return {"datasets": [dict(row) for row in cursor.fetchall()]}
+
+
+@app.get("/api/models")
+def list_models():
+    """List deployed/candidate detection models — used by the Admin · Models view."""
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT id, name, version, model_path, status, metrics, promoted, created_at
+            FROM models
+            ORDER BY promoted DESC, created_at DESC
+        """)
+        return {"models": [dict(row) for row in cursor.fetchall()]}
 
 
 @app.post("/api/models/datasets")

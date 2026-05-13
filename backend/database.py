@@ -17,7 +17,11 @@ NEO4J_AUTH = (
 )
 
 # PostGIS Configuration
-POSTGIS_URI = os.getenv("POSTGIS_URI", "postgresql://sentinel:sentinel@172.18.0.11:5432/sentinel")
+# Default URI uses the docker-compose service name `postgis`, which resolves
+# via docker DNS inside the compose network. The hardcoded IP `172.18.0.11`
+# previously here was unstable across compose recreations; tests run outside
+# docker should override POSTGIS_URI explicitly.
+POSTGIS_URI = os.getenv("POSTGIS_URI", "postgresql://sentinel:sentinel@postgis:5432/sentinel")
 ASYNC_POSTGIS_URI = POSTGIS_URI.replace("postgresql://", "postgresql+asyncpg://", 1)
 
 

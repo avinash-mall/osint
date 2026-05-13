@@ -13,7 +13,7 @@ import tempfile
 import base64
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 from celery import Celery
 
@@ -1539,10 +1539,18 @@ def _insert_detection_rows(cur, clip_id: int, source_fps: float, window_idx: int
         else:
             # Heartbeat / lost-track frame.
             bbox_json = json.dumps([])
-        # Each call corresponds to one prompt's session, so the session
-        # prompt is authoritative — runner-emitted class/prompt_text are
-        # only a sanity check.
-        cls = fallback_prompt
+        # Class resolution: for PCS mode, each session corresponds to one
+        # text prompt → trust the session_prompt over runner output. For
+        # AMG mode, the runner assigns a per-detection class via the
+        # Grounding-DINO labelling pass, so honour the entry's class when
+        # it differs from the AMG sentinel ("_amg"). Fallback chain:
+        # entry["class"] if non-empty and not the AMG sentinel →
+        # session_prompt otherwise.
+        entry_class = entry.get("class")
+        if entry_class and entry_class != "_amg" and fallback_prompt == "_amg":
+            cls = str(entry_class)
+        else:
+            cls = fallback_prompt
         prompt_text = fallback_prompt
         local_tid = entry.get("track_id")
         if local_tid is not None:
@@ -1595,8 +1603,17 @@ def _insert_detection_rows(cur, clip_id: int, source_fps: float, window_idx: int
 
 
 @celery_app.task(name="worker.process_fmv", queue="imagery")
-def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = None, frame_stride: int | None = None, max_frames: int | None = None) -> int:
+def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = None,
+                frame_stride: int | None = None, max_frames: int | None = None,
+                prompt_mode: str = "amg") -> int:
     """Run SAM3 FMV tracking over the full clip via sliding-window sessions.
+
+    ``prompt_mode``:
+      * ``"pcs"`` (default) — Promptable Concept Segmentation. ``text_prompts``
+        defaults to ``["object"]``. One inference session per (window, prompt).
+      * ``"amg"`` — promptless Automatic Mask Generation. One inference
+        session per window; ``text_prompts`` is ignored. Requires the
+        inference service to report ``amg_available: true`` from /health.
 
     Per-window flow:
       1. Slice source into overlapping windows (so SAM3's tracker is
@@ -1613,13 +1630,23 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
          window finishing — not 4 minutes after the whole clip processes.
     """
     provider_lifecycle.ensure_running()
+    mode = (prompt_mode or "pcs").strip().lower()
+    if mode not in {"pcs", "amg"}:
+        raise ValueError(f"unknown prompt_mode {prompt_mode!r}")
     source_fps, duration_s = _probe_source(video_path)
     if duration_s <= 0:
         duration_s = FMV_TRACK_WINDOW_SECONDS
     windows = _slice_windows(duration_s)
-    prompts = list(text_prompts or [])
-    if not prompts:
-        prompts = ["object"]
+    if mode == "amg":
+        # AMG is promptless — there is exactly one "session" per window. Use
+        # a synthetic prompt list of length one so the existing window-task
+        # fan-out shape (cartesian product with prompts) yields one task
+        # per window. The runner ignores the prompt value.
+        prompts = ["_amg"]
+    else:
+        prompts = list(text_prompts or [])
+        if not prompts:
+            prompts = ["object"]
 
     _update_clip_tracking(
         clip_id,
@@ -1641,6 +1668,13 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
         health = _ensure_fmv_profile(session, clip_id)
         video_backend = (health.get("model_versions") or {}).get("sam3_video", "")
         multiplex = "multiplex" in str(video_backend).lower()
+        # AMG must be probed-available before we dispatch; the inference
+        # service exposes the cached probe result on /health.
+        if mode == "amg" and not bool(health.get("amg_available")):
+            raise RuntimeError(
+                f"AMG mode requested but inference service reports amg_available=False "
+                f"(amg_config={health.get('amg_config')})"
+            )
         # Bound concurrency by the inference-sam3 pool size. Each multiplex
         # replica accepts one in-flight session at a time (enforced by its
         # per-bundle lock on the server); going beyond pool_size just
@@ -1648,9 +1682,9 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
         pool_size = int(health.get("pool_size") or 1)
         inflight_cap = max(1, min(FMV_INFLIGHT_REQUESTS, pool_size))
         logger.info(
-            "FMV tracking clip=%s windows=%d backend=%s multiplex=%s "
+            "FMV tracking clip=%s windows=%d backend=%s multiplex=%s mode=%s "
             "pool_size=%d inflight_cap=%d",
-            clip_id, len(windows), video_backend, multiplex, pool_size, inflight_cap,
+            clip_id, len(windows), video_backend, multiplex, mode, pool_size, inflight_cap,
         )
 
         # Build the (window, prompt) task list. ffmpeg slicing runs
@@ -1683,13 +1717,22 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
 
         def _run_one(args: tuple[int, int, Any, str]) -> int:
             win_idx, win_start_frame, win_path, prompt = args
-            payload = json.dumps({
-                "video_path": str(win_path),
-                "text_prompts": [prompt],
-                "frame_stride": 1,
-                "max_frames": FMV_TRACK_FRAMES_PER_WINDOW,
-                "modality": "fmv",
-            })
+            if mode == "amg":
+                payload = json.dumps({
+                    "video_path": str(win_path),
+                    "prompt_mode": "amg",
+                    "frame_stride": 1,
+                    "max_frames": FMV_TRACK_FRAMES_PER_WINDOW,
+                    "modality": "fmv_amg",
+                })
+            else:
+                payload = json.dumps({
+                    "video_path": str(win_path),
+                    "text_prompts": [prompt],
+                    "frame_stride": 1,
+                    "max_frames": FMV_TRACK_FRAMES_PER_WINDOW,
+                    "modality": "fmv",
+                })
             # Retry transient 503s — the server returns 503 when every
             # GPU bundle is busy, so this is the natural backpressure
             # signal under fan-out. Linear backoff capped at 30 s; the

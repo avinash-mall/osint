@@ -437,6 +437,25 @@ def _acquire_video_bundle() -> dict[str, Any]:
 
 @app.get("/health")
 def health() -> dict[str, Any]:
+    # Probe AMG lazily on first /health after profile load. The probe needs a
+    # bundle with sam3_image loaded; calling it before /load returns False
+    # which is the correct "not yet available" state. The seeded probe needs
+    # sam3_video and runs a real session against a temp 64×64 fixture — its
+    # first run takes a few seconds, so we probe it only after the
+    # per-frame AMG probe passes (no point checking the fast path on a
+    # broken-AMG stack).
+    amg_ok = False
+    amg_seeded_ok = False
+    if _pool:
+        try:
+            amg_ok = sam3_runner.probe_amg(_pool[0])
+        except Exception:
+            amg_ok = False
+        if amg_ok:
+            try:
+                amg_seeded_ok = sam3_runner.probe_amg_seeded(_pool[0])
+            except Exception:
+                amg_seeded_ok = False
     return {
         "status": "ok",
         "model_loaded": bool(_pool),
@@ -451,6 +470,29 @@ def health() -> dict[str, Any]:
         "gpu_model": GPU_MODEL,
         "active_requests": _active_requests,
         "embed_detections": SAM3_EMBED_DETECTIONS,
+        "amg_available": amg_ok,
+        "amg_seeded_available": amg_seeded_ok,
+        "amg_config": {
+            "grid_size": sam3_runner.SAM3_AMG_GRID_SIZE,
+            "reseed_frames": sam3_runner.SAM3_AMG_RESEED_FRAMES,
+            "enabled": sam3_runner.SAM3_AMG_ENABLED,
+            "path": "seeded" if amg_seeded_ok else "per_frame",
+            "pred_iou_thresh": sam3_runner.SAM3_AMG_PRED_IOU_THRESH,
+            "min_area_px": sam3_runner.SAM3_AMG_MIN_AREA_PX,
+            "max_area_frac": sam3_runner.SAM3_AMG_MAX_AREA_FRAC,
+            "edge_frac_max": sam3_runner.SAM3_AMG_EDGE_FRAC_MAX,
+            "nms_iou": sam3_runner.SAM3_AMG_NMS_IOU,
+            "stability_thresh": sam3_runner.SAM3_AMG_STABILITY_THRESH,
+            "min_consecutive_frames": sam3_runner.SAM3_AMG_MIN_CONSECUTIVE_FRAMES,
+            "label_via_gd": sam3_runner.SAM3_AMG_LABEL_VIA_GD,
+            "label_iou_min": sam3_runner.SAM3_AMG_LABEL_IOU_MIN,
+            "label_gd_thresh": sam3_runner.SAM3_AMG_LABEL_GD_THRESH,
+            "labels_preview": [p.strip() for p in sam3_runner.SAM3_AMG_LABEL_PROMPTS.split(",") if p.strip()][:8],
+            "detector": sam3_runner.SAM3_AMG_DETECTOR,
+            "hud_mask_enabled": sam3_runner.SAM3_AMG_HUD_MASK_ENABLED,
+            "hud_std_thresh": sam3_runner.SAM3_AMG_HUD_STD_THRESH,
+            "hud_overlap_max": sam3_runner.SAM3_AMG_HUD_OVERLAP_MAX,
+        },
         "load_flags": {
             "dinov3_sat": SAM3_LOAD_DINOV3_SAT,
             "prithvi": SAM3_LOAD_PRITHVI,
@@ -719,12 +761,31 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
             if not video_path:
                 raise HTTPException(status_code=400, detail="video upload or metadata.video_path required")
 
-        try:
-            prompts = resolve_prompts({**meta, "modality": "fmv"})
-        except OntologyBackendUnavailable as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        prompt_mode = (meta.get("prompt_mode") or "pcs").strip().lower()
+        if prompt_mode not in {"pcs", "amg"}:
+            raise HTTPException(status_code=400, detail=f"unknown prompt_mode {prompt_mode!r}")
+        if prompt_mode == "amg":
+            if not sam3_runner.SAM3_AMG_ENABLED:
+                raise HTTPException(status_code=501, detail="AMG disabled on this GPU profile")
+            # The bundle lock is already held by `_acquire_video_bundle()`
+            # above, so probing here would either deadlock or non-blockingly
+            # fail. Rely on the cached result from /health instead — the
+            # docker healthcheck primes it at startup.
+            if sam3_runner._AMG_AVAILABLE is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail="AMG availability not yet probed; call /health first",
+                )
+            if not sam3_runner.amg_available():
+                raise HTTPException(status_code=501, detail="AMG unavailable; see inference logs")
+            prompts = []  # no text prompts in AMG mode
+        else:
+            try:
+                prompts = resolve_prompts({**meta, "modality": "fmv"})
+            except OntologyBackendUnavailable as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         # Pre-flight the video file. SAM3's `start_session` raises
         # ValueError("Could not open video: ...") from inside the
@@ -756,30 +817,67 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
 
         reserved = bundle
 
-        def stream():
-            try:
-                yield from (
-                    line + "\n"
-                    for line in sam3_runner.run_video(
-                        reserved,
-                        video_path,
-                        prompts,
-                        frame_stride=frame_stride,
-                        start_frame=start_frame,
-                        end_frame=end_frame,
-                        max_frames=max_frames,
-                        dinov3=None,  # DINOV3_LVD removed (NaN on real video crops)
-                        score_threshold=SAM3_TEXT_THR,
+        if prompt_mode == "amg":
+            # Prefer the hybrid AMG-seeded path (single image-AMG sweep
+            # then GPU-batched video propagation). Falls back to per-frame
+            # AMG if the probe says the seeded path is unavailable.
+            amg_runner = (
+                sam3_runner.run_video_amg_seeded
+                if sam3_runner.amg_seeded_available()
+                else sam3_runner.run_video_amg
+            )
+            amg_path_label = (
+                "seeded" if sam3_runner.amg_seeded_available() else "per_frame"
+            )
+            def stream():
+                try:
+                    yield from (
+                        line + "\n"
+                        for line in amg_runner(
+                            reserved,
+                            video_path,
+                            frame_stride=frame_stride,
+                            start_frame=start_frame,
+                            end_frame=end_frame,
+                            max_frames=max_frames,
+                            dinov3=reserved.get("dinov3_sat"),
+                            score_threshold=SAM3_BOX_THR,
+                            grid_size=sam3_runner.SAM3_AMG_GRID_SIZE,
+                            reseed_every_n_frames=sam3_runner.SAM3_AMG_RESEED_FRAMES,
+                        )
                     )
-                )
-            finally:
-                if cleanup_path is not None:
-                    cleanup_path.unlink(missing_ok=True)
-                reserved["lock"].release()
-                _leave_request()
+                finally:
+                    if cleanup_path is not None:
+                        cleanup_path.unlink(missing_ok=True)
+                    reserved["lock"].release()
+                    _leave_request()
+        else:
+            def stream():
+                try:
+                    yield from (
+                        line + "\n"
+                        for line in sam3_runner.run_video(
+                            reserved,
+                            video_path,
+                            prompts,
+                            frame_stride=frame_stride,
+                            start_frame=start_frame,
+                            end_frame=end_frame,
+                            max_frames=max_frames,
+                            dinov3=None,  # DINOV3_LVD removed (NaN on real video crops)
+                            score_threshold=SAM3_TEXT_THR,
+                        )
+                    )
+                finally:
+                    if cleanup_path is not None:
+                        cleanup_path.unlink(missing_ok=True)
+                    reserved["lock"].release()
+                    _leave_request()
 
         logger.info(
-            "sam3_detect_video_start prompts=%s queue_depth=%s path=%s device=%s",
+            "sam3_detect_video_start mode=%s amg_path=%s prompts=%s queue_depth=%s path=%s device=%s",
+            prompt_mode,
+            amg_path_label if prompt_mode == "amg" else "-",
             len(prompts),
             queue_depth,
             video_path,

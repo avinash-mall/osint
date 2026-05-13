@@ -1,0 +1,458 @@
+/**
+ * ShellModern — top-level workstation chrome.
+ *
+ * Layout:  64px icon-rail sidebar (expands to 224px on hover, floats over canvas) +
+ *          52px topbar (workspace + AOR breadcrumb, ⌘K search, alerts, analyst chip) +
+ *          28px status bar (live health + uploads + Zulu time).
+ *
+ * Wired to /api/health and /api/ingest/uploads so the status reflects real backend state.
+ */
+
+import { useEffect, useMemo, useState } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
+import axios from 'axios';
+import {
+  Bell,
+  Crosshair,
+  Film,
+  GitBranch,
+  Map as MapIcon,
+  Search,
+} from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import { StatusDot } from './atoms';
+
+const API_URL = (import.meta as any).env?.VITE_API_URL || '';
+
+export type WorkspaceKey = 'map' | 'fmv' | 'graph' | 'admin';
+
+type NavItem = {
+  key: WorkspaceKey;
+  label: string;
+  short: string;
+  Icon: LucideIcon;
+  badge?: number | string;
+};
+
+const NAV: NavItem[] = [
+  { key: 'map',   label: 'Geoint',      short: 'GEO', Icon: MapIcon },
+  { key: 'fmv',   label: 'Drone Video', short: 'FMV', Icon: Film },
+  { key: 'graph', label: 'Link Graph',  short: 'LNK', Icon: Crosshair },
+  { key: 'admin', label: 'Admin',       short: 'ADM', Icon: GitBranch },
+];
+
+type Health = { healthy?: boolean; neo4j?: string; postgis?: string };
+
+function useClock() {
+  const [t, setT] = useState(new Date());
+  useEffect(() => {
+    const id = window.setInterval(() => setT(new Date()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  return t;
+}
+
+function useSystemStatus() {
+  const [health, setHealth] = useState<Health>({});
+  const [uploadCount, setUploadCount] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const [h, u] = await Promise.all([
+          axios.get<Health>(`${API_URL}/api/health`),
+          axios.get<{ uploads?: unknown[] }>(`${API_URL}/api/ingest/uploads`),
+        ]);
+        if (cancelled) return;
+        setHealth(h.data ?? {});
+        setUploadCount(u.data?.uploads?.length ?? 0);
+      } catch {
+        if (!cancelled) setHealth({ healthy: false });
+      }
+    };
+    refresh();
+    const id = window.setInterval(refresh, 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
+  return { health, uploadCount };
+}
+
+type ShellProps = {
+  active: WorkspaceKey;
+  onNavigate: (key: WorkspaceKey) => void;
+  children: ReactNode;
+  /** Optional right-side hint for the topbar (e.g. AOR/UTC line). */
+  contextLine?: string;
+  /** Optional right-side content slotted into the status bar. */
+  statusRight?: ReactNode;
+};
+
+export function Shell({ active, onNavigate, children, contextLine, statusRight }: ShellProps) {
+  const [hover, setHover] = useState(false);
+  const W_COL = 64;
+  const W_OPEN = 224;
+  const activeNav = useMemo(() => NAV.find((n) => n.key === active) ?? NAV[0], [active]);
+  const { health, uploadCount } = useSystemStatus();
+  const clock = useClock();
+
+  const services = (() => {
+    let up = 1; // API itself responded
+    let total = 3;
+    if (health.neo4j === 'ok') up += 1;
+    if (health.postgis === 'ok') up += 1;
+    if (health.healthy === false) up = 0;
+    return { up, total };
+  })();
+  const allOk = services.up === services.total;
+
+  return (
+    <div
+      data-shell="modern"
+      style={{
+        height: '100%',
+        display: 'grid',
+        gridTemplateColumns: `${W_COL}px minmax(0, 1fr)`,
+        background: 'var(--bg-0)',
+        color: 'var(--ink-0)',
+        fontFamily: 'var(--font-sans)',
+        fontSize: 12,
+        overflow: 'hidden',
+        position: 'relative',
+      }}
+    >
+      {/* Reserved column — the floating aside expands on hover.
+          z-index has to beat the map workspace's floating glass panels
+          (zIndex 500) so the sidebar overlays them instead of getting
+          covered when it expands. */}
+      <div
+        style={{ position: 'relative', height: '100%', zIndex: 1000 }}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
+      >
+        <aside
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            bottom: 0,
+            width: hover ? W_OPEN : W_COL,
+            background: 'var(--bg-1)',
+            borderRight: '1px solid var(--line)',
+            display: 'flex',
+            flexDirection: 'column',
+            padding: hover ? '14px 12px' : '14px 8px',
+            gap: 14,
+            transition: 'width .18s ease, padding .18s ease, box-shadow .18s ease',
+            boxShadow: hover ? '10px 0 28px rgba(0,0,0,.40)' : 'none',
+            overflow: 'hidden',
+          }}
+        >
+          <Brand expanded={hover} />
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <div
+              className="label-mono"
+              style={{
+                padding: '4px 6px',
+                fontSize: 10,
+                opacity: hover ? 1 : 0,
+                transition: 'opacity .1s',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              Workspaces
+            </div>
+            {NAV.map((n) => (
+              <NavButton key={n.key} item={n} active={active === n.key} expanded={hover} onClick={() => onNavigate(n.key)} />
+            ))}
+          </div>
+
+          <div style={{ flex: 1 }} />
+
+          <SidebarFooter expanded={hover} allOk={allOk} services={services} />
+        </aside>
+      </div>
+
+      <div style={{ minWidth: 0, display: 'grid', gridTemplateRows: '52px minmax(0,1fr) 28px' }}>
+        <Topbar workspaceLabel={activeNav.label} contextLine={contextLine ?? `AOR · Live · UTC ${clock.toISOString().slice(11, 19)}`} />
+
+        <main style={{ minWidth: 0, minHeight: 0, overflow: 'hidden', background: 'var(--bg-0)' }}>
+          {children}
+        </main>
+
+        <StatusBar uploadCount={uploadCount} allOk={allOk} clock={clock} statusRight={statusRight} />
+      </div>
+    </div>
+  );
+}
+
+function Brand({ expanded }: { expanded: boolean }) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: expanded ? '0 4px 12px' : '0 0 12px',
+        borderBottom: '1px solid var(--line)',
+        justifyContent: expanded ? 'flex-start' : 'center',
+      }}
+    >
+      <div
+        style={{
+          width: 30,
+          height: 30,
+          display: 'grid',
+          placeItems: 'center',
+          flexShrink: 0,
+          background: 'color-mix(in oklab, var(--accent) 18%, var(--bg-2))',
+          border: '1px solid color-mix(in oklab, var(--accent) 60%, transparent)',
+          color: 'var(--accent)',
+          borderRadius: 6,
+          fontWeight: 700,
+          fontFamily: 'var(--font-mono)',
+          fontSize: 13,
+        }}
+      >
+        S
+      </div>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          lineHeight: 1.2,
+          opacity: expanded ? 1 : 0,
+          transition: 'opacity .12s ease .04s',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+        }}
+      >
+        <span style={{ fontWeight: 600, fontSize: 13 }}>Sentinel</span>
+        <span
+          className="mono"
+          style={{ color: 'var(--ink-2)', fontSize: 10, letterSpacing: '.06em' }}
+        >
+          GEOINT WORKSTATION
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function NavButton({
+  item,
+  active,
+  expanded,
+  onClick,
+}: {
+  item: NavItem;
+  active: boolean;
+  expanded: boolean;
+  onClick: () => void;
+}) {
+  const { Icon } = item;
+  const style: CSSProperties = {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 12,
+    height: 38,
+    padding: expanded ? '0 12px' : '0',
+    justifyContent: expanded ? 'flex-start' : 'center',
+    border: '1px solid ' + (active ? 'var(--line-2)' : 'transparent'),
+    background: active ? 'var(--bg-2)' : 'transparent',
+    color: active ? 'var(--ink-0)' : 'var(--ink-1)',
+    borderRadius: 8,
+    cursor: 'pointer',
+    textAlign: 'left',
+    fontSize: 12.5,
+    position: 'relative',
+    overflow: 'hidden',
+  };
+  return (
+    <button title={item.label} onClick={onClick} style={style} type="button">
+      {active && (
+        <span
+          style={{
+            position: 'absolute',
+            left: 0,
+            top: 8,
+            bottom: 8,
+            width: 3,
+            background: 'var(--accent)',
+            borderRadius: '0 3px 3px 0',
+          }}
+        />
+      )}
+      <Icon size={17} style={{ flexShrink: 0, color: active ? 'var(--accent)' : undefined }} />
+      {expanded && (
+        <>
+          <span style={{ flex: 1, whiteSpace: 'nowrap' }}>{item.label}</span>
+          {item.badge != null && (
+            <span className="mono" style={{ color: 'var(--ink-2)', fontSize: 10 }}>
+              {item.badge}
+            </span>
+          )}
+        </>
+      )}
+    </button>
+  );
+}
+
+function SidebarFooter({
+  expanded,
+  allOk,
+  services,
+}: {
+  expanded: boolean;
+  allOk: boolean;
+  services: { up: number; total: number };
+}) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+        padding: expanded ? '10px 4px' : '10px 0',
+        borderTop: '1px solid var(--line)',
+        alignItems: expanded ? 'stretch' : 'center',
+      }}
+    >
+      {expanded ? (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11 }}>
+            <StatusDot tone={allOk ? 'ok' : 'crit'} pulse={allOk} />
+            <span style={{ color: 'var(--ink-1)' }}>
+              {allOk ? 'All systems nominal' : 'System degraded'}
+            </span>
+          </div>
+          <div className="mono" style={{ fontSize: 10, color: 'var(--ink-2)' }}>
+            {services.up}/{services.total} services
+          </div>
+        </>
+      ) : (
+        <StatusDot tone={allOk ? 'ok' : 'crit'} pulse={allOk} />
+      )}
+    </div>
+  );
+}
+
+function Topbar({ workspaceLabel, contextLine }: { workspaceLabel: string; contextLine: string }) {
+  return (
+    <header
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 14,
+        padding: '0 18px',
+        borderBottom: '1px solid var(--line)',
+        background: 'var(--bg-1)',
+      }}
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.15 }}>
+        <span style={{ fontSize: 14, fontWeight: 600 }}>{workspaceLabel}</span>
+        <span
+          className="mono"
+          style={{ fontSize: 10, color: 'var(--ink-2)', letterSpacing: '.06em' }}
+        >
+          {contextLine}
+        </span>
+      </div>
+      <div style={{ flex: 1 }} />
+      <button
+        className="btn ghost sm rounded"
+        style={{ gap: 8, height: 30, border: '1px solid var(--line)' }}
+        type="button"
+      >
+        <Search size={13} />
+        <span style={{ color: 'var(--ink-2)' }}>Jump to anything…</span>
+        <span className="kbd">⌘K</span>
+      </button>
+      <button className="btn sm rounded icon" type="button" title="Alerts">
+        <Bell size={13} />
+      </button>
+      <AnalystChip />
+    </header>
+  );
+}
+
+function AnalystChip() {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '4px 10px 4px 4px',
+        border: '1px solid var(--line)',
+        borderRadius: 999,
+        background: 'var(--bg-2)',
+      }}
+    >
+      <div
+        style={{
+          width: 24,
+          height: 24,
+          borderRadius: 999,
+          background: 'color-mix(in oklab, var(--nato-friend) 30%, var(--bg-3))',
+          display: 'grid',
+          placeItems: 'center',
+          color: 'var(--nato-friend)',
+          fontWeight: 600,
+          fontSize: 11,
+        }}
+      >
+        AN
+      </div>
+      <span style={{ fontSize: 11.5 }}>Analyst</span>
+      <span className="mono" style={{ color: 'var(--ink-2)', fontSize: 10 }}>
+        · DESK
+      </span>
+    </div>
+  );
+}
+
+function StatusBar({
+  uploadCount,
+  allOk,
+  clock,
+  statusRight,
+}: {
+  uploadCount: number;
+  allOk: boolean;
+  clock: Date;
+  statusRight?: ReactNode;
+}) {
+  return (
+    <footer
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 18,
+        padding: '0 18px',
+        borderTop: '1px solid var(--line)',
+        background: 'var(--bg-1)',
+        fontSize: 10.5,
+        color: 'var(--ink-2)',
+      }}
+    >
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        <StatusDot tone={allOk ? 'ok' : 'crit'} size={6} pulse={allOk} />
+        <span style={{ color: allOk ? 'var(--ok)' : 'var(--crit)' }}>
+          {allOk ? 'Connected' : 'Degraded'}
+        </span>
+      </span>
+      <span className="mono">
+        {uploadCount} upload{uploadCount === 1 ? '' : 's'} active
+      </span>
+      <div style={{ flex: 1 }} />
+      {statusRight}
+      <span className="mono">{clock.toISOString().slice(0, 19)}Z</span>
+    </footer>
+  );
+}
+
+export default Shell;

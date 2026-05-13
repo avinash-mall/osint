@@ -6,7 +6,9 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import {
   Activity,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
+  ChevronUp,
   CircleHelp,
   Crosshair,
   Eye,
@@ -463,6 +465,11 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
     grid: true,
   });
   const [isLoading, setIsLoading] = useState(false);
+  // Modern shell: each side panel can be collapsed to a 36 px floating handle so
+  // the analyst can maximise the map canvas without losing context.
+  const [leftOpen, setLeftOpen] = useState(true);
+  const [rightOpen, setRightOpen] = useState(true);
+  const [timelineOpen, setTimelineOpen] = useState(true);
 
   const selectedImageryData = imagery.find((img) => img.id === selectedImagery);
   const processingUploads = useMemo(
@@ -1048,13 +1055,37 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
   };
 
   return (
-    <div className="grid h-full min-h-0 grid-cols-[320px_minmax(0,1fr)_320px] gap-px bg-sentinel-line">
-      <section className="sentinel-panel min-h-0 border-0">
+    <div style={{ position: 'relative', height: '100%', width: '100%', background: 'var(--bg-0)', overflow: 'hidden' }}>
+      {/* Full-bleed map column (rendered below, sandwiched between the floating
+          left / right panels via z-index).  This is now the workspace canvas. */}
+      {leftOpen ? (
+      <section
+        className="sentinel-panel"
+        style={{
+          position: 'absolute',
+          left: 14,
+          top: 14,
+          bottom: 14,
+          width: 320,
+          zIndex: 500,
+          border: '1px solid var(--line)',
+          borderRadius: 10,
+          background: 'color-mix(in oklab, var(--bg-1) 94%, transparent)',
+          backdropFilter: 'blur(8px)',
+          boxShadow: '0 8px 30px rgba(0,0,0,.35)',
+          display: 'flex',
+          flexDirection: 'column',
+          minHeight: 0,
+        }}
+      >
         <div className="sentinel-panel-header">
           <Layers className="h-4 w-4" />
-          <span>Layers / Classes</span>
-          <button type="button" onClick={fetchDetections} className="sentinel-icon-btn ml-auto h-6 w-6">
+          <span>Operating picture</span>
+          <button type="button" onClick={fetchDetections} className="sentinel-icon-btn ml-auto h-6 w-6" title="Refresh">
             <RefreshCw className="h-3.5 w-3.5" />
+          </button>
+          <button type="button" onClick={() => setLeftOpen(false)} className="sentinel-icon-btn h-6 w-6" title="Collapse panel">
+            <ChevronLeft className="h-3.5 w-3.5" />
           </button>
         </div>
 
@@ -1233,8 +1264,51 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
           )}
         </div>
       </section>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setLeftOpen(true)}
+          title="Show operating picture"
+          style={{
+            position: 'absolute',
+            left: 14,
+            top: 14,
+            width: 36,
+            zIndex: 500,
+            padding: '10px 0',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: 8,
+            background: 'color-mix(in oklab, var(--bg-1) 94%, transparent)',
+            backdropFilter: 'blur(8px)',
+            border: '1px solid var(--line)',
+            borderRadius: 10,
+            color: 'var(--ink-1)',
+            cursor: 'pointer',
+            boxShadow: '0 6px 18px rgba(0,0,0,.3)',
+          }}
+        >
+          <Layers size={14} style={{ color: 'var(--accent)' }} />
+          <span
+            style={{
+              writingMode: 'vertical-rl',
+              transform: 'rotate(180deg)',
+              fontSize: 10.5,
+              letterSpacing: '.06em',
+              color: 'var(--ink-1)',
+            }}
+          >
+            Operating picture
+          </span>
+          <ChevronRight size={11} style={{ color: 'var(--ink-3)' }} />
+        </button>
+      )}
 
-      <section className="relative flex min-h-0 min-w-0 flex-col bg-sentinel-bg">
+      <section
+        className="relative flex min-h-0 min-w-0 flex-col bg-sentinel-bg"
+        style={{ position: 'absolute', inset: 0 }}
+      >
         <div className="relative min-h-0 flex-1">
           <MapContainer
             center={[25.0, 55.0]}
@@ -1557,45 +1631,171 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
           )}
         </div>
 
-        <div className="h-20 border-t border-sentinel-line bg-sentinel-panel px-3 py-2">
-          <div className="mb-1 flex items-center gap-3">
-            <button type="button" className="sentinel-icon-btn h-6 w-6" onClick={() => setTimelinePlaying((value) => !value)}>
-              {timelinePlaying ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+      </section>
+
+      {/* Floating event-timeline panel, anchored to the bottom and inset
+          past the left/right floating panels when they're open so it
+          always uses the maximum free width. */}
+      {timelineOpen ? (
+        <div
+          style={{
+            position: 'absolute',
+            left: leftOpen ? 348 : 64,
+            right: rightOpen ? 368 : 64,
+            bottom: 14,
+            zIndex: 500,
+            background: 'color-mix(in oklab, var(--bg-1) 94%, transparent)',
+            backdropFilter: 'blur(8px)',
+            border: '1px solid var(--line)',
+            borderRadius: 10,
+            padding: '10px 38px 10px 14px',
+            boxShadow: '0 6px 24px rgba(0,0,0,.3)',
+            transition: 'left .18s ease, right .18s ease',
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setTimelineOpen(false)}
+            title="Collapse timeline"
+            className="btn icon xs"
+            style={{ position: 'absolute', top: 8, right: 8, borderRadius: 6 }}
+          >
+            <ChevronDown size={11} />
+          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+            <button
+              type="button"
+              className="btn icon sm"
+              onClick={() => setTimelinePlaying((value) => !value)}
+              title={timelinePlaying ? 'Pause timeline' : 'Play timeline'}
+            >
+              {timelinePlaying ? <Pause size={12} /> : <Play size={12} />}
             </button>
-            <button type="button" className="sentinel-icon-btn h-6 w-6" onClick={fetchDetections}>
-              <RefreshCw className="h-3.5 w-3.5" />
+            <button
+              type="button"
+              className="btn icon sm"
+              onClick={fetchDetections}
+              title="Refresh detections"
+            >
+              <RefreshCw size={12} />
             </button>
-            <span className="sentinel-label">Timeline</span>
-            <div className="grid grid-cols-3 border border-sentinel-line-2">
+            <span className="label-mono">Event timeline · last {timelineWindowMinutes}m</span>
+            <div className="seg" style={{ marginLeft: 8 }}>
               {[15, 30, 60].map((minutes) => (
-                <button key={minutes} type="button" onClick={() => setRecentWindow(minutes)} className={`h-6 px-3 text-[10px] ${timelineWindowMinutes === minutes ? 'bg-sentinel-panel-2 text-slate-100' : 'text-sentinel-muted'}`}>
+                <button
+                  key={minutes}
+                  type="button"
+                  className={timelineWindowMinutes === minutes ? 'on' : ''}
+                  onClick={() => setRecentWindow(minutes)}
+                >
                   {minutes}M
                 </button>
               ))}
             </div>
-            <span className="ml-auto font-mono text-[10px] text-sentinel-muted">{new Date(timeRange.start).toLocaleTimeString()} / {new Date(timeRange.end).toLocaleTimeString()}</span>
+            <div style={{ flex: 1 }} />
+            <span className="mono" style={{ fontSize: 10, color: 'var(--ink-2)' }}>
+              {new Date(timeRange.start).toLocaleTimeString()} / {new Date(timeRange.end).toLocaleTimeString()}
+            </span>
+            <span className="mono" style={{ fontSize: 10, color: 'var(--ink-3)' }}>
+              · {visibleDetectionCount} in window
+            </span>
           </div>
-          <div className="relative flex h-9 items-end gap-px border border-sentinel-line bg-sentinel-bg p-0.5">
+          <div
+            style={{
+              position: 'relative',
+              display: 'flex',
+              alignItems: 'flex-end',
+              gap: 1,
+              height: 40,
+              border: '1px solid var(--line)',
+              background: 'var(--bg-0)',
+              padding: 2,
+            }}
+          >
             {timelineBuckets.map((value, index) => {
               const inWindow = index >= 60 - timelineWindowMinutes;
               return (
                 <div
                   key={index}
-                  className={inWindow ? 'bg-sentinel-accent' : 'bg-sentinel-line-2'}
-                  style={{ flex: 1, height: `${Math.max(4, (value / maxTimelineBucket) * 100)}%`, opacity: inWindow ? 0.45 + (value / maxTimelineBucket) * 0.55 : 0.35 }}
+                  style={{
+                    flex: 1,
+                    height: `${Math.max(4, (value / maxTimelineBucket) * 100)}%`,
+                    background: inWindow ? 'var(--accent)' : 'var(--line-2)',
+                    opacity: inWindow ? 0.45 + (value / maxTimelineBucket) * 0.55 : 0.35,
+                  }}
                 />
               );
             })}
-            <div className="absolute bottom-0 top-0 w-px bg-sentinel-accent" style={{ left: `${((60 - timelineWindowMinutes) / 60) * 100}%` }} />
+            <div
+              style={{
+                position: 'absolute',
+                top: 0,
+                bottom: 0,
+                width: 1,
+                left: `${((60 - timelineWindowMinutes) / 60) * 100}%`,
+                background: 'var(--accent)',
+              }}
+            />
           </div>
         </div>
-      </section>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setTimelineOpen(true)}
+          title="Show event timeline"
+          style={{
+            position: 'absolute',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            bottom: 14,
+            zIndex: 500,
+            padding: '6px 14px',
+            background: 'color-mix(in oklab, var(--bg-1) 94%, transparent)',
+            backdropFilter: 'blur(8px)',
+            border: '1px solid var(--line)',
+            borderRadius: 999,
+            color: 'var(--ink-1)',
+            fontSize: 11.5,
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            boxShadow: '0 6px 18px rgba(0,0,0,.3)',
+          }}
+        >
+          <Activity size={11} style={{ color: 'var(--accent)' }} />
+          Event timeline
+          <ChevronUp size={10} style={{ color: 'var(--ink-3)' }} />
+        </button>
+      )}
 
-      <section className="sentinel-panel min-h-0 border-0">
+      {rightOpen ? (
+      <section
+        className="sentinel-panel"
+        style={{
+          position: 'absolute',
+          right: 14,
+          top: 14,
+          bottom: 14,
+          width: 340,
+          zIndex: 500,
+          border: '1px solid var(--line)',
+          borderRadius: 10,
+          background: 'color-mix(in oklab, var(--bg-1) 94%, transparent)',
+          backdropFilter: 'blur(8px)',
+          boxShadow: '0 8px 30px rgba(0,0,0,.35)',
+          display: 'flex',
+          flexDirection: 'column',
+          minHeight: 0,
+        }}
+      >
         <div className="sentinel-panel-header">
           <Crosshair className="h-4 w-4" />
           <span>Selection</span>
           <span className="sentinel-tag acc ml-auto">DETAIL</span>
+          <button type="button" onClick={() => setRightOpen(false)} className="sentinel-icon-btn h-6 w-6" title="Collapse panel">
+            <ChevronRight className="h-3.5 w-3.5" />
+          </button>
         </div>
         <div className="sentinel-scroll">
           {selectedDetection ? (
@@ -1783,6 +1983,46 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
           </div>
         </div>
       </section>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setRightOpen(true)}
+          title="Show selection panel"
+          style={{
+            position: 'absolute',
+            right: 14,
+            top: 14,
+            width: 36,
+            zIndex: 500,
+            padding: '10px 0',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: 8,
+            background: 'color-mix(in oklab, var(--bg-1) 94%, transparent)',
+            backdropFilter: 'blur(8px)',
+            border: '1px solid var(--line)',
+            borderRadius: 10,
+            color: 'var(--ink-1)',
+            cursor: 'pointer',
+            boxShadow: '0 6px 18px rgba(0,0,0,.3)',
+          }}
+        >
+          <Crosshair size={14} style={{ color: 'var(--accent)' }} />
+          <span
+            style={{
+              writingMode: 'vertical-rl',
+              transform: 'rotate(180deg)',
+              fontSize: 10.5,
+              letterSpacing: '.06em',
+              color: 'var(--ink-1)',
+            }}
+          >
+            Selection {selectedDetection ? `· DET-${selectedDetection.properties?.id}` : ''}
+          </span>
+          <ChevronLeft size={11} style={{ color: 'var(--ink-3)' }} />
+        </button>
+      )}
     </div>
   );
 }

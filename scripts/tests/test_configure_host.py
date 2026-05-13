@@ -32,9 +32,14 @@ def test_parse_gpu_query_extracts_gpu_rows():
     assert gpus[0].name == "NVIDIA A100 80GB PCIe"
 
 
-def test_a100_driver_550_generates_sam3_cu126_torch_values():
+def test_a100_compatible_driver_generates_datacenter_profile_values():
+    """A100 → ampere_sm80_86_datacenter profile (cu130 / torch 2.10.0).
+
+    Profile minimum driver is 575.51 (set when the profile was upgraded to
+    cu130). The test driver here exceeds that so the call succeeds.
+    """
     info = HostGpuInfo(
-        driver_version="550.163.01",
+        driver_version="595.58.03",
         gpus=(HostGpu("NVIDIA A100 80GB PCIe"),),
     )
 
@@ -43,29 +48,30 @@ def test_a100_driver_550_generates_sam3_cu126_torch_values():
     assert values["GPU_MODEL"] == "NVIDIA A100 80GB PCIe"
     assert values["NVIDIA_VISIBLE_DEVICES"] == "all"
     assert values["NVIDIA_DRIVER_CAPABILITIES"] == "compute,utility"
-    assert "SAM3_TORCHAUDIO_VERSION" not in values
-    assert "GPU_DRIVER_VERSION" not in values
-    assert values["SAM3_GPU_PROFILE"] == "ampere_sm80_86"
-    assert values["SAM3_CUDA_VERSION"] == "12.4.1"
-    assert values["SAM3_UBUNTU_VERSION"] == "22.04"
-    assert values["SAM3_TORCH_INDEX_URL"].endswith("/cu126")
-    assert values["SAM3_TORCH_VERSION"] == "2.7.1"
-    assert values["SAM3_TORCHVISION_VERSION"] == "0.22.1"
+    assert values["SAM3_GPU_PROFILE"] == "ampere_sm80_86_datacenter"
+    assert values["SAM3_CUDA_VERSION"] == "13.2.0"
+    assert values["SAM3_UBUNTU_VERSION"] == "24.04"
+    assert values["SAM3_TORCH_INDEX_URL"].endswith("/cu130")
+    assert values["SAM3_TORCH_VERSION"] == "2.10.0+cu130"
+    assert values["SAM3_TORCHVISION_VERSION"] == "0.25.0+cu130"
+    # cu130-stack profile DOES set torchaudio (older cu126 stack did not).
+    assert values["SAM3_TORCHAUDIO_VERSION"] == "2.10.0+cu130"
 
 
-def test_blackwell_compatible_driver_generates_cu128_values():
+def test_blackwell_compatible_driver_generates_cu130_values():
+    """RTX 5070 Ti → blackwell_sm120 profile (cu130 / torch 2.10.0)."""
     info = HostGpuInfo(
-        driver_version="570.86.10",
+        driver_version="595.58.03",
         gpus=(HostGpu("NVIDIA GeForce RTX 5070 Ti"),),
     )
 
     values = generated_env_values(info)
 
     assert values["SAM3_GPU_PROFILE"] == "blackwell_sm120"
-    assert values["SAM3_CUDA_VERSION"] == "12.8.1"
+    assert values["SAM3_CUDA_VERSION"] == "13.2.0"
     assert values["SAM3_UBUNTU_VERSION"] == "24.04"
-    assert values["SAM3_TORCH_INDEX_URL"].endswith("/cu128")
-    assert values["SAM3_TORCH_VERSION"] == "2.7.1+cu128"
+    assert values["SAM3_TORCH_INDEX_URL"].endswith("/cu130")
+    assert values["SAM3_TORCH_VERSION"] == "2.10.0+cu130"
 
 
 def test_blackwell_incompatible_driver_fails_fast():

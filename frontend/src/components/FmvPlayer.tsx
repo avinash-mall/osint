@@ -5,7 +5,12 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import {
   AlertTriangle,
+  ChevronLeft,
+  ChevronRight,
+  Download,
   Film,
+  Map as MapIcon,
+  Maximize2,
   Pause,
   Play,
   SkipBack,
@@ -13,6 +18,7 @@ import {
   UploadCloud,
 } from 'lucide-react';
 import { useEventStream } from '../hooks/useEventStream';
+import { AffGlyph, type Affiliation } from './atoms';
 import {
   categoryFor,
   detectionClassLabel,
@@ -146,12 +152,15 @@ function trackIdOf(det: Detection): string | null {
   return det.metadata?.track_id || det.bbox?.track_id || null;
 }
 
+type SidePanelTab = 'tracks' | 'upload';
+
 export default function FmvPlayer() {
   const [clips, setClips] = useState<Clip[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [frames, setFrames] = useState<FrameRow[]>([]);
   const [detections, setDetections] = useState<Detection[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [promptMode, setPromptMode] = useState<'pcs' | 'amg'>('amg');
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [trackingError, setTrackingError] = useState<string | null>(null);
@@ -161,6 +170,10 @@ export default function FmvPlayer() {
   const [duration, setDuration] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [hoverPct, setHoverPct] = useState<number | null>(null);
+  const [showMap, setShowMap] = useState(true);
+  const [rightOpen, setRightOpen] = useState(true);
+  const [sideTab, setSideTab] = useState<SidePanelTab>('tracks');
+  const [trackFilter, setTrackFilter] = useState<'in-frame' | 'all'>('in-frame');
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -572,6 +585,7 @@ export default function FmvPlayer() {
         fd.append('file', file);
         fd.append('name', file.name);
         if (srt) fd.append('srt', srt);
+        fd.append('prompt_mode', promptMode);
         const res = await axios.post(`${API_URL}/api/fmv/clips`, fd, {
           onUploadProgress: (e) => {
             const pct = Math.round((e.loaded / (e.total || 1)) * 100);
@@ -587,7 +601,7 @@ export default function FmvPlayer() {
         setUploadProgress(0);
       }
     },
-    [fetchClips],
+    [fetchClips, promptMode],
   );
 
   const onPickFiles = useCallback(
@@ -705,172 +719,408 @@ export default function FmvPlayer() {
     return [25.078, 55.179];
   }, [frameCenter, platformPath]);
 
-  const showMap = platformPath.length > 0;
+  const hasTelemetry = platformPath.length > 0;
+  const mapSplitVisible = showMap && hasTelemetry;
+
+  // Tracks classified by an aff (best-effort: hostile/friend/neutral/unknown
+  // derived from the threat metadata stored on the detection).  Keeps the
+  // tracks list visually consistent with the map COP's affiliation system.
+  const affOf = (det: Detection | undefined): Affiliation => {
+    const m: any = det?.metadata ?? {};
+    if (m.affiliation && ['friend', 'hostile', 'neutral', 'unknown'].includes(m.affiliation)) {
+      return m.affiliation as Affiliation;
+    }
+    const threat = m.threat_level || m.threat || '';
+    if (threat === 'critical' || threat === 'high') return 'hostile';
+    if (threat === 'medium') return 'unknown';
+    if (threat === 'low') return 'neutral';
+    return 'unknown';
+  };
 
   // -------------------- Render --------------------
 
+  // -- Telemetry HUD rows derived from the current frame telemetry.
+  const hudRows: Array<[string, string]> = (() => {
+    const t = currentFrame?.telemetry;
+    if (!t) return [];
+    const fmtNum = (v: number | undefined, suffix = '') =>
+      v == null || !Number.isFinite(v) ? '—' : `${v.toFixed(4)}${suffix}`;
+    const fmtInt = (v: number | undefined, suffix = '') =>
+      v == null || !Number.isFinite(v) ? '—' : `${Math.round(v)}${suffix}`;
+    const platformLat = t.platform_latitude ?? t.frame_center_latitude;
+    const platformLon = t.platform_longitude ?? t.frame_center_longitude;
+    const rows: Array<[string, string]> = [
+      ['CLIP',   selectedClip?.name?.slice(0, 18) || '—'],
+      ['SRC',    t.source?.toUpperCase() || '—'],
+      ['TIME',   t.timestamp_seconds != null ? fmt(t.timestamp_seconds) : '—'],
+      ['LAT',    fmtNum(platformLat, '°')],
+      ['LON',    fmtNum(platformLon, '°')],
+      ['HDG',    fmtInt(t.platform_heading, '°')],
+    ];
+    if (t.sensor_azimuth != null) rows.push(['AZ', fmtInt(t.sensor_azimuth, '°')]);
+    if (t.sensor_elevation != null) rows.push(['EL', fmtInt(t.sensor_elevation, '°')]);
+    return rows;
+  })();
+
+  // -- Event marker positions on the scrubber: cluster the densest histogram
+  //    bins into diamond markers, color-graded by intensity.
+  const eventMarkers = (() => {
+    if (!histogram.max || !duration) return [];
+    const out: Array<{ pct: number; tone: 'critical' | 'high' | 'medium' }> = [];
+    const min = histogram.max * 0.7;
+    histogram.counts.forEach((c, i) => {
+      if (c < min) return;
+      const pct = (i + 0.5) / histogram.buckets;
+      const tone = c >= histogram.max * 0.95 ? 'critical' : c >= histogram.max * 0.85 ? 'high' : 'medium';
+      out.push({ pct, tone });
+    });
+    return out;
+  })();
+
+  // -- "Processed" fraction for the YouTube-style buffered bar.  Once
+  //    detections complete this is 1.0; while a window-batch is running
+  //    we extrapolate from `trackingProgress`.  Falls back to "all
+  //    frames before the latest detection" for clips with no progress
+  //    event yet (so a clip with detections shows correctly).
+  const processedFrac = (() => {
+    if (trackingProgress && trackingProgress.windows > 0) {
+      return Math.max(0, Math.min(1, trackingProgress.window / trackingProgress.windows));
+    }
+    if (!detections.length || !duration) return selectedClip?.status === 'ready' ? 1 : 0;
+    const totalFrames = Math.max(1, Math.floor(duration * fps));
+    const last = detections.reduce((m, d) => Math.max(m, d.frame_index), 0);
+    return Math.max(0, Math.min(1, last / totalFrames));
+  })();
+  const processingActive = trackingProgress != null && trackingProgress.windows > 0;
+
+  // -- Track rows derived from detectionGroups; the right Tracks tab
+  //    needs a track-id, label, aff, conf, frames range, and an
+  //    "in-frame" flag synced to the scrubber.
+  type TrackRow = {
+    key: string;
+    label: string;
+    trackId: string | null;
+    aff: Affiliation;
+    conf: number;
+    first: number;
+    last: number;
+    frames: number;
+    inFrame: boolean;
+  };
+  const trackRows: TrackRow[] = detectionGroups.map((g) => {
+    // pick a representative detection for affiliation
+    const rep = detections.find((d) =>
+      (g.trackId ? trackIdOf(d) === g.trackId : d.class === g.className),
+    );
+    return {
+      key: g.key,
+      label: detectionClassLabel(g.className),
+      trackId: g.trackId,
+      aff: affOf(rep),
+      conf: g.topConfidence,
+      first: g.first,
+      last: g.last,
+      frames: g.count,
+      inFrame: currentFrameIdx >= g.first && currentFrameIdx <= g.last,
+    };
+  });
+  const inFrameCount = trackRows.filter((t) => t.inFrame).length;
+  const visibleTrackRows = trackFilter === 'all' ? trackRows : trackRows.filter((t) => t.inFrame);
+
+  const accent = 'var(--accent)';
+
   return (
-    <div className="sentinel-view" style={{ display: 'grid', gridTemplateColumns: '260px 1fr 360px', gap: 8, height: '100%' }}>
-      {/* LEFT — clip library */}
-      <aside className="sentinel-panel" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-        <div className="sentinel-panel-header">
-          <Film size={14} /> <span>FMV LIBRARY</span>
-          <span className="sentinel-tag info" style={{ marginLeft: 'auto' }}>{clips.length}</span>
-        </div>
-        <div style={{ padding: 8 }}>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            accept=".mp4,.mov,.m4v,.ts,.mpeg,.mpg,.srt"
-            style={{ display: 'none' }}
-            onChange={(e) => onPickFiles(e.target.files)}
-          />
+    <div
+      style={{
+        height: '100%',
+        display: 'grid',
+        gridTemplateColumns: rightOpen ? '1fr 360px' : '1fr 36px',
+        gap: 1,
+        background: 'var(--line)',
+        transition: 'grid-template-columns .18s ease',
+        minHeight: 0,
+      }}
+    >
+      {/* === LEFT COLUMN: video + (optional) synced map + transport === */}
+      <section style={{ display: 'flex', flexDirection: 'column', background: 'var(--bg-0)', minWidth: 0, minHeight: 0 }}>
+        {/* hidden file input — wired by Upload tab and drop overlay */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept=".mp4,.mov,.m4v,.ts,.mpeg,.mpg,.srt"
+          style={{ display: 'none' }}
+          onChange={(e) => onPickFiles(e.target.files)}
+        />
+
+        <div
+          style={{
+            flex: 1,
+            display: 'grid',
+            gridTemplateColumns: mapSplitVisible ? '1.55fr 1fr' : '1fr',
+            minHeight: 0,
+            gap: 1,
+            background: 'var(--line)',
+            transition: 'grid-template-columns .18s ease',
+          }}
+        >
+          {/* VIDEO PANE ---------------------------------------------------- */}
           <div
-            onClick={() => fileInputRef.current?.click()}
+            ref={wrapperRef}
+            style={{
+              position: 'relative',
+              overflow: 'hidden',
+              background: '#000',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              minWidth: 0,
+            }}
             onDragOver={(e) => e.preventDefault()}
             onDrop={(e) => {
               e.preventDefault();
               onPickFiles(e.dataTransfer.files);
             }}
-            className="sentinel-row"
-            style={{
-              cursor: 'pointer',
-              padding: '14px 10px',
-              border: '1px dashed var(--line)',
-              textAlign: 'center',
-              flexDirection: 'column',
-              gap: 4,
-            }}
           >
-            <UploadCloud size={20} />
-            <div style={{ fontSize: 11, fontWeight: 600 }}>Drop FMV clip</div>
-            <div style={{ fontSize: 10, color: 'var(--muted)' }}>mp4 / mov / ts (+ optional .srt)</div>
+            {!selectedClip && (
+              <div style={{ color: 'var(--ink-2)', fontSize: 12, textAlign: 'center', padding: 24 }}>
+                <Film size={36} style={{ opacity: 0.5 }} />
+                <div style={{ marginTop: 12 }}>Select a clip from the Upload tab, or drop a file here.</div>
+              </div>
+            )}
+            {selectedClip && (
+              <>
+                <video
+                  ref={videoRef}
+                  style={{ maxWidth: '100%', maxHeight: '100%', display: 'block' }}
+                  playsInline
+                  controls={false}
+                />
+                <canvas
+                  ref={canvasRef}
+                  style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'none' }}
+                />
+
+                {/* Telemetry HUD — top-left, monospace */}
+                {hudRows.length > 0 && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: 14,
+                      left: 14,
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 10.5,
+                      color: '#bbf2d0',
+                      textShadow: '0 0 4px rgba(0,0,0,.8)',
+                      pointerEvents: 'none',
+                    }}
+                  >
+                    {hudRows.map(([k, v]) => (
+                      <div key={k} style={{ display: 'grid', gridTemplateColumns: '50px 1fr', gap: 8, lineHeight: 1.45 }}>
+                        <span style={{ color: '#7bce97', opacity: 0.7 }}>{k}</span>
+                        <span>{v}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Top-right corner: status pills */}
+                <div style={{ position: 'absolute', top: 14, right: 14, display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {selectedClip.status === 'ready' && (
+                    <span
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 10.5,
+                        color: '#ff4040',
+                        letterSpacing: '.1em',
+                        padding: '2px 6px',
+                        background: 'rgba(0,0,0,.5)',
+                        border: '1px solid rgba(255,64,64,.4)',
+                      }}
+                    >
+                      ● LIVE
+                    </span>
+                  )}
+                  {trackingProgress && trackingProgress.windows > 0 && (
+                    <span
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 10.5,
+                        color: accent,
+                        padding: '2px 6px',
+                        background: 'rgba(0,0,0,.5)',
+                        border: `1px solid ${accent}`,
+                      }}
+                      title={`Tracking window ${trackingProgress.window}/${trackingProgress.windows}`}
+                    >
+                      ⊕ TRACK {trackingProgress.window}/{trackingProgress.windows}
+                    </span>
+                  )}
+                  <button className="btn icon sm" style={{ background: 'rgba(0,0,0,.5)', borderColor: 'rgba(255,255,255,.15)', color: '#fff' }} title="Fullscreen">
+                    <Maximize2 size={12} />
+                  </button>
+                </div>
+
+                {/* Transcoding overlay */}
+                {selectedClip.status !== 'ready' && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      inset: 0,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      background: 'rgba(0,0,0,0.6)',
+                    }}
+                  >
+                    <span className="tag accent">TRANSCODING…</span>
+                  </div>
+                )}
+
+                {/* Synthetic telemetry warning */}
+                {selectedClip.status === 'ready' && !hasRealTelemetry && frames.length > 0 && (
+                  <div style={{ position: 'absolute', bottom: 14, left: 14 }}>
+                    <span
+                      className="tag unknown"
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'help' }}
+                      title="No MISB-0601 KLV, MP4 GPMD, or co-uploaded .srt sidecar was detected in this clip.  Showing a synthetic sine-wave path for demo."
+                    >
+                      <AlertTriangle size={11} /> SYNTHETIC TELEMETRY
+                    </span>
+                  </div>
+                )}
+
+                {/* Tracking error toast */}
+                {trackingError && (
+                  <div style={{ position: 'absolute', bottom: 14, right: 14 }}>
+                    <span className="tag crit" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                      <AlertTriangle size={11} /> {trackingError}
+                    </span>
+                  </div>
+                )}
+              </>
+            )}
           </div>
-          {uploading && (
-            <div style={{ marginTop: 8 }}>
-              <div style={{ fontSize: 10, color: 'var(--muted)' }}>UPLOADING {uploadProgress}%</div>
-              <div style={{ height: 4, background: 'var(--line)', borderRadius: 2, overflow: 'hidden', marginTop: 4 }}>
-                <div style={{ width: `${uploadProgress}%`, height: '100%', background: 'var(--accent)' }} />
+
+          {/* SYNCED MAP PANE ---------------------------------------------- */}
+          {mapSplitVisible && (
+            <div style={{ position: 'relative', background: 'var(--bg-0)', minWidth: 0 }}>
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 10,
+                  left: 12,
+                  zIndex: 500,
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 10,
+                  color: 'var(--ink-2)',
+                  letterSpacing: '.08em',
+                  textTransform: 'uppercase',
+                }}
+              >
+                Synced map
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowMap(false)}
+                title="Collapse map"
+                className="btn icon xs"
+                style={{ position: 'absolute', top: 8, right: 8, zIndex: 500, borderRadius: 6 }}
+              >
+                <ChevronRight size={11} />
+              </button>
+              <MapContainer
+                key={selectedId || 'empty'}
+                center={mapCenter}
+                zoom={15}
+                style={{ width: '100%', height: '100%' }}
+                attributionControl={false}
+              >
+                <TileLayer url={CARTO_BASEMAP_URL} />
+                {platformPath.length > 1 && (
+                  <Polyline positions={platformPath} pathOptions={{ color: '#7cf', weight: 1.5 }} />
+                )}
+                {platformPosition && <Marker position={platformPosition} icon={platformMarkerIcon} />}
+                {frameCenter && <Marker position={frameCenter} icon={flyMarkerIcon} />}
+                {currentFrame?.footprint && (
+                  <GeoJSON
+                    key={`fp-${currentFrame.frame_index}`}
+                    data={currentFrame.footprint as any}
+                    style={() => ({ color: '#7cf', weight: 1, fillOpacity: 0.08 })}
+                  />
+                )}
+              </MapContainer>
+              <div
+                style={{
+                  position: 'absolute',
+                  left: 10,
+                  bottom: 10,
+                  zIndex: 500,
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 10,
+                  color: 'var(--ink-1)',
+                  background: 'rgba(11, 13, 16, 0.7)',
+                  padding: '4px 8px',
+                  border: '1px solid var(--line)',
+                  pointerEvents: 'none',
+                }}
+                title={
+                  currentFrame?.telemetry?.source === 'misb-klv'
+                    ? 'Real telemetry parsed from MISB ST 0601 KLV stream'
+                    : currentFrame?.telemetry?.source === 'srt'
+                      ? 'Real telemetry parsed from co-uploaded .srt sidecar'
+                      : currentFrame?.telemetry?.source === 'gpmd'
+                        ? 'Real telemetry parsed from MP4 GPMD track'
+                        : 'No real telemetry detected'
+                }
+              >
+                {currentFrame?.telemetry?.source?.toUpperCase() || 'TELEMETRY'} · frame {currentFrameIdx}
               </div>
             </div>
           )}
-          {uploadError && (
-            <div className="sentinel-tag crit" style={{ marginTop: 8, display: 'block' }}>{uploadError}</div>
-          )}
-          {inferenceStatus === 'loading' && (
-            <div className="sentinel-tag" style={{ marginTop: 8, display: 'block' }}>Loading FMV models…</div>
-          )}
-          {trackingProgress && trackingProgress.windows > 0 && (
-            <div className="sentinel-tag" style={{ marginTop: 8, display: 'block' }}>
-              Tracking window {trackingProgress.window}/{trackingProgress.windows}…
-            </div>
-          )}
-          {trackingError && (
-            <div className="sentinel-tag crit" style={{ marginTop: 8, display: 'block' }}>
-              <AlertTriangle size={11} /> Tracking: {trackingError}
-            </div>
-          )}
-        </div>
-        <div className="sentinel-scroll" style={{ flex: 1, padding: '0 8px 8px' }}>
-          {clips.length === 0 && !uploading && (
-            <div style={{ fontSize: 11, color: 'var(--muted)', textAlign: 'center', padding: 16 }}>
-              No clips yet. Drop a file above to begin.
-            </div>
-          )}
-          {clips.map((clip) => {
-            const selected = clip.id === selectedId;
-            return (
-              <button
-                key={clip.id}
-                type="button"
-                className={`sentinel-row ${selected ? 'selected' : ''}`}
-                onClick={() => setSelectedId(clip.id)}
-                style={{ width: '100%', textAlign: 'left', flexDirection: 'column', alignItems: 'stretch', padding: 8, marginBottom: 4 }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <Film size={12} />
-                  <span style={{ fontSize: 11, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-                    {clip.name}
-                  </span>
-                </div>
-                <div style={{ display: 'flex', gap: 4, marginTop: 4, fontSize: 10, color: 'var(--muted)' }}>
-                  <span className={`sentinel-tag ${clip.status === 'ready' ? 'ok' : clip.status === 'error' ? 'crit' : 'warn'}`}>{clip.status}</span>
-                  <span>{fmt(clip.duration_seconds)}</span>
-                  {clip.width && clip.height && <span>{clip.width}×{clip.height}</span>}
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      </aside>
-
-      {/* CENTER — player */}
-      <section style={{ display: 'flex', flexDirection: 'column', minWidth: 0, gap: 8 }}>
-        <div
-          ref={wrapperRef}
-          className="sentinel-panel"
-          style={{ position: 'relative', flex: 1, minHeight: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', background: '#000' }}
-        >
-          {!selectedClip && (
-            <div style={{ color: 'var(--muted)', fontSize: 12, textAlign: 'center', padding: 24 }}>
-              <Film size={36} style={{ opacity: 0.5 }} />
-              <div style={{ marginTop: 12 }}>Select a clip from the library, or drop a new one.</div>
-            </div>
-          )}
-          {selectedClip && (
-            <>
-              <video
-                ref={videoRef}
-                style={{ maxWidth: '100%', maxHeight: '100%', display: 'block' }}
-                playsInline
-                controls={false}
-              />
-              <canvas
-                ref={canvasRef}
-                style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'none' }}
-              />
-              {selectedClip.status !== 'ready' && (
-                <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)' }}>
-                  <span className="sentinel-tag info">TRANSCODING…</span>
-                </div>
-              )}
-              {selectedClip.status === 'ready' && !hasRealTelemetry && frames.length > 0 && (
-                <div style={{ position: 'absolute', top: 8, left: 8 }}>
-                  <span
-                    className="sentinel-tag warn"
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: 4, cursor: 'help' }}
-                    title="No MISB-0601 KLV, MP4 GPMD, or co-uploaded .srt sidecar was detected in this clip. The map is showing a synthetic sine-wave path for demo. Upload an FMV clip with embedded telemetry or a matching .srt to see real coordinates."
-                  >
-                    <AlertTriangle size={11} /> SYNTHETIC TELEMETRY
-                  </span>
-                </div>
-              )}
-            </>
-          )}
         </div>
 
-        {/* Timeline + transport */}
+        {/* TRANSPORT + SCRUBBER ----------------------------------------- */}
         {selectedClip && (
-          <div className="sentinel-panel" style={{ padding: 8 }}>
-            <div
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                fontSize: 9,
-                color: 'var(--muted)',
-                letterSpacing: '0.05em',
-                marginBottom: 3,
-                fontFamily: 'ui-monospace, monospace',
-              }}
-            >
-              <span title="Bars show the number of detections in each time bucket — taller = busier frames">
-                ◧ DETECTION DENSITY
+          <div style={{ background: 'var(--bg-1)', borderTop: '1px solid var(--line)', padding: '10px 14px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+              <button className="btn icon sm" onClick={() => seekTo(currentTime - 1 / fps)} type="button" title="Previous frame">
+                <SkipBack size={12} />
+              </button>
+              <button
+                onClick={togglePlay}
+                className="btn primary"
+                style={{ width: 36, height: 30, padding: 0, justifyContent: 'center', borderRadius: 0 }}
+                type="button"
+                title="Play / Pause (Space)"
+              >
+                {playing ? <Pause size={14} /> : <Play size={14} />}
+              </button>
+              <button className="btn icon sm" onClick={() => seekTo(currentTime + 1 / fps)} type="button" title="Next frame">
+                <SkipForward size={12} />
+              </button>
+              <span className="mono" style={{ fontSize: 11, color: 'var(--ink-0)' }}>
+                {fmt(currentTime)}
               </span>
-              <span title="Drag the bar to scrub. ←/→ step one frame. Space toggles play.">
-                SCRUB ◨
+              <span className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                / {fmt(duration || selectedClip.duration_seconds)}
               </span>
+              <div style={{ flex: 1 }} />
+              <span className="mono" style={{ fontSize: 10, color: 'var(--ink-2)' }}>
+                FRAME {currentFrameIdx}
+              </span>
+              <button
+                className={`btn xs ${mapSplitVisible ? 'primary' : ''}`}
+                onClick={() => setShowMap((v) => !v)}
+                disabled={!hasTelemetry}
+                type="button"
+                title={hasTelemetry ? 'Toggle synced map' : 'No telemetry — map disabled'}
+              >
+                <MapIcon size={11} /> Map
+              </button>
+              <button className="btn xs" type="button" title="Export clip"><Download size={11} /> Clip</button>
             </div>
+
             <div
               id="fmv-timeline-strip"
               onMouseDown={onTimelineDown}
@@ -881,50 +1131,147 @@ export default function FmvPlayer() {
               onMouseLeave={() => setHoverPct(null)}
               style={{
                 position: 'relative',
-                height: 44,
-                background: 'var(--color-sentinel-panel-2, #161a1e)',
-                borderRadius: 4,
+                height: 56,
+                background: 'var(--bg-0)',
+                border: '1px solid var(--line)',
                 cursor: 'pointer',
                 overflow: 'hidden',
               }}
+              title="Drag the bar to scrub. ←/→ step one frame. Space toggles play."
             >
-              {/* Histogram bars */}
-              <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'flex-end' }}>
-                {histogram.counts.map((count, idx) => {
-                  const h = histogram.max ? (count / histogram.max) * 100 : 0;
-                  return (
-                    <div
-                      key={idx}
-                      style={{
-                        flex: 1,
-                        height: `${h}%`,
-                        background: h > 0 ? 'rgba(124,255,180,0.55)' : 'transparent',
-                        marginRight: 1,
-                      }}
-                    />
-                  );
-                })}
-              </div>
-              {/* Progress fill */}
+              {/* Processed (buffered) band — YouTube style */}
               <div
                 style={{
                   position: 'absolute',
-                  left: 0,
                   top: 0,
                   bottom: 0,
-                  width: `${duration ? (currentTime / duration) * 100 : 0}%`,
-                  background: 'rgba(78,161,255,0.18)',
-                  borderRight: '1px solid #4ea1ff',
+                  left: 0,
+                  width: `${Math.round(processedFrac * 100)}%`,
+                  background: 'color-mix(in oklab, var(--ink-1) 22%, transparent)',
                 }}
               />
-              {/* Hover scrub indicator */}
+              {/* Active processing edge */}
+              {processingActive && processedFrac < 1 && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    bottom: 0,
+                    left: `${Math.round(processedFrac * 100)}%`,
+                    width: '6%',
+                    background: `repeating-linear-gradient(135deg, ${accent}55 0 6px, ${accent}11 6px 12px)`,
+                    animation: 'fmv-proc 1.4s linear infinite',
+                  }}
+                />
+              )}
+              {/* Processing label */}
+              {processingActive && (
+                <div
+                  className="mono"
+                  style={{
+                    position: 'absolute',
+                    top: 4,
+                    left: `calc(${Math.round(processedFrac * 100)}% + 8px)`,
+                    fontSize: 9,
+                    letterSpacing: '.08em',
+                    color: accent,
+                    textTransform: 'uppercase',
+                    textShadow: '0 0 4px var(--bg-0)',
+                    pointerEvents: 'none',
+                  }}
+                >
+                  ◉ Detecting · {Math.round(processedFrac * 100)}%
+                </div>
+              )}
+
+              {/* Detection density waveform */}
+              <svg
+                width="100%"
+                height="100%"
+                preserveAspectRatio="none"
+                viewBox="0 0 1000 56"
+                style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }}
+              >
+                {histogram.max > 0 &&
+                  (() => {
+                    const n = histogram.counts.length;
+                    let path = 'M0,56';
+                    for (let i = 0; i < n; i++) {
+                      const x = (i / Math.max(1, n - 1)) * 1000;
+                      const v = (histogram.counts[i] / histogram.max) * 44;
+                      path += ` L${x.toFixed(1)},${(56 - v).toFixed(1)}`;
+                    }
+                    path += ' L1000,56 Z';
+                    return <path d={path} fill={accent} opacity={0.25} />;
+                  })()}
+              </svg>
+
+              {/* Event diamond markers */}
+              {eventMarkers.map((e, i) => {
+                const color =
+                  e.tone === 'critical' ? 'var(--nato-hostile)' :
+                  e.tone === 'high' ? accent : 'var(--nato-unknown)';
+                return (
+                  <div
+                    key={i}
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      bottom: 0,
+                      width: 2,
+                      left: `${e.pct * 100}%`,
+                      background: color,
+                      pointerEvents: 'none',
+                    }}
+                  >
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: -3,
+                        left: -3,
+                        width: 8,
+                        height: 8,
+                        transform: 'rotate(45deg)',
+                        background: color,
+                      }}
+                    />
+                  </div>
+                );
+              })}
+
+              {/* Playhead */}
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  bottom: 0,
+                  left: `${duration ? (currentTime / duration) * 100 : 0}%`,
+                  borderLeft: `1.5px solid ${accent}`,
+                  pointerEvents: 'none',
+                }}
+              >
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: -4,
+                    left: -5,
+                    width: 0,
+                    height: 0,
+                    borderLeft: '5px solid transparent',
+                    borderRight: '5px solid transparent',
+                    borderTop: `6px solid ${accent}`,
+                  }}
+                />
+              </div>
+
+              {/* Hover indicator */}
               {hoverPct !== null && (
                 <div
                   style={{
                     position: 'absolute',
-                    left: `${hoverPct * 100}%`,
                     top: 0,
                     bottom: 0,
+                    left: `${hoverPct * 100}%`,
                     width: 1,
                     background: 'rgba(255,255,255,0.4)',
                     pointerEvents: 'none',
@@ -932,161 +1279,391 @@ export default function FmvPlayer() {
                 />
               )}
             </div>
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 8, fontSize: 11 }}>
-              <button type="button" className="sentinel-btn" onClick={() => seekTo(currentTime - 1 / fps)} title="Previous frame">
-                <SkipBack size={12} />
-              </button>
-              <button type="button" className="sentinel-btn primary" onClick={togglePlay} title="Play/Pause (Space)">
-                {playing ? <Pause size={12} /> : <Play size={12} />}
-              </button>
-              <button type="button" className="sentinel-btn" onClick={() => seekTo(currentTime + 1 / fps)} title="Next frame">
-                <SkipForward size={12} />
-              </button>
-              <span style={{ fontFamily: 'ui-monospace, monospace', color: 'var(--muted)', marginLeft: 8 }}>
-                {fmt(currentTime)} / {fmt(duration || selectedClip.duration_seconds)}
-              </span>
-              <span style={{ fontFamily: 'ui-monospace, monospace', color: 'var(--muted)', marginLeft: 'auto' }}>
-                FRAME {currentFrameIdx}
-              </span>
-            </div>
           </div>
         )}
       </section>
 
-      {/* RIGHT — map + detections */}
-      <aside className="sentinel-panel" style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-        {showMap && (
-          <div style={{ height: 280, position: 'relative' }}>
-            <div className="sentinel-panel-header" style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 500 }}>
-              <span>TELEMETRY MAP</span>
-              <span
-                className="sentinel-tag info"
-                style={{ marginLeft: 'auto' }}
-                title={
-                  currentFrame?.telemetry?.source === 'misb-klv'
-                    ? 'Real telemetry parsed from MISB ST 0601 KLV stream'
-                    : currentFrame?.telemetry?.source === 'srt'
-                      ? 'Real telemetry parsed from co-uploaded .srt sidecar (DJI/Autel format)'
-                      : currentFrame?.telemetry?.source === 'gpmd'
-                        ? 'Real telemetry parsed from MP4 GPMD track (GoPro/DJI)'
-                        : currentFrame?.telemetry?.source === 'fixture'
-                          ? 'No real KLV/SRT/GPMD detected — showing synthetic sine-wave coords for demo'
-                          : 'Telemetry source'
-                }
-              >
-                {currentFrame?.telemetry?.source?.toUpperCase() || 'TELEMETRY'}
-              </span>
-            </div>
-            <MapContainer
-              key={selectedId || 'empty'}
-              center={mapCenter}
-              zoom={15}
-              style={{ width: '100%', height: '100%' }}
-              attributionControl={false}
-            >
-              <TileLayer url={CARTO_BASEMAP_URL} />
-              {platformPath.length > 1 && (
-                <Polyline positions={platformPath} pathOptions={{ color: '#7cf', weight: 1.5 }} />
-              )}
-              {platformPosition && <Marker position={platformPosition} icon={platformMarkerIcon} />}
-              {frameCenter && <Marker position={frameCenter} icon={flyMarkerIcon} />}
-              {currentFrame?.footprint && (
-                <GeoJSON
-                  key={`fp-${currentFrame.frame_index}`}
-                  data={currentFrame.footprint as any}
-                  style={() => ({ color: '#7cf', weight: 1, fillOpacity: 0.08 })}
-                />
-              )}
-            </MapContainer>
-            {/* Compact legend — what each glyph on the map represents. */}
-            <div
-              style={{
-                position: 'absolute',
-                left: 6,
-                bottom: 6,
-                zIndex: 500,
-                background: 'rgba(16, 19, 22, 0.85)',
-                border: '1px solid var(--line)',
-                borderRadius: 3,
-                padding: '6px 8px',
-                fontSize: 10,
-                lineHeight: '14px',
-                color: 'var(--sentinel-text, #cfd6dc)',
-                pointerEvents: 'none',
-                fontFamily: 'ui-monospace, monospace',
-              }}
-              title="Live map overlay — updates every frame from telemetry"
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ display: 'inline-block', width: 18, height: 0, borderTop: '2px solid #7cf' }} />
-                <span>Platform track</span>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ display: 'inline-block', width: 10, height: 10, background: '#fdb44b', border: '1px solid #001' }} />
-                <span>Platform (current)</span>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 5, background: '#7cf', border: '1px solid #001' }} />
-                <span>Frame center</span>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ display: 'inline-block', width: 14, height: 8, border: '1px solid #7cf', background: 'rgba(124,204,255,0.18)' }} />
-                <span>Sensor footprint</span>
-              </div>
-            </div>
-          </div>
-        )}
-        {!showMap && (
-          <div className="sentinel-panel-header">
-            <span>DETECTIONS</span>
-            <span className="sentinel-tag warn" style={{ marginLeft: 'auto' }}>NO TELEMETRY</span>
-          </div>
-        )}
-        <div
-          className="sentinel-panel-header"
-          title="Each row groups consecutive frames where the same track (or class) was detected. Click to jump to the first frame of that track. The highlighted row contains the current frame."
+      {/* === RIGHT COLUMN: Tracks / Upload tabs (collapsible) === */}
+      {rightOpen ? (
+        <aside
+          className="panel"
+          style={{ display: 'flex', flexDirection: 'column', minWidth: 0, border: 0, position: 'relative' }}
         >
-          <span>DETECTED OBJECTS</span>
-          <span className="sentinel-tag info" style={{ marginLeft: 'auto' }}>{detectionGroups.length}</span>
-        </div>
-        <div className="sentinel-scroll" style={{ flex: 1, padding: '0 8px 8px' }}>
-          {detectionGroups.length === 0 && (
-            <div style={{ fontSize: 11, color: 'var(--muted)', textAlign: 'center', padding: 12 }}>
-              {selectedClip
-                ? selectedClip.status === 'ready'
-                  ? 'No detections yet — SAM3 pipeline may still be running.'
-                  : 'Waiting for transcode…'
-                : 'Select a clip to view detections.'}
-            </div>
-          )}
-          {detectionGroups.map((g) => {
-            const active = currentFrameIdx >= g.first && currentFrameIdx <= g.last;
-            return (
-              <button
-                key={g.key}
-                type="button"
-                className={`sentinel-row ${active ? 'selected' : ''}`}
-                onClick={() => seekTo(g.first / fps)}
-                style={{ width: '100%', textAlign: 'left', padding: 8, marginBottom: 4, display: 'flex', gap: 8, alignItems: 'center' }}
-              >
-                <span
-                  className="sentinel-dot"
-                  style={{ background: categoryFor((g as any).branch_id || 'Other', categories).color }}
-                />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {detectionClassLabel(g.className)}
-                    {g.trackId && <span style={{ color: 'var(--muted)', marginLeft: 6 }}>#{g.trackId}</span>}
+          <button
+            onClick={() => setRightOpen(false)}
+            type="button"
+            title="Collapse panel"
+            className="btn icon xs"
+            style={{ position: 'absolute', top: 8, right: 8, zIndex: 2 }}
+          >
+            <ChevronRight size={11} />
+          </button>
+
+          <div className="panel-h" style={{ padding: 0 }}>
+            {([['tracks', 'Tracks', trackRows.length], ['upload', 'Upload', clips.length]] as Array<[SidePanelTab, string, number]>).map(
+              ([k, label, count]) => (
+                <button
+                  key={k}
+                  onClick={() => setSideTab(k)}
+                  type="button"
+                  style={{
+                    flex: 1,
+                    height: 34,
+                    border: 0,
+                    background: sideTab === k ? 'var(--bg-2)' : 'transparent',
+                    color: sideTab === k ? 'var(--ink-0)' : 'var(--ink-2)',
+                    borderRight: '1px solid var(--line)',
+                    borderBottom: sideTab === k ? `2px solid ${accent}` : '2px solid transparent',
+                    cursor: 'pointer',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 11,
+                    letterSpacing: '.08em',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 6,
+                    textTransform: 'uppercase',
+                  }}
+                >
+                  {label} <span style={{ color: sideTab === k ? accent : 'var(--ink-3)' }}>{count}</span>
+                </button>
+              ),
+            )}
+          </div>
+
+          <div className="scroll" style={{ flex: 1, minHeight: 0 }}>
+            {sideTab === 'tracks' && (
+              <>
+                <div
+                  style={{
+                    padding: '10px 14px',
+                    borderBottom: '1px solid var(--line)',
+                    display: 'flex',
+                    gap: 6,
+                    alignItems: 'center',
+                  }}
+                >
+                  <div className="seg" style={{ flex: 1 }}>
+                    <button
+                      type="button"
+                      className={trackFilter === 'in-frame' ? 'on' : ''}
+                      onClick={() => setTrackFilter('in-frame')}
+                    >
+                      IN FRAME
+                    </button>
+                    <button type="button" className={trackFilter === 'all' ? 'on' : ''} onClick={() => setTrackFilter('all')}>
+                      ALL
+                    </button>
                   </div>
-                  <div style={{ fontSize: 10, color: 'var(--muted)' }}>
-                    frames {g.first}–{g.last} · ×{g.count} · max {(g.topConfidence * 100) | 0}%
-                  </div>
+                  <span className="mono" style={{ fontSize: 10, color: 'var(--ink-3)' }}>
+                    {inFrameCount} / {trackRows.length}
+                  </span>
                 </div>
-              </button>
-            );
-          })}
+
+                {visibleTrackRows.length === 0 && (
+                  <div style={{ fontSize: 11, color: 'var(--ink-2)', textAlign: 'center', padding: 16 }}>
+                    {selectedClip
+                      ? selectedClip.status === 'ready'
+                        ? trackFilter === 'in-frame'
+                          ? 'No tracks active at this frame.'
+                          : 'No detections yet — SAM3 pipeline may still be running.'
+                        : 'Waiting for transcode…'
+                      : 'Select a clip in the Upload tab.'}
+                  </div>
+                )}
+
+                {visibleTrackRows.map((t) => (
+                  <button
+                    key={t.key}
+                    type="button"
+                    onClick={() => seekTo(t.first / fps)}
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: '16px 1fr auto',
+                      gap: 10,
+                      alignItems: 'center',
+                      width: '100%',
+                      padding: '10px 14px',
+                      borderBottom: '1px solid var(--line)',
+                      background: t.inFrame ? `color-mix(in oklab, ${accent} 9%, transparent)` : 'transparent',
+                      borderLeft: t.inFrame ? `2px solid ${accent}` : '2px solid transparent',
+                      cursor: 'pointer',
+                      textAlign: 'left',
+                      color: 'var(--ink-0)',
+                    }}
+                  >
+                    <AffGlyph aff={t.aff} size={14} />
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 12, fontWeight: t.inFrame ? 600 : 500 }}>{t.label}</div>
+                      <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)' }}>
+                        {t.trackId ? `TRK-${t.trackId}` : 'no track'} · {t.frames}f · {Math.round(t.conf * 100)}%
+                      </div>
+                    </div>
+                    <span
+                      className="mono"
+                      style={{
+                        fontSize: 9,
+                        color: t.inFrame ? 'var(--ok)' : 'var(--ink-3)',
+                        padding: '1px 5px',
+                        border: '1px solid',
+                        borderColor: t.inFrame ? 'var(--ok)' : 'var(--line-2)',
+                      }}
+                    >
+                      {t.inFrame ? 'IN' : 'OUT'}
+                    </span>
+                  </button>
+                ))}
+              </>
+            )}
+
+            {sideTab === 'upload' && (
+              <UploadTab
+                clips={clips}
+                selectedId={selectedId}
+                setSelectedId={setSelectedId}
+                fileInputRef={fileInputRef}
+                onPickFiles={onPickFiles}
+                uploading={uploading}
+                uploadProgress={uploadProgress}
+                uploadError={uploadError}
+                inferenceStatus={inferenceStatus}
+                promptMode={promptMode}
+                setPromptMode={setPromptMode}
+              />
+            )}
+          </div>
+        </aside>
+      ) : (
+        <aside
+          onClick={() => setRightOpen(true)}
+          title="Show tracks"
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'flex-start',
+            background: 'var(--bg-1)',
+            borderLeft: '1px solid var(--line)',
+            padding: '12px 0',
+            gap: 14,
+            cursor: 'pointer',
+          }}
+        >
+          <ChevronLeft size={12} style={{ color: 'var(--ink-2)' }} />
+          <Film size={14} style={{ color: accent }} />
+          <span
+            style={{
+              writingMode: 'vertical-rl',
+              transform: 'rotate(180deg)',
+              fontSize: 10.5,
+              letterSpacing: '.06em',
+              color: 'var(--ink-1)',
+              marginTop: 4,
+            }}
+          >
+            Tracks · Upload
+          </span>
+          <span
+            className="mono"
+            style={{
+              writingMode: 'vertical-rl',
+              transform: 'rotate(180deg)',
+              fontSize: 10,
+              color: 'var(--ink-3)',
+            }}
+          >
+            {inFrameCount} / {trackRows.length}
+          </span>
+        </aside>
+      )}
+    </div>
+  );
+}
+
+/* ----------------------------------------------------------------------
+ * Upload tab — drop zone + clip library + prompt-mode toggle.
+ * Lives in the right sidebar; data + handlers are passed in from the
+ * parent so all state stays in one place.
+ * --------------------------------------------------------------------*/
+
+function UploadTab({
+  clips,
+  selectedId,
+  setSelectedId,
+  fileInputRef,
+  onPickFiles,
+  uploading,
+  uploadProgress,
+  uploadError,
+  inferenceStatus,
+  promptMode,
+  setPromptMode,
+}: {
+  clips: Clip[];
+  selectedId: number | null;
+  setSelectedId: (id: number) => void;
+  fileInputRef: React.MutableRefObject<HTMLInputElement | null>;
+  onPickFiles: (fl: FileList | null) => void;
+  uploading: boolean;
+  uploadProgress: number;
+  uploadError: string | null;
+  inferenceStatus: 'idle' | 'loading' | 'ready' | 'error';
+  promptMode: 'pcs' | 'amg';
+  setPromptMode: (m: 'pcs' | 'amg') => void;
+}) {
+  const accent = 'var(--accent)';
+  return (
+    <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {/* DROP ZONE */}
+      <div
+        onClick={() => fileInputRef.current?.click()}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={(e) => {
+          e.preventDefault();
+          onPickFiles(e.dataTransfer.files);
+        }}
+        style={{
+          border: '1px dashed var(--line-2)',
+          background: 'color-mix(in oklab, var(--bg-2) 60%, transparent)',
+          borderRadius: 10,
+          padding: '14px 16px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          cursor: 'pointer',
+          transition: 'border-color .15s, background .15s',
+        }}
+      >
+        <div
+          style={{
+            width: 38,
+            height: 38,
+            borderRadius: 10,
+            display: 'grid',
+            placeItems: 'center',
+            background: `color-mix(in oklab, ${accent} 14%, transparent)`,
+            border: `1px solid color-mix(in oklab, ${accent} 50%, transparent)`,
+            color: accent,
+            flexShrink: 0,
+          }}
+        >
+          <UploadCloud size={18} />
         </div>
-      </aside>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink-0)', marginBottom: 2 }}>
+            Upload drone video
+          </div>
+          <div className="mono" style={{ fontSize: 10.5, color: 'var(--ink-2)' }}>
+            MP4 / MOV / TS · MISB-0601 auto-extract · optional .srt sidecar
+          </div>
+        </div>
+      </div>
+
+      {/* PROMPT MODE — AMG (default) vs PCS */}
+      <div>
+        <div className="label-mono" style={{ marginBottom: 6 }}>Detection mode</div>
+        <div className="seg" style={{ width: '100%' }}>
+          <button
+            type="button"
+            className={promptMode === 'amg' ? 'on' : ''}
+            onClick={() => setPromptMode('amg')}
+            disabled={uploading}
+            style={{ flex: 1 }}
+            title="Automatic Mask Generation — dense, promptless detection (default)"
+          >
+            AMG
+          </button>
+          <button
+            type="button"
+            className={promptMode === 'pcs' ? 'on' : ''}
+            onClick={() => setPromptMode('pcs')}
+            disabled={uploading}
+            style={{ flex: 1 }}
+            title="Promptable Concept Segmentation — track named classes"
+          >
+            PCS
+          </button>
+        </div>
+      </div>
+
+      {/* STATUS PILLS */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {uploading && (
+          <div>
+            <div className="mono" style={{ fontSize: 10, color: 'var(--ink-2)' }}>
+              UPLOADING {uploadProgress}%
+            </div>
+            <div style={{ height: 4, background: 'var(--bg-3)', borderRadius: 999, overflow: 'hidden', marginTop: 4 }}>
+              <div style={{ width: `${uploadProgress}%`, height: '100%', background: accent }} />
+            </div>
+          </div>
+        )}
+        {uploadError && (
+          <span className="tag crit" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <AlertTriangle size={11} /> {uploadError}
+          </span>
+        )}
+        {inferenceStatus === 'loading' && <span className="tag accent">Loading FMV models…</span>}
+        {inferenceStatus === 'error' && <span className="tag crit">Inference profile failed to load</span>}
+      </div>
+
+      {/* CLIP LIBRARY */}
+      <div>
+        <div className="label-mono" style={{ marginBottom: 6 }}>
+          Clip library · {clips.length}
+        </div>
+        {clips.length === 0 && (
+          <div className="mono" style={{ fontSize: 11, color: 'var(--ink-2)', padding: 8 }}>
+            No clips yet.  Drop a file above to begin.
+          </div>
+        )}
+        {clips.map((clip) => {
+          const selected = clip.id === selectedId;
+          const statusTone =
+            clip.status === 'ready' ? 'ok' :
+            clip.status === 'error' ? 'crit' : 'unknown';
+          return (
+            <button
+              key={clip.id}
+              type="button"
+              onClick={() => setSelectedId(clip.id)}
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '24px 1fr auto',
+                gap: 10,
+                width: '100%',
+                padding: '8px 0',
+                borderTop: '1px solid var(--line)',
+                background: selected ? `color-mix(in oklab, ${accent} 9%, transparent)` : 'transparent',
+                border: 0,
+                borderBottom: '1px solid var(--line)',
+                cursor: 'pointer',
+                textAlign: 'left',
+                color: 'var(--ink-0)',
+              }}
+            >
+              <Film size={13} style={{ color: selected ? accent : 'var(--ink-2)' }} />
+              <div style={{ minWidth: 0 }}>
+                <div
+                  style={{
+                    fontSize: 12,
+                    fontWeight: selected ? 600 : 500,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {clip.name}
+                </div>
+                <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)' }}>
+                  {fmt(clip.duration_seconds)} {clip.width && clip.height ? `· ${clip.width}×${clip.height}` : ''}
+                </div>
+              </div>
+              <span className={`tag ${statusTone}`}>{clip.status}</span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
