@@ -778,6 +778,22 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
                 raise HTTPException(status_code=503, detail=str(exc)) from exc
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
+            # SAM3 video tracking is single-prompt-per-session: the upstream
+            # multiplex predictor `add_prompt` unconditionally resets the
+            # inference state, so N concepts require N separate sessions.
+            # The worker's (window × prompt) ThreadPoolExecutor in
+            # backend/worker.py already fans out one prompt per request;
+            # reject anything else loudly instead of silently dropping
+            # prompts beyond the first.
+            if len(prompts) > 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"SAM3 video tracking is single-prompt-per-session "
+                        f"(received {len(prompts)} resolved prompts: {prompts!r}). "
+                        f"Send one /detect_video request per prompt."
+                    ),
+                )
 
         # Pre-flight the video file. SAM3's `start_session` raises
         # ValueError("Could not open video: ...") from inside the
@@ -840,6 +856,9 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
                     reserved["lock"].release()
                     _leave_request()
         else:
+            # prompts is guaranteed len == 1 (or 0 → run_video no-ops) by
+            # the multi-prompt 400 check above.
+            _video_prompt = prompts[0] if prompts else ""
             def stream():
                 try:
                     yield from (
@@ -847,7 +866,7 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
                         for line in sam3_runner.run_video(
                             reserved,
                             video_path,
-                            prompts,
+                            _video_prompt,
                             frame_stride=frame_stride,
                             start_frame=start_frame,
                             end_frame=end_frame,

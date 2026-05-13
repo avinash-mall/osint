@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Circle, CircleMarker, GeoJSON, ImageOverlay, MapContainer, Marker, Polyline, Popup, TileLayer, useMap, useMapEvents, ZoomControl } from 'react-leaflet';
+import { Circle, CircleMarker, GeoJSON, ImageOverlay, MapContainer, Marker, Polyline, Popup, Rectangle, TileLayer, useMap, useMapEvents, ZoomControl } from 'react-leaflet';
 import L from 'leaflet';
 import axios from 'axios';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -43,6 +43,12 @@ import {
   type DetectionCategoryMap,
 } from '../utils/detectionTaxonomy';
 import type { OntologyBranch } from '../utils/useOntology';
+import ObjectDetailsForm from './ObjectDetailsForm';
+import { useAuth } from '../hooks/useAuth';
+import ReviewPanel from './map/ReviewPanel';
+import ProvenancePanel from './map/ProvenancePanel';
+import SimilarPanel from './map/SimilarPanel';
+import TimeMachineBar from './map/TimeMachineBar';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 const TILE_PROXY_URL = import.meta.env.VITE_TILE_PROXY_URL || '/tiles';
@@ -357,13 +363,84 @@ function MapBoundsUpdater({ onBoundsChange }: { onBoundsChange: (bounds: string)
   return null;
 }
 
-function MapCursorTracker({ onCursorChange }: { onCursorChange: (cursor: { lat: number; lon: number }) => void }) {
+function MapCursorTracker({
+  onCursorChange,
+  onLeave,
+}: {
+  onCursorChange: (cursor: { lat: number; lon: number }) => void;
+  onLeave?: () => void;
+}) {
   useMapEvents({
     mousemove(event) {
       onCursorChange({ lat: event.latlng.lat, lon: event.latlng.lng });
     },
+    mouseout() {
+      onLeave?.();
+    },
   });
   return null;
+}
+
+/**
+ * Drag-to-draw a rectangle on the map and emit it as a Leaflet LatLngBounds.
+ * Active only while `enabled` is true; disables map drag while active so the
+ * user can box-select without panning, then re-enables it on completion or
+ * when the mode is turned off.
+ */
+function DrawRectHandler({
+  enabled,
+  onFinish,
+}: {
+  enabled: boolean;
+  onFinish: (bounds: L.LatLngBounds) => void;
+}) {
+  const map = useMap();
+  const [draftStart, setDraftStart] = useState<L.LatLng | null>(null);
+  const [draftEnd, setDraftEnd] = useState<L.LatLng | null>(null);
+
+  useEffect(() => {
+    if (!enabled) return;
+    map.dragging.disable();
+    map.boxZoom.disable();
+    const container = map.getContainer();
+    container.style.cursor = 'crosshair';
+    return () => {
+      map.dragging.enable();
+      map.boxZoom.enable();
+      container.style.cursor = '';
+    };
+  }, [enabled, map]);
+
+  useMapEvents({
+    mousedown(event) {
+      if (!enabled) return;
+      setDraftStart(event.latlng);
+      setDraftEnd(event.latlng);
+    },
+    mousemove(event) {
+      if (!enabled || !draftStart) return;
+      setDraftEnd(event.latlng);
+    },
+    mouseup() {
+      if (!enabled || !draftStart || !draftEnd) {
+        setDraftStart(null);
+        setDraftEnd(null);
+        return;
+      }
+      const bounds = L.latLngBounds(draftStart, draftEnd);
+      setDraftStart(null);
+      setDraftEnd(null);
+      // Reject zero-size rectangles (single click).
+      const minPx = 6;
+      const swPt = map.latLngToContainerPoint(bounds.getSouthWest());
+      const nePt = map.latLngToContainerPoint(bounds.getNorthEast());
+      if (Math.abs(swPt.x - nePt.x) < minPx || Math.abs(swPt.y - nePt.y) < minPx) return;
+      onFinish(bounds);
+    },
+  });
+
+  if (!enabled || !draftStart || !draftEnd) return null;
+  return <Rectangle bounds={L.latLngBounds(draftStart, draftEnd)} pathOptions={{ color: '#ff7a1a', weight: 2, dashArray: '6 4', fillOpacity: 0.18 }} />;
 }
 
 function imageryBounds(imagery: any): L.LatLngBounds | null {
@@ -417,9 +494,26 @@ function MapFitToDetections({ geojson, filterKey }: { geojson: any; filterKey: s
 
 type GaiaMapProps = {
   onOpenGraph?: () => void;
+  /** Switch to FMV with the given clip selected (Detection's fmv_clip_id). */
+  onOpenFmv?: (clipId: number) => void;
+  /** Bubble cursor lat/lon up to the global status bar. */
+  onCursorChange?: (cursor: { lat: number; lon: number } | null) => void;
+  /** Cross-workspace navigation: focus a specific detection on mount. */
+  crossNav?: {
+    workspace: 'map' | 'fmv' | 'graph' | 'admin';
+    detectionId?: number;
+    className?: string;
+  } | null;
+  consumeCrossNav?: () => void;
 };
 
-export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
+export default function GaiaMap({
+  onOpenGraph,
+  onOpenFmv,
+  onCursorChange,
+  crossNav,
+  consumeCrossNav,
+}: GaiaMapProps) {
   // Map view no longer triggers an imagery-profile load on mount: that would
   // race the FMV tab and force a container restart (which loses any
   // in-flight FMV tracking). The /detect endpoint already calls
@@ -450,6 +544,23 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
   const [actionStatus, setActionStatus] = useState('');
   const [isActionBusy, setIsActionBusy] = useState(false);
   const [candidateLinks, setCandidateLinks] = useState<any[]>([]);
+  // Manual box drawing & soft-delete
+  const [drawMode, setDrawMode] = useState(false);
+  const [drawError, setDrawError] = useState<string | null>(null);
+  const { user } = useAuth();
+
+  // Map+ enhancements
+  const [bboxMode, setBboxMode] = useState<'hbb' | 'obb' | 'mask'>('mask');
+  const [prithviOverlays, setPrithviOverlays] = useState<{ flood: boolean; burn: boolean; crops: boolean }>({
+    flood: false,
+    burn: false,
+    crops: false,
+  });
+  const [prithviGeojson, setPrithviGeojson] = useState<Record<string, any>>({});
+  const [selectionTab, setSelectionTab] = useState<'edit' | 'review' | 'provenance' | 'similar'>('edit');
+  const [tmRange, setTmRange] = useState<'24h' | '7d' | '30d'>('24h');
+  const [tmValue, setTmValue] = useState(1);
+  const [tmPlaying, setTmPlaying] = useState(false);
   const [timeRange, setTimeRange] = useState<{ start: string; end: string }>(() => {
     const now = new Date();
     const hourAgo = new Date(now.getTime() - 60 * 60 * 1000);
@@ -580,6 +691,70 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
       return !labels.some((label) => hiddenDetectionLabels.includes(label));
     }),
   }), [detectionsGeoJSON, detectionClassFilter, hiddenDetectionCategories, hiddenDetectionLabels]);
+
+  // Map+ geometry mode — rewrite each feature's geometry into the requested
+  // shape:
+  //   hbb  → axis-aligned envelope (Polygon) from the original geometry
+  //   obb  → polygon built from metadata.obb when present; falls back to mask
+  //   mask → the raw geometry as ingested (default for SAM3 outputs)
+  const geomDisplayedDetectionsGeoJSON = useMemo(() => {
+    if (bboxMode === 'mask') return filteredDetectionsGeoJSON;
+    const out = { ...filteredDetectionsGeoJSON, features: [] as any[] };
+    for (const f of filteredDetectionsGeoJSON.features || []) {
+      if (!f?.geometry) continue;
+      if (bboxMode === 'hbb') {
+        // Compute envelope by scanning all coordinates.
+        const coords: number[][] = [];
+        const walk = (c: any) => {
+          if (Array.isArray(c) && c.length >= 2 && typeof c[0] === 'number' && typeof c[1] === 'number') {
+            coords.push([c[0], c[1]]);
+          } else if (Array.isArray(c)) {
+            for (const i of c) walk(i);
+          }
+        };
+        walk(f.geometry.coordinates);
+        if (!coords.length) {
+          out.features.push(f);
+          continue;
+        }
+        let minLon = coords[0][0], maxLon = coords[0][0], minLat = coords[0][1], maxLat = coords[0][1];
+        for (const [lon, lat] of coords) {
+          if (lon < minLon) minLon = lon;
+          if (lon > maxLon) maxLon = lon;
+          if (lat < minLat) minLat = lat;
+          if (lat > maxLat) maxLat = lat;
+        }
+        out.features.push({
+          ...f,
+          geometry: {
+            type: 'Polygon',
+            coordinates: [[
+              [minLon, minLat],
+              [maxLon, minLat],
+              [maxLon, maxLat],
+              [minLon, maxLat],
+              [minLon, minLat],
+            ]],
+          },
+        });
+      } else {
+        // OBB — if metadata.obb is a polygon of [lon,lat] pairs, use it; else
+        // fall back to the mask polygon so the layer never disappears.
+        const obb = f?.properties?.metadata?.obb;
+        if (Array.isArray(obb) && obb.length >= 3 && Array.isArray(obb[0]) && obb[0].length >= 2) {
+          const ring = obb.map((pt: any) => [Number(pt[0]), Number(pt[1])]);
+          ring.push(ring[0]);
+          out.features.push({
+            ...f,
+            geometry: { type: 'Polygon', coordinates: [ring] },
+          });
+        } else {
+          out.features.push(f);
+        }
+      }
+    }
+    return out;
+  }, [filteredDetectionsGeoJSON, bboxMode]);
 
   const filteredDetectionClassStats = useMemo(() => {
     const query = detectionLabelSearch.trim().toLowerCase();
@@ -836,6 +1011,32 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
   useEffect(() => { fetchDetectionFeatures(); }, [fetchDetectionFeatures]);
   useEffect(() => { fetchDetectionTracks(); }, [fetchDetectionTracks]);
 
+  // Fetch Prithvi overlay GeoJSON for any toggled kind. Each kind is loaded
+  // lazily and cached until the user toggles it off.
+  useEffect(() => {
+    let cancelled = false;
+    const wanted: Array<'flood' | 'burn' | 'crops'> = ['flood', 'burn', 'crops'].filter(
+      (k) => prithviOverlays[k as 'flood' | 'burn' | 'crops'],
+    ) as any;
+    (async () => {
+      for (const kind of wanted) {
+        if (prithviGeojson[kind]) continue;
+        try {
+          const params: any = { kind };
+          if (mapBounds) params.bbox = mapBounds;
+          const { data } = await axios.get(`${API_URL}/api/detections/prithvi-overlays`, { params });
+          if (cancelled) return;
+          setPrithviGeojson((cur) => ({ ...cur, [kind]: data }));
+        } catch (err) {
+          console.error('prithvi overlay load failed', kind, err);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [prithviOverlays, mapBounds, prithviGeojson]);
+
   useEffect(() => {
     const fetchBasemap = async () => {
       try {
@@ -873,6 +1074,130 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
       fetchUploadJobs();
     }
   }, [focusTimeRange, fetchUploadJobs]));
+
+  // Bubble cursor coords up to the global status bar.
+  useEffect(() => {
+    if (!onCursorChange) return;
+    onCursorChange(cursor);
+  }, [cursor, onCursorChange]);
+
+  // Listen for global "jump to detection" events (Shell's Jump search).
+  useEffect(() => {
+    const handler = (evt: Event) => {
+      const id = Number((evt as CustomEvent).detail?.id);
+      if (!Number.isFinite(id)) return;
+      const feat = detectionsGeoJSON?.features?.find(
+        (f: any) => Number(f.properties?.id) === id,
+      );
+      if (feat) {
+        setSelectedDetection(feat);
+        setRightOpen(true);
+      }
+    };
+    window.addEventListener('sentinel:jump-to-detection', handler);
+    return () => window.removeEventListener('sentinel:jump-to-detection', handler);
+  }, [detectionsGeoJSON]);
+
+  // Consume cross-workspace navigation: when the user clicks "Open on GEOINT"
+  // from Ontology or FMV we land here with a detectionId or className. Select
+  // the matching detection, fit the map to it, then notify the parent so the
+  // intent is consumed only once.
+  useEffect(() => {
+    if (!crossNav) return;
+    if (crossNav.detectionId) {
+      const feat = detectionsGeoJSON?.features?.find(
+        (f: any) => Number(f.properties?.id) === Number(crossNav.detectionId),
+      );
+      if (feat) {
+        setSelectedDetection(feat);
+        setRightOpen(true);
+      }
+    }
+    if (crossNav.className) {
+      setDetectionClassFilter(crossNav.className);
+    }
+    consumeCrossNav?.();
+  }, [crossNav, detectionsGeoJSON, consumeCrossNav]);
+  useEffect(() => {
+    if (!onCursorChange) return;
+    return () => onCursorChange(null);
+  }, [onCursorChange]);
+
+  // Create a manual detection from a user-drawn rectangle. We turn the rect
+  // into a GeoJSON polygon and POST to /api/detections/manual; the new row
+  // streams back via fetchDetections() and shows up on the map immediately.
+  const createManualDetection = useCallback(
+    async (
+      bounds: L.LatLngBounds,
+      payload: { object_class?: string; designation?: string; threat?: string; affiliation?: string; notes?: string },
+    ) => {
+      const sw = bounds.getSouthWest();
+      const ne = bounds.getNorthEast();
+      const geometry = {
+        type: 'Polygon',
+        coordinates: [[
+          [sw.lng, sw.lat],
+          [ne.lng, sw.lat],
+          [ne.lng, ne.lat],
+          [sw.lng, ne.lat],
+          [sw.lng, sw.lat],
+        ]],
+      };
+      try {
+        setIsActionBusy(true);
+        setDrawError(null);
+        const { data } = await axios.post(`${API_URL}/api/detections/manual`, {
+          geometry,
+          object_class: (payload.object_class || 'unknown').trim().toLowerCase() || 'unknown',
+          designation: payload.designation,
+          threat_level: payload.threat || 'medium',
+          affiliation: payload.affiliation || 'unknown',
+          notes: payload.notes,
+        });
+        setActionStatus(`Manual detection ${data?.id} created.`);
+        await fetchDetections();
+        // Pre-select the new detection so the right panel opens on it.
+        setSelectedDetection({
+          type: 'Feature',
+          geometry: data?.geometry,
+          properties: {
+            id: data?.id,
+            class: data?.class,
+            confidence: data?.confidence,
+            source: 'operator',
+            threat_level: data?.threat_level,
+            allegiance: data?.affiliation,
+            metadata: data?.metadata,
+          },
+        });
+        setRightOpen(true);
+        return data;
+      } catch (err: any) {
+        const detail = err?.response?.data?.detail || err?.message || 'manual detection failed';
+        setDrawError(detail);
+        setActionStatus(`Manual detection failed: ${detail}`);
+        return null;
+      } finally {
+        setIsActionBusy(false);
+      }
+    },
+    [fetchDetections],
+  );
+
+  const deleteDetection = useCallback(async (detectionId: number) => {
+    setIsActionBusy(true);
+    try {
+      await axios.delete(`${API_URL}/api/detections/${detectionId}`);
+      setActionStatus(`Detection ${detectionId} deleted.`);
+      setSelectedDetection(null);
+      await fetchDetections();
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail || err?.message || 'delete failed';
+      setActionStatus(`Delete failed: ${detail}`);
+    } finally {
+      setIsActionBusy(false);
+    }
+  }, [fetchDetections]);
 
   const tagDetection = useCallback(async (detectionId: number, allegiance: string) => {
     setIsActionBusy(true);
@@ -1319,6 +1644,21 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
             <ZoomControl position="bottomright" />
             <MapBoundsUpdater onBoundsChange={setMapBounds} />
             <MapCursorTracker onCursorChange={setCursor} />
+            <DrawRectHandler
+              enabled={drawMode}
+              onFinish={async (bounds) => {
+                const cls = window.prompt(
+                  'Object class for this manual detection (e.g. tank, frigate, building):',
+                  'unknown',
+                )?.trim();
+                if (cls === undefined) {
+                  setDrawMode(false);
+                  return;
+                }
+                await createManualDetection(bounds, { object_class: cls || 'unknown' });
+                setDrawMode(false);
+              }}
+            />
             <MapFitToImagery imagery={selectedImageryData} />
             <MapFitToDetections geojson={filteredDetectionsGeoJSON} filterKey={detectionClassFilter} />
 
@@ -1326,11 +1666,37 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
               url={CARTO_BASEMAP_URL}
               subdomains="abcd"
               maxZoom={20}
+              maxNativeZoom={10}
               opacity={1}
               attribution="&copy; OpenStreetMap &copy; CARTO"
             />
 
             <ImageOverlay url="/world_map.svg" bounds={[[-85, -180], [85, 180]]} opacity={0.32} />
+
+            {/* Prithvi overlays — hatched fills coloured per kind */}
+            {(['flood', 'burn', 'crops'] as const).map((kind) => {
+              if (!prithviOverlays[kind]) return null;
+              const data = prithviGeojson[kind];
+              if (!data || !data.features || data.features.length === 0) return null;
+              const color =
+                kind === 'flood' ? '#4ea1ff'
+                : kind === 'burn' ? '#c46a30'
+                : '#3dd68c';
+              return (
+                <GeoJSON
+                  key={`prithvi-${kind}`}
+                  data={data as any}
+                  style={() => ({
+                    color,
+                    weight: 1.2,
+                    opacity: 0.85,
+                    fillColor: color,
+                    fillOpacity: 0.22,
+                    dashArray: '4 3',
+                  })}
+                />
+              );
+            })}
 
             {activeLayers.grid && (
               <GeoJSON
@@ -1455,10 +1821,10 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
               );
             })}
 
-            {activeLayers.detections && showBbox && filteredDetectionsGeoJSON.features?.length > 0 && (
+            {activeLayers.detections && showBbox && geomDisplayedDetectionsGeoJSON.features?.length > 0 && (
               <CanvasGeoJSON
-                key={`detections-${detectionsLayerVersion}-${detectionClassFilter || 'all'}-${hiddenDetectionCategories.join('|')}-${hiddenDetectionLabels.join('|')}-${filteredDetectionsGeoJSON.features.length}`}
-                data={filteredDetectionsGeoJSON}
+                key={`detections-${detectionsLayerVersion}-${detectionClassFilter || 'all'}-${hiddenDetectionCategories.join('|')}-${hiddenDetectionLabels.join('|')}-${geomDisplayedDetectionsGeoJSON.features.length}-${bboxMode}`}
+                data={geomDisplayedDetectionsGeoJSON}
                 renderer={detectionCanvasRenderer}
                 pointToLayer={(feature: any, latlng: L.LatLng) => L.circleMarker(latlng, {
                   ...getDetectionStyle(feature),
@@ -1590,6 +1956,96 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
               <button type="button" className="pointer-events-auto grid h-7 w-7 place-items-center border-b border-sentinel-line text-sentinel-muted"><Minus className="h-3.5 w-3.5" /></button>
               <button type="button" className="pointer-events-auto grid h-7 w-7 place-items-center text-sentinel-muted"><Crosshair className="h-3.5 w-3.5" /></button>
             </div>
+
+            {/* Map+ top-center toolbar — geometry mode, Prithvi overlays, draw mode */}
+            <div className="absolute left-1/2 top-3 z-[500] -translate-x-1/2 pointer-events-auto flex flex-col items-center gap-2">
+              <div
+                className="flex items-center gap-1 border border-sentinel-line-2 bg-sentinel-panel/95 px-2 py-1 font-mono text-[10px] uppercase tracking-widest text-slate-300 rounded-full"
+                role="group"
+                aria-label="Detection geometry mode"
+              >
+                <span className="px-2 text-[10px] text-sentinel-muted">GEOM</span>
+                {(['hbb', 'obb', 'mask'] as const).map((k) => (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => setBboxMode(k)}
+                    title={
+                      k === 'hbb'
+                        ? 'Axis-aligned bounding box'
+                        : k === 'obb'
+                          ? 'Oriented bounding box (from SAM3 metadata)'
+                          : 'Mask polygon (raw geometry)'
+                    }
+                    className={`px-3 py-1 rounded-full transition ${
+                      bboxMode === k
+                        ? 'bg-sentinel-accent text-slate-900 font-bold'
+                        : 'text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    {k.toUpperCase()}
+                  </button>
+                ))}
+                <span className="mx-1 h-4 w-px bg-sentinel-line-2" />
+                <span className="px-1 text-[10px] text-sentinel-muted">PRITHVI</span>
+                {(['flood', 'burn', 'crops'] as const).map((k) => {
+                  const on = prithviOverlays[k];
+                  return (
+                    <button
+                      key={k}
+                      type="button"
+                      onClick={() => setPrithviOverlays((cur) => ({ ...cur, [k]: !cur[k] }))}
+                      title={`Toggle Prithvi ${k} overlay`}
+                      className={`px-3 py-1 rounded-full transition ${
+                        on
+                          ? 'bg-sentinel-accent/20 text-sentinel-accent'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {k}
+                    </button>
+                  );
+                })}
+                <span className="mx-1 h-4 w-px bg-sentinel-line-2" />
+                <button
+                  type="button"
+                  onClick={() => setActiveLayers((cur) => ({ ...cur, tracks: !cur.tracks }))}
+                  title="Toggle asset tracks"
+                  className={`px-3 py-1 rounded-full transition ${
+                    activeLayers.tracks
+                      ? 'bg-sentinel-accent/20 text-sentinel-accent'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  tracks
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setDrawMode((v) => !v)}
+                title={drawMode ? 'Cancel drawing' : 'Draw a manual box over an object'}
+                className={`flex items-center gap-2 border px-3 py-1.5 font-mono text-[11px] uppercase tracking-widest transition ${
+                  drawMode
+                    ? 'border-sentinel-accent bg-sentinel-accent/15 text-sentinel-accent'
+                    : 'border-sentinel-line-2 bg-sentinel-panel text-sentinel-text hover:border-sentinel-accent/60'
+                }`}
+              >
+                <Crosshair className="h-3.5 w-3.5" />
+                {drawMode ? 'Cancel draw' : 'Draw object'}
+              </button>
+              {drawError && (
+                <div className="mt-1 border border-red-500 bg-red-500/10 px-2 py-1 font-mono text-[10px] text-red-300">
+                  {drawError}
+                </div>
+              )}
+            </div>
+
+            {drawMode && (
+              <div className="absolute left-1/2 top-16 z-[500] -translate-x-1/2 pointer-events-none border border-sentinel-accent bg-sentinel-panel/80 px-3 py-1.5 font-mono text-[10.5px] uppercase tracking-widest text-sentinel-accent">
+                Drag on the map to box an object, then label it
+              </div>
+            )}
           </div>
 
           {isLoading && (
@@ -1662,6 +2118,29 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
           >
             <ChevronDown size={11} />
           </button>
+
+          {/* Time-machine scrubber (imagery acquisition timeline) */}
+          {imagery.length > 0 && (
+            <div style={{ marginBottom: 12 }}>
+              <TimeMachineBar
+                passes={imagery.map((p: any) => ({
+                  id: Number(p.id),
+                  acquisition_time: p.acquisition_time,
+                  sensor_type: p.sensor_type,
+                  name: p.name,
+                }))}
+                range={tmRange}
+                value={tmValue}
+                playing={tmPlaying}
+                onRangeChange={setTmRange}
+                onValueChange={setTmValue}
+                onTogglePlay={() => setTmPlaying((p) => !p)}
+                onRecenter={() => setTmValue(1)}
+                isoNow={new Date().toISOString()}
+              />
+            </div>
+          )}
+
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
             <button
               type="button"
@@ -1847,6 +2326,77 @@ export default function GaiaMap({ onOpenGraph }: GaiaMapProps) {
                   <Crosshair className="h-3.5 w-3.5" /> Track Object
                 </button>
               </div>
+
+              {/* Map+ Selection tabs: Edit / Review / Provenance / Similar */}
+              <div className="flex border-b border-sentinel-line">
+                {(['edit', 'review', 'provenance', 'similar'] as const).map((k) => (
+                  <button
+                    key={k}
+                    type="button"
+                    onClick={() => setSelectionTab(k)}
+                    className={`flex-1 px-2 py-2 font-mono text-[10.5px] uppercase tracking-widest transition border-b-2 ${
+                      selectionTab === k
+                        ? 'border-sentinel-accent text-sentinel-accent bg-sentinel-panel-2'
+                        : 'border-transparent text-sentinel-muted hover:text-slate-200'
+                    }`}
+                  >
+                    {k}
+                  </button>
+                ))}
+              </div>
+
+              {selectionTab === 'edit' && (
+                <ObjectDetailsForm
+                  key={`map-det-${selectedDetection.properties.id}`}
+                  source="map"
+                  detectionId={Number(selectedDetection.properties.id)}
+                  defaultClass={selectedDetection.properties?.class}
+                  title={selectedDetection.properties?.label || detectionClassLabel(selectedDetection.properties?.class)}
+                  initial={{
+                    designation: selectedDetection.properties?.metadata?.designation,
+                    military_classification: selectedDetection.properties?.metadata?.military_classification,
+                    threat_level: selectedDetection.properties?.threat_level,
+                    affiliation: selectedDetection.properties?.allegiance,
+                  }}
+                  canDelete={
+                    (selectedDetection.properties?.source || selectedDetection.properties?.metadata?.source) === 'operator'
+                    || user?.role === 'admin'
+                  }
+                  onDeleted={() => deleteDetection(Number(selectedDetection.properties.id))}
+                  onSaved={() => fetchDetections()}
+                  onViewInFmv={
+                    selectedDetection.properties?.fmv_clip_id && onOpenFmv
+                      ? () => onOpenFmv(Number(selectedDetection.properties.fmv_clip_id))
+                      : undefined
+                  }
+                />
+              )}
+              {selectionTab === 'review' && (
+                <ReviewPanel
+                  selectedDetection={selectedDetection}
+                  onReviewed={() => fetchDetections()}
+                  onJump={(id) => {
+                    const feat = detectionsGeoJSON?.features?.find(
+                      (f: any) => Number(f.properties?.id) === id,
+                    );
+                    if (feat) setSelectedDetection(feat);
+                  }}
+                />
+              )}
+              {selectionTab === 'provenance' && (
+                <ProvenancePanel selectedDetection={selectedDetection} />
+              )}
+              {selectionTab === 'similar' && (
+                <SimilarPanel
+                  selectedDetection={selectedDetection}
+                  onSelect={(id) => {
+                    const feat = detectionsGeoJSON?.features?.find(
+                      (f: any) => Number(f.properties?.id) === id,
+                    );
+                    if (feat) setSelectedDetection(feat);
+                  }}
+                />
+              )}
               <div className="border-b border-sentinel-line p-3">
                 <div className="mb-2 flex items-center gap-2">
                   <span className="sentinel-label flex-1">Candidate Links</span>

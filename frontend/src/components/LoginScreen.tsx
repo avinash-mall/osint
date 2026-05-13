@@ -1,0 +1,429 @@
+/**
+ * LoginScreen — Sentinel · GEOINT Workstation sign-in.
+ *
+ * Ported from the design's LoginSplit prototype:
+ *   /tmp/sentinel-design/test1/project/components/login-screen.jsx → LoginSplit
+ *
+ * Two-pane layout: brand half (graticule + telemetry strip) on the left,
+ * credential form on the right. Wired to POST /api/auth/login via useAuth.
+ */
+
+import { useState } from 'react';
+import { Building, Key, Lock, Shield, User } from 'lucide-react';
+import { useAuth } from '../hooks/useAuth';
+
+export default function LoginScreen() {
+  const { login, error } = useAuth();
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!username.trim() || !password) return;
+    setBusy(true);
+    try {
+      await login(username.trim(), password);
+    } catch {
+      // error surfaces via useAuth().error
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      style={{
+        height: '100%',
+        width: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        background: 'var(--bg-0)',
+        color: 'var(--ink-0)',
+        fontFamily: 'var(--font-sans)',
+      }}
+    >
+      <ClassifiedBar />
+
+      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1.1fr .9fr', minHeight: 0 }}>
+        {/* ===== Brand pane ===== */}
+        <div
+          style={{
+            position: 'relative',
+            overflow: 'hidden',
+            background: 'linear-gradient(135deg, var(--bg-0) 0%, var(--bg-1) 100%)',
+            borderRight: '1px solid var(--line)',
+            padding: '48px 56px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 22,
+          }}
+        >
+          <GraticuleBG />
+
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 14 }}>
+            <BrandMark />
+            <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.2 }}>
+              <span style={{ fontSize: 18, fontWeight: 600 }}>Sentinel</span>
+              <span className="mono" style={{ color: 'var(--ink-2)', fontSize: 11, letterSpacing: '.08em' }}>
+                GEOINT WORKSTATION
+              </span>
+            </div>
+          </div>
+
+          <div
+            style={{
+              position: 'relative',
+              marginTop: 'auto',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 18,
+            }}
+          >
+            <h1
+              style={{
+                margin: 0,
+                fontSize: 42,
+                lineHeight: 1.05,
+                fontWeight: 500,
+                letterSpacing: '-0.01em',
+                maxWidth: 560,
+              }}
+            >
+              All-source geospatial intelligence.
+              <br />
+              <span style={{ color: 'var(--accent)' }}>One workstation.</span>
+            </h1>
+            <p
+              style={{
+                margin: 0,
+                color: 'var(--ink-1)',
+                fontSize: 14,
+                lineHeight: 1.55,
+                maxWidth: 520,
+              }}
+            >
+              SAM 3, DINOv3, Prithvi and TerraMind fused on a single map. Sign in to your operator
+              profile to resume your last AOI.
+            </p>
+
+            <TelemetryStrip />
+          </div>
+        </div>
+
+        {/* ===== Auth pane ===== */}
+        <form
+          onSubmit={onSubmit}
+          style={{
+            background: 'var(--bg-1)',
+            padding: '56px 64px',
+            display: 'flex',
+            flexDirection: 'column',
+            justifyContent: 'center',
+            gap: 24,
+          }}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <span className="label-mono">Operator sign-in</span>
+            <h2 style={{ margin: 0, fontSize: 26, fontWeight: 500 }}>Resume operations</h2>
+            <span style={{ color: 'var(--ink-2)', fontSize: 13 }}>
+              Authenticate with the env-bootstrap admin or your enterprise LDAP account.
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <Field label="OPERATOR ID">
+              <Input
+                icon={<User size={14} style={{ color: 'var(--ink-2)' }} />}
+                value={username}
+                onChange={(v) => setUsername(v)}
+                placeholder="lastname.firstname"
+                autoComplete="username"
+                autoFocus
+                disabled={busy}
+                name="username"
+              />
+            </Field>
+
+            <Field label="PASSPHRASE">
+              <Input
+                icon={<Lock size={14} style={{ color: 'var(--ink-2)' }} />}
+                value={password}
+                onChange={(v) => setPassword(v)}
+                placeholder="••••••••••••"
+                type="password"
+                autoComplete="current-password"
+                disabled={busy}
+                name="password"
+              />
+            </Field>
+
+            {error && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '8px 12px',
+                  background: 'color-mix(in oklab, var(--nato-hostile) 12%, var(--bg-2))',
+                  border: '1px solid var(--nato-hostile)',
+                  color: 'var(--nato-hostile)',
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 11.5,
+                  letterSpacing: '.02em',
+                }}
+                role="alert"
+                aria-live="polite"
+              >
+                <Shield size={13} />
+                {error}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={busy || !username.trim() || !password}
+              className="btn primary"
+              style={{
+                height: 42,
+                fontSize: 13,
+                opacity: busy || !username.trim() || !password ? 0.6 : 1,
+                cursor: busy ? 'wait' : 'pointer',
+              }}
+            >
+              <Key size={14} />
+              {busy ? 'Authenticating…' : 'Sign in'}
+              <span style={{ flex: 1 }} />
+              <span className="kbd" style={{ marginLeft: 0 }}>↵</span>
+            </button>
+
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                color: 'var(--ink-3)',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 10.5,
+                letterSpacing: '.06em',
+                paddingTop: 6,
+              }}
+            >
+              <Building size={11} />
+              <span>
+                LDAP enabled? Configure it under <b style={{ color: 'var(--ink-1)' }}>Admin · Auth</b> after signing in as the env admin.
+              </span>
+            </div>
+          </div>
+
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              paddingTop: 18,
+              borderTop: '1px solid var(--line)',
+              color: 'var(--ink-2)',
+              fontSize: 11,
+            }}
+          >
+            <span className="mono">BUILD · sentinel/main</span>
+            <span className="mono">AUTH · local</span>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function ClassifiedBar() {
+  return (
+    <div
+      style={{
+        height: 22,
+        background: 'var(--nato-unknown)',
+        color: '#0b0d10',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontFamily: 'var(--font-mono)',
+        fontSize: 10.5,
+        letterSpacing: '.18em',
+        fontWeight: 700,
+      }}
+    >
+      UNCLASSIFIED // FOR OFFICIAL USE ONLY
+    </div>
+  );
+}
+
+function BrandMark() {
+  return (
+    <div
+      style={{
+        width: 44,
+        height: 44,
+        display: 'grid',
+        placeItems: 'center',
+        background: 'color-mix(in oklab, var(--accent) 18%, var(--bg-2))',
+        border: '1px solid color-mix(in oklab, var(--accent) 60%, transparent)',
+        color: 'var(--accent)',
+        borderRadius: 8,
+        fontWeight: 700,
+        fontFamily: 'var(--font-mono)',
+        fontSize: 18,
+        flexShrink: 0,
+      }}
+    >
+      S
+    </div>
+  );
+}
+
+function GraticuleBG() {
+  return (
+    <svg
+      width="100%"
+      height="100%"
+      preserveAspectRatio="none"
+      style={{ position: 'absolute', inset: 0, opacity: 0.55, pointerEvents: 'none' }}
+    >
+      <defs>
+        <pattern id="login-grid-lg" width="80" height="80" patternUnits="userSpaceOnUse">
+          <path d="M80 0 H0 V80" fill="none" stroke="var(--line-2)" strokeWidth=".6" />
+        </pattern>
+        <pattern id="login-grid-sm" width="16" height="16" patternUnits="userSpaceOnUse">
+          <path d="M16 0 H0 V16" fill="none" stroke="var(--line)" strokeWidth=".4" />
+        </pattern>
+        <radialGradient id="login-vign" cx="50%" cy="40%" r="70%">
+          <stop offset="0%" stopColor="color-mix(in oklab, var(--accent) 12%, transparent)" />
+          <stop offset="60%" stopColor="transparent" />
+        </radialGradient>
+      </defs>
+      <rect width="100%" height="100%" fill="url(#login-grid-sm)" />
+      <rect width="100%" height="100%" fill="url(#login-grid-lg)" />
+      <rect width="100%" height="100%" fill="url(#login-vign)" />
+      <g fill="none" stroke="color-mix(in oklab, var(--accent) 55%, transparent)" strokeWidth=".8">
+        <path d="M -20 480 Q 360 60 820 540" />
+        <path d="M  80 760 Q 600 200 1100 700" opacity=".5" />
+        <path d="M -40 220 Q 380 520 760 220" opacity=".35" />
+      </g>
+      <g>
+        {[
+          { x: 220, y: 280, r: 4 },
+          { x: 540, y: 380, r: 3 },
+          { x: 380, y: 600, r: 3.2 },
+          { x: 720, y: 220, r: 2.8 },
+        ].map((p, i) => (
+          <g key={i}>
+            <circle
+              cx={p.x}
+              cy={p.y}
+              r={p.r * 4}
+              fill="color-mix(in oklab, var(--accent) 40%, transparent)"
+              opacity=".25"
+            />
+            <circle cx={p.x} cy={p.y} r={p.r} fill="var(--accent)" />
+          </g>
+        ))}
+      </g>
+    </svg>
+  );
+}
+
+function TelemetryStrip() {
+  return (
+    <div
+      style={{
+        marginTop: 18,
+        display: 'grid',
+        gridTemplateColumns: 'repeat(4, 1fr)',
+        border: '1px solid var(--line)',
+        background: 'color-mix(in oklab, var(--bg-1) 92%, transparent)',
+      }}
+    >
+      {[
+        { l: 'SYSTEM', v: 'NOMINAL', tone: 'var(--ok)' },
+        { l: 'AUTH', v: 'LOCAL · READY' },
+        { l: 'POSTGIS', v: 'CONNECTED' },
+        { l: 'NEO4J', v: 'CONNECTED' },
+      ].map((s, i) => (
+        <div
+          key={i}
+          style={{
+            padding: '14px 16px',
+            borderRight: i < 3 ? '1px solid var(--line)' : '0',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 4,
+          }}
+        >
+          <span className="label-mono">{s.l}</span>
+          <span className="mono" style={{ color: (s as any).tone || 'var(--ink-0)', fontSize: 12 }}>
+            {s.v}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span className="label-mono">{label}</span>
+      </span>
+      {children}
+    </label>
+  );
+}
+
+type InputProps = {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  icon?: React.ReactNode;
+  type?: string;
+  disabled?: boolean;
+  autoFocus?: boolean;
+  autoComplete?: string;
+  name?: string;
+};
+
+function Input({ value, onChange, placeholder, icon, type, disabled, autoFocus, autoComplete, name }: InputProps) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        height: 38,
+        padding: '0 10px',
+        background: 'var(--bg-0)',
+        border: '1px solid var(--line-2)',
+      }}
+    >
+      {icon}
+      <input
+        type={type || 'text'}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        disabled={disabled}
+        autoFocus={autoFocus}
+        autoComplete={autoComplete}
+        name={name}
+        style={{
+          flex: 1,
+          border: 0,
+          outline: 'none',
+          background: 'transparent',
+          color: 'var(--ink-0)',
+          fontFamily: 'inherit',
+          fontSize: 13,
+        }}
+      />
+    </div>
+  );
+}

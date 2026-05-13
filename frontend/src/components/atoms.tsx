@@ -148,3 +148,116 @@ export function LabelMono({ children, style }: LabelMonoProps) {
     </div>
   );
 }
+
+
+/** Modality badge — color-coded for the five sensor families.
+ *  Ported from /tmp/sentinel-design-v2/test1/project/components/features.jsx:7 */
+export type Modality = 'rgb' | 'multispectral' | 'sar' | 'hsi' | 'fmv';
+const MODALITY_META: Record<Modality, { label: string; color: string }> = {
+  rgb:           { label: 'RGB',  color: '#9bd1ff' },
+  multispectral: { label: 'MSI',  color: '#a78bfa' },
+  sar:           { label: 'SAR',  color: '#fca56a' },
+  hsi:           { label: 'HSI',  color: '#ff79c6' },
+  fmv:           { label: 'FMV',  color: '#5ee0a0' },
+};
+export function ModalityBadge({
+  m = 'rgb',
+  size = 'sm',
+}: {
+  m?: Modality | string;
+  size?: 'xs' | 'sm';
+}) {
+  const meta = MODALITY_META[(m as Modality)] || MODALITY_META.rgb;
+  const fz = size === 'xs' ? 9 : 10;
+  return (
+    <span
+      className="mono"
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        padding: size === 'xs' ? '1px 5px' : '2px 7px',
+        fontSize: fz,
+        letterSpacing: '.08em',
+        color: meta.color,
+        border: `1px solid ${meta.color}`,
+        background: `color-mix(in oklab, ${meta.color} 12%, transparent)`,
+        borderRadius: 2,
+        textTransform: 'uppercase',
+      }}
+      title={`Sensor modality: ${meta.label}`}
+    >
+      {meta.label}
+    </span>
+  );
+}
+
+/** Embedding badge — surfaces which DINOv3 head produced the embedding.
+ *  Ported from features.jsx:26 */
+export type EmbeddingKind = 'sat' | 'lvd' | 'terramind' | 'none';
+const EMBED_META: Record<EmbeddingKind, { label: string; color: string }> = {
+  sat:       { label: 'DINOv3-SAT', color: '#9bd1ff' },
+  lvd:       { label: 'DINOv3-LVD', color: '#5ee0a0' },
+  terramind: { label: 'TERRAMIND',  color: '#a78bfa' },
+  none:      { label: '—',          color: 'var(--ink-3)' },
+};
+export function EmbeddingBadge({ kind = 'sat' }: { kind?: EmbeddingKind | string }) {
+  const meta = EMBED_META[(kind as EmbeddingKind)] || EMBED_META.none;
+  return (
+    <span
+      className="mono"
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        padding: '2px 7px',
+        fontSize: 9.5,
+        letterSpacing: '.08em',
+        color: meta.color,
+        background: `color-mix(in oklab, ${meta.color} 14%, transparent)`,
+        border: `1px solid color-mix(in oklab, ${meta.color} 50%, transparent)`,
+        borderRadius: 2,
+      }}
+      title={`Embedding head: ${meta.label}`}
+    >
+      {meta.label}
+    </span>
+  );
+}
+
+/** Card-style panel with optional title/sub header. Used by Admin views and
+ *  Map+/FMV+ overlay panels. Pure presentational. */
+export function Panel({
+  title,
+  sub,
+  right,
+  children,
+  style,
+}: {
+  title?: ReactNode;
+  sub?: ReactNode;
+  right?: ReactNode;
+  children: ReactNode;
+  style?: CSSProperties;
+}) {
+  return (
+    <div
+      className="card"
+      style={{
+        background: 'var(--bg-1)',
+        border: '1px solid var(--line)',
+        borderRadius: 10,
+        padding: 16,
+        ...style,
+      }}
+    >
+      {(title || sub || right) && (
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 12 }}>
+          {title && <span style={{ fontSize: 13, fontWeight: 600 }}>{title}</span>}
+          {sub && <span className="mono" style={{ fontSize: 10.5, color: 'var(--ink-3)' }}>{sub}</span>}
+          <span style={{ flex: 1 }} />
+          {right}
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}

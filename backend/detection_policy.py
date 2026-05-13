@@ -117,22 +117,76 @@ def _load_json_thresholds(name: str) -> dict[str, float]:
     return out
 
 
+def _load_db_overrides() -> tuple[dict[str, float], float | None, float | None]:
+    """Read confidence overrides from the inference_config row, if present.
+
+    Returns ``(per_class_thresholds, global_floor, high_threshold)``. All three
+    can be ``None`` / empty when the row doesn't exist or the DB is unreachable,
+    in which case the env-var fallback is used.
+    """
+    try:
+        from database import postgis_db  # local import — keeps tests that stub the env from needing a DB
+        with postgis_db.get_cursor() as cur:
+            cur.execute("SELECT config FROM inference_config WHERE id = 1")
+            row = cur.fetchone()
+    except Exception:
+        return {}, None, None
+    if not row:
+        return {}, None, None
+    cfg = row[0] if not isinstance(row, dict) else row.get("config")
+    if isinstance(cfg, str):
+        try:
+            cfg = json.loads(cfg)
+        except json.JSONDecodeError:
+            return {}, None, None
+    if not isinstance(cfg, dict):
+        return {}, None, None
+    raw_overrides = cfg.get("per_class_confidence_overrides") or {}
+    out: dict[str, float] = {}
+    if isinstance(raw_overrides, dict):
+        for key, value in raw_overrides.items():
+            try:
+                out[normalize_label(key)] = float(value)
+            except (TypeError, ValueError):
+                continue
+    g = cfg.get("global_floor")
+    h = cfg.get("high_confidence_threshold")
+    try:
+        g = float(g) if g is not None else None
+    except (TypeError, ValueError):
+        g = None
+    try:
+        h = float(h) if h is not None else None
+    except (TypeError, ValueError):
+        h = None
+    return out, g, h
+
+
 @lru_cache(maxsize=1)
 def active_detection_policy() -> dict[str, Any]:
-    """Open-vocab policy: single global floor, no enabled/disabled lists."""
+    """Open-vocab policy: DB-backed overrides win, env values are the fallback."""
     profile_name = os.getenv("DETECTION_THRESHOLD_PROFILE", "open").strip() or "open"
     global_floor = float(os.getenv("GLOBAL_CONFIDENCE_FLOOR", "0.0"))
     high_threshold = float(os.getenv("HIGH_CONFIDENCE_THRESHOLD", "0.5"))
+    env_overrides = _load_json_thresholds("PER_CLASS_CONFIDENCE_OVERRIDES")
+    db_overrides, db_global, db_high = _load_db_overrides()
+    merged = {**env_overrides, **db_overrides}  # DB wins on collisions
     return {
         "taxonomy_version": TAXONOMY_VERSION,
         "model_version": DEFAULT_MODEL_VERSION,
         "threshold_profile": profile_name,
-        "global_confidence_floor": global_floor,
-        "high_confidence_threshold": high_threshold,
+        "global_confidence_floor": db_global if db_global is not None else global_floor,
+        "high_confidence_threshold": db_high if db_high is not None else high_threshold,
         "enabled_parent_classes": [],  # open-vocab: no closed set; informational only
         "disabled_parent_classes": [],
-        "class_thresholds": _load_json_thresholds("PER_CLASS_CONFIDENCE_OVERRIDES"),
+        "class_thresholds": merged,
     }
+
+
+def invalidate_policy_cache() -> None:
+    """Drop the cached policy so the next ``active_detection_policy()`` call
+    re-reads from the DB. Called by ``PUT /api/inference/confidence-overrides``."""
+    active_detection_policy.cache_clear()
 
 
 def threshold_for_parent(parent_class: str, policy: dict[str, Any] | None = None) -> float:

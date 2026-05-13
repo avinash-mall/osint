@@ -43,6 +43,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { type BranchIconKey } from './defenceOntology';
+import { iconComponentByKey } from './iconLibrary';
 
 export const BRANCH_ICON_BY_KEY: Record<BranchIconKey, LucideIcon> = {
   military: Shield,
@@ -103,7 +104,19 @@ export function objectIconComponent(
   if (/courtyard|plaza|square|marketplace|residential|office|mall|hospital|school|mosque|church|temple|government|embassy|prison|detention|police_station|fire_station|train_station_terminal|apartment|tower\b|pylon|\bshed\b|\bhut\b|\bbarn\b|industrial_building|multi_story_building|single_story_building|office_tower|government_building|building/.test(raw)) return Building2;
   if (/vehicle_track|heavy_track|tire_tracks|foot_path|wheel_ruts|track_vehicle_marking|activity_trail|recently_cleared|newly_painted|stockpile_growth|disturbed_vegetation|fresh_earth|soil_disturbance|burn_patch|new_excavation|new_trench|new_temporary|new_building|new_pad|new_road|removed_structure|object_moved|object_removed|object_added|convoy_moving|empty_storage|loaded_storage|increased_depot_activity|smoke_plume|steam_plume|active_burning/.test(raw)) return Activity;
   if (/checkpoint|barricade|sniper_position|rooftop_position|crew_served_weapon_position|garrison|combat_outpost|forward_operating_base|military_base|military_headquarters|barracks|officer_quarters|mess_hall|vehicle_shed|motor_pool|training_area|firing_range|tank_range|drone_range|command_bunker|hardened_command_post|tent_city|bivouac|temporary_camp|refugee_camp|detention_facility|vehicle_inspection_lane|vehicle_wash_rack|garrison_helipad/.test(raw)) return Landmark;
-  return fallbackIconKey ? BRANCH_ICON_BY_KEY[fallbackIconKey] : CircleHelp;
+  // Branch-level fallback. Try the design-canvas BranchIconKey table first
+  // (camelCase keys), then the curated snake_case ICON_BY_KEY table from
+  // iconLibrary, which is what backend seed_ontology.py writes. If neither
+  // resolves, render the CircleHelp glyph rather than `undefined` — passing
+  // `undefined` as a JSX element type crashes the render with
+  // "Element type is invalid".
+  if (fallbackIconKey) {
+    const fromBranchMap = BRANCH_ICON_BY_KEY[fallbackIconKey];
+    if (fromBranchMap) return fromBranchMap;
+    const fromLibrary = iconComponentByKey(fallbackIconKey);
+    if (fromLibrary) return fromLibrary;
+  }
+  return CircleHelp;
 }
 
 export function ObjectIcon({

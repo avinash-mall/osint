@@ -3,52 +3,76 @@
 This guide builds the Sentinel platform on a connected workstation and
 deploys the resulting images to a fully disconnected server. After the
 images are loaded, the platform runs without making any outbound network
-calls — basemap tiles, AI model weights, and HLS segments are all served
-from inside the cluster.
+calls — basemap tiles, AI model weights, webfonts, and HLS segments are
+all served from inside the cluster.
+
+> **SECURITY — rotate before building.** If the working tree's `.env`
+> contains a real `HF_TOKEN`, treat that token as leaked: revoke it at
+> <https://huggingface.co/settings/tokens>, issue a fresh one, then
+> `git rm --cached .env`, add `.env` to `.gitignore`, and scrub the
+> historical commit with `git filter-repo --invert-paths --path .env`.
+> `.env` is operator-managed per-deployment and must never be committed.
 
 ## What ships in the bundle
 
-| Image                          | Built from               | Carries                                                           |
-| ------------------------------ | ------------------------ | ----------------------------------------------------------------- |
-| `sentinel-backend:latest`      | `./backend/Dockerfile`   | FastAPI, Celery, ffmpeg, `klvdata`, postgis client                |
-| `sentinel-frontend:latest`     | `./frontend/Dockerfile`  | Vite-built static React bundle (`hls.js`, Leaflet, lucide, etc.)  |
-| `sentinel-nginx:offline`       | `./nginx/Dockerfile`     | Reverse proxy **and** the baked-in Carto Dark basemap (z=0..10)   |
-| `sentinel-inference-sam3:gpu`  | `./inference-sam3/Dockerfile.gpu` | CUDA 12.x + every HF weight under `/models/hf` (~18 GB)  |
-| `postgis/postgis:16-3.4`       | upstream                 | PostGIS DB                                                        |
-| `redis:alpine`                 | upstream                 | Celery broker                                                     |
-| `neo4j:5.20.0`                 | upstream                 | Ontology graph                                                    |
-| `developmentseed/titiler:latest`| upstream                | Imagery COG tile server                                           |
-| `maplibre/martin:latest`       | upstream                 | Vector tile server from PostGIS                                   |
+| Image                            | Built from                          | Carries                                                          |
+| -------------------------------- | ----------------------------------- | ---------------------------------------------------------------- |
+| `sentinel-backend:latest`        | `./backend/Dockerfile`              | FastAPI, Celery, ffmpeg, `klvdata`, postgis client               |
+| `sentinel-frontend:latest`       | `./frontend/Dockerfile`             | Vite-built static React bundle (`hls.js`, Leaflet, lucide, etc.) |
+| `sentinel-nginx:offline`         | `./nginx/Dockerfile`                | Reverse proxy only (lightweight; rebuilds in seconds)            |
+| `sentinel-assets:offline`        | `./assets/Dockerfile`               | Carto-Dark basemap pyramid (z=0..10) **and** IBM Plex webfonts   |
+| `sentinel-inference-sam3:gpu`    | `./inference-sam3/Dockerfile.gpu`   | CUDA 12.x + every HF weight under `/models/hf` (~18 GB)          |
+| `postgis/postgis:16-3.4`         | upstream                            | PostGIS DB                                                       |
+| `redis:7.4-alpine`               | upstream                            | Celery broker                                                    |
+| `neo4j:5.20.0`                   | upstream                            | Ontology graph                                                   |
+| `developmentseed/titiler:0.20.1` | upstream                            | Imagery COG tile server                                          |
+| `maplibre/martin:v0.15.0`        | upstream                            | Vector tile server from PostGIS                                  |
+
+All upstream images are pinned to specific versions. On the connected
+host, record the `@sha256:...` digests for any image you intend to ship
+so the air-gap target can verify byte-for-byte equivalence:
+
+```bash
+for img in postgis/postgis:16-3.4 redis:7.4-alpine neo4j:5.20.0 \
+           developmentseed/titiler:0.20.1 maplibre/martin:v0.15.0; do
+  docker pull "$img" && docker inspect --format '{{index .RepoDigests 0}}' "$img"
+done
+```
 
 ## Connected build host — one-time setup
 
 ```bash
 # 0. Pre-requisites: Docker buildx, Python 3.11+, ~5 GB free disk in repo root,
-#    plus the ~20 GB the inference image will occupy.
+#    plus ~25 GB across the inference and assets images.
 
 # 1. GPU + CUDA detection (writes SAM3_* vars into .env).
 python scripts/configure_host.py
 
 # 2. Hugging Face token with access to facebook/sam3 and facebook/dinov3-*
 #    (both gated). Get one at https://huggingface.co/settings/tokens.
+#    Keep this OUT of git — write to .env which is in .gitignore.
 export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 echo "HF_TOKEN=$HF_TOKEN" >> .env
 
-# 3. Fetch the basemap tile pyramid (~1.4 M files, ~3 GB, 4-8 hours).
+# 3. Pre-bake the assets payload: basemap tile pyramid (~1.4 M files,
+#    ~3 GB, 4-8 h) plus the IBM Plex webfont woff2 files.
 #    Idempotent — safe to ctrl-c and restart.
 python scripts/build_offline_basemap.py --zoom 0-10
+bash assets/scripts/fetch_fonts.sh
 
 # 4. Build every image. The sam3 build downloads ~18 GB of weights;
-#    expect 30-60 minutes on a fast connection.
+#    expect 30-60 minutes on a fast connection. The assets and inference
+#    Dockerfiles both fail fast if the pre-bake step above was skipped.
 docker compose build
 ```
 
 When the build finishes, sanity-check the image sizes:
 
 ```bash
-docker images | grep -E 'sentinel-nginx|sentinel-inference-sam3'
-# sentinel-nginx:offline           ~3.1 GB
+docker images | grep -E 'sentinel-(assets|inference-sam3|nginx)'
+# sentinel-assets:offline          ~3.1 GB
 # sentinel-inference-sam3:gpu      ~18-22 GB
+# sentinel-nginx:offline           ~50 MB
 ```
 
 ## Package the bundle
@@ -58,12 +82,13 @@ docker save \
   sentinel-backend:latest \
   sentinel-frontend:latest \
   sentinel-nginx:offline \
+  sentinel-assets:offline \
   sentinel-inference-sam3:gpu \
   postgis/postgis:16-3.4 \
-  redis:alpine \
+  redis:7.4-alpine \
   neo4j:5.20.0 \
-  developmentseed/titiler:latest \
-  maplibre/martin:latest \
+  developmentseed/titiler:0.20.1 \
+  maplibre/martin:v0.15.0 \
   | gzip -1 > sentinel-offline-bundle.tar.gz
 # Expect ~22-26 GB compressed.
 
@@ -87,8 +112,9 @@ gunzip -c sentinel-offline-bundle.tar.gz | docker load
 mkdir -p /opt/sentinel && cd /opt/sentinel
 tar xzf /path/to/sentinel-repo.tar.gz
 
-# 3. Bring the .env file online from the template. HF_TOKEN must stay
-#    empty here — the image already carries the weights.
+# 3. Bring the .env file online from the template. HF_TOKEN MUST stay
+#    empty here — the image already carries the weights, and
+#    HF_HUB_OFFLINE=1 will refuse any download attempt anyway.
 cp .env.offline.example .env
 
 # 4. Start the stack.
@@ -104,19 +130,61 @@ with dark tiles (served from `/basemap/...`), the FMV tab should accept
 uploads and stream them via HLS, and the detection pipeline should run
 end-to-end without any DNS resolution leaving the host.
 
-## How to confirm the air-gap holds
+## Verifying zero egress
+
+The stack is designed so it *cannot* reach the public internet at
+runtime. To prove it on the target host:
 
 ```bash
-# 1. No model fetches at runtime.
-docker compose logs inference-sam3 | grep -iE 'downloading|http(s)?://' || \
-  echo "OK — no outbound model fetches"
+# 1. Internal-only network: docker forbids NAT and external DNS on it.
+docker network create --internal --driver bridge sentinel-airgap
 
-# 2. No basemap fetches from the browser.
-#    Open the GEOINT or FMV tab and check the network panel: every
-#    /basemap/* request should be 200 from your nginx, no requests to
-#    basemaps.cartocdn.com.
+cat > docker-compose.airgap.yml <<'EOF'
+networks:
+  default:
+    name: sentinel-airgap
+    external: true
+EOF
+docker compose -f docker-compose.yml -f docker-compose.airgap.yml up -d
 
-# 3. End-to-end: drop a tiny .mp4 into FMV, confirm detections appear.
+# 2. Click through every UI tab (Map, FMV, Detections, Ontology, Login).
+#    In browser devtools → Network, filter for `googleapis|gstatic|cartocdn`:
+#    expect ZERO hits. Every request must be same-origin (host:3000).
+
+# 3. Independent packet capture on the host.
+sudo tcpdump -i any -nn \
+  'port 53 or (tcp and (port 80 or port 443)) and not (net 172.16.0.0/12 or host 127.0.0.1)' \
+  -w /tmp/airgap.pcap &
+SNIFF_PID=$!
+# ...drive the UI for 5 minutes...
+sudo kill $SNIFF_PID
+sudo tcpdump -r /tmp/airgap.pcap | head
+# Expected: empty. Any DNS (53) or outbound 443 is a regression.
+
+# 4. Asset-bake sanity (one-shot):
+docker run --rm sentinel-assets:offline \
+  ls /usr/share/nginx/html/basemap/0/0/0.png /usr/share/nginx/html/fonts/
+
+# 5. Confirm the inference image did not phone home at startup:
+docker compose logs inference-sam3 | grep -iE 'downloading|http(s)?://' \
+  || echo "OK — no outbound model fetches"
+```
+
+A belt-and-braces option: add an `iptables` LOG-then-DROP rule on the
+docker bridge for any non-internal destination and tail
+`journalctl -kf | grep AIRGAP-LEAK`. Expected: silent.
+
+## Refreshing only the assets image
+
+The reverse proxy caches the `assets` upstream for 30 days. After
+rebuilding the assets image (new tiles, new fonts), flush the proxy:
+
+```bash
+python scripts/build_offline_basemap.py --zoom 0-10
+bash assets/scripts/fetch_fonts.sh
+docker compose build assets
+docker compose up -d assets
+docker compose restart nginx       # clears proxy_cache
 ```
 
 ## Dev override — keeping a writable model cache
@@ -146,30 +214,6 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 The volume shadows the image's `/models` directory, restoring the old
 "first run downloads, subsequent runs reuse" loop.
 
-## Strict air-gap variant
-
-By default `nginx/tile-proxy.conf` includes an `@basemap_fallback` location
-that proxies missing tiles from `a.basemaps.cartocdn.com`. This means a
-deployment without pre-baked tiles still renders maps (useful during build
-or in connected QA environments). For a deployment that **must not** reach
-the public internet, edit `nginx/tile-proxy.conf` before `docker compose
-build`:
-
-1. Delete the `location @basemap_fallback { ... }` block.
-2. Change `try_files $uri @basemap_fallback;` to `try_files $uri =404;`.
-
-After rebuilding the nginx image, any tile not in the baked pyramid 404s
-instead of attempting an outbound HTTPS request. Verify with:
-
-```bash
-docker compose logs nginx | grep -i carto    # should be empty
-```
-
-A belt-and-braces approach for extra-strict environments: block outbound
-DNS at the host firewall. The `@basemap_fallback` block's
-`resolver 1.1.1.1 8.8.8.8` line will fail to resolve, and the fallback
-short-circuits to a 502 rather than reaching out.
-
 ## Known limitations
 
 - **LLM features**: ontology auto-update and any chat-model-driven flow
@@ -178,10 +222,20 @@ short-circuits to a 502 rather than reaching out.
 - **URL ingest**: `/api/ingest/url` still accepts URLs, but the worker
   fetch fails immediately and logs the error. This is by design — the
   feature exists for connected deployments.
-- **Basemap zoom ceiling**: tiles end at zoom 10 (~city-block scale).
-  For street-level zoom, re-run `build_offline_basemap.py --zoom 0-14`
-  and rebuild the nginx image. Each additional zoom level quadruples
-  storage.
+- **Basemap zoom ceiling**: pre-baked tiles end at zoom 10 (~city-block
+  scale). The Leaflet basemap layer sets `maxNativeZoom={10}` so the
+  map upscales gracefully past z=10 (slightly blurry) rather than
+  rendering blank squares. For native street-level detail, re-run
+  `build_offline_basemap.py --zoom 0-14` and rebuild the assets image —
+  each additional zoom level quadruples storage.
+- **Non-Latin scripts**: the bundled IBM Plex weights cover Latin-1.
+  Cyrillic/Arabic/CJK labels in user-entered content will fall back to
+  the OS's `system-ui` font. Add the matching IBM Plex subset to
+  `assets/scripts/fetch_fonts.sh` and a `unicode-range` `@font-face`
+  block in `frontend/src/index.css` if non-Latin coverage is needed.
 - **Carto attribution**: the platform displays `© OpenStreetMap
   contributors © CARTO` in the basemap layer credits (Leaflet's default
   attribution control). Don't remove it — CC-BY requires it.
+- **IBM Plex license**: SIL OFL 1.1 — the `assets/scripts/fetch_fonts.sh`
+  pulls the OFL.txt alongside the woff2 files; the assets image serves
+  it at `http://<host>:3000/assets/LICENSE.txt`.

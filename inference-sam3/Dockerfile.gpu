@@ -97,6 +97,35 @@ RUN mkdir -p /models/hf/hub /models/torch/ultralytics && \
     rm -rf /root/.cache/huggingface/token /root/.huggingface
 ENV HF_TOKEN=
 
+# Fail fast if REQUIRED weights are missing. Optional heads (Prithvi
+# flood/burn, Grounding-DINO, DOTA-OBB, TerraMind) stay tolerant above.
+# SAM3 needs either the gated repo or the non-gated mirror; DINOv3-SAT has
+# no fallback so its absence is a build-stop and points operators at a
+# missing/invalid HF_TOKEN before the image ever boots.
+COPY <<'PY' /tmp/verify_bake.py
+import sys
+from pathlib import Path
+
+HF = Path("/models/hf/hub")
+
+def has(repo: str) -> bool:
+    return (HF / f"models--{repo.replace('/', '--')}").exists()
+
+missing = []
+if not (has("facebook/sam3") or has("1038lab/sam3")):
+    missing.append("facebook/sam3 OR 1038lab/sam3 (mirror)")
+if not has("facebook/dinov3-vitl16-pretrain-sat493m"):
+    missing.append("facebook/dinov3-vitl16-pretrain-sat493m")
+
+if missing:
+    sys.exit(
+        "[bake] required model weights missing from /models/hf — "
+        "check HF_TOKEN: " + ", ".join(missing)
+    )
+print("[bake] required model weights present:", sorted(p.name for p in HF.glob("models--*")))
+PY
+RUN python /tmp/verify_bake.py && rm /tmp/verify_bake.py
+
 COPY . /app
 
 ENV PORT=8001 \

@@ -23,11 +23,27 @@ import {
 } from 'lucide-react';
 import OntologyAdmin from './OntologyAdmin';
 import IngestConnect from './IngestConnect';
+import AdminAuthTab from './AdminAuthTab';
 import { StatusDot } from './atoms';
+import HealthDashboardView from './admin/HealthDashboardView';
+import ConfOverrideView from './admin/ConfOverrideView';
+import PromptProfilesView from './admin/PromptProfilesView';
+import TaxonomyVersionView from './admin/TaxonomyVersionView';
+import { Filter, HeartPulse, History, Key, Search } from 'lucide-react';
 
 const API_URL = (import.meta as any).env?.VITE_API_URL || '';
 
-type AdminTab = 'ontology' | 'processing' | 'models' | 'alerts' | 'upload';
+type AdminTab =
+  | 'ontology'
+  | 'processing'
+  | 'models'
+  | 'alerts'
+  | 'upload'
+  | 'auth'
+  | 'health'
+  | 'confidence'
+  | 'prompts'
+  | 'versions';
 
 type Counts = {
   processing: number;
@@ -43,16 +59,42 @@ type NavItemDef = {
 };
 
 const NAV: NavItemDef[] = [
-  { key: 'ontology',   label: 'Ontology',      Icon: GitBranch },
-  { key: 'upload',     label: 'Upload imagery', Icon: UploadIcon },
-  { key: 'processing', label: 'Processing',     Icon: Activity, badgeKey: 'processing' },
-  { key: 'models',     label: 'AI models',      Icon: Box,      badgeKey: 'models' },
-  { key: 'alerts',     label: 'Health alerts',  Icon: AlertTriangle, badgeKey: 'alerts' },
+  { key: 'ontology',   label: 'Ontology',         Icon: GitBranch },
+  { key: 'upload',     label: 'Upload imagery',   Icon: UploadIcon },
+  { key: 'processing', label: 'Processing',       Icon: Activity, badgeKey: 'processing' },
+  { key: 'models',     label: 'AI models',        Icon: Box,      badgeKey: 'models' },
+  { key: 'health',     label: 'Health dashboard', Icon: HeartPulse },
+  { key: 'confidence', label: 'Conf overrides',   Icon: Filter },
+  { key: 'prompts',    label: 'Prompt profiles',  Icon: Search },
+  { key: 'versions',   label: 'Version history',  Icon: History },
+  { key: 'alerts',     label: 'Health alerts',    Icon: AlertTriangle, badgeKey: 'alerts' },
+  { key: 'auth',       label: 'Auth · LDAP',      Icon: Key },
 ];
 
-export default function AdminScreen() {
+type AdminScreenProps = {
+  /** Switch to the GEOINT workspace focused on a specific detection. */
+  onOpenDetectionOnMap?: (detectionId: number, className?: string) => void;
+  /** Switch to the FMV workspace focused on a specific detection. */
+  onOpenDetectionInFmv?: (detectionId: number) => void;
+};
+
+export default function AdminScreen({
+  onOpenDetectionOnMap,
+  onOpenDetectionInFmv,
+}: AdminScreenProps = {}) {
   const [tab, setTab] = useState<AdminTab>('ontology');
   const [counts, setCounts] = useState<Counts>({ processing: 0, models: 0, alerts: 0 });
+
+  // Listen for Shell's "jump to admin tab" events (e.g. Bell icon ⇒ alerts).
+  useEffect(() => {
+    const handler = (evt: Event) => {
+      const detail = (evt as CustomEvent).detail || {};
+      const target = String(detail.tab || '').toLowerCase();
+      if (NAV.some((n) => n.key === target)) setTab(target as AdminTab);
+    };
+    window.addEventListener('sentinel:admin-tab', handler);
+    return () => window.removeEventListener('sentinel:admin-tab', handler);
+  }, []);
 
   return (
     <div
@@ -116,11 +158,21 @@ export default function AdminScreen() {
           minWidth: 0,
         }}
       >
-        {tab === 'ontology'   && <OntologyAdmin />}
+        {tab === 'ontology'   && (
+          <OntologyAdmin
+            onOpenDetectionOnMap={onOpenDetectionOnMap}
+            onOpenDetectionInFmv={onOpenDetectionInFmv}
+          />
+        )}
         {tab === 'upload'     && <IngestConnect />}
         {tab === 'processing' && <ProcessingView onCount={(n) => setCounts((c) => ({ ...c, processing: n }))} />}
         {tab === 'models'     && <ModelsView onCount={(n) => setCounts((c) => ({ ...c, models: n }))} />}
         {tab === 'alerts'     && <AlertsView onCount={(n) => setCounts((c) => ({ ...c, alerts: n }))} />}
+        {tab === 'auth'       && <AdminAuthTab />}
+        {tab === 'health'     && <HealthDashboardView />}
+        {tab === 'confidence' && <ConfOverrideView />}
+        {tab === 'prompts'    && <PromptProfilesView />}
+        {tab === 'versions'   && <TaxonomyVersionView />}
       </section>
     </div>
   );

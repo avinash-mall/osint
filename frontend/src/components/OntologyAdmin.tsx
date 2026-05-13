@@ -12,6 +12,7 @@
  * Step 12 will replace the placeholder section at the bottom with the
  * unknown-labels triage panel.
  */
+import axios from 'axios';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Check,
@@ -1048,7 +1049,17 @@ function UnknownRow({ row, expanded, onToggle, branches, onAssigned }: UnknownRo
 // Main component
 // ---------------------------------------------------------------------------
 
-export default function OntologyAdmin() {
+type OntologyAdminProps = {
+  /** Optional cross-workspace navigation hooks; when set, "Open on GEOINT" /
+   *  "Open in FMV" buttons appear next to recent-instance rows. */
+  onOpenDetectionOnMap?: (detectionId: number, className?: string) => void;
+  onOpenDetectionInFmv?: (detectionId: number) => void;
+};
+
+export default function OntologyAdmin({
+  onOpenDetectionOnMap,
+  onOpenDetectionInFmv,
+}: OntologyAdminProps = {}) {
   const { tree, branches, branchById, objectsById, isLoading, error: loadError, refresh } = useOntology();
   const [mode, setMode] = useState<EditorMode>({ kind: 'none' });
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -1380,6 +1391,14 @@ export default function OntologyAdmin() {
                 error={formError}
               />
             )}
+            {mode.kind === 'object' && (
+              <RecentInstancesPanel
+                key={`instances-${mode.id}`}
+                objectId={mode.id}
+                onOpenOnMap={onOpenDetectionOnMap}
+                onOpenInFmv={onOpenDetectionInFmv}
+              />
+            )}
           </div>
         </div>
 
@@ -1469,6 +1488,129 @@ export default function OntologyAdmin() {
             </>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Recent instances — small panel that lists the latest detections classified
+// under this taxonomy object and offers cross-workspace navigation.
+// ---------------------------------------------------------------------------
+
+type Instance = {
+  id: number;
+  class: string;
+  confidence?: number;
+  acquisition_time?: string;
+  fmv_clip_id?: number | null;
+  threat_level?: string;
+  affiliation?: string;
+};
+
+function RecentInstancesPanel({
+  objectId,
+  onOpenOnMap,
+  onOpenInFmv,
+}: {
+  objectId: string;
+  onOpenOnMap?: (detectionId: number, className?: string) => void;
+  onOpenInFmv?: (detectionId: number) => void;
+}) {
+  const [items, setItems] = useState<Instance[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    const lowered = objectId.replace(/_/g, ' ').toLowerCase();
+    (async () => {
+      try {
+        // Query detections filtered to this object's class label. The API
+        // already lower-cases on disk, so the object id (e.g. "Tank")
+        // matches its stored class "tank" once we map to lower.
+        const { data } = await axios.get(`/api/detections`, {
+          params: { det_class: lowered, limit: 25 },
+        });
+        if (cancelled) return;
+        setItems(
+          (data?.detections || []).map((d: any) => ({
+            id: d.id,
+            class: d.class,
+            confidence: d.confidence,
+            acquisition_time: d.acquisition_time,
+            fmv_clip_id: d.metadata?.fmv_clip_id ?? null,
+            threat_level: d.metadata?.threat_level,
+            affiliation: d.metadata?.allegiance,
+          })),
+        );
+      } catch (err: any) {
+        if (!cancelled) setError(err?.response?.data?.detail || err?.message || 'failed to load instances');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [objectId]);
+
+  return (
+    <div className="mt-6 border-t border-slate-800 pt-4">
+      <div className="mb-2 flex items-center gap-2">
+        <h3 className="font-mono text-[10.5px] uppercase tracking-widest text-slate-400">
+          Recent instances · {items.length}
+        </h3>
+        {loading && <span className="font-mono text-[10px] text-slate-500">loading…</span>}
+      </div>
+      {error && (
+        <div className="mb-2 border border-red-500 bg-red-500/10 px-3 py-2 font-mono text-[10.5px] text-red-300">
+          {error}
+        </div>
+      )}
+      {!loading && items.length === 0 && !error && (
+        <div className="font-mono text-[11px] text-slate-500">No detections classified as this object yet.</div>
+      )}
+      <div className="space-y-1.5">
+        {items.map((it) => (
+          <div
+            key={it.id}
+            className="grid grid-cols-[1fr_auto] items-center gap-2 border border-slate-800 bg-slate-900/40 px-3 py-2"
+          >
+            <div className="min-w-0">
+              <div className="text-xs font-medium text-slate-200">DET-{it.id} · {it.class}</div>
+              <div className="font-mono text-[10px] text-slate-500">
+                {it.acquisition_time ? new Date(it.acquisition_time).toLocaleString() : '—'}
+                {it.confidence != null && <> · {Math.round((it.confidence || 0) * 100)}%</>}
+                {it.threat_level && <> · {it.threat_level.toUpperCase()}</>}
+              </div>
+            </div>
+            <div className="flex gap-1">
+              {onOpenOnMap && (
+                <button
+                  type="button"
+                  className="border border-slate-700 px-2 py-0.5 font-mono text-[10px] text-slate-200 hover:border-sentinel-accent hover:text-sentinel-accent"
+                  onClick={() => onOpenOnMap(it.id, it.class)}
+                  title="Open on the GEOINT map"
+                >
+                  MAP
+                </button>
+              )}
+              {onOpenInFmv && it.fmv_clip_id != null && (
+                <button
+                  type="button"
+                  className="border border-slate-700 px-2 py-0.5 font-mono text-[10px] text-slate-200 hover:border-sentinel-accent hover:text-sentinel-accent"
+                  onClick={() => onOpenInFmv(it.id)}
+                  title="Open in the FMV player"
+                >
+                  FMV
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );

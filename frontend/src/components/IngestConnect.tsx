@@ -455,6 +455,12 @@ export default function IngestConnect() {
               </span>
             ))}
           </div>
+          {/* VRAM accounting bar from /api/inference/dashboard */}
+          <VramBar />
+
+          {/* Chip pipeline visualiser — live status of upload-job chips */}
+          <ChipPipelineGrid activeJob={activeJob || undefined} />
+
           {sensorPipeline.warning && (
             <div className="flex items-start gap-2 border border-yellow-500/40 bg-yellow-500/5 text-yellow-200 text-xs px-3 py-2 rounded">
               <span className="font-bold uppercase tracking-wider text-[10px]">Note:</span>
@@ -563,3 +569,139 @@ export default function IngestConnect() {
     </div>
   );
 }
+
+/* ---------------------------------------------------------------------- */
+/*  Ingest+ enhancements: VRAM bar + chip pipeline visualiser              */
+/* ---------------------------------------------------------------------- */
+
+function VramBar() {
+  const [data, setData] = useState<{ vram_used_gib?: number | null; vram_total_gib?: number | null; models?: any[] }>({});
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const r = await axios.get(`${API_BASE_URL}/api/inference/dashboard`);
+        if (!cancelled) setData(r.data || {});
+      } catch {
+        if (!cancelled) setData({});
+      }
+    };
+    load();
+    const id = window.setInterval(load, 8000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, []);
+  const used = Number(data.vram_used_gib ?? 0);
+  const total = Number(data.vram_total_gib ?? 0);
+  if (!total) {
+    return (
+      <div className="font-mono text-[10px] text-slate-500">
+        VRAM ·{' '}
+        <span className="text-slate-400">
+          {used > 0 ? `${used.toFixed(1)} GiB used` : 'sidecar not reporting'}
+        </span>
+      </div>
+    );
+  }
+  const pct = Math.min(100, Math.round((used / total) * 100));
+  const color = pct > 85 ? 'bg-red-500' : pct > 60 ? 'bg-amber-400' : 'bg-blue-500';
+  const onlineCount = (data.models || []).filter((m: any) => (m.status || '').toLowerCase() === 'online').length;
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-between font-mono text-[10px] text-slate-400">
+        <span>
+          <span className="text-slate-500 uppercase tracking-wider">VRAM</span>{' '}
+          {used.toFixed(1)} / {total.toFixed(1)} GiB · {onlineCount}/{(data.models || []).length} loaded
+        </span>
+        <span className={pct > 85 ? 'text-red-400' : pct > 60 ? 'text-amber-300' : 'text-blue-300'}>{pct}%</span>
+      </div>
+      <div className="h-1.5 w-full bg-slate-800 rounded overflow-hidden">
+        <div className={`h-full ${color} transition-all`} style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function ChipPipelineGrid({ activeJob }: { activeJob: UploadJob | undefined }) {
+  // Map the upload-job metadata onto a chip grid. Backend stores
+  // processed_chips / planned_chips so we synthesize: done = processed,
+  // queued = planned - processed, inferring = the next 6 after processed,
+  // error = anything from job.metadata.errors.
+  const planned = Number((activeJob?.metadata as any)?.planned_chips ?? (activeJob?.metadata as any)?.total_chips ?? 0);
+  const processed = Number((activeJob?.metadata as any)?.processed_chips ?? 0);
+  const errored = Number((activeJob?.metadata as any)?.error_chips ?? 0);
+  if (!planned || planned <= 0) return null;
+  const cols = 16;
+  const rows = Math.min(12, Math.max(2, Math.ceil(planned / cols)));
+  const total = rows * cols;
+  const inferringWindow = Math.min(planned - processed, 8);
+  type CellState = 'empty' | 'done' | 'inferring' | 'queued' | 'error';
+  const cells: CellState[] = Array.from({ length: total }, (_, i) => {
+    if (i >= planned) return 'empty';
+    if (i < processed) return 'done';
+    if (i < processed + inferringWindow) return 'inferring';
+    return 'queued';
+  });
+  // Mark a deterministic spread of errors at the tail of processed range.
+  for (let i = 0; i < errored && i < processed; i++) {
+    const idx = processed - 1 - i * 3;
+    if (idx >= 0) cells[idx] = 'error';
+  }
+  const pct = Math.round((processed / planned) * 100);
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center justify-between font-mono text-[10px] text-slate-400">
+        <span className="text-slate-500 uppercase tracking-wider">Chip pipeline</span>
+        <span>
+          {processed} / {planned} · {pct}%
+        </span>
+      </div>
+      <div
+        className="grid border border-slate-800 bg-slate-950 p-1 rounded"
+        style={{ gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: 2 }}
+      >
+        {cells.map((st, i) => {
+          const bg =
+            st === 'done' ? '#3dd68c'
+            : st === 'inferring' ? '#4ea1ff'
+            : st === 'error' ? '#ff3b30'
+            : st === 'empty' ? 'transparent'
+            : '#f5b400';
+          const op = st === 'queued' ? 0.32 : 0.95;
+          return (
+            <div
+              key={i}
+              title={`chip ${i + 1} · ${st}`}
+              style={{
+                aspectRatio: '1/1',
+                background: bg,
+                opacity: op,
+                animation: st === 'inferring' ? 'chip-pulse 1.1s ease-in-out infinite' : 'none',
+              }}
+            />
+          );
+        })}
+      </div>
+      <div className="flex items-center gap-3 font-mono text-[9.5px] text-slate-500">
+        <Legend c="#3dd68c" label="done" />
+        <Legend c="#4ea1ff" label="inferring" />
+        <Legend c="#f5b400" label="queued" />
+        <Legend c="#ff3b30" label="error" />
+      </div>
+      <style>{`@keyframes chip-pulse { 0%,100% { opacity: 0.55; } 50% { opacity: 1; } }`}</style>
+    </div>
+  );
+}
+
+function Legend({ c, label }: { c: string; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span style={{ width: 8, height: 8, background: c, display: 'inline-block', borderRadius: 1 }} />
+      {label}
+    </span>
+  );
+}
+
+const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || '';

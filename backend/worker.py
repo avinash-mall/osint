@@ -2252,3 +2252,135 @@ def process_satellite_imagery(
         publish_event("imagery", {"type": "ingest_failed", "image_url": image_url, "upload_id": upload_id, "error": str(e)})
         publish_event("ops", {"type": "imagery_failed", "image_url": image_url, "upload_id": upload_id, "error": str(e)})
         raise
+
+
+# ============================================================================
+# Audio transcription — runs faster-whisper on a worker host. Opt-in via
+# WHISPER_ENABLED=1; on hosts without faster-whisper installed the task marks
+# the transcript row as "failed" with a clear error instead of pretending.
+# ============================================================================
+
+
+@celery_app.task(name="worker.transcribe_audio", queue="default")
+def transcribe_audio(document_id: int, audio_path: str) -> dict:
+    if os.getenv("WHISPER_ENABLED", "0") != "1":
+        with postgis_db.get_cursor(commit=True) as cur:
+            cur.execute(
+                "UPDATE transcripts SET status='skipped', text=%s WHERE document_id=%s",
+                ("Transcription disabled: set WHISPER_ENABLED=1.", document_id),
+            )
+        return {"status": "skipped"}
+    try:
+        from faster_whisper import WhisperModel  # type: ignore
+    except ImportError as exc:
+        with postgis_db.get_cursor(commit=True) as cur:
+            cur.execute(
+                "UPDATE transcripts SET status='failed', text=%s WHERE document_id=%s",
+                (f"faster-whisper not installed: {exc}", document_id),
+            )
+        return {"status": "failed", "error": str(exc)}
+
+    model_size = os.getenv("WHISPER_MODEL", "base")
+    device = os.getenv("WHISPER_DEVICE", "auto")
+    try:
+        model = WhisperModel(model_size, device=device, compute_type="int8")
+        segments_iter, info = model.transcribe(audio_path)
+        segments = []
+        full_text_parts = []
+        for seg in segments_iter:
+            segments.append({"start": seg.start, "end": seg.end, "text": seg.text})
+            full_text_parts.append(seg.text)
+        full_text = "".join(full_text_parts).strip() or "(empty audio)"
+        with postgis_db.get_cursor(commit=True) as cur:
+            cur.execute(
+                """
+                UPDATE transcripts SET
+                  text=%s, status='ready', confidence=%s, language=%s, segments=%s
+                WHERE document_id=%s
+                """,
+                (full_text, 1.0, info.language or "unknown", json.dumps(segments), document_id),
+            )
+        publish_event(
+            "ops",
+            {"type": "transcript_ready", "document_id": document_id, "language": info.language},
+        )
+        return {"status": "ready", "language": info.language, "segments": len(segments)}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("transcription failed for document %s", document_id)
+        with postgis_db.get_cursor(commit=True) as cur:
+            cur.execute(
+                "UPDATE transcripts SET status='failed', text=%s WHERE document_id=%s",
+                (f"Transcription failed: {exc}", document_id),
+            )
+        return {"status": "failed", "error": str(exc)}
+
+
+# ============================================================================
+# Training — invokes a real training entrypoint at backend/scripts/train.py.
+# If no GPU/profile is detected, the task fails the job rather than silently
+# pretending it succeeded.
+# ============================================================================
+
+
+@celery_app.task(name="worker.train_model", queue="default")
+def train_model(job_id: int) -> dict:
+    with postgis_db.get_cursor() as cur:
+        cur.execute(
+            "SELECT id, name, dataset_path, epochs, status, metrics FROM training_jobs WHERE id=%s",
+            (job_id,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return {"status": "missing"}
+    job = dict(row)
+    gpu = os.getenv("SAM3_GPU_PROFILE") or os.getenv("CUDA_VISIBLE_DEVICES")
+    if not gpu:
+        with postgis_db.get_cursor(commit=True) as cur:
+            cur.execute(
+                "UPDATE training_jobs SET status='failed', metrics = metrics || %s::jsonb WHERE id=%s",
+                (json.dumps({"error": "no GPU profile"}), job_id),
+            )
+        return {"status": "failed", "error": "no GPU profile"}
+
+    train_script = Path(__file__).resolve().parent / "scripts" / "train.py"
+    if not train_script.exists():
+        with postgis_db.get_cursor(commit=True) as cur:
+            cur.execute(
+                "UPDATE training_jobs SET status='failed', metrics = metrics || %s::jsonb WHERE id=%s",
+                (json.dumps({"error": "scripts/train.py not present"}), job_id),
+            )
+        return {"status": "failed", "error": "scripts/train.py missing"}
+
+    cmd = [
+        "python", str(train_script),
+        "--name", str(job.get("name") or f"job-{job_id}"),
+        "--dataset", str(job.get("dataset_path") or ""),
+        "--epochs", str(int(job.get("epochs") or 1)),
+        "--out", str(Path(os.getenv("MODEL_OUT_DIR", "/data/models")) / f"job-{job_id}"),
+    ]
+    with postgis_db.get_cursor(commit=True) as cur:
+        cur.execute("UPDATE training_jobs SET status='running' WHERE id=%s", (job_id,))
+    try:
+        completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        ok = completed.returncode == 0
+        metrics = {
+            "stdout_tail": (completed.stdout or "")[-2000:],
+            "stderr_tail": (completed.stderr or "")[-2000:],
+            "return_code": completed.returncode,
+        }
+        status = "done" if ok else "failed"
+        with postgis_db.get_cursor(commit=True) as cur:
+            cur.execute(
+                "UPDATE training_jobs SET status=%s, metrics = metrics || %s::jsonb WHERE id=%s",
+                (status, json.dumps(metrics), job_id),
+            )
+        publish_event("ops", {"type": "training_finished", "job_id": job_id, "status": status})
+        return {"status": status, **metrics}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("train_model failed for job %s", job_id)
+        with postgis_db.get_cursor(commit=True) as cur:
+            cur.execute(
+                "UPDATE training_jobs SET status='failed', metrics = metrics || %s::jsonb WHERE id=%s",
+                (json.dumps({"error": str(exc)}), job_id),
+            )
+        return {"status": "failed", "error": str(exc)}

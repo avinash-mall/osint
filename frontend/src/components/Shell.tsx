@@ -13,14 +13,17 @@ import type { CSSProperties, ReactNode } from 'react';
 import axios from 'axios';
 import {
   Bell,
+  ChevronDown,
   Crosshair,
   Film,
   GitBranch,
+  LogOut,
   Map as MapIcon,
   Search,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { StatusDot } from './atoms';
+import { useAuth } from '../hooks/useAuth';
 
 const API_URL = (import.meta as any).env?.VITE_API_URL || '';
 
@@ -177,7 +180,11 @@ export function Shell({ active, onNavigate, children, contextLine, statusRight }
       </div>
 
       <div style={{ minWidth: 0, display: 'grid', gridTemplateRows: '52px minmax(0,1fr) 28px' }}>
-        <Topbar workspaceLabel={activeNav.label} contextLine={contextLine ?? `AOR · Live · UTC ${clock.toISOString().slice(11, 19)}`} />
+        <Topbar
+          workspaceLabel={activeNav.label}
+          contextLine={contextLine ?? `AOR · Live · UTC ${clock.toISOString().slice(11, 19)}`}
+          onNavigate={onNavigate}
+        />
 
         <main style={{ minWidth: 0, minHeight: 0, overflow: 'hidden', background: 'var(--bg-0)' }}>
           {children}
@@ -340,7 +347,36 @@ function SidebarFooter({
   );
 }
 
-function Topbar({ workspaceLabel, contextLine }: { workspaceLabel: string; contextLine: string }) {
+function Topbar({
+  workspaceLabel,
+  contextLine,
+  onNavigate,
+}: {
+  workspaceLabel: string;
+  contextLine: string;
+  onNavigate: (key: WorkspaceKey) => void;
+}) {
+  const handleJump = () => {
+    const raw = window.prompt('Jump to · enter detection id (e.g. DET-1234) or workspace key (map/fmv/graph/admin):');
+    if (!raw) return;
+    const v = raw.trim().toLowerCase();
+    if (['map', 'fmv', 'graph', 'admin'].includes(v)) {
+      onNavigate(v as WorkspaceKey);
+      return;
+    }
+    const m = v.match(/(?:det[-_])?(\d+)/);
+    if (m) {
+      const id = Number(m[1]);
+      if (!Number.isNaN(id)) {
+        // Dispatch a window event the workspaces can listen to; lightweight
+        // alternative to plumbing a separate handler through every layer.
+        onNavigate('map');
+        window.dispatchEvent(new CustomEvent('sentinel:jump-to-detection', { detail: { id } }));
+        return;
+      }
+    }
+    alert(`Couldn't interpret "${raw}". Try a workspace key or "DET-1234".`);
+  };
   return (
     <header
       style={{
@@ -366,12 +402,22 @@ function Topbar({ workspaceLabel, contextLine }: { workspaceLabel: string; conte
         className="btn ghost sm rounded"
         style={{ gap: 8, height: 30, border: '1px solid var(--line)' }}
         type="button"
+        onClick={handleJump}
+        title="Jump to a detection or workspace"
       >
         <Search size={13} />
         <span style={{ color: 'var(--ink-2)' }}>Jump to anything…</span>
         <span className="kbd">⌘K</span>
       </button>
-      <button className="btn sm rounded icon" type="button" title="Alerts">
+      <button
+        className="btn sm rounded icon"
+        type="button"
+        title="View health alerts"
+        onClick={() => {
+          onNavigate('admin');
+          window.dispatchEvent(new CustomEvent('sentinel:admin-tab', { detail: { tab: 'alerts' } }));
+        }}
+      >
         <Bell size={13} />
       </button>
       <AnalystChip />
@@ -380,37 +426,101 @@ function Topbar({ workspaceLabel, contextLine }: { workspaceLabel: string; conte
 }
 
 function AnalystChip() {
+  const { user, logout } = useAuth();
+  const [open, setOpen] = useState(false);
+  const initials = (user?.display_name || user?.username || 'AN')
+    .split(/[\s.]+/)
+    .map((s) => s[0]?.toUpperCase() || '')
+    .join('')
+    .slice(0, 2) || 'AN';
+  const accent =
+    user?.role === 'admin' ? 'var(--accent)' : 'var(--nato-friend)';
   return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-        padding: '4px 10px 4px 4px',
-        border: '1px solid var(--line)',
-        borderRadius: 999,
-        background: 'var(--bg-2)',
-      }}
-    >
-      <div
+    <div style={{ position: 'relative' }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
         style={{
-          width: 24,
-          height: 24,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '4px 10px 4px 4px',
+          border: '1px solid var(--line)',
           borderRadius: 999,
-          background: 'color-mix(in oklab, var(--nato-friend) 30%, var(--bg-3))',
-          display: 'grid',
-          placeItems: 'center',
-          color: 'var(--nato-friend)',
-          fontWeight: 600,
-          fontSize: 11,
+          background: 'var(--bg-2)',
+          cursor: 'pointer',
+          color: 'inherit',
         }}
+        title={user?.username || 'profile'}
       >
-        AN
-      </div>
-      <span style={{ fontSize: 11.5 }}>Analyst</span>
-      <span className="mono" style={{ color: 'var(--ink-2)', fontSize: 10 }}>
-        · DESK
-      </span>
+        <div
+          style={{
+            width: 24,
+            height: 24,
+            borderRadius: 999,
+            background: `color-mix(in oklab, ${accent} 30%, var(--bg-3))`,
+            display: 'grid',
+            placeItems: 'center',
+            color: accent,
+            fontWeight: 600,
+            fontSize: 11,
+          }}
+        >
+          {initials}
+        </div>
+        <span style={{ fontSize: 11.5 }}>{user?.display_name || user?.username || 'Operator'}</span>
+        <span className="mono" style={{ color: 'var(--ink-2)', fontSize: 10 }}>
+          · {(user?.role || 'analyst').toUpperCase()}
+        </span>
+        <ChevronDown size={12} style={{ color: 'var(--ink-3)' }} />
+      </button>
+      {open && (
+        <div
+          onMouseLeave={() => setOpen(false)}
+          style={{
+            position: 'absolute',
+            top: 'calc(100% + 6px)',
+            right: 0,
+            minWidth: 200,
+            zIndex: 1500,
+            background: 'var(--bg-1)',
+            border: '1px solid var(--line)',
+            boxShadow: '0 8px 28px rgba(0,0,0,.45)',
+            padding: 8,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 4,
+          }}
+        >
+          <div style={{ padding: '6px 8px', borderBottom: '1px solid var(--line)' }}>
+            <div style={{ fontSize: 12, fontWeight: 600 }}>{user?.display_name || user?.username}</div>
+            <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)' }}>
+              {user?.email || user?.username} · {(user?.role || 'analyst').toUpperCase()}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={async () => {
+              setOpen(false);
+              await logout();
+            }}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: '8px 10px',
+              border: 0,
+              background: 'transparent',
+              color: 'var(--ink-1)',
+              cursor: 'pointer',
+              fontSize: 12,
+              textAlign: 'left',
+            }}
+          >
+            <LogOut size={13} /> Sign out
+          </button>
+        </div>
+      )}
     </div>
   );
 }

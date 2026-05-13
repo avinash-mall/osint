@@ -54,6 +54,11 @@ services:
       - GLOBAL_CONFIDENCE_FLOOR=${GLOBAL_CONFIDENCE_FLOOR:-0.0}
       - HIGH_CONFIDENCE_THRESHOLD=${HIGH_CONFIDENCE_THRESHOLD:-0.8}
       - MODEL_VERSION=${MODEL_VERSION:-sam3-open-vocab}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-sentinel-dev-admin}
+      - SESSION_SECRET=${SESSION_SECRET:-dev-session-secret-replace-in-production}
+      - SESSION_TTL_HOURS=${SESSION_TTL_HOURS:-12}
+      - FORCE_HTTPS=${FORCE_HTTPS:-0}
     env_file:
       - .env
     depends_on:
@@ -78,7 +83,10 @@ services:
       start_period: 10s
 
   llm-local-proxy:
-    image: alpine/socat:latest
+    # Pinned for reproducible air-gap shipping. Update the digest after a
+    # connected-host `docker pull alpine/socat:1.8.0.0` and verify with
+    # `docker inspect --format '{{index .RepoDigests 0}}' alpine/socat:1.8.0.0`.
+    image: alpine/socat:1.8.0.0
     profiles:
       - llm-proxy
     network_mode: host
@@ -109,7 +117,10 @@ services:
       retries: 5
 
   titiler:
-    image: developmentseed/titiler:latest
+    # Pinned for reproducible air-gap shipping; bump the tag after testing
+    # on a connected host and record the @sha256 digest in
+    # docs/offline-deployment.md.
+    image: developmentseed/titiler:0.20.1
     volumes:
       - imagery_data:/data/imagery:ro
     environment:
@@ -122,7 +133,10 @@ services:
       retries: 5
 
   martin:
-    image: maplibre/martin:latest
+    # Pinned for reproducible air-gap shipping; bump the tag after testing
+    # on a connected host and record the @sha256 digest in
+    # docs/offline-deployment.md.
+    image: maplibre/martin:v0.15.0
     restart: on-failure
     environment:
       - DATABASE_URL=postgresql://sentinel:sentinel@postgis:5432/sentinel
@@ -293,7 +307,8 @@ services:
       start_period: 420s
 
   redis:
-    image: redis:alpine
+    # Pinned for reproducible air-gap shipping.
+    image: redis:7.4-alpine
     healthcheck:
       test: ["CMD-SHELL", "redis-cli ping | grep PONG || exit 1"]
       interval: 10s
@@ -351,11 +366,27 @@ services:
       timeout: 5s
       retries: 3
 
+  # Strict-air-gap static-file service. Hosts the baked-in basemap tile
+  # pyramid and the self-hosted IBM Plex webfonts. The reverse proxy
+  # (`nginx` below) routes `/basemap/` and `/assets/` to this service so the
+  # browser never reaches the public internet.
+  #
+  # Pre-bake on the connected build host before `docker compose build`:
+  #   python scripts/build_offline_basemap.py --zoom 0-10 --out assets/static/basemap
+  #   bash assets/scripts/fetch_fonts.sh
+  assets:
+    build: ./assets
+    image: sentinel-assets:offline
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   nginx:
     build:
       context: ./nginx
-      additional_contexts:
-        assets: ./offline-assets
     image: sentinel-nginx:offline
     restart: unless-stopped
     ports:
@@ -370,6 +401,8 @@ services:
       titiler:
         condition: service_healthy
       martin:
+        condition: service_healthy
+      assets:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1/ || exit 1"]

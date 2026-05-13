@@ -23,3 +23,5 @@ pyproj>=3.6
 docker>=7.0
 klvdata
 construct>=2.10
+ldap3>=2.9
+itsdangerous>=2.1

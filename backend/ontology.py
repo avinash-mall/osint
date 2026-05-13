@@ -400,12 +400,15 @@ def get_version() -> int:
     return int(v) if v is not None else 0
 
 
-def bump_version() -> int:
+def bump_version(summary: str | None = None, changes: dict | None = None, by: str | None = None) -> int:
     """Atomically increment ``ontology_version.version_id`` and return the new value.
 
-    Single-statement upsert avoids the UPDATE-then-INSERT race where two
-    concurrent callers could both fall through to the INSERT path.
+    When ``summary`` or ``changes`` is provided, append a row to
+    ``ontology_version_history`` so the Admin · Taxonomy version-history tab
+    has an audit trail. The history table is intentionally append-only and is
+    written best-effort — a failure to log shouldn't abort the bump itself.
     """
+    import json as _json
     with postgis_db.get_cursor(commit=True) as cur:
         cur.execute(
             "INSERT INTO ontology_version (singleton, version_id, updated_at) "
@@ -416,6 +419,41 @@ def bump_version() -> int:
         )
         row = cur.fetchone()
         new_id = int(row["version_id"])
+        try:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ontology_version_history (
+                    id                 BIGSERIAL PRIMARY KEY,
+                    version_id         BIGINT NOT NULL,
+                    summary            TEXT,
+                    changes            JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    detections_at_cut  BIGINT,
+                    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    created_by         TEXT
+                )
+                """
+            )
+            cur.execute(
+                "SELECT count(*) AS c FROM detections WHERE deleted_at IS NULL"
+            )
+            cnt_row = cur.fetchone()
+            detections_at_cut = int(cnt_row["c"]) if cnt_row else 0
+            cur.execute(
+                """
+                INSERT INTO ontology_version_history
+                  (version_id, summary, changes, detections_at_cut, created_by)
+                VALUES (%s, %s, %s::jsonb, %s, %s)
+                """,
+                (
+                    new_id,
+                    summary or "",
+                    _json.dumps(changes or {}, default=str),
+                    detections_at_cut,
+                    by or "system",
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ontology version history write failed: %s", exc)
     invalidate_cache()
     logger.info("ontology: version bumped to %d", new_id)
     return new_id

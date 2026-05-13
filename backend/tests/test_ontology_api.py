@@ -62,7 +62,20 @@ def _cleanup() -> None:
 
 @pytest.fixture()
 def client():
-    return TestClient(main.app)
+    """A pre-authenticated TestClient. The /api/auth middleware gates every
+    mutating verb, and we exercise PUT/POST/DELETE throughout this suite, so
+    each fresh client logs in as the env admin first."""
+    import os
+    os.environ.setdefault("ADMIN_USERNAME", "admin")
+    os.environ.setdefault("ADMIN_PASSWORD", "sentinel-dev-admin")
+    os.environ.setdefault("SESSION_SECRET", "dev-session-secret-replace-in-production-with-openssl-rand-hex-32")
+    tc = TestClient(main.app)
+    r = tc.post(
+        "/api/auth/login",
+        json={"username": os.environ["ADMIN_USERNAME"], "password": os.environ["ADMIN_PASSWORD"]},
+    )
+    assert r.status_code == 200, f"test fixture login failed: {r.text}"
+    return tc
 
 
 @pytest.fixture(autouse=True)

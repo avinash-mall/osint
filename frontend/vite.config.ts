@@ -13,9 +13,15 @@ export default defineConfig({
       usePolling: true,
     },
     proxy: {
-      // Map `/basemap/{z}/{x}/{y}.png` to Carto's dark raster in local dev
-      // so `npm run dev` outside Docker renders tiles without needing the
-      // nginx fallback or pre-baked offline tiles.
+      // Dev-only convenience: when running `npm run dev` OUTSIDE the
+      // docker compose stack, forward `/basemap/{z}/{x}/{y}.png` to Carto
+      // so devs without the pre-baked tile pyramid still see a map.
+      //
+      // This block is read only by Vite's dev server; the production
+      // build (vite build → static bundle served by sentinel-nginx) never
+      // touches it. In a docker compose dev loop, basemap tiles come from
+      // the sentinel-assets container via the reverse proxy and this
+      // entry is bypassed.
       '/basemap': {
         target: 'https://a.basemaps.cartocdn.com',
         changeOrigin: true,

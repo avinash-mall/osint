@@ -563,20 +563,17 @@ def run_text_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompt
     """
     prompts = list(prompts)
     if SAM3_BATCHED_TEXT and len(prompts) > 1:
-        try:
-            candidates: list[tuple[np.ndarray, list[float], float, str]] = []
-            for offset in range(0, len(prompts), SAM3_BATCHED_TEXT_CHUNK_SIZE):
-                candidates.extend(
-                    _run_text_prompts_batched(
-                        bundle,
-                        image_rgb_uint8,
-                        prompts[offset:offset + SAM3_BATCHED_TEXT_CHUNK_SIZE],
-                        score_threshold,
-                    )
+        candidates: list[tuple[np.ndarray, list[float], float, str]] = []
+        for offset in range(0, len(prompts), SAM3_BATCHED_TEXT_CHUNK_SIZE):
+            candidates.extend(
+                _run_text_prompts_batched(
+                    bundle,
+                    image_rgb_uint8,
+                    prompts[offset:offset + SAM3_BATCHED_TEXT_CHUNK_SIZE],
+                    score_threshold,
                 )
-            return candidates
-        except Exception as exc:
-            print(f"[INFERENCE-SAM3] batched text prompt path failed; falling back to native loop: {exc}")
+            )
+        return candidates
 
     processor = bundle["sam3_image"]["processor"]
     device = bundle.get("device", "cpu")
@@ -745,30 +742,25 @@ def run_box_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompt_
     return candidates
 
 
-def run_video(bundle, video_path, prompts, *, frame_stride, start_frame, end_frame, max_frames, dinov3, score_threshold):
+def run_video(bundle, video_path, prompt: str, *, frame_stride, start_frame, end_frame, max_frames, dinov3, score_threshold):
     """Run a SAM3 video tracking session for a single text concept.
 
     The upstream API (`Sam3VideoInference.add_prompt` and
     `Sam3MultiplexTrackingWithInteractivity.add_prompt`) unconditionally
     calls `self.reset_state(inference_state)` for any text prompt, so the
     tracker can only persist one text concept per session. Callers that
-    need N concepts must run N sequential sessions (one per prompt).
-    Anything that re-prompts mid-session would reset the inference state
-    and destroy SAM3's built-in hotstart unmatched/duplicate suppression
-    (`hotstart_delay=15`, `hotstart_unmatch_thresh=8`,
-    `hotstart_dup_thresh=8`), so re-prompting is intentionally absent.
+    need N concepts must run N sequential sessions (one per prompt) —
+    the worker's (window × prompt) ThreadPoolExecutor is the supported
+    pattern. Anything that re-prompts mid-session would reset the
+    inference state and destroy SAM3's built-in hotstart unmatched/
+    duplicate suppression (`hotstart_delay=15`,
+    `hotstart_unmatch_thresh=8`, `hotstart_dup_thresh=8`), so
+    re-prompting is intentionally absent.
     """
     predictor = bundle["sam3_video"]
-    clean_prompts = [p for p in prompts if p and not p.startswith("__")]
-    if not clean_prompts:
+    prompt_text = prompt if prompt and not prompt.startswith("__") else None
+    if not prompt_text:
         return
-    if len(clean_prompts) > 1:
-        logger.warning(
-            "run_video received %d prompts; only the first (%r) will be tracked. "
-            "Caller should iterate sessions per prompt to track multiple concepts.",
-            len(clean_prompts), clean_prompts[0],
-        )
-    prompt_text = clean_prompts[0]
 
     # Autocast: the multiplex predictor casts decoded frames to bfloat16
     # internally but ships its weights as float32. Without the ambient cuda

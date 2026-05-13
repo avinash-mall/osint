@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
-import { GeoJSON, MapContainer, Marker, Polyline, TileLayer } from 'react-leaflet';
+import { GeoJSON, MapContainer, Marker, Polyline, TileLayer, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import {
@@ -24,6 +24,8 @@ import {
   detectionClassLabel,
   useDetectionCategories,
 } from '../utils/detectionTaxonomy';
+import ObjectDetailsForm from './ObjectDetailsForm';
+import { useAuth } from '../hooks/useAuth';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 const CARTO_BASEMAP_URL = '/basemap/{z}/{x}/{y}.png';
@@ -98,6 +100,94 @@ const platformMarkerIcon = L.divIcon({
   iconAnchor: [5, 5],
 });
 
+function FmvMapCursorTracker({
+  onCursorChange,
+}: {
+  onCursorChange: (cursor: { lat: number; lon: number } | null) => void;
+}) {
+  useMapEvents({
+    mousemove(event) {
+      onCursorChange({ lat: event.latlng.lat, lon: event.latlng.lng });
+    },
+    mouseout() {
+      onCursorChange(null);
+    },
+  });
+  return null;
+}
+
+/** Track lifecycle sparkline: SVG polyline showing detection density across
+ *  the track's [first..last] frame range. Bucketed into 24 columns. */
+function LifecycleSparkline({
+  first,
+  last,
+  groupKey,
+  detections,
+  accent,
+}: {
+  first: number;
+  last: number;
+  groupKey: string;
+  detections: Detection[];
+  accent: string;
+}) {
+  const buckets = 24;
+  if (last <= first) {
+    return null;
+  }
+  const counts = new Array(buckets).fill(0);
+  // groupKey looks like "t:42" or "c:tank"; derive a matcher.
+  const isTrack = groupKey.startsWith('t:');
+  const idValue = groupKey.slice(2);
+  let max = 1;
+  for (const d of detections) {
+    if (isTrack) {
+      const tid = (d.metadata?.track_id ?? '').toString();
+      if (tid !== idValue) continue;
+    } else {
+      if (d.class !== idValue) continue;
+    }
+    if (d.frame_index < first || d.frame_index > last) continue;
+    const b = Math.min(buckets - 1, Math.floor(((d.frame_index - first) / Math.max(1, last - first)) * buckets));
+    counts[b] += 1;
+    if (counts[b] > max) max = counts[b];
+  }
+  const w = 100;
+  const h = 18;
+  let path = `M0,${h}`;
+  for (let i = 0; i < buckets; i++) {
+    const x = (i / Math.max(1, buckets - 1)) * w;
+    const y = h - (counts[i] / max) * h;
+    path += ` L${x.toFixed(1)},${y.toFixed(1)}`;
+  }
+  return (
+    <div
+      style={{
+        position: 'relative',
+        marginTop: 4,
+        height: h,
+        background: 'var(--bg-3)',
+        borderRadius: 2,
+        overflow: 'hidden',
+      }}
+      title={`Lifecycle: ${last - first + 1} frames, density bucketed into ${buckets}`}
+    >
+      <svg width="100%" height="100%" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none">
+        <polyline
+          points={Array.from({ length: buckets }, (_, i) => `${(i / (buckets - 1)) * w},${h - (counts[i] / max) * h}`).join(' ')}
+          fill="none"
+          stroke={accent}
+          strokeWidth="1"
+          opacity="0.85"
+        />
+        <path d={`${path} L${w},${h} Z`} fill={accent} opacity="0.15" />
+      </svg>
+      <span style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 2, background: '#5ee0a0' }} />
+      <span style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 2, background: accent }} />
+    </div>
+  );
+}
+
 function fmt(seconds: number | null | undefined): string {
   if (seconds == null || !Number.isFinite(seconds)) return '00:00';
   const total = Math.max(0, Math.floor(seconds));
@@ -106,16 +196,25 @@ function fmt(seconds: number | null | undefined): string {
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 }
 
-function normalizeBbox(det: Detection): { xyxy?: [number, number, number, number]; obb?: number[][] } {
-  // The worker stores fmv_detections.bbox as a 4-element pixel array
-  // [x, y, w, h] (see backend/worker.py:_xyxy_to_normalized_cxcywh called
-  // without width/height). Other ingest paths may use the SAM3-native
-  // {bbox_xyxy: [x1, y1, x2, y2]} object form, so support both.
+function normalizeBbox(det: Detection): { xyxy?: [number, number, number, number]; xyxyNormalized?: boolean; obb?: number[][] } {
+  // The worker stores fmv_detections.bbox as a 4-element normalized cxcywh
+  // array [cx, cy, w, h] in [0, 1] (see backend/worker.py around line 1543).
+  // Legacy rows from before that fix may still hold pixel [x, y, w, h], so
+  // any value > 1.5 means treat the array as pixels. Other ingest paths
+  // use the SAM3-native {bbox_xyxy: [x1, y1, x2, y2]} object form, which
+  // is always in pixel space.
   const raw = det.bbox ?? det.metadata?.bbox ?? null;
   let xyxy: [number, number, number, number] | undefined;
+  let xyxyNormalized = false;
   if (Array.isArray(raw) && raw.length === 4) {
-    const [x, y, w, h] = raw.map(Number);
-    xyxy = [x, y, x + w, y + h];
+    const [a, b, c, d] = raw.map(Number);
+    const looksPixel = [a, b, c, d].some((v) => Number.isFinite(v) && Math.abs(v) > 1.5);
+    if (looksPixel) {
+      xyxy = [a, b, a + c, b + d];
+    } else {
+      xyxy = [a - c / 2, b - d / 2, a + c / 2, b + d / 2];
+      xyxyNormalized = true;
+    }
   } else if (raw && typeof raw === 'object') {
     const arr = (raw as any).bbox_xyxy || (raw as any).xyxy;
     if (Array.isArray(arr) && arr.length === 4) {
@@ -145,16 +244,47 @@ function normalizeBbox(det: Detection): { xyxy?: [number, number, number, number
       obb = (obbRaw as any[]).map((pt: any) => [Number(pt[0]), Number(pt[1])]);
     }
   }
-  return { xyxy, obb };
+  return { xyxy, xyxyNormalized, obb };
 }
 
 function trackIdOf(det: Detection): string | null {
   return det.metadata?.track_id || det.bbox?.track_id || null;
 }
 
-type SidePanelTab = 'tracks' | 'upload';
+type SidePanelTab = 'tracks' | 'upload' | 'detail';
 
-export default function FmvPlayer() {
+/**
+ * Three states for the synced map:
+ *   - hidden:  no map visible; a small icon button reveals the PiP overlay.
+ *   - pip:     300x190 picture-in-picture overlay in the bottom-right of the
+ *              video pane. Matches the design's default and is the new
+ *              "minimized" state.
+ *   - split:   1/3 of the workspace as a side pane next to the video. This
+ *              is the legacy "expanded" behaviour, kept for analysts who
+ *              want a wider map while scrubbing.
+ */
+type MapMode = 'hidden' | 'pip' | 'split';
+
+type FmvPlayerProps = {
+  /** Bubble synced-map cursor coords up to the global status bar. */
+  onCursorChange?: (cursor: { lat: number; lon: number } | null) => void;
+  /** Open the GEOINT workspace focused on a clip's primary detection. */
+  onOpenMap?: (detectionId: number) => void;
+  /** Cross-workspace navigation: focus a specific clip on mount. */
+  crossNav?: {
+    workspace: 'map' | 'fmv' | 'graph' | 'admin';
+    fmvClipId?: number;
+    detectionId?: number;
+  } | null;
+  consumeCrossNav?: () => void;
+};
+
+export default function FmvPlayer({
+  onCursorChange,
+  onOpenMap,
+  crossNav,
+  consumeCrossNav,
+}: FmvPlayerProps = {}) {
   const [clips, setClips] = useState<Clip[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [frames, setFrames] = useState<FrameRow[]>([]);
@@ -171,10 +301,27 @@ export default function FmvPlayer() {
   const [duration, setDuration] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [hoverPct, setHoverPct] = useState<number | null>(null);
-  const [showMap, setShowMap] = useState(true);
+  // 3-state PiP/split/hidden map (default to PiP matching the new design).
+  const [mapMode, setMapMode] = useState<MapMode>('pip');
   const [rightOpen, setRightOpen] = useState(true);
   const [sideTab, setSideTab] = useState<SidePanelTab>('tracks');
   const [trackFilter, setTrackFilter] = useState<'in-frame' | 'all'>('in-frame');
+  const [selectedDetectionId, setSelectedDetectionId] = useState<number | null>(null);
+  const [mapCursor, setMapCursor] = useState<{ lat: number; lon: number } | null>(null);
+  const { user } = useAuth();
+
+  // FMV+ stream counters — incremented on every ws frame; the per-second
+  // delta is recomputed on a 1 s tick.
+  const [ndjsonTotal, setNdjsonTotal] = useState(0);
+  const [ndjsonDelta, setNdjsonDelta] = useState(0);
+  const ndjsonLastTotalRef = useRef(0);
+  const ndjsonNewTracksRef = useRef(0);
+  const [ndjsonNewTracksDelta, setNdjsonNewTracksDelta] = useState(0);
+  // Re-ID cluster: cosine-similar tracks sharing a DINOv3-LVD embedding
+  const [reidCluster, setReidCluster] = useState<{
+    anchorTrack: string | null;
+    members: Array<{ id: number; track_id: string | null; similarity: number; class: string }>;
+  }>({ anchorTrack: null, members: [] });
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -227,6 +374,25 @@ export default function FmvPlayer() {
     fetchClips();
   }, [fetchClips]);
 
+  // Bubble cursor coords up to the global status bar.
+  useEffect(() => {
+    if (!onCursorChange) return;
+    onCursorChange(mapCursor);
+  }, [mapCursor, onCursorChange]);
+  useEffect(() => {
+    if (!onCursorChange) return;
+    return () => onCursorChange(null);
+  }, [onCursorChange]);
+
+  // Consume cross-workspace navigation: focus a clip and (optionally) a
+  // detection on mount or when the parent updates the target.
+  useEffect(() => {
+    if (!crossNav) return;
+    if (crossNav.fmvClipId) setSelectedId(crossNav.fmvClipId);
+    if (crossNav.detectionId) setSelectedDetectionId(crossNav.detectionId);
+    consumeCrossNav?.();
+  }, [crossNav, consumeCrossNav]);
+
   // Load the FMV inference profile on mount. The backend swaps profiles on
   // demand; unmount should not call /unload because that endpoint restarts the
   // inference container and can interrupt queued or in-flight FMV tracking.
@@ -278,11 +444,15 @@ export default function FmvPlayer() {
         setTrackingError(null);
         if (msg?.type === 'fmv_detections_complete') setTrackingProgress(null);
         fetchDetections(selectedId);
+        setNdjsonTotal((n) => n + (msg?.type === 'fmv_detection' ? 1 : 0));
+        if (msg?.new_track) ndjsonNewTracksRef.current += 1;
       }
       if (msg?.type === 'fmv_detections_progress') {
         setTrackingError(null);
         setTrackingProgress({ window: msg.window || 0, windows: msg.windows || 0 });
         fetchDetections(selectedId);
+        // count progress frames as ndjson chunks
+        setNdjsonTotal((n) => n + 1);
       }
       if (msg?.type === 'fmv_detections_failed') {
         setTrackingError(msg.error || 'tracking failed');
@@ -292,6 +462,61 @@ export default function FmvPlayer() {
     [selectedId, fetchFrames, fetchDetections],
   );
   useEventStream(selectedId ? `fmv:${selectedId}` : 'fmv:none', onClipChannel);
+
+  // Compute per-second NDJSON delta on a 1 s tick.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      const total = ndjsonTotal;
+      setNdjsonDelta(Math.max(0, total - ndjsonLastTotalRef.current));
+      ndjsonLastTotalRef.current = total;
+      setNdjsonNewTracksDelta(ndjsonNewTracksRef.current);
+      ndjsonNewTracksRef.current = 0;
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [ndjsonTotal]);
+
+  // Reset counters when switching clips.
+  useEffect(() => {
+    setNdjsonTotal(0);
+    setNdjsonDelta(0);
+    ndjsonLastTotalRef.current = 0;
+    ndjsonNewTracksRef.current = 0;
+    setNdjsonNewTracksDelta(0);
+    setReidCluster({ anchorTrack: null, members: [] });
+  }, [selectedId]);
+
+  // Re-ID cluster — fetch when the selected detection has an embedding.
+  useEffect(() => {
+    if (!selectedDetectionId) {
+      setReidCluster({ anchorTrack: null, members: [] });
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await axios.get(
+          `${API_URL}/api/fmv/detections/${selectedDetectionId}/similar`,
+          { params: { k: 8 } },
+        );
+        if (cancelled) return;
+        const members = (data?.results || [])
+          .filter((r: any) => Number(r.similarity || 0) >= 0.86)
+          .map((r: any) => ({
+            id: r.id,
+            track_id: r.track_id || (r.metadata?.track_id ?? null),
+            similarity: Number(r.similarity || 0),
+            class: r.class || 'unknown',
+          }));
+        const anchorTrack = detections.find((d) => d.id === selectedDetectionId)?.metadata?.track_id;
+        setReidCluster({ anchorTrack: anchorTrack ? String(anchorTrack) : null, members });
+      } catch {
+        if (!cancelled) setReidCluster({ anchorTrack: null, members: [] });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDetectionId, detections]);
 
   // Poll while clip is transcoding so the UI flips to "ready" without
   // requiring a WS event.
@@ -513,12 +738,14 @@ export default function FmvPlayer() {
         ctx.globalAlpha = strokeAlpha;
         ctx.strokeStyle = color;
         ctx.fillStyle = color;
-        const { xyxy, obb } = normalizeBbox(d);
+        const { xyxy, xyxyNormalized, obb } = normalizeBbox(d);
         // SAM3 video emits obb in `yolo_obb_normalized_xyxyxyxy` form (0..1).
         // Scale by image dimensions; sx/sy then map image px → canvas px.
         const obbNormalized = (d.metadata?.obb_format || '').includes('normalized');
         const obbScaleX = obbNormalized ? videoWidth * sx : sx;
         const obbScaleY = obbNormalized ? videoHeight * sy : sy;
+        const bboxScaleX = xyxyNormalized ? videoWidth * sx : sx;
+        const bboxScaleY = xyxyNormalized ? videoHeight * sy : sy;
         if (obb && obb.length >= 3) {
           ctx.beginPath();
           ctx.moveTo(obb[0][0] * obbScaleX, obb[0][1] * obbScaleY);
@@ -538,14 +765,14 @@ export default function FmvPlayer() {
           ctx.fillStyle = color;
         } else if (xyxy) {
           const [x1, y1, x2, y2] = xyxy;
-          ctx.strokeRect(x1 * sx, y1 * sy, (x2 - x1) * sx, (y2 - y1) * sy);
+          ctx.strokeRect(x1 * bboxScaleX, y1 * bboxScaleY, (x2 - x1) * bboxScaleX, (y2 - y1) * bboxScaleY);
           const label = `${detectionClassLabel(d.class)} ${Math.round((d.confidence || 0) * 100)}%`;
           const m = ctx.measureText(label);
           ctx.globalAlpha = aged ? 0.5 : 0.85;
-          ctx.fillRect(x1 * sx, y1 * sy - 14, m.width + 6, 14);
+          ctx.fillRect(x1 * bboxScaleX, y1 * bboxScaleY - 14, m.width + 6, 14);
           ctx.globalAlpha = 1;
           ctx.fillStyle = '#000';
-          ctx.fillText(label, x1 * sx + 3, y1 * sy - 3);
+          ctx.fillText(label, x1 * bboxScaleX + 3, y1 * bboxScaleY - 3);
           ctx.fillStyle = color;
         }
         ctx.globalAlpha = 1;
@@ -559,16 +786,25 @@ export default function FmvPlayer() {
     };
   }, [detectionsForFrame, categories, fps, videoWidth, videoHeight]);
 
-  // Resize canvas to match the video element's rendered size.
+  // Resize canvas to match the video element's rendered size AND position.
+  // The wrapper is a flex container that centers the <video>; when its aspect
+  // ratio differs from the video's, the video letterboxes inside it. The
+  // canvas is absolutely positioned within the same wrapper, so it must track
+  // the video's offsetLeft/offsetTop — otherwise overlays draw shifted by the
+  // letterbox margin.
   useEffect(() => {
     const wrapper = wrapperRef.current;
     const canvas = canvasRef.current;
     const v = videoRef.current;
     if (!wrapper || !canvas || !v) return;
-    const obs = new ResizeObserver(() => {
+    const sync = () => {
+      canvas.style.left = `${v.offsetLeft}px`;
+      canvas.style.top = `${v.offsetTop}px`;
       canvas.style.width = `${v.clientWidth}px`;
       canvas.style.height = `${v.clientHeight}px`;
-    });
+    };
+    sync();
+    const obs = new ResizeObserver(sync);
     obs.observe(v);
     obs.observe(wrapper);
     return () => obs.disconnect();
@@ -722,7 +958,9 @@ export default function FmvPlayer() {
   }, [frameCenter, platformPath]);
 
   const hasTelemetry = platformPath.length > 0;
-  const mapSplitVisible = showMap && hasTelemetry;
+  // Only the "split" mode reserves space in the grid; PiP overlays the video.
+  const mapSplitVisible = mapMode === 'split' && hasTelemetry;
+  const mapPipVisible = mapMode === 'pip' && hasTelemetry;
 
   // Tracks classified by an aff (best-effort: hostile/friend/neutral/unknown
   // derived from the threat metadata stored on the detection).  Keeps the
@@ -926,41 +1164,86 @@ export default function FmvPlayer() {
                   </div>
                 )}
 
-                {/* Top-right corner: status pills */}
-                <div style={{ position: 'absolute', top: 14, right: 14, display: 'flex', alignItems: 'center', gap: 8 }}>
-                  {selectedClip.status === 'ready' && (
+                {/* Top-right corner: status pills + FMV+ counters */}
+                <div style={{ position: 'absolute', top: 14, right: 14, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {selectedClip.status === 'ready' && (
+                      <span
+                        style={{
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: 10.5,
+                          color: '#ff4040',
+                          letterSpacing: '.1em',
+                          padding: '2px 6px',
+                          background: 'rgba(0,0,0,.5)',
+                          border: '1px solid rgba(255,64,64,.4)',
+                        }}
+                      >
+                        ● LIVE
+                      </span>
+                    )}
+                    {trackingProgress && trackingProgress.windows > 0 && (
+                      <span
+                        style={{
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: 10.5,
+                          color: accent,
+                          padding: '2px 6px',
+                          background: 'rgba(0,0,0,.5)',
+                          border: `1px solid ${accent}`,
+                        }}
+                        title={`Tracking window ${trackingProgress.window}/${trackingProgress.windows}`}
+                      >
+                        ⊕ TRACK {trackingProgress.window}/{trackingProgress.windows}
+                      </span>
+                    )}
+                    <button className="btn icon sm" style={{ background: 'rgba(0,0,0,.5)', borderColor: 'rgba(255,255,255,.15)', color: '#fff' }} title="Fullscreen">
+                      <Maximize2 size={12} />
+                    </button>
+                  </div>
+
+                  {/* Object-Multiplex badge — appears when SAM3 uses the
+                       multiplex inference path. Reads metadata across the
+                       latest in-frame detections. */}
+                  {(() => {
+                    const inFrameDets = detectionsForFrame(currentFrameIdx);
+                    const usesMultiplex = inFrameDets.some(({ det }) => det.metadata?.uses_multiplex === true)
+                      || detections.slice(0, 5).some((d) => d.metadata?.uses_multiplex === true);
+                    if (!usesMultiplex) return null;
+                    return (
+                      <span
+                        style={{
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: 10.5,
+                          color: accent,
+                          padding: '3px 8px',
+                          background: 'rgba(0,0,0,.6)',
+                          border: `1px solid ${accent}`,
+                          letterSpacing: '.06em',
+                        }}
+                        title="SAM3 video tracker is running in Object-Multiplex mode"
+                      >
+                        ⚡ OBJECT-MULTIPLEX · {inFrameDets.length} OBJ
+                      </span>
+                    );
+                  })()}
+
+                  {/* NDJSON streaming counter (FMV+) */}
+                  {(ndjsonTotal > 0 || (trackingProgress && trackingProgress.windows > 0)) && (
                     <span
                       style={{
                         fontFamily: 'var(--font-mono)',
-                        fontSize: 10.5,
-                        color: '#ff4040',
-                        letterSpacing: '.1em',
-                        padding: '2px 6px',
-                        background: 'rgba(0,0,0,.5)',
-                        border: '1px solid rgba(255,64,64,.4)',
+                        fontSize: 10,
+                        color: '#fff',
+                        padding: '3px 8px',
+                        background: 'rgba(0,0,0,.6)',
+                        letterSpacing: '.04em',
                       }}
+                      title="NDJSON inference events streamed since clip selection"
                     >
-                      ● LIVE
+                      NDJSON · <span style={{ color: accent }}>FRAME {currentFrameIdx}</span> · <span style={{ color: '#5ee0a0' }}>+{ndjsonDelta} dets/s · +{ndjsonNewTracksDelta} tracks/s</span> · {ndjsonTotal} total
                     </span>
                   )}
-                  {trackingProgress && trackingProgress.windows > 0 && (
-                    <span
-                      style={{
-                        fontFamily: 'var(--font-mono)',
-                        fontSize: 10.5,
-                        color: accent,
-                        padding: '2px 6px',
-                        background: 'rgba(0,0,0,.5)',
-                        border: `1px solid ${accent}`,
-                      }}
-                      title={`Tracking window ${trackingProgress.window}/${trackingProgress.windows}`}
-                    >
-                      ⊕ TRACK {trackingProgress.window}/{trackingProgress.windows}
-                    </span>
-                  )}
-                  <button className="btn icon sm" style={{ background: 'rgba(0,0,0,.5)', borderColor: 'rgba(255,255,255,.15)', color: '#fff' }} title="Fullscreen">
-                    <Maximize2 size={12} />
-                  </button>
                 </div>
 
                 {/* Transcoding overlay */}
@@ -1000,6 +1283,112 @@ export default function FmvPlayer() {
                     </span>
                   </div>
                 )}
+
+                {/* PiP minimized synced-map overlay (300x190, bottom-right) */}
+                {mapPipVisible && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      right: 14,
+                      bottom: 14,
+                      width: 300,
+                      height: 190,
+                      background: 'var(--bg-0)',
+                      border: '1px solid rgba(255,255,255,.22)',
+                      boxShadow: '0 12px 32px rgba(0,0,0,.55)',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <MapContainer
+                      key={`pip-${selectedId || 'empty'}`}
+                      center={mapCenter}
+                      zoom={15}
+                      style={{ width: '100%', height: '100%' }}
+                      attributionControl={false}
+                    >
+                      <TileLayer url={CARTO_BASEMAP_URL} maxNativeZoom={10} />
+                      <FmvMapCursorTracker onCursorChange={setMapCursor} />
+                      {platformPath.length > 1 && (
+                        <Polyline positions={platformPath} pathOptions={{ color: '#7cf', weight: 1.5 }} />
+                      )}
+                      {platformPosition && <Marker position={platformPosition} icon={platformMarkerIcon} />}
+                      {frameCenter && <Marker position={frameCenter} icon={flyMarkerIcon} />}
+                      {currentFrame?.footprint && (
+                        <GeoJSON
+                          key={`pip-fp-${currentFrame.frame_index}`}
+                          data={currentFrame.footprint as any}
+                          style={() => ({ color: '#7cf', weight: 1, fillOpacity: 0.08 })}
+                        />
+                      )}
+                    </MapContainer>
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: 0,
+                        right: 0,
+                        height: 22,
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        padding: '0 8px',
+                        background: 'linear-gradient(to bottom, rgba(0,0,0,.7), rgba(0,0,0,0))',
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 9.5,
+                        color: '#fff',
+                        letterSpacing: '.08em',
+                      }}
+                    >
+                      <MapIcon size={10} style={{ color: 'var(--accent)' }} />
+                      <span>SYNCED MAP · MINIMIZED</span>
+                      <span style={{ flex: 1 }} />
+                      <button
+                        type="button"
+                        onClick={() => setMapMode('split')}
+                        title="Expand to 1/3 split view"
+                        className="btn icon xs"
+                        style={{
+                          background: 'rgba(0,0,0,.5)',
+                          borderColor: 'rgba(255,255,255,.2)',
+                          color: '#fff',
+                          width: 18,
+                          height: 18,
+                        }}
+                      >
+                        <Maximize2 size={10} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMapMode('hidden')}
+                        title="Hide map"
+                        className="btn icon xs"
+                        style={{
+                          background: 'rgba(0,0,0,.5)',
+                          borderColor: 'rgba(255,255,255,.2)',
+                          color: '#fff',
+                          width: 18,
+                          height: 18,
+                        }}
+                      >
+                        <ChevronRight size={10} />
+                      </button>
+                    </div>
+                    <div
+                      style={{
+                        position: 'absolute',
+                        bottom: 4,
+                        left: 6,
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 9.5,
+                        color: '#bbf2d0',
+                        textShadow: '0 0 4px rgba(0,0,0,.8)',
+                        pointerEvents: 'none',
+                      }}
+                    >
+                      {currentFrame?.telemetry?.source?.toUpperCase() || 'TELEMETRY'} · #{currentFrameIdx}
+                    </div>
+                  </div>
+                )}
               </>
             )}
           </div>
@@ -1022,23 +1411,35 @@ export default function FmvPlayer() {
               >
                 Synced map
               </div>
-              <button
-                type="button"
-                onClick={() => setShowMap(false)}
-                title="Collapse map"
-                className="btn icon xs"
-                style={{ position: 'absolute', top: 8, right: 8, zIndex: 500, borderRadius: 6 }}
-              >
-                <ChevronRight size={11} />
-              </button>
+              <div style={{ position: 'absolute', top: 8, right: 8, zIndex: 500, display: 'flex', gap: 4 }}>
+                <button
+                  type="button"
+                  onClick={() => setMapMode('pip')}
+                  title="Minimize to picture-in-picture"
+                  className="btn icon xs"
+                  style={{ borderRadius: 6 }}
+                >
+                  <ChevronRight size={11} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMapMode('hidden')}
+                  title="Hide map"
+                  className="btn icon xs"
+                  style={{ borderRadius: 6 }}
+                >
+                  <MapIcon size={11} />
+                </button>
+              </div>
               <MapContainer
-                key={selectedId || 'empty'}
+                key={`split-${selectedId || 'empty'}`}
                 center={mapCenter}
                 zoom={15}
                 style={{ width: '100%', height: '100%' }}
                 attributionControl={false}
               >
-                <TileLayer url={CARTO_BASEMAP_URL} />
+                <TileLayer url={CARTO_BASEMAP_URL} maxNativeZoom={10} />
+                <FmvMapCursorTracker onCursorChange={setMapCursor} />
                 {platformPath.length > 1 && (
                   <Polyline positions={platformPath} pathOptions={{ color: '#7cf', weight: 1.5 }} />
                 )}
@@ -1111,17 +1512,54 @@ export default function FmvPlayer() {
               <span className="mono" style={{ fontSize: 10, color: 'var(--ink-2)' }}>
                 FRAME {currentFrameIdx}
               </span>
-              <button
-                className={`btn xs ${mapSplitVisible ? 'primary' : ''}`}
-                onClick={() => setShowMap((v) => !v)}
-                disabled={!hasTelemetry}
-                type="button"
-                title={hasTelemetry ? 'Toggle synced map' : 'No telemetry — map disabled'}
-              >
-                <MapIcon size={11} /> Map
-              </button>
+              <div className="seg" style={{ display: 'inline-flex' }} title={hasTelemetry ? 'Synced map' : 'No telemetry — map disabled'}>
+                <button
+                  type="button"
+                  className={mapMode === 'hidden' ? 'on' : ''}
+                  onClick={() => setMapMode('hidden')}
+                  disabled={!hasTelemetry}
+                  title="Hide map"
+                >
+                  HIDE
+                </button>
+                <button
+                  type="button"
+                  className={mapMode === 'pip' ? 'on' : ''}
+                  onClick={() => setMapMode('pip')}
+                  disabled={!hasTelemetry}
+                  title="Minimize map to picture-in-picture overlay"
+                >
+                  MIN
+                </button>
+                <button
+                  type="button"
+                  className={mapMode === 'split' ? 'on' : ''}
+                  onClick={() => setMapMode('split')}
+                  disabled={!hasTelemetry}
+                  title="Expand map to 1/3 split view"
+                >
+                  EXP
+                </button>
+              </div>
               <button className="btn xs" type="button" title="Export clip"><Download size={11} /> Clip</button>
             </div>
+
+            {/* Linear scrub slider — primary, keyboard/touch friendly seek */}
+            <input
+              type="range"
+              min={0}
+              max={Math.max(0.001, duration || selectedClip.duration_seconds || 1)}
+              step={duration ? Math.max(0.01, duration / 1000) : 0.01}
+              value={Math.min(duration || selectedClip.duration_seconds || 0, Math.max(0, currentTime))}
+              onChange={(e) => seekTo(Number(e.target.value))}
+              title="Drag to seek. Keyboard arrows step too."
+              aria-label="Playback position"
+              style={{
+                width: '100%',
+                accentColor: accent,
+                marginBottom: 8,
+              }}
+            />
 
             <div
               id="fmv-timeline-strip"
@@ -1302,35 +1740,41 @@ export default function FmvPlayer() {
           </button>
 
           <div className="panel-h" style={{ padding: 0 }}>
-            {([['tracks', 'Tracks', trackRows.length], ['upload', 'Upload', clips.length]] as Array<[SidePanelTab, string, number]>).map(
-              ([k, label, count]) => (
-                <button
-                  key={k}
-                  onClick={() => setSideTab(k)}
-                  type="button"
-                  style={{
-                    flex: 1,
-                    height: 34,
-                    border: 0,
-                    background: sideTab === k ? 'var(--bg-2)' : 'transparent',
-                    color: sideTab === k ? 'var(--ink-0)' : 'var(--ink-2)',
-                    borderRight: '1px solid var(--line)',
-                    borderBottom: sideTab === k ? `2px solid ${accent}` : '2px solid transparent',
-                    cursor: 'pointer',
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 11,
-                    letterSpacing: '.08em',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: 6,
-                    textTransform: 'uppercase',
-                  }}
-                >
-                  {label} <span style={{ color: sideTab === k ? accent : 'var(--ink-3)' }}>{count}</span>
-                </button>
-              ),
-            )}
+            {(
+              [
+                ['tracks', 'Tracks', trackRows.length] as [SidePanelTab, string, number],
+                ['upload', 'Upload', clips.length] as [SidePanelTab, string, number],
+                ...(selectedDetectionId
+                  ? ([['detail', 'Detail', 1] as [SidePanelTab, string, number]] as const)
+                  : []),
+              ]
+            ).map(([k, label, count]) => (
+              <button
+                key={k}
+                onClick={() => setSideTab(k)}
+                type="button"
+                style={{
+                  flex: 1,
+                  height: 34,
+                  border: 0,
+                  background: sideTab === k ? 'var(--bg-2)' : 'transparent',
+                  color: sideTab === k ? 'var(--ink-0)' : 'var(--ink-2)',
+                  borderRight: '1px solid var(--line)',
+                  borderBottom: sideTab === k ? `2px solid ${accent}` : '2px solid transparent',
+                  cursor: 'pointer',
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 11,
+                  letterSpacing: '.08em',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                  textTransform: 'uppercase',
+                }}
+              >
+                {label} <span style={{ color: sideTab === k ? accent : 'var(--ink-3)' }}>{count}</span>
+              </button>
+            ))}
           </div>
 
           <div className="scroll" style={{ flex: 1, minHeight: 0 }}>
@@ -1374,11 +1818,92 @@ export default function FmvPlayer() {
                   </div>
                 )}
 
+                {/* Re-ID cluster panel — DINOv3-LVD cosine-similar tracks */}
+                {reidCluster.members.length > 0 && (
+                  <div
+                    style={{
+                      margin: '10px 14px',
+                      padding: 10,
+                      border: `1px solid color-mix(in oklab, ${accent} 50%, var(--line))`,
+                      borderRadius: 6,
+                      background: `color-mix(in oklab, ${accent} 8%, var(--bg-2))`,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                      <span
+                        className="mono"
+                        style={{
+                          fontSize: 9.5,
+                          padding: '2px 6px',
+                          color: '#5ee0a0',
+                          background: 'color-mix(in oklab, #5ee0a0 14%, transparent)',
+                          border: '1px solid color-mix(in oklab, #5ee0a0 50%, transparent)',
+                        }}
+                      >
+                        DINOv3-LVD
+                      </span>
+                      <span className="mono" style={{ fontSize: 10, color: 'var(--ink-2)' }}>
+                        cosine ≥ 0.86 · {reidCluster.members.length} peer{reidCluster.members.length === 1 ? '' : 's'}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 11.5, color: 'var(--ink-1)', marginBottom: 8 }}>
+                      Possibly the same object as{' '}
+                      {reidCluster.members.slice(0, 3).map((m, i) => (
+                        <span key={m.id}>
+                          {i > 0 ? ', ' : ''}
+                          <b style={{ color: accent }}>{m.track_id ? `TRK-${m.track_id}` : `DET-${m.id}`}</b>
+                          <span className="mono" style={{ fontSize: 10, color: 'var(--ink-3)' }}>
+                            {' '}({(m.similarity * 100).toFixed(0)}%)
+                          </span>
+                        </span>
+                      ))}
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                      {reidCluster.members.map((m, i) => (
+                        <button
+                          key={m.id}
+                          type="button"
+                          onClick={() => setSelectedDetectionId(m.id)}
+                          className="mono"
+                          style={{
+                            fontSize: 10.5,
+                            padding: '2px 8px',
+                            borderRadius: 999,
+                            background: i === 0 ? accent : 'var(--bg-3)',
+                            color: i === 0 ? '#0b0d10' : 'var(--ink-1)',
+                            border: 0,
+                            cursor: 'pointer',
+                            fontWeight: i === 0 ? 600 : 500,
+                          }}
+                          title={`${m.class} · ${(m.similarity * 100).toFixed(0)}% similarity`}
+                        >
+                          {m.track_id ? `TRK-${m.track_id}` : `DET-${m.id}`}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {visibleTrackRows.map((t) => (
                   <button
                     key={t.key}
                     type="button"
-                    onClick={() => seekTo(t.first / fps)}
+                    onClick={() => {
+                      seekTo(t.first / fps);
+                      // Find the highest-confidence detection in this track
+                      // and open it in the Detail tab so the operator can edit.
+                      const matching = detections
+                        .filter((d) =>
+                          t.trackId
+                            ? String(d.metadata?.track_id) === String(t.trackId)
+                            : d.class === t.label || detectionClassLabel(d.class) === t.label,
+                        )
+                        .sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+                      if (matching[0]) {
+                        setSelectedDetectionId(matching[0].id);
+                        setSideTab('detail');
+                      }
+                    }}
                     style={{
                       display: 'grid',
                       gridTemplateColumns: '16px 1fr auto',
@@ -1399,6 +1924,42 @@ export default function FmvPlayer() {
                       <div style={{ fontSize: 12, fontWeight: t.inFrame ? 600 : 500 }}>{t.label}</div>
                       <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)' }}>
                         {t.trackId ? `TRK-${t.trackId}` : 'no track'} · {t.frames}f · {Math.round(t.conf * 100)}%
+                      </div>
+                      {/* Lifecycle sparkline + first/last-seen markers */}
+                      <LifecycleSparkline
+                        first={t.first}
+                        last={t.last}
+                        groupKey={t.key}
+                        detections={detections}
+                        accent={accent}
+                      />
+                      <div style={{ display: 'flex', gap: 4, marginTop: 4 }}>
+                        <span
+                          className="mono"
+                          style={{
+                            fontSize: 9,
+                            padding: '1px 5px',
+                            border: '1px solid var(--line-2)',
+                            color: '#5ee0a0',
+                            borderRadius: 2,
+                          }}
+                          title={`First detection at frame ${t.first}`}
+                        >
+                          FIRST #{t.first}
+                        </span>
+                        <span
+                          className="mono"
+                          style={{
+                            fontSize: 9,
+                            padding: '1px 5px',
+                            border: '1px solid var(--line-2)',
+                            color: accent,
+                            borderRadius: 2,
+                          }}
+                          title={`Last detection at frame ${t.last}`}
+                        >
+                          LAST #{t.last}
+                        </span>
                       </div>
                     </div>
                     <span
@@ -1435,6 +1996,42 @@ export default function FmvPlayer() {
                 setModel={setModel}
               />
             )}
+            {sideTab === 'detail' && selectedDetectionId != null && (() => {
+              const det = detections.find((d) => d.id === selectedDetectionId);
+              if (!det) return (
+                <div style={{ padding: 16, color: 'var(--ink-2)', fontSize: 12 }}>
+                  Detection {selectedDetectionId} not loaded yet.
+                </div>
+              );
+              return (
+                <ObjectDetailsForm
+                  key={`fmv-det-${det.id}`}
+                  source="fmv"
+                  detectionId={det.id}
+                  defaultClass={det.class}
+                  title={detectionClassLabel(det.class)}
+                  initial={{
+                    object_class: det.class,
+                    designation: det.metadata?.designation,
+                    military_classification: det.metadata?.military_classification,
+                    threat_level: (det as any).threat_level || det.metadata?.threat_level,
+                    affiliation: (det as any).affiliation || det.metadata?.allegiance,
+                  }}
+                  canDelete={user?.role === 'admin'}
+                  onDeleted={() => {
+                    setDetections((cur) => cur.filter((d) => d.id !== det.id));
+                    setSelectedDetectionId(null);
+                    setSideTab('tracks');
+                  }}
+                  onSaved={() => {
+                    if (selectedId != null) fetchDetections(selectedId);
+                  }}
+                  onViewOnMap={
+                    onOpenMap ? () => onOpenMap(det.id) : undefined
+                  }
+                />
+              );
+            })()}
           </div>
         </aside>
       ) : (

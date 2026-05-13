@@ -11,13 +11,28 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from fastapi import FastAPI, Query, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form
+from fastapi import Depends, FastAPI, Query, HTTPException, Request, Response, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, List
 import uvicorn
 import requests
 from database import db, postgis_db
+from auth import (
+    LDAPSettings,
+    SessionUser,
+    authenticate_admin,
+    authenticate_ldap,
+    cookie_kwargs,
+    create_session_cookie,
+    get_current_user,
+    get_optional_user,
+    load_auth_config,
+    require_admin,
+    save_auth_config,
+    test_ldap_connection,
+    SESSION_COOKIE,
+)
 from ai import AIUnavailable, ai_status, get_ai_response, get_llm_json
 from imagery_metadata import extract_raster_metadata
 from video_metadata import extract_telemetry
@@ -53,6 +68,32 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Public mutating endpoints — everything else POST/PUT/PATCH/DELETE requires
+# a valid session cookie. The login endpoint is the only public mutating one;
+# logout is allowed unauthenticated so a stale cookie can always be cleared.
+_PUBLIC_MUTATING_PATHS = {"/api/auth/login", "/api/auth/logout"}
+
+
+@app.middleware("http")
+async def require_session_on_mutations(request: Request, call_next):
+    """Centralized auth gate for every mutating verb.
+
+    Endpoints can still re-declare ``Depends(get_current_user)`` to receive the
+    parsed user — this middleware only short-circuits unauthenticated mutating
+    requests so we don't need to remember to add the dependency individually.
+    """
+    method = request.method.upper()
+    if method in {"POST", "PUT", "PATCH", "DELETE"}:
+        path = request.url.path
+        # Allow CORS preflight to pass; that's an OPTIONS request handled above.
+        if path not in _PUBLIC_MUTATING_PATHS:
+            from fastapi.responses import JSONResponse  # local import keeps cold-start light
+            user = get_optional_user(request)
+            if user is None:
+                return JSONResponse(status_code=401, content={"detail": "not authenticated"})
+    return await call_next(request)
 
 # --- Existing Models ---
 class DetectionTagUpdate(BaseModel):
@@ -577,6 +618,85 @@ def ensure_platform_tables() -> None:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_ontology_updates_source ON ontology_updates(source_type, source_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_ontology_updates_status ON ontology_updates(status)")
 
+            # --- Auth + object-details + soft-delete schema --------------------
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS auth_config (
+                    id          INTEGER PRIMARY KEY DEFAULT 1,
+                    config      JSONB   NOT NULL DEFAULT '{}'::jsonb,
+                    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_by  TEXT,
+                    CHECK (id = 1)
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS object_details (
+                    id                       BIGSERIAL PRIMARY KEY,
+                    source                   TEXT NOT NULL,
+                    source_id                TEXT NOT NULL,
+                    designation              TEXT,
+                    object_class             TEXT,
+                    military_classification  TEXT,
+                    threat_level             TEXT,
+                    affiliation              TEXT,
+                    confidence_override      REAL,
+                    notes                    TEXT,
+                    updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_by               TEXT,
+                    UNIQUE (source, source_id)
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_object_details_source ON object_details(source, source_id)")
+            cursor.execute("ALTER TABLE detections     ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ")
+            cursor.execute("ALTER TABLE detections     ADD COLUMN IF NOT EXISTS source     TEXT DEFAULT 'ai'")
+            cursor.execute("ALTER TABLE detections     ADD COLUMN IF NOT EXISTS threat_level TEXT")
+            cursor.execute("ALTER TABLE detections     ADD COLUMN IF NOT EXISTS affiliation  TEXT")
+            cursor.execute("ALTER TABLE fmv_detections ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ")
+            cursor.execute("ALTER TABLE fmv_detections ADD COLUMN IF NOT EXISTS threat_level TEXT")
+            cursor.execute("ALTER TABLE fmv_detections ADD COLUMN IF NOT EXISTS affiliation  TEXT")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_detections_deleted_at     ON detections(deleted_at) WHERE deleted_at IS NULL")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_fmv_detections_deleted_at ON fmv_detections(deleted_at) WHERE deleted_at IS NULL")
+            # Replace any stale 'placeholder' default on transcripts.status.
+            cursor.execute("ALTER TABLE transcripts ALTER COLUMN status SET DEFAULT 'pending'")
+            cursor.execute("UPDATE transcripts SET status = 'pending' WHERE status = 'placeholder'")
+
+            # --- Round 2: DB-backed inference config, prompt profiles, version history ---
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS inference_config (
+                    id          INTEGER PRIMARY KEY DEFAULT 1,
+                    config      JSONB   NOT NULL DEFAULT '{}'::jsonb,
+                    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_by  TEXT,
+                    CHECK (id = 1)
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS prompt_profiles (
+                    id           BIGSERIAL PRIMARY KEY,
+                    sensor       TEXT NOT NULL,
+                    name         TEXT NOT NULL,
+                    version      TEXT NOT NULL,
+                    prompts      JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    current      BOOLEAN NOT NULL DEFAULT FALSE,
+                    notes        TEXT,
+                    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    created_by   TEXT,
+                    UNIQUE (sensor, version)
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_prompt_profiles_sensor_current ON prompt_profiles(sensor, current)")
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS ontology_version_history (
+                    id                   BIGSERIAL PRIMARY KEY,
+                    version_id           BIGINT NOT NULL,
+                    summary              TEXT,
+                    changes              JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    detections_at_cut    BIGINT,
+                    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    created_by           TEXT
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_onto_history_version ON ontology_version_history(version_id DESC)")
+
         _platform_schema_ready = True
 
 
@@ -834,6 +954,7 @@ def ontology_context_snapshot(limit: int = 24) -> dict:
                        sp.acquisition_time
                 FROM detections d
                 LEFT JOIN satellite_passes sp ON d.pass_id = sp.id
+                WHERE d.deleted_at IS NULL
                 ORDER BY d.created_at DESC
                 LIMIT %s
             """, (limit,))
@@ -1262,6 +1383,120 @@ def health():
 
     status["healthy"] = status["neo4j"] == "ok" and status["postgis"] == "ok"
     return status
+
+
+# ============================================================================
+# Authentication
+# ============================================================================
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class AuthTestRequest(BaseModel):
+    username: str
+    password: str
+
+
+def _set_session_cookie(response: Response, user: SessionUser) -> None:
+    response.set_cookie(value=create_session_cookie(user), **cookie_kwargs())
+
+
+def _clear_session_cookie(response: Response) -> None:
+    kwargs = cookie_kwargs()
+    response.delete_cookie(key=kwargs["key"], path=kwargs["path"])
+
+
+@app.post("/api/auth/login")
+def login(body: LoginRequest, response: Response):
+    """Authenticate against the env admin first, then LDAP if configured.
+
+    On success, sets the ``sentinel_session`` cookie and returns the user.
+    """
+    ensure_platform_tables()
+    user = authenticate_admin(body.username, body.password)
+    if user is None:
+        try:
+            cfg = load_auth_config(postgis_db)
+        except Exception as exc:
+            logger.warning("auth_config load failed: %s", exc)
+            cfg = LDAPSettings()
+        if cfg.enabled:
+            try:
+                user = authenticate_ldap(cfg, body.username, body.password)
+            except RuntimeError as exc:
+                # Connection / config errors get surfaced; bad-password returns None.
+                raise HTTPException(status_code=503, detail=f"LDAP: {exc}") from exc
+    if user is None:
+        raise HTTPException(status_code=401, detail="invalid credentials")
+    _set_session_cookie(response, user)
+    return {"user": user.to_public(), "role": user.role}
+
+
+@app.post("/api/auth/logout")
+def logout(response: Response):
+    _clear_session_cookie(response)
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+def me(request: Request):
+    user = get_optional_user(request)
+    if user is None:
+        raise HTTPException(status_code=401, detail="not authenticated")
+    return {"user": user.to_public(), "role": user.role}
+
+
+@app.get("/api/admin/auth/config")
+def admin_auth_get(user: SessionUser = Depends(require_admin)):
+    """Return the saved LDAP configuration. ``bind_password`` is masked."""
+    ensure_platform_tables()
+    cfg = load_auth_config(postgis_db)
+    payload = cfg.model_dump() if hasattr(cfg, "model_dump") else json.loads(cfg.json())
+    if payload.get("bind_password"):
+        payload["bind_password"] = "********"
+    return payload
+
+
+@app.put("/api/admin/auth/config")
+def admin_auth_put(cfg: LDAPSettings, user: SessionUser = Depends(require_admin)):
+    """Save new LDAP config. If ``bind_password`` is the mask, preserve the existing one."""
+    ensure_platform_tables()
+    current = load_auth_config(postgis_db)
+    if cfg.bind_password == "********":
+        cfg.bind_password = current.bind_password
+    save_auth_config(postgis_db, cfg, updated_by=user.username)
+    test = test_ldap_connection(cfg) if cfg.enabled and cfg.host else {"ok": True, "skipped": True}
+    out = cfg.model_dump() if hasattr(cfg, "model_dump") else json.loads(cfg.json())
+    if out.get("bind_password"):
+        out["bind_password"] = "********"
+    return {"config": out, "test": test}
+
+
+@app.post("/api/admin/auth/test")
+def admin_auth_test(body: AuthTestRequest, user: SessionUser = Depends(require_admin)):
+    """Test a username/password against the saved LDAP config without storing a session."""
+    ensure_platform_tables()
+    cfg = load_auth_config(postgis_db)
+    if not cfg.enabled:
+        return {"ok": False, "error": "LDAP is disabled. Enable it and Save before testing."}
+    try:
+        result = authenticate_ldap(cfg, body.username, body.password)
+    except RuntimeError as exc:
+        return {"ok": False, "error": str(exc)}
+    if result is None:
+        return {"ok": False, "error": "bind succeeded but credentials were rejected"}
+    return {"ok": True, "user": result.to_public()}
+
+
+@app.post("/api/admin/auth/test-connection")
+def admin_auth_test_connection(cfg: LDAPSettings, user: SessionUser = Depends(require_admin)):
+    """Run a service-bind smoke test against an *unsaved* config payload."""
+    if cfg.bind_password == "********":
+        current = load_auth_config(postgis_db)
+        cfg.bind_password = current.bind_password
+    return test_ldap_connection(cfg)
 
 
 INFERENCE_SAM3_URL = os.getenv("INFERENCE_SAM3_URL", "http://inference-sam3:8001")
@@ -2086,14 +2321,14 @@ def get_fmv_detections(clip_id: int, frame_index: Optional[int] = None):
             cursor.execute("""
                 SELECT id, clip_id, frame_index, class, confidence, bbox, metadata, created_at
                 FROM fmv_detections
-                WHERE clip_id = %s
+                WHERE clip_id = %s AND deleted_at IS NULL
                 ORDER BY frame_index, confidence DESC
             """, (clip_id,))
         else:
             cursor.execute("""
                 SELECT id, clip_id, frame_index, class, confidence, bbox, metadata, created_at
                 FROM fmv_detections
-                WHERE clip_id = %s AND frame_index = %s
+                WHERE clip_id = %s AND frame_index = %s AND deleted_at IS NULL
                 ORDER BY confidence DESC
             """, (clip_id, frame_index))
         return {"detections": [dict(row) for row in cursor.fetchall()]}
@@ -2295,14 +2530,38 @@ def promote_model(model_id: int):
 
 @app.post("/api/training/jobs")
 def create_training_job(req: TrainingJobCreate):
+    """Queue a real training run. Requires GPU profile; otherwise rejects so the
+    operator knows the job won't run instead of recording a fake 'queued'."""
     ensure_platform_tables()
+    gpu_profile = os.getenv("SAM3_GPU_PROFILE") or os.getenv("CUDA_VISIBLE_DEVICES")
+    if not gpu_profile:
+        raise HTTPException(
+            status_code=503,
+            detail="no GPU profile detected — run scripts/configure_host.py or set SAM3_GPU_PROFILE before queuing training",
+        )
+    metrics = {
+        "gpu_profile": gpu_profile,
+        "queued_at": datetime.now(timezone.utc).isoformat(),
+    }
     with postgis_db.get_cursor(commit=True) as cursor:
         cursor.execute("""
             INSERT INTO training_jobs (name, dataset_path, epochs, status, metrics)
             VALUES (%s, %s, %s, 'queued', %s)
             RETURNING id, name, dataset_path, epochs, status, metrics, created_at, updated_at
-        """, (req.name, req.dataset_path, req.epochs, json.dumps({"mode": "offline_stub"})))
+        """, (req.name, req.dataset_path, req.epochs, json.dumps(metrics)))
         job = dict(cursor.fetchone())
+    try:
+        from worker import train_model  # lazy import — worker depends on backend objects
+        task = train_model.delay(job["id"])
+        job["task_id"] = task.id
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("queueing training task failed: %s", exc, exc_info=True)
+        with postgis_db.get_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE training_jobs SET status = 'failed', metrics = metrics || %s::jsonb WHERE id = %s",
+                (json.dumps({"error": str(exc)}), job["id"]),
+            )
+        raise HTTPException(status_code=503, detail=f"training worker unavailable: {exc}") from exc
     publish_event("training:%s" % job["id"], {"type": "training_queued", "job": job})
     publish_event("ops", {"type": "training_queued", "job": job})
     return {"success": True, "job": job}
@@ -2456,7 +2715,7 @@ def get_detections(
                sp.name as pass_name, sp.acquisition_time, sp.file_path
         FROM detections d
         JOIN satellite_passes sp ON d.pass_id = sp.id
-        WHERE 1=1
+        WHERE d.deleted_at IS NULL
     """
     params = []
     
@@ -2509,7 +2768,7 @@ def get_detection_classes(
                    coalesce(d.metadata->>'allegiance', 'unknown') AS allegiance
             FROM detections d
             JOIN satellite_passes sp ON d.pass_id = sp.id
-            WHERE 1=1
+            WHERE d.deleted_at IS NULL
     """
     params = []
     if bbox:
@@ -2605,7 +2864,7 @@ def get_detections_geojson(
                    ST_AsGeoJSON(d.geom)::jsonb AS geometry
             FROM detections d
             JOIN satellite_passes sp ON d.pass_id = sp.id
-            WHERE ST_Intersects(d.geom, sp.footprint)
+            WHERE d.deleted_at IS NULL AND ST_Intersects(d.geom, sp.footprint)
         """
         params = []
         if bbox:
@@ -2670,7 +2929,7 @@ def get_detections_geojson(
 
 
 @app.patch("/api/detections/{detection_id}/tag")
-def tag_detection(detection_id: int, update: DetectionTagUpdate):
+def tag_detection(detection_id: int, update: DetectionTagUpdate, user: SessionUser = Depends(get_current_user)):
     allegiance = update.allegiance.strip().lower()
     if allegiance not in {"friendly", "hostile", "neutral", "unknown"}:
         raise HTTPException(status_code=400, detail="allegiance must be friendly, hostile, neutral, or unknown")
@@ -2716,6 +2975,860 @@ def tag_detection(detection_id: int, update: DetectionTagUpdate):
     return {"id": row["id"], "class": row["class"], "metadata": enriched_detection_metadata(row["class"], row["metadata"])}
 
 
+# ============================================================================
+# Object details (operator-edited metadata, shared across Map / FMV / Ontology)
+# ============================================================================
+
+THREAT_LEVELS = {"critical", "high", "medium", "low", "none"}
+AFFILIATIONS = {"friend", "friendly", "hostile", "neutral", "unknown"}
+
+
+class ObjectDetailsBody(BaseModel):
+    designation: Optional[str] = None
+    object_class: Optional[str] = None
+    military_classification: Optional[str] = None
+    threat_level: Optional[str] = None
+    affiliation: Optional[str] = None
+    confidence_override: Optional[float] = None
+    notes: Optional[str] = None
+
+
+def _normalize_threat(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    norm = value.strip().lower()
+    if not norm:
+        return None
+    if norm not in THREAT_LEVELS:
+        raise HTTPException(status_code=400, detail=f"threat_level must be one of {sorted(THREAT_LEVELS)}")
+    return norm
+
+
+def _normalize_affiliation(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    norm = value.strip().lower()
+    if not norm:
+        return None
+    if norm == "friendly":
+        norm = "friend"
+    if norm not in {"friend", "hostile", "neutral", "unknown"}:
+        raise HTTPException(status_code=400, detail="affiliation must be friend/hostile/neutral/unknown")
+    return norm
+
+
+def _read_object_details(source: str, source_id: str) -> dict:
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT designation, object_class, military_classification,
+                   threat_level, affiliation, confidence_override, notes,
+                   updated_at, updated_by
+            FROM object_details
+            WHERE source = %s AND source_id = %s
+            """,
+            (source, str(source_id)),
+        )
+        row = cursor.fetchone()
+    if not row:
+        return {}
+    return dict(row)
+
+
+def _upsert_object_details(source: str, source_id: str, body: ObjectDetailsBody, updated_by: str) -> dict:
+    threat = _normalize_threat(body.threat_level)
+    affiliation = _normalize_affiliation(body.affiliation)
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute(
+            """
+            INSERT INTO object_details (
+                source, source_id, designation, object_class, military_classification,
+                threat_level, affiliation, confidence_override, notes, updated_at, updated_by
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s)
+            ON CONFLICT (source, source_id) DO UPDATE SET
+                designation             = COALESCE(EXCLUDED.designation, object_details.designation),
+                object_class            = COALESCE(EXCLUDED.object_class, object_details.object_class),
+                military_classification = COALESCE(EXCLUDED.military_classification, object_details.military_classification),
+                threat_level            = COALESCE(EXCLUDED.threat_level, object_details.threat_level),
+                affiliation             = COALESCE(EXCLUDED.affiliation, object_details.affiliation),
+                confidence_override     = COALESCE(EXCLUDED.confidence_override, object_details.confidence_override),
+                notes                   = COALESCE(EXCLUDED.notes, object_details.notes),
+                updated_at              = NOW(),
+                updated_by              = EXCLUDED.updated_by
+            RETURNING designation, object_class, military_classification, threat_level,
+                      affiliation, confidence_override, notes, updated_at, updated_by
+            """,
+            (
+                source,
+                str(source_id),
+                body.designation,
+                body.object_class,
+                body.military_classification,
+                threat,
+                affiliation,
+                body.confidence_override,
+                body.notes,
+                updated_by,
+            ),
+        )
+        row = cursor.fetchone()
+    return dict(row) if row else {}
+
+
+@app.get("/api/detections/{detection_id}/details")
+def get_detection_details(detection_id: int, user: SessionUser = Depends(get_current_user)):
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("SELECT id, class, source, deleted_at FROM detections WHERE id = %s", (detection_id,))
+        row = cursor.fetchone()
+    if not row or row.get("deleted_at"):
+        raise HTTPException(status_code=404, detail="detection not found")
+    return {
+        "detection_id": detection_id,
+        "source": row.get("source") or "ai",
+        "object_class": row.get("class"),
+        "details": _read_object_details("detection", str(detection_id)),
+    }
+
+
+@app.put("/api/detections/{detection_id}/details")
+def put_detection_details(
+    detection_id: int,
+    body: ObjectDetailsBody,
+    user: SessionUser = Depends(get_current_user),
+):
+    """Write operator-edited metadata. Also writes threat/affiliation onto the
+    underlying detection row so existing GeoJSON / track queries see it."""
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute(
+            "SELECT id, class, source, deleted_at FROM detections WHERE id = %s",
+            (detection_id,),
+        )
+        row = cursor.fetchone()
+    if not row or row.get("deleted_at"):
+        raise HTTPException(status_code=404, detail="detection not found")
+
+    saved = _upsert_object_details("detection", str(detection_id), body, user.username)
+    threat = saved.get("threat_level")
+    affiliation = saved.get("affiliation")
+    with postgis_db.get_cursor(commit=True) as cursor:
+        meta_patch: dict = {}
+        if threat:
+            meta_patch["threat_level"] = threat
+        if affiliation:
+            meta_patch["allegiance"] = affiliation
+        if body.designation:
+            meta_patch["designation"] = body.designation
+        if body.military_classification:
+            meta_patch["military_classification"] = body.military_classification
+        cursor.execute(
+            """
+            UPDATE detections SET
+                threat_level = COALESCE(%s, threat_level),
+                affiliation  = COALESCE(%s, affiliation),
+                metadata     = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+            WHERE id = %s
+            """,
+            (threat, affiliation, json.dumps(meta_patch), detection_id),
+        )
+    publish_event(
+        "detections",
+        {"type": "detection_details_updated", "id": detection_id, "details": saved},
+    )
+    return {"detection_id": detection_id, "details": saved}
+
+
+@app.get("/api/fmv/detections/{detection_id}/details")
+def get_fmv_detection_details(detection_id: int, user: SessionUser = Depends(get_current_user)):
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute(
+            "SELECT id, class, clip_id, deleted_at FROM fmv_detections WHERE id = %s",
+            (detection_id,),
+        )
+        row = cursor.fetchone()
+    if not row or row.get("deleted_at"):
+        raise HTTPException(status_code=404, detail="fmv detection not found")
+    return {
+        "detection_id": detection_id,
+        "clip_id": row.get("clip_id"),
+        "object_class": row.get("class"),
+        "details": _read_object_details("fmv_detection", str(detection_id)),
+    }
+
+
+@app.put("/api/fmv/detections/{detection_id}/details")
+def put_fmv_detection_details(
+    detection_id: int,
+    body: ObjectDetailsBody,
+    user: SessionUser = Depends(get_current_user),
+):
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute(
+            "SELECT id, class, clip_id, deleted_at FROM fmv_detections WHERE id = %s",
+            (detection_id,),
+        )
+        row = cursor.fetchone()
+    if not row or row.get("deleted_at"):
+        raise HTTPException(status_code=404, detail="fmv detection not found")
+
+    saved = _upsert_object_details("fmv_detection", str(detection_id), body, user.username)
+    threat = saved.get("threat_level")
+    affiliation = saved.get("affiliation")
+    with postgis_db.get_cursor(commit=True) as cursor:
+        meta_patch: dict = {}
+        if threat:
+            meta_patch["threat_level"] = threat
+        if affiliation:
+            meta_patch["allegiance"] = affiliation
+        if body.designation:
+            meta_patch["designation"] = body.designation
+        if body.military_classification:
+            meta_patch["military_classification"] = body.military_classification
+        cursor.execute(
+            """
+            UPDATE fmv_detections SET
+                threat_level = COALESCE(%s, threat_level),
+                affiliation  = COALESCE(%s, affiliation),
+                metadata     = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+            WHERE id = %s
+            """,
+            (threat, affiliation, json.dumps(meta_patch), detection_id),
+        )
+    publish_event(
+        f"fmv:{row.get('clip_id')}",
+        {"type": "fmv_detection_details_updated", "id": detection_id, "details": saved},
+    )
+    return {"detection_id": detection_id, "details": saved}
+
+
+# ============================================================================
+# Manual detections (operator-drawn boxes on the GEOINT map)
+# ============================================================================
+
+
+class ManualDetectionBody(BaseModel):
+    pass_id: Optional[int] = None
+    geometry: dict = Field(..., description="GeoJSON Polygon in EPSG:4326")
+    object_class: str = Field("unknown", description="Free-form class label")
+    designation: Optional[str] = None
+    military_classification: Optional[str] = None
+    threat_level: Optional[str] = "medium"
+    affiliation: Optional[str] = "unknown"
+    notes: Optional[str] = None
+    confidence: Optional[float] = 1.0
+
+
+@app.post("/api/detections/manual", status_code=201)
+def create_manual_detection(
+    body: ManualDetectionBody,
+    user: SessionUser = Depends(get_current_user),
+):
+    ensure_platform_tables()
+    geom = body.geometry
+    if not isinstance(geom, dict) or geom.get("type") not in {"Polygon", "MultiPolygon"}:
+        raise HTTPException(status_code=400, detail="geometry must be a GeoJSON Polygon or MultiPolygon")
+    threat = _normalize_threat(body.threat_level) or "medium"
+    affiliation = _normalize_affiliation(body.affiliation) or "unknown"
+    cls = (body.object_class or "unknown").strip().lower() or "unknown"
+
+    geom_json = json.dumps(geom)
+    metadata = {
+        "manual": True,
+        "operator": user.username,
+        "designation": body.designation or "",
+        "military_classification": body.military_classification or "",
+        "review_status": "operator",
+        "branch_id": parent_class_for_label(cls) or "Other",
+        "original_class": cls,
+        "threshold_profile": "manual",
+        "model_version": "operator",
+    }
+    with postgis_db.get_cursor(commit=True) as cursor:
+        # Coerce single-Polygon to centroid via ST_Centroid; multi-polygon via union.
+        cursor.execute(
+            """
+            INSERT INTO detections (pass_id, class, confidence, geom, centroid, metadata, threat_level, affiliation, source)
+            VALUES (
+                %s,
+                %s,
+                %s,
+                CASE WHEN %s = 'Polygon'
+                     THEN ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326)
+                     ELSE ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326)
+                END,
+                ST_Centroid(ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326)),
+                %s::jsonb,
+                %s,
+                %s,
+                'operator'
+            )
+            RETURNING id, class, confidence, metadata,
+                      ST_X(centroid) AS lon, ST_Y(centroid) AS lat,
+                      ST_AsGeoJSON(geom)::jsonb AS geometry,
+                      created_at, threat_level, affiliation, source
+            """,
+            (
+                body.pass_id,
+                cls,
+                float(body.confidence if body.confidence is not None else 1.0),
+                geom.get("type"),
+                geom_json,
+                geom_json,
+                geom_json,
+                json.dumps(metadata),
+                threat,
+                affiliation,
+            ),
+        )
+        row = cursor.fetchone()
+
+    # Persist any extra detail fields (notes etc.) in object_details too.
+    detail_body = ObjectDetailsBody(
+        designation=body.designation,
+        object_class=cls,
+        military_classification=body.military_classification,
+        threat_level=threat,
+        affiliation=affiliation,
+        confidence_override=float(body.confidence) if body.confidence is not None else None,
+        notes=body.notes,
+    )
+    _upsert_object_details("detection", str(row["id"]), detail_body, user.username)
+
+    publish_event(
+        "detections",
+        {"type": "detection_created", "id": row["id"], "source": "operator"},
+    )
+    return {
+        "id": row["id"],
+        "class": row["class"],
+        "confidence": float(row["confidence"]),
+        "threat_level": row.get("threat_level"),
+        "affiliation": row.get("affiliation"),
+        "geometry": row.get("geometry"),
+        "lat": float(row["lat"]) if row.get("lat") is not None else None,
+        "lon": float(row["lon"]) if row.get("lon") is not None else None,
+        "metadata": row.get("metadata") or {},
+        "source": "operator",
+        "created_at": row.get("created_at"),
+    }
+
+
+@app.delete("/api/detections/{detection_id}")
+def delete_detection(detection_id: int, user: SessionUser = Depends(get_current_user)):
+    """Soft-delete a detection. Admins can delete anything; analysts can only
+    delete operator-drawn boxes."""
+    ensure_platform_tables()
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute(
+            "SELECT id, source, deleted_at FROM detections WHERE id = %s",
+            (detection_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="detection not found")
+        if row.get("deleted_at"):
+            return {"id": detection_id, "deleted": True, "already_deleted": True}
+        is_operator = (row.get("source") or "ai") == "operator"
+        if not is_operator and user.role != "admin":
+            raise HTTPException(
+                status_code=403,
+                detail="only admins can delete AI detections; analysts can delete operator-drawn boxes",
+            )
+        cursor.execute(
+            "UPDATE detections SET deleted_at = NOW() WHERE id = %s RETURNING id",
+            (detection_id,),
+        )
+    publish_event(
+        "detections",
+        {"type": "detection_deleted", "id": detection_id, "by": user.username},
+    )
+    return {"id": detection_id, "deleted": True}
+
+
+@app.delete("/api/fmv/detections/{detection_id}")
+def delete_fmv_detection(detection_id: int, user: SessionUser = Depends(get_current_user)):
+    ensure_platform_tables()
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute(
+            "SELECT id, clip_id, deleted_at, metadata FROM fmv_detections WHERE id = %s",
+            (detection_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="fmv detection not found")
+        if row.get("deleted_at"):
+            return {"id": detection_id, "deleted": True, "already_deleted": True}
+        # FMV detections are all AI-produced today, so require admin to remove
+        # them (analysts should leave AI evidence in place).
+        if user.role != "admin":
+            raise HTTPException(status_code=403, detail="admin role required to delete FMV detections")
+        cursor.execute(
+            "UPDATE fmv_detections SET deleted_at = NOW() WHERE id = %s RETURNING id",
+            (detection_id,),
+        )
+    publish_event(
+        f"fmv:{row.get('clip_id')}",
+        {"type": "fmv_detection_deleted", "id": detection_id, "by": user.username},
+    )
+    return {"id": detection_id, "deleted": True}
+
+
+# ============================================================================
+# Round 2 endpoints — Map+, FMV+, Admin advanced
+# ============================================================================
+
+
+REVIEW_STATUSES = {"pending", "accepted", "flagged", "rejected", "review_candidate", "high_confidence"}
+
+
+class ReviewUpdate(BaseModel):
+    status: str
+    note: Optional[str] = None
+
+
+@app.patch("/api/detections/{detection_id}/review")
+def patch_detection_review(detection_id: int, body: ReviewUpdate, user: SessionUser = Depends(get_current_user)):
+    """Set the operator review status on a detection. Stored in
+    ``detections.metadata.review_status`` so existing GeoJSON / queue queries
+    pick it up without a schema change."""
+    status = body.status.strip().lower()
+    if status not in REVIEW_STATUSES:
+        raise HTTPException(status_code=400, detail=f"status must be one of {sorted(REVIEW_STATUSES)}")
+    patch: dict = {"review_status": status, "reviewed_by": user.username}
+    if body.note:
+        patch["review_note"] = body.note
+    with postgis_db.get_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            UPDATE detections
+            SET metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb
+            WHERE id = %s AND deleted_at IS NULL
+            RETURNING id, class, metadata
+            """,
+            (json.dumps(patch), detection_id),
+        )
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="detection not found")
+    publish_event("detections", {"type": "detection_review_updated", "id": detection_id, "status": status, "by": user.username})
+    return {"id": row["id"], "class": row["class"], "review_status": status, "metadata": row["metadata"]}
+
+
+@app.get("/api/detections/queue")
+def get_review_queue(
+    status: str = Query("pending", description="review status to filter"),
+    limit: int = Query(50, ge=1, le=500),
+    user: SessionUser = Depends(get_current_user),
+):
+    """Review queue for the Map+ Review tab. Filters by ``metadata.review_status``."""
+    if status.lower() == "pending":
+        # Pending = explicit "pending" plus the historical default values when
+        # the operator hasn't touched the row yet.
+        where_review = "(coalesce(d.metadata->>'review_status', 'review_candidate') IN ('pending','review_candidate'))"
+        params: list = [limit]
+    else:
+        where_review = "(coalesce(d.metadata->>'review_status', 'review_candidate') = %s)"
+        params = [status.lower(), limit]
+    with postgis_db.get_cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT d.id, d.class, d.confidence, d.metadata,
+                   ST_AsGeoJSON(d.geom)::jsonb AS geometry,
+                   ST_Y(d.centroid) AS lat, ST_X(d.centroid) AS lon,
+                   sp.acquisition_time, sp.name AS pass_name
+            FROM detections d
+            LEFT JOIN satellite_passes sp ON sp.id = d.pass_id
+            WHERE d.deleted_at IS NULL AND {where_review}
+            ORDER BY d.created_at DESC
+            LIMIT %s
+            """,
+            params,
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+    return {"status": status.lower(), "count": len(rows), "detections": rows}
+
+
+def _cosine(a: list, b: list) -> float:
+    import math as _m
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = 0.0
+    na = 0.0
+    nb = 0.0
+    for x, y in zip(a, b):
+        try:
+            x = float(x); y = float(y)
+        except (TypeError, ValueError):
+            return 0.0
+        dot += x * y
+        na += x * x
+        nb += y * y
+    denom = _m.sqrt(na) * _m.sqrt(nb)
+    return dot / denom if denom > 0 else 0.0
+
+
+def _detection_embedding(meta: dict | None) -> list | None:
+    if not isinstance(meta, dict):
+        return None
+    emb = meta.get("embedding")
+    if isinstance(emb, list) and emb:
+        return emb
+    emb = meta.get("terramind_embedding")
+    if isinstance(emb, list) and emb:
+        return emb
+    return None
+
+
+@app.get("/api/detections/{detection_id}/similar")
+def get_similar_detections(detection_id: int, k: int = Query(12, ge=1, le=50), user: SessionUser = Depends(get_current_user)):
+    """Return the k cosine-similar detections by DINOv3 embedding."""
+    with postgis_db.get_cursor() as cur:
+        cur.execute(
+            "SELECT id, class, confidence, metadata, ST_Y(centroid) AS lat, ST_X(centroid) AS lon "
+            "FROM detections WHERE id = %s AND deleted_at IS NULL",
+            (detection_id,),
+        )
+        anchor = cur.fetchone()
+        if not anchor:
+            raise HTTPException(status_code=404, detail="detection not found")
+        anchor_emb = _detection_embedding(dict(anchor).get("metadata"))
+        if not anchor_emb:
+            return {"detection_id": detection_id, "method": "embedding", "results": [], "reason": "no embedding stored on anchor"}
+
+        cur.execute(
+            "SELECT id, class, confidence, metadata, ST_Y(centroid) AS lat, ST_X(centroid) AS lon "
+            "FROM detections "
+            "WHERE id <> %s AND deleted_at IS NULL AND metadata ? 'embedding' "
+            "ORDER BY created_at DESC "
+            "LIMIT 2000",
+            (detection_id,),
+        )
+        candidates = [dict(r) for r in cur.fetchall()]
+
+    scored: list[dict] = []
+    for c in candidates:
+        emb = _detection_embedding(c.get("metadata"))
+        if not emb:
+            continue
+        sim = _cosine(anchor_emb, emb)
+        if sim <= 0:
+            continue
+        scored.append({**c, "similarity": sim})
+    scored.sort(key=lambda r: r["similarity"], reverse=True)
+    return {"detection_id": detection_id, "method": "embedding", "results": scored[:k]}
+
+
+@app.get("/api/fmv/detections/{detection_id}/similar")
+def get_similar_fmv_detections(detection_id: int, k: int = Query(12, ge=1, le=50), user: SessionUser = Depends(get_current_user)):
+    """LVD-side cosine similarity for FMV (Re-ID cluster)."""
+    with postgis_db.get_cursor() as cur:
+        cur.execute(
+            "SELECT id, clip_id, class, confidence, metadata FROM fmv_detections WHERE id = %s AND deleted_at IS NULL",
+            (detection_id,),
+        )
+        anchor = cur.fetchone()
+        if not anchor:
+            raise HTTPException(status_code=404, detail="fmv detection not found")
+        anchor_meta = dict(anchor).get("metadata") or {}
+        anchor_emb = _detection_embedding(anchor_meta)
+        if not anchor_emb:
+            return {"detection_id": detection_id, "method": "embedding", "results": [], "reason": "no embedding stored"}
+        clip_id = dict(anchor).get("clip_id")
+
+        cur.execute(
+            "SELECT id, clip_id, frame_index, class, confidence, metadata "
+            "FROM fmv_detections "
+            "WHERE id <> %s AND deleted_at IS NULL AND metadata ? 'embedding' "
+            "ORDER BY created_at DESC "
+            "LIMIT 4000",
+            (detection_id,),
+        )
+        candidates = [dict(r) for r in cur.fetchall()]
+    scored: list[dict] = []
+    for c in candidates:
+        emb = _detection_embedding(c.get("metadata"))
+        if not emb:
+            continue
+        sim = _cosine(anchor_emb, emb)
+        if sim <= 0:
+            continue
+        scored.append({**c, "similarity": sim, "track_id": (c.get("metadata") or {}).get("track_id")})
+    scored.sort(key=lambda r: r["similarity"], reverse=True)
+    return {
+        "detection_id": detection_id,
+        "clip_id": clip_id,
+        "method": "lvd",
+        "results": scored[:k],
+    }
+
+
+# --- Confidence overrides ---------------------------------------------------
+
+
+class ConfidenceConfig(BaseModel):
+    per_class_confidence_overrides: dict[str, float] = Field(default_factory=dict)
+    global_floor: Optional[float] = None
+    high_confidence_threshold: Optional[float] = None
+
+
+def _read_inference_config() -> dict:
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cur:
+        cur.execute("SELECT config FROM inference_config WHERE id = 1")
+        row = cur.fetchone()
+    cfg = (row[0] if row and not isinstance(row, dict) else (row or {}).get("config")) or {}
+    if isinstance(cfg, str):
+        try:
+            cfg = json.loads(cfg)
+        except json.JSONDecodeError:
+            cfg = {}
+    return cfg or {}
+
+
+@app.get("/api/inference/confidence-overrides")
+def get_confidence_overrides(user: SessionUser = Depends(get_current_user)):
+    policy = DETECTION_POLICY  # initial values from env
+    cfg = _read_inference_config()
+    db_overrides = cfg.get("per_class_confidence_overrides") or {}
+    return {
+        "per_class_confidence_overrides": db_overrides,
+        "env_per_class_confidence_overrides": policy.get("class_thresholds", {}),
+        "global_floor": cfg.get("global_floor"),
+        "env_global_floor": policy.get("global_confidence_floor"),
+        "high_confidence_threshold": cfg.get("high_confidence_threshold"),
+        "env_high_confidence_threshold": policy.get("high_confidence_threshold"),
+    }
+
+
+@app.put("/api/inference/confidence-overrides")
+def put_confidence_overrides(body: ConfidenceConfig, user: SessionUser = Depends(require_admin)):
+    """Replace the DB-stored confidence overrides and invalidate the policy cache.
+
+    Empty dict clears all DB overrides (env values take over)."""
+    payload = {
+        "per_class_confidence_overrides": {k: float(v) for k, v in (body.per_class_confidence_overrides or {}).items()},
+        "global_floor": body.global_floor,
+        "high_confidence_threshold": body.high_confidence_threshold,
+    }
+    with postgis_db.get_cursor(commit=True) as cur:
+        cur.execute(
+            "INSERT INTO inference_config (id, config, updated_at, updated_by) "
+            "VALUES (1, %s::jsonb, NOW(), %s) "
+            "ON CONFLICT (id) DO UPDATE "
+            "SET config = EXCLUDED.config, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by",
+            (json.dumps(payload), user.username),
+        )
+    try:
+        from detection_policy import invalidate_policy_cache
+        invalidate_policy_cache()
+    except Exception:
+        pass
+    return {"saved": True, **payload}
+
+
+# --- Prompt profiles --------------------------------------------------------
+
+
+class PromptProfileBody(BaseModel):
+    sensor: str
+    name: str
+    version: str
+    prompts: list[str] = Field(default_factory=list)
+    notes: Optional[str] = None
+    make_current: bool = False
+
+
+@app.get("/api/ontology/prompt-profiles")
+def list_prompt_profiles(user: SessionUser = Depends(get_current_user)):
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cur:
+        cur.execute(
+            "SELECT id, sensor, name, version, prompts, current, notes, created_at, created_by "
+            "FROM prompt_profiles ORDER BY sensor, created_at DESC"
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+    # Fold in the live ontology's default prompts for sensors with no profile.
+    try:
+        defaults = ontology_default_prompts()
+    except Exception:
+        defaults = {}
+    return {"profiles": rows, "ontology_defaults": defaults}
+
+
+@app.post("/api/ontology/prompt-profiles", status_code=201)
+def create_prompt_profile(body: PromptProfileBody, user: SessionUser = Depends(require_admin)):
+    ensure_platform_tables()
+    if not body.sensor or not body.version or not body.name:
+        raise HTTPException(status_code=400, detail="sensor, name and version are required")
+    sensor = body.sensor.strip().lower()
+    with postgis_db.get_cursor(commit=True) as cur:
+        if body.make_current:
+            cur.execute("UPDATE prompt_profiles SET current = FALSE WHERE sensor = %s", (sensor,))
+        cur.execute(
+            """
+            INSERT INTO prompt_profiles (sensor, name, version, prompts, current, notes, created_by)
+            VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s)
+            ON CONFLICT (sensor, version) DO UPDATE
+              SET name = EXCLUDED.name,
+                  prompts = EXCLUDED.prompts,
+                  current = EXCLUDED.current OR prompt_profiles.current,
+                  notes = EXCLUDED.notes
+            RETURNING id, sensor, name, version, prompts, current, notes, created_at, created_by
+            """,
+            (sensor, body.name, body.version, json.dumps(body.prompts), body.make_current, body.notes, user.username),
+        )
+        row = dict(cur.fetchone())
+    return row
+
+
+@app.put("/api/ontology/prompt-profiles/{profile_id}/activate")
+def activate_prompt_profile(profile_id: int, user: SessionUser = Depends(require_admin)):
+    ensure_platform_tables()
+    with postgis_db.get_cursor(commit=True) as cur:
+        cur.execute("SELECT sensor FROM prompt_profiles WHERE id = %s", (profile_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="profile not found")
+        sensor = row["sensor"]
+        cur.execute("UPDATE prompt_profiles SET current = FALSE WHERE sensor = %s", (sensor,))
+        cur.execute(
+            "UPDATE prompt_profiles SET current = TRUE WHERE id = %s RETURNING id, sensor, name, version, current",
+            (profile_id,),
+        )
+        out = dict(cur.fetchone())
+    return out
+
+
+@app.delete("/api/ontology/prompt-profiles/{profile_id}")
+def delete_prompt_profile(profile_id: int, user: SessionUser = Depends(require_admin)):
+    with postgis_db.get_cursor(commit=True) as cur:
+        cur.execute("DELETE FROM prompt_profiles WHERE id = %s RETURNING id", (profile_id,))
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="profile not found")
+    return {"id": profile_id, "deleted": True}
+
+
+# --- Taxonomy version history ----------------------------------------------
+
+
+@app.get("/api/ontology/version-history")
+def get_version_history(limit: int = Query(100, ge=1, le=1000), user: SessionUser = Depends(get_current_user)):
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cur:
+        cur.execute(
+            "SELECT id, version_id, summary, changes, detections_at_cut, created_at, created_by "
+            "FROM ontology_version_history ORDER BY version_id DESC, id DESC LIMIT %s",
+            (limit,),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.execute("SELECT version_id FROM ontology_version LIMIT 1")
+        cur_row = cur.fetchone()
+        current = int(cur_row["version_id"]) if cur_row else None
+    return {"current_version_id": current, "versions": rows}
+
+
+# --- Inference dashboard ----------------------------------------------------
+
+
+@app.get("/api/inference/dashboard")
+def inference_dashboard(user: SessionUser = Depends(get_current_user)):
+    """Aggregate health + model status for the Admin · Health view."""
+    base = {
+        "gpu": {
+            "model": os.getenv("GPU_MODEL") or "unknown",
+            "profile": os.getenv("SAM3_GPU_PROFILE") or os.getenv("CUDA_VISIBLE_DEVICES") or "cpu",
+            "cuda_version": os.getenv("SAM3_CUDA_VERSION") or "n/a",
+        },
+        "vram_total_gib": None,
+        "vram_used_gib": None,
+        "models": [],
+        "mode": "online" if os.getenv("OPENAI_API_BASE") else "offline_safe",
+    }
+    try:
+        resp = requests.get(f"{INFERENCE_SAM3_URL}/health", timeout=2.5)
+        if resp.status_code == 200:
+            data = resp.json() if resp.text else {}
+            base["vram_total_gib"] = data.get("vram_total_gib") or data.get("vram_total_gb")
+            base["vram_used_gib"] = data.get("vram_used_gib") or data.get("vram_used_gb")
+            base["models"] = data.get("models") or data.get("loaded_models") or []
+            base["device"] = data.get("device")
+            base["profile_loaded"] = data.get("profile_loaded") or data.get("profile")
+    except Exception as exc:
+        base["inference_error"] = str(exc)
+    # Fall back to a static description of the configured models if the sidecar
+    # doesn't expose its own list; the analyst still sees which heads are wired.
+    if not base["models"]:
+        env_models = [
+            {"id": "sam3", "name": "SAM 3 image", "version": os.getenv("SAM3_MODEL_VERSION", "facebook/sam3"), "status": "configured"},
+            {"id": "dinov3-sat", "name": "DINOv3-SAT", "version": os.getenv("DINOV3_SAT_MODEL_ID", "facebook/dinov3-vitl16-pretrain-sat493m"), "status": "configured"},
+            {"id": "dinov3-lvd", "name": "DINOv3-LVD", "version": os.getenv("DINOV3_LVD_MODEL_ID", "facebook/dinov3-vitl16-pretrain-lvd1689m"), "status": "configured"},
+            {"id": "prithvi", "name": "Prithvi-EO", "version": os.getenv("PRITHVI_BACKBONE_ID", "ibm-nasa-geospatial/Prithvi-EO-2.0-600M-TL"), "status": "configured"},
+            {"id": "terramind", "name": "TerraMind", "version": os.getenv("TERRAMIND_MODEL_ID", "terramind_v1_large"), "status": "configured"},
+        ]
+        base["models"] = env_models
+    return base
+
+
+# --- Prithvi overlays -------------------------------------------------------
+
+
+PRITHVI_KINDS = {"flood", "burn", "burn_scar", "crops", "crop"}
+
+
+@app.get("/api/detections/prithvi-overlays")
+def get_prithvi_overlays(
+    kind: str = Query(..., description="flood | burn | crops"),
+    bbox: Optional[str] = None,
+    limit: int = Query(500, ge=1, le=5000),
+    user: SessionUser = Depends(get_current_user),
+):
+    """GeoJSON FeatureCollection of detections tagged with the requested
+    Prithvi label. Source: ``metadata.prithvi_labels`` (a list of label keys
+    emitted by the imagery worker)."""
+    norm = kind.strip().lower()
+    if norm not in PRITHVI_KINDS:
+        raise HTTPException(status_code=400, detail=f"kind must be one of {sorted(PRITHVI_KINDS)}")
+    label_filter = "burn" if norm in {"burn", "burn_scar"} else ("crop" if norm in {"crop", "crops"} else "flood")
+    params: list = [label_filter]
+    where = "metadata->'prithvi_labels' ? %s AND d.deleted_at IS NULL"
+    if bbox:
+        min_lon, min_lat, max_lon, max_lat = parse_bbox(bbox)
+        where += " AND ST_Intersects(d.geom, ST_MakeEnvelope(%s, %s, %s, %s, 4326))"
+        params.extend([min_lon, min_lat, max_lon, max_lat])
+    params.append(limit)
+    with postgis_db.get_cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT d.id, d.class, d.metadata,
+                   ST_AsGeoJSON(d.geom)::jsonb AS geometry
+            FROM detections d
+            WHERE {where}
+            ORDER BY d.created_at DESC
+            LIMIT %s
+            """,
+            params,
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+    features = [
+        {
+            "type": "Feature",
+            "geometry": r["geometry"],
+            "properties": {
+                "id": r["id"],
+                "class": r["class"],
+                "prithvi_labels": (r.get("metadata") or {}).get("prithvi_labels", []),
+                "kind": norm,
+            },
+        }
+        for r in rows
+    ]
+    return {"type": "FeatureCollection", "kind": norm, "count": len(features), "features": features}
+
+
 def target_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     radius = 6_371_000
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
@@ -2746,7 +3859,7 @@ def detection_row_for_candidate(detection_id: int) -> dict:
                    sp.acquisition_time, sp.name AS pass_name
             FROM detections d
             JOIN satellite_passes sp ON sp.id = d.pass_id
-            WHERE d.id = %s
+            WHERE d.id = %s AND d.deleted_at IS NULL
         """, (detection_id,))
         row = cursor.fetchone()
         if not row:
@@ -3143,11 +4256,15 @@ def upload_imagery(
             response.update({"message": "Vector upload stored for cataloging.", "layer": dict(cursor.fetchone())})
     elif media_type in {"document", "audio"}:
         title = filename.rsplit(".", 1)[0]
-        summary = (
-            "Audio uploaded. Transcription is queued; configure a local or remote transcriber to replace this placeholder."
-            if media_type == "audio"
-            else "Document uploaded. LLM extraction is queued for automated processing."
-        )
+        whisper_enabled = os.getenv("WHISPER_ENABLED", "0") == "1"
+        if media_type == "audio":
+            summary = (
+                "Audio uploaded. Transcription queued on the worker."
+                if whisper_enabled
+                else "Audio uploaded. Set WHISPER_ENABLED=1 to enable on-host transcription."
+            )
+        else:
+            summary = "Document uploaded. LLM extraction is queued for automated processing."
         with postgis_db.get_cursor(commit=True) as cursor:
             cursor.execute("""
                 INSERT INTO documents (upload_id, domain, title, file_path, media_type, status, summary, metadata)
@@ -3164,16 +4281,32 @@ def upload_imagery(
             ))
             document = dict(cursor.fetchone())
             if media_type == "audio":
+                transcript_status = "queued" if whisper_enabled else "skipped"
+                transcript_text = (
+                    "Transcription queued on the worker." if whisper_enabled
+                    else "Set WHISPER_ENABLED=1 to enable on-host transcription via the worker."
+                )
                 cursor.execute("""
                     INSERT INTO transcripts (document_id, text, confidence, status, segments)
-                    VALUES (%s, %s, 0, 'placeholder', %s)
+                    VALUES (%s, %s, 0, %s, %s)
                     RETURNING id, document_id, language, text, confidence, segments, status, created_at
                 """, (
                     document["id"],
-                    "Transcription placeholder. Configure a local Whisper-compatible service or remote transcription provider.",
+                    transcript_text,
+                    transcript_status,
                     json.dumps([]),
                 ))
                 response["transcript"] = dict(cursor.fetchone())
+                # Queue real transcription if the operator opted in. The worker
+                # task reads the file with ffmpeg + faster-whisper and patches
+                # the transcript row on completion.
+                if whisper_enabled:
+                    try:
+                        from worker import transcribe_audio  # lazy import to avoid hard dep
+                        task = transcribe_audio.delay(document["id"], str(local_path))
+                        response["transcribe_task_id"] = task.id
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("queueing transcription failed: %s", exc, exc_info=True)
         ontology_text = ""
         if media_type == "document":
             ontology_text = read_document_text(str(local_path))
@@ -3772,7 +4905,7 @@ def pin_detection(req: PinRequest):
                    sp.acquisition_time
             FROM detections d
             JOIN satellite_passes sp ON sp.id = d.pass_id
-            WHERE d.id = %s
+            WHERE d.id = %s AND d.deleted_at IS NULL
         """, (detection_id,))
         det = cursor.fetchone()
         if not det:
@@ -4109,7 +5242,7 @@ def _fetch_object(cursor, object_id: str) -> Optional[dict]:
 
 
 @app.post("/api/ontology/branches", status_code=201)
-def create_ontology_branch(body: OntologyBranchIn):
+def create_ontology_branch(body: OntologyBranchIn, user: SessionUser = Depends(get_current_user)):
     bid = (body.id or "").strip()
     if not bid:
         raise HTTPException(status_code=400, detail="id is required")
@@ -4137,12 +5270,12 @@ def create_ontology_branch(body: OntologyBranchIn):
             ),
         )
         row = dict(cursor.fetchone())
-    ontology_bump_version()
+    ontology_bump_version(summary=f"branch created: {bid}", changes={"op": "create_branch", "id": bid}, by=user.username)
     return _branch_row_to_dict(row)
 
 
 @app.patch("/api/ontology/branches/{branch_id}")
-def patch_ontology_branch(branch_id: str, body: OntologyBranchPatch):
+def patch_ontology_branch(branch_id: str, body: OntologyBranchPatch, user: SessionUser = Depends(get_current_user)):
     payload = body.dict(exclude_unset=True)
     if not payload:
         raise HTTPException(status_code=400, detail="no fields to update")
@@ -4180,12 +5313,12 @@ def patch_ontology_branch(branch_id: str, body: OntologyBranchPatch):
             params,
         )
         row = dict(cursor.fetchone())
-    ontology_bump_version()
+    ontology_bump_version(summary=f"branch updated: {branch_id}", changes={"op": "patch_branch", "id": branch_id, "fields": list(payload.keys())}, by=user.username)
     return _branch_row_to_dict(row)
 
 
 @app.delete("/api/ontology/branches/{branch_id}")
-def delete_ontology_branch(branch_id: str, force: bool = Query(False)):
+def delete_ontology_branch(branch_id: str, force: bool = Query(False), user: SessionUser = Depends(get_current_user)):
     with postgis_db.get_cursor(commit=True) as cursor:
         existing = _fetch_branch(cursor, branch_id)
         if not existing:
@@ -4260,12 +5393,12 @@ def delete_ontology_branch(branch_id: str, force: bool = Query(False)):
 
         cursor.execute("DELETE FROM ontology_branches WHERE id = %s", (branch_id,))
 
-    ontology_bump_version()
+    ontology_bump_version(summary=f"branch deleted: {branch_id}", changes={"op": "delete_branch", "id": branch_id, "affected_detections": affected}, by=user.username)
     return {"deleted": 1, "affected_detections": affected}
 
 
 @app.post("/api/ontology/objects", status_code=201)
-def create_ontology_object(body: OntologyObjectIn):
+def create_ontology_object(body: OntologyObjectIn, user: SessionUser = Depends(get_current_user)):
     oid = (body.id or "").strip()
     bid = (body.branch_id or "").strip()
     if not oid:
@@ -4296,12 +5429,12 @@ def create_ontology_object(body: OntologyObjectIn):
             ),
         )
         row = dict(cursor.fetchone())
-    ontology_bump_version()
+    ontology_bump_version(summary=f"object created: {oid}", changes={"op": "create_object", "id": oid, "branch_id": bid}, by=user.username)
     return _object_row_to_dict(row)
 
 
 @app.patch("/api/ontology/objects/{object_id}")
-def patch_ontology_object(object_id: str, body: OntologyObjectPatch):
+def patch_ontology_object(object_id: str, body: OntologyObjectPatch, user: SessionUser = Depends(get_current_user)):
     payload = body.dict(exclude_unset=True)
     if not payload:
         raise HTTPException(status_code=400, detail="no fields to update")
@@ -4334,23 +5467,23 @@ def patch_ontology_object(object_id: str, body: OntologyObjectPatch):
             params,
         )
         row = dict(cursor.fetchone())
-    ontology_bump_version()
+    ontology_bump_version(summary=f"object updated: {object_id}", changes={"op": "patch_object", "id": object_id, "fields": list(payload.keys())}, by=user.username)
     return _object_row_to_dict(row)
 
 
 @app.delete("/api/ontology/objects/{object_id}")
-def delete_ontology_object(object_id: str):
+def delete_ontology_object(object_id: str, user: SessionUser = Depends(get_current_user)):
     with postgis_db.get_cursor(commit=True) as cursor:
         existing = _fetch_object(cursor, object_id)
         if not existing:
             raise HTTPException(status_code=404, detail="object not found")
         cursor.execute("DELETE FROM ontology_objects WHERE id = %s", (object_id,))
-    ontology_bump_version()
+    ontology_bump_version(summary=f"object deleted: {object_id}", changes={"op": "delete_object", "id": object_id}, by=user.username)
     return {"deleted": 1}
 
 
 @app.post("/api/ontology/unknown-labels/{label}/assign")
-def assign_unknown_label(label: str, body: OntologyAssignBody):
+def assign_unknown_label(label: str, body: OntologyAssignBody, user: SessionUser = Depends(get_current_user)):
     if body.object_id and body.create_object:
         raise HTTPException(status_code=400, detail="provide object_id OR create_object, not both")
     bid = (body.branch_id or "").strip()
@@ -4405,7 +5538,11 @@ def assign_unknown_label(label: str, body: OntologyAssignBody):
             (label,),
         )
 
-    ontology_bump_version()
+    ontology_bump_version(
+        summary=f"unknown label assigned: {label} → {created_object_id or 'existing'}",
+        changes={"op": "assign_unknown", "label": label, "branch_id": bid, "created_object_id": created_object_id},
+        by=user.username,
+    )
     return {
         "assigned_to_branch": bid,
         "created_object_id": created_object_id,
