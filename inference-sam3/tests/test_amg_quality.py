@@ -422,3 +422,75 @@ def test_filter_candidates_handles_4_tuples(runner_module, monkeypatch):
     assert len(out) == 1
     assert len(out[0]) == 4
     assert out[0][3] == "vehicle"
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: Ontology-driven per-class GD threshold filter
+# ---------------------------------------------------------------------------
+
+
+def _mk_gd_tuple(score: float, label: str | None):
+    mask = np.zeros((4, 4), dtype=bool)
+    return (mask, [0.0, 0.0, 1.0, 1.0], float(score), label)
+
+
+def test_class_threshold_filter_drops_off_ontology_low_score(runner_module):
+    """A pole at 0.30 must be dropped: off-ontology floor is 0.45."""
+    candidates = [_mk_gd_tuple(0.30, "pole")]
+    out = runner_module._filter_by_class_threshold(
+        candidates, frozenset({"building", "vehicle"}),
+        onto_thresh=0.20, default_thresh=0.45,
+    )
+    assert out == []
+
+
+def test_class_threshold_filter_keeps_on_ontology_low_score(runner_module):
+    """A building at 0.22 must survive: ontology floor is 0.20."""
+    candidates = [_mk_gd_tuple(0.22, "building")]
+    out = runner_module._filter_by_class_threshold(
+        candidates, frozenset({"building", "vehicle"}),
+        onto_thresh=0.20, default_thresh=0.45,
+    )
+    assert len(out) == 1
+    assert out[0][3] == "building"
+
+
+def test_class_threshold_filter_passes_none_label_through(runner_module):
+    """Candidates with label=None are pre-label-assignment AMG fallback
+    cases — the per-class filter must not drop them."""
+    candidates = [_mk_gd_tuple(0.10, None), _mk_gd_tuple(0.40, "pole")]
+    out = runner_module._filter_by_class_threshold(
+        candidates, frozenset({"building"}),
+        onto_thresh=0.20, default_thresh=0.45,
+    )
+    assert len(out) == 1
+    assert out[0][3] is None
+
+
+def test_class_threshold_filter_empty_ontology_uses_default(runner_module):
+    """Backend-unreachable → ontology set empty → every label uses the
+    default (high) floor. Verifies the graceful-degrade behaviour."""
+    candidates = [
+        _mk_gd_tuple(0.22, "building"),   # would pass with ontology
+        _mk_gd_tuple(0.50, "vehicle"),    # passes default
+        _mk_gd_tuple(0.30, "pole"),       # fails default
+    ]
+    out = runner_module._filter_by_class_threshold(
+        candidates, frozenset(),
+        onto_thresh=0.20, default_thresh=0.45,
+    )
+    assert [c[3] for c in out] == ["vehicle"]
+
+
+def test_class_threshold_filter_collapses_when_onto_above_default(runner_module):
+    """If operator sets ontology >= default (config override), behaviour
+    must reduce to a single-floor filter at default."""
+    candidates = [
+        _mk_gd_tuple(0.30, "building"),
+        _mk_gd_tuple(0.50, "pole"),
+    ]
+    out = runner_module._filter_by_class_threshold(
+        candidates, frozenset({"building"}),
+        onto_thresh=0.50, default_thresh=0.45,
+    )
+    assert [c[3] for c in out] == ["pole"]

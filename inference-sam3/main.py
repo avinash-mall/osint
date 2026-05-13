@@ -210,6 +210,23 @@ def _fetch_default_prompts(sensor: str, timeout: float = 5.0) -> list[str]:
     return prompts
 
 
+def get_ontology_optical_labels() -> frozenset[str]:
+    """Lowercase set of admin-ontology prompts for the ``optical`` sensor.
+
+    Used by sam3_runner's FMV AMG path to decide which GD-returned labels
+    qualify for the recall-friendly threshold. Returns an empty frozenset
+    when the backend ontology is unreachable so callers fall back to the
+    high default threshold for every class. Reuses the 30-s TTL cache in
+    ``_fetch_default_prompts`` — no extra network traffic on warm cache.
+    """
+    try:
+        prompts = _fetch_default_prompts("optical")
+    except Exception as exc:  # noqa: BLE001 — graceful degrade
+        logger.debug("ontology fetch failed; per-class GD floor disabled: %s", exc)
+        return frozenset()
+    return frozenset(p.strip().lower() for p in prompts if p and p.strip())
+
+
 def resolve_prompts(meta: dict[str, Any] | None) -> list[str]:
     """Resolve the SAM3 prompt list for a request.
 
@@ -487,6 +504,8 @@ def health() -> dict[str, Any]:
             "label_via_gd": sam3_runner.SAM3_AMG_LABEL_VIA_GD,
             "label_iou_min": sam3_runner.SAM3_AMG_LABEL_IOU_MIN,
             "label_gd_thresh": sam3_runner.SAM3_AMG_LABEL_GD_THRESH,
+            "label_gd_thresh_ontology": sam3_runner.SAM3_AMG_LABEL_GD_THRESH_ONTOLOGY,
+            "ontology_label_count": len(get_ontology_optical_labels()),
             "labels_preview": [p.strip() for p in sam3_runner.SAM3_AMG_LABEL_PROMPTS.split(",") if p.strip()][:8],
             "detector": sam3_runner.SAM3_AMG_DETECTOR,
             "hud_mask_enabled": sam3_runner.SAM3_AMG_HUD_MASK_ENABLED,

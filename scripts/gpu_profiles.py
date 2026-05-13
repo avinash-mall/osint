@@ -195,12 +195,18 @@ class GpuBuildProfile:
             "SAM3_AMG_MIN_CONSECUTIVE_FRAMES": "2",
             "SAM3_AMG_LABEL_VIA_GD": "1",
             "SAM3_AMG_LABEL_IOU_MIN": "0.20",
-            # Phase 5: GD-tiny hallucinates at low thresholds on out-of-domain
-            # FMV footage; 0.25 trims the worst hallucinations while keeping
-            # enough recall for tracking. Combined with the HUD filter this
-            # eliminates the top-row Sign and bottom-dial Pole false positives
-            # without over-suppressing legitimate scene content.
-            "SAM3_AMG_LABEL_GD_THRESH": "0.25",
+            # Phase 6: Two-tier GD score floor driven by the admin ontology.
+            #   SAM3_AMG_LABEL_GD_THRESH (0.45) — floor for labels NOT in
+            #     the optical ontology. Raised from Phase 5's 0.25 so GD-
+            #     tiny "pole"/"tower"/"sign" hallucinations need strong
+            #     evidence to escape the filter.
+            #   SAM3_AMG_LABEL_GD_THRESH_ONTOLOGY (0.20) — floor for labels
+            #     declared in OntologyAdmin (vehicle/person/building/…) so
+            #     the core classes the user cares about regain recall.
+            # Backend-unreachable → ontology set empty → every label uses
+            # the high floor (safe default).
+            "SAM3_AMG_LABEL_GD_THRESH": "0.45",
+            "SAM3_AMG_LABEL_GD_THRESH_ONTOLOGY": "0.20",
             # Phase 5: drone-HUD overlay auto-detection. The default 1
             # enables detection across all GPU profiles. Set 0 in .env per
             # host if HUD detection ever misfires on a non-HUD clip type.

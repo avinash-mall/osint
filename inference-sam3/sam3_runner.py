@@ -117,13 +117,21 @@ SAM3_AMG_LABEL_PROMPTS = os.getenv(
     "vehicle,person,building,road,vegetation,water,aircraft,vessel,"
     "animal,equipment,structure,tower,pole,sign,debris,container",
 )
-# Phase 5: GD-first AMG re-uses GD's confidence as the primary detector,
-# so the lenient 0.15 (Phase 3 default when GD was only labelling matched
-# AMG candidates) is now too permissive — it lets GD-tiny's low-confidence
-# hallucinations through on textured drone-HUD characters and on broad
-# classes (aircraft, vessel, animal). 0.35 is empirically the threshold
-# below which GD-tiny consistently mislabels on out-of-domain FMV footage.
-SAM3_AMG_LABEL_GD_THRESH = float(os.getenv("SAM3_AMG_LABEL_GD_THRESH", "0.25"))
+# Phase 6: Two-tier GD score floor driven by the admin GEOINT ontology.
+#   * SAM3_AMG_LABEL_GD_THRESH — floor for labels NOT in the optical
+#     ontology. Raised from 0.25 → 0.45 so GD-tiny's "pole"/"tower"/"sign"
+#     hallucinations need strong confidence to escape the filter.
+#   * SAM3_AMG_LABEL_GD_THRESH_ONTOLOGY — floor for labels that ARE in
+#     the optical ontology (vehicle, person, building, vegetation, …).
+#     Default 0.20 recovers recall on the core classes the user actually
+#     cares about. Operators widen the ontology via OntologyAdmin.tsx →
+#     more FMV recall, automatically.
+# GD is invoked at the LOWER of the two thresholds so it returns enough
+# candidates; per-class filtering in _filter_by_class_threshold then
+# applies the correct floor. Backend-unavailable → ontology set is empty
+# → every label uses the default (high) floor.
+SAM3_AMG_LABEL_GD_THRESH = float(os.getenv("SAM3_AMG_LABEL_GD_THRESH", "0.45"))
+SAM3_AMG_LABEL_GD_THRESH_ONTOLOGY = float(os.getenv("SAM3_AMG_LABEL_GD_THRESH_ONTOLOGY", "0.20"))
 # Tighter IoU threshold than before — but the centroid-containment fallback
 # (≥ 0.6 of candidate inside the GD box) means tiny AMG masks sitting inside
 # broad GD "vegetation"/"building" boxes still match.
@@ -1228,6 +1236,61 @@ def _filter_candidates_by_hud(
     return kept
 
 
+def _ontology_label_set(sensor: str = "optical") -> frozenset[str]:
+    """Lowercase set of admin-ontology prompts for ``sensor``.
+
+    Thin wrapper around ``main.get_ontology_optical_labels`` so this module
+    doesn't reimplement the cache + TTL. Returns an empty set on any
+    failure (backend down, circular-import edge case) so callers safely
+    fall back to the default (high) GD threshold for every class.
+    """
+    try:
+        import main as _main  # noqa: WPS433 — sibling module, runtime import
+        if sensor == "optical":
+            return _main.get_ontology_optical_labels()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("ontology label set unavailable: %s", exc)
+    return frozenset()
+
+
+def _filter_by_class_threshold(
+    candidates: list[tuple],
+    ontology_set: frozenset[str],
+    onto_thresh: float,
+    default_thresh: float,
+) -> list[tuple]:
+    """Apply a per-class GD score floor driven by the admin ontology.
+
+    Each candidate is a tuple with the GD/box score at index 2 and the
+    label at index 3 (matches both ``grounding_dino.run`` outputs and the
+    refined 4-tuples from ``_amg_sweep_via_gd``). Candidates whose label
+    is in ``ontology_set`` must clear ``onto_thresh``; others must clear
+    ``default_thresh``. ``label=None`` candidates pass through unchanged
+    so the caller can keep the ``_amg`` generic fallback.
+
+    When ``onto_thresh >= default_thresh`` the two-tier policy reduces to
+    a single floor and the ontology lookup is skipped.
+    """
+    if not candidates:
+        return list(candidates)
+    if onto_thresh >= default_thresh:
+        return [
+            c for c in candidates
+            if (len(c) < 4 or c[3] is None) or float(c[2]) >= default_thresh
+        ]
+    out = []
+    for c in candidates:
+        label = c[3] if len(c) >= 4 else None
+        if label is None:
+            out.append(c)
+            continue
+        key = str(label).strip().lower()
+        thr = onto_thresh if key in ontology_set else default_thresh
+        if float(c[2]) >= thr:
+            out.append(c)
+    return out
+
+
 def _amg_sweep_image_grid(
     bundle: dict[str, Any],
     image_rgb_uint8: np.ndarray,
@@ -1352,10 +1415,15 @@ def _amg_sweep_via_gd(
         return []
 
     sweep_start = _time.monotonic()
+    # Phase 6: call GD at the LOWER of (default, ontology) so on-ontology
+    # candidates (building/vehicle/person/…) above 0.20 survive; per-class
+    # filtering below then re-applies the 0.45 floor to off-ontology
+    # labels (pole/tower/sign).
+    gd_score_floor = min(SAM3_AMG_LABEL_GD_THRESH, SAM3_AMG_LABEL_GD_THRESH_ONTOLOGY)
     try:
         gd_results = grounding_dino.run(
             gd_bundle, image_rgb_uint8, label_prompts,
-            score_threshold=SAM3_AMG_LABEL_GD_THRESH,
+            score_threshold=gd_score_floor,
         )
     except Exception as exc:
         logger.warning("GD-first AMG: grounding_dino.run failed (%s)", exc)
@@ -1366,6 +1434,26 @@ def _amg_sweep_via_gd(
             "GD-first AMG: 0 GD boxes on seed frame (vocab gap; "
             "consider lowering SAM3_AMG_LABEL_GD_THRESH or expanding prompts)"
         )
+        return []
+
+    # Phase 6 per-class filter: drop off-ontology low-score candidates
+    # before wasting SAM3 refinement compute on them. Ontology labels keep
+    # the lower floor so building/vehicle/person recall is recovered.
+    ontology_set = _ontology_label_set("optical")
+    pre_class = len(gd_results)
+    gd_results = _filter_by_class_threshold(
+        gd_results, ontology_set,
+        onto_thresh=SAM3_AMG_LABEL_GD_THRESH_ONTOLOGY,
+        default_thresh=SAM3_AMG_LABEL_GD_THRESH,
+    )
+    if pre_class != len(gd_results):
+        logger.info(
+            "GD-first AMG: per-class GD floor (onto=%.2f, default=%.2f, "
+            "ontology_size=%d) dropped %d/%d GD boxes",
+            SAM3_AMG_LABEL_GD_THRESH_ONTOLOGY, SAM3_AMG_LABEL_GD_THRESH,
+            len(ontology_set), pre_class - len(gd_results), pre_class,
+        )
+    if not gd_results:
         return []
 
     processor = bundle["sam3_image"]["processor"]
@@ -1550,14 +1638,28 @@ def _assign_amg_labels_via_gd(
     label_prompts = [p.strip() for p in SAM3_AMG_LABEL_PROMPTS.split(",") if p.strip()]
     if not label_prompts:
         return [None] * n
+    # Phase 6: call GD at the lower of the two floors so on-ontology
+    # labels survive the GD-side gate.
+    gd_score_floor = min(SAM3_AMG_LABEL_GD_THRESH, SAM3_AMG_LABEL_GD_THRESH_ONTOLOGY)
     try:
         gd_results = grounding_dino.run(
             gd_bundle, image_rgb_uint8, label_prompts,
-            score_threshold=SAM3_AMG_LABEL_GD_THRESH,
+            score_threshold=gd_score_floor,
         )
     except Exception as exc:
         logger.debug("AMG label assignment via GD failed: %s", exc)
         return [None] * n
+    if not gd_results:
+        return [None] * n
+    # Phase 6 per-class filter: only GD boxes that clear their class-specific
+    # floor are eligible for label matching. The remaining AMG candidates
+    # fall through to `_amg` exactly as today (label=None).
+    ontology_set = _ontology_label_set("optical")
+    gd_results = _filter_by_class_threshold(
+        gd_results, ontology_set,
+        onto_thresh=SAM3_AMG_LABEL_GD_THRESH_ONTOLOGY,
+        default_thresh=SAM3_AMG_LABEL_GD_THRESH,
+    )
     if not gd_results:
         return [None] * n
     gd_boxes = np.asarray([r[1] for r in gd_results], dtype=np.float32)  # (G, 4) xyxy
