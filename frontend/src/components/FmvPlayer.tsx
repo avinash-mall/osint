@@ -161,6 +161,7 @@ export default function FmvPlayer() {
   const [detections, setDetections] = useState<Detection[]>([]);
   const [uploading, setUploading] = useState(false);
   const [promptMode, setPromptMode] = useState<'pcs' | 'amg'>('amg');
+  const [model, setModel] = useState<'sam3' | 'yolo26'>('sam3');
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [trackingError, setTrackingError] = useState<string | null>(null);
@@ -586,6 +587,7 @@ export default function FmvPlayer() {
         fd.append('name', file.name);
         if (srt) fd.append('srt', srt);
         fd.append('prompt_mode', promptMode);
+        fd.append('model', model);
         const res = await axios.post(`${API_URL}/api/fmv/clips`, fd, {
           onUploadProgress: (e) => {
             const pct = Math.round((e.loaded / (e.total || 1)) * 100);
@@ -601,7 +603,7 @@ export default function FmvPlayer() {
         setUploadProgress(0);
       }
     },
-    [fetchClips, promptMode],
+    [fetchClips, promptMode, model],
   );
 
   const onPickFiles = useCallback(
@@ -1429,6 +1431,8 @@ export default function FmvPlayer() {
                 inferenceStatus={inferenceStatus}
                 promptMode={promptMode}
                 setPromptMode={setPromptMode}
+                model={model}
+                setModel={setModel}
               />
             )}
           </div>
@@ -1498,6 +1502,8 @@ function UploadTab({
   inferenceStatus,
   promptMode,
   setPromptMode,
+  model,
+  setModel,
 }: {
   clips: Clip[];
   selectedId: number | null;
@@ -1510,6 +1516,8 @@ function UploadTab({
   inferenceStatus: 'idle' | 'loading' | 'ready' | 'error';
   promptMode: 'pcs' | 'amg';
   setPromptMode: (m: 'pcs' | 'amg') => void;
+  model: 'sam3' | 'yolo26';
+  setModel: (m: 'sam3' | 'yolo26') => void;
 }) {
   const accent = 'var(--accent)';
   return (
@@ -1557,6 +1565,29 @@ function UploadTab({
             MP4 / MOV / TS · MISB-0601 auto-extract · optional .srt sidecar
           </div>
         </div>
+      </div>
+
+      {/* MODEL SELECTOR — SAM 3.1 (default) vs YOLO 26 */}
+      <div>
+        <div className="label-mono" style={{ marginBottom: 6 }}>Model</div>
+        <select
+          value={model}
+          onChange={(e) => setModel(e.target.value as 'sam3' | 'yolo26')}
+          disabled={uploading}
+          style={{
+            width: '100%',
+            padding: '6px 8px',
+            background: 'var(--bg-2)',
+            border: '1px solid var(--line-2)',
+            borderRadius: 6,
+            color: 'var(--ink-0)',
+            fontSize: 12,
+          }}
+          title="Inference engine. SAM 3.1 uses multiplex tracker; YOLO 26 runs YOLOE-26x-seg per-frame."
+        >
+          <option value="sam3">SAM 3.1 (default)</option>
+          <option value="yolo26">YOLO 26</option>
+        </select>
       </div>
 
       {/* PROMPT MODE — AMG (default) vs PCS */}

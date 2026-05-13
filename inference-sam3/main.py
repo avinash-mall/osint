@@ -32,6 +32,7 @@ import prithvi_heads
 import sam3_runner
 import sar
 import terramind
+import yoloe
 
 
 cv2.setNumThreads(0)
@@ -110,6 +111,10 @@ SAM3_LOAD_TERRAMIND  = _flag("SAM3_LOAD_TERRAMIND",  _DEFAULT)
 # chips with no true positives (see docs/inference_layer_comparison*).
 SAM3_LOAD_DOTA_OBB        = _flag("SAM3_LOAD_DOTA_OBB",        _DEFAULT)
 SAM3_LOAD_GROUNDING_DINO  = _flag("SAM3_LOAD_GROUNDING_DINO",  _DEFAULT)
+# YOLOE-26x open-vocabulary segmentation specialist used by the standalone
+# FMV tracker. Bundles both -pf (prompt-free) and -seg (text-prompted)
+# checkpoints — together ~1 GiB, loads on every profile by default.
+SAM3_LOAD_YOLOE           = _flag("SAM3_LOAD_YOLOE",           _DEFAULT)
 
 # Profile -> component set. "fmv" keeps VRAM small for video tracking;
 # "imagery" loads the full geospatial stack for satellite detection.
@@ -128,6 +133,7 @@ PROFILE_COMPONENTS: dict[str, tuple[str, ...]] = {
         "sam3_video",
         "grounding_dino" if SAM3_LOAD_GROUNDING_DINO else None,
         "dota_obb" if SAM3_LOAD_DOTA_OBB else None,
+        "yoloe" if SAM3_LOAD_YOLOE else None,
     ) if c),
     "imagery": (
         "sam3_image",
@@ -313,6 +319,8 @@ def _build_component(name: str, device: str) -> Any:
         return dota_obb.load(device)
     if name == "grounding_dino":
         return grounding_dino.load(device)
+    if name == "yoloe":
+        return yoloe.load(device)
     raise ValueError(f"unknown component: {name}")
 
 
@@ -327,6 +335,7 @@ def _empty_bundle(device: str) -> dict[str, Any]:
         "terramind": None,
         "dota_obb": None,
         "grounding_dino": None,
+        "yoloe": None,
     }
 
 
@@ -518,6 +527,7 @@ def health() -> dict[str, Any]:
             "terramind": SAM3_LOAD_TERRAMIND,
             "dota_obb": SAM3_LOAD_DOTA_OBB,
             "grounding_dino": SAM3_LOAD_GROUNDING_DINO,
+            "yoloe": SAM3_LOAD_YOLOE,
         },
     }
 
@@ -781,7 +791,7 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
                 raise HTTPException(status_code=400, detail="video upload or metadata.video_path required")
 
         prompt_mode = (meta.get("prompt_mode") or "pcs").strip().lower()
-        if prompt_mode not in {"pcs", "amg"}:
+        if prompt_mode not in {"pcs", "amg", "yoloe"}:
             raise HTTPException(status_code=400, detail=f"unknown prompt_mode {prompt_mode!r}")
         if prompt_mode == "amg":
             if not sam3_runner.SAM3_AMG_ENABLED:
@@ -798,6 +808,22 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
             if not sam3_runner.amg_available():
                 raise HTTPException(status_code=501, detail="AMG unavailable; see inference logs")
             prompts = []  # no text prompts in AMG mode
+        elif prompt_mode == "yoloe":
+            # YOLOE path: explicit empty text_prompts list → prompt-free
+            # (-pf checkpoint). Anything else → resolve from DB ontology
+            # like PCS and run -seg. Skipping resolve_prompts for the empty
+            # case avoids the 400/503 it raises when the backend has no
+            # default prompts.
+            explicit = meta.get("text_prompts")
+            if isinstance(explicit, list) and len(explicit) == 0:
+                prompts = []
+            else:
+                try:
+                    prompts = resolve_prompts({**meta, "modality": "fmv"})
+                except OntologyBackendUnavailable as exc:
+                    raise HTTPException(status_code=503, detail=str(exc)) from exc
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
         else:
             try:
                 prompts = resolve_prompts({**meta, "modality": "fmv"})
@@ -836,6 +862,7 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
 
         reserved = bundle
 
+        amg_path_label = "-"
         if prompt_mode == "amg":
             # Prefer the hybrid AMG-seeded path (single image-AMG sweep
             # then GPU-batched video propagation). Falls back to per-frame
@@ -870,6 +897,36 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
                         cleanup_path.unlink(missing_ok=True)
                     reserved["lock"].release()
                     _leave_request()
+        elif prompt_mode == "yoloe":
+            yoloe_bundle = reserved.get("yoloe") or {}
+            if yoloe_bundle.get("pf") is None and yoloe_bundle.get("seg") is None:
+                # Outer `except` runs the bundle.lock.release() + _leave_request()
+                # + cleanup_path cleanup on the way out.
+                raise HTTPException(
+                    status_code=503,
+                    detail="YOLOE not loaded (set SAM3_LOAD_YOLOE=1 and reload the fmv profile)",
+                )
+            _yoloe_prompts = list(prompts) if prompts else None
+            def stream():
+                try:
+                    yield from (
+                        line + "\n"
+                        for line in sam3_runner.run_video_yoloe(
+                            reserved,
+                            video_path,
+                            _yoloe_prompts,
+                            frame_stride=frame_stride,
+                            start_frame=start_frame,
+                            end_frame=end_frame,
+                            max_frames=max_frames,
+                            score_threshold=SAM3_BOX_THR,
+                        )
+                    )
+                finally:
+                    if cleanup_path is not None:
+                        cleanup_path.unlink(missing_ok=True)
+                    reserved["lock"].release()
+                    _leave_request()
         else:
             def stream():
                 try:
@@ -896,7 +953,7 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
         logger.info(
             "sam3_detect_video_start mode=%s amg_path=%s prompts=%s queue_depth=%s path=%s device=%s",
             prompt_mode,
-            amg_path_label if prompt_mode == "amg" else "-",
+            amg_path_label,
             len(prompts),
             queue_depth,
             video_path,
@@ -939,6 +996,7 @@ def _leave_request() -> None:
 
 def _bundle_components(bundle: dict[str, Any]) -> dict[str, Any]:
     prithvi_bundle = bundle.get("prithvi") or {}
+    yoloe_bundle = bundle.get("yoloe") or {}
     def _model_loaded(b):
         return bool(b) and b.get("model") is not None
     return {
@@ -950,6 +1008,9 @@ def _bundle_components(bundle: dict[str, Any]) -> dict[str, Any]:
         "terramind": bundle.get("terramind") is not None,
         "dota_obb": _model_loaded(bundle.get("dota_obb")),
         "grounding_dino": _model_loaded(bundle.get("grounding_dino")),
+        "yoloe": bool(yoloe_bundle.get("pf") or yoloe_bundle.get("seg")),
+        "yoloe_pf": yoloe_bundle.get("pf") is not None,
+        "yoloe_seg": yoloe_bundle.get("seg") is not None,
     }
 
 

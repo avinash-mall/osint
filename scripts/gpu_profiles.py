@@ -76,6 +76,9 @@ class GpuBuildProfile:
     sam3_load_dota_obb: bool = True
     # Grounding-DINO: open-vocab text-to-box detector (tiny ≈ 0.6 GiB, +241 ms/chip).
     sam3_load_grounding_dino: bool = True
+    # YOLOE-26x open-vocab instance segmentation (pf + seg, ~1 GiB combined).
+    # Powers the standalone YOLO 26 FMV tracker that bypasses SAM 3.1 multiplex.
+    sam3_load_yoloe: bool = True
 
     # --- Detection embedding (DINOv3-SAT re-ID) ---
     # Generates a 768-d embedding for every detection crop; enables track
@@ -164,6 +167,7 @@ class GpuBuildProfile:
             # Specialist detectors
             "SAM3_LOAD_DOTA_OBB": "1" if self.sam3_load_dota_obb else "0",
             "SAM3_LOAD_GROUNDING_DINO": "1" if self.sam3_load_grounding_dino else "0",
+            "SAM3_LOAD_YOLOE": "1" if self.sam3_load_yoloe else "0",
             # Embedding & batching
             "SAM3_EMBED_DETECTIONS": "1" if self.sam3_embed_detections else "0",
             "SAM3_BATCHED_TEXT_CHUNK_SIZE": str(self.sam3_batched_text_chunk_size),
@@ -336,15 +340,27 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         min_driver_version="575.51",
         ubuntu_version="24.04",
         enable_tf32=True,
-        # Image compile is safe. Video compile is OFF on this stack: the
-        # cu130 + sm_80 + multiplex-warmup matmul shape trips
-        # `cublasLtMatmulAlgoGetHeuristic → CUBLAS_STATUS_NOT_INITIALIZED`
-        # on torch 2.10.0+cu130 (observed 2026-05-12 on A100 80GB,
-        # driver ≥575.51). Multiplex still runs in eager mode — only the
-        # torch.compile JIT path is disabled. Revisit when upstream
-        # PyTorch / SAM3 releases the fix; flip back to True and verify
-        # warmup completes.
-        compile_image=True,
+        # Both compile_image and compile_video are OFF on this stack — two
+        # independent upstream incompatibilities on cu130 + sm_80:
+        #   * compile_video: multiplex-warmup matmul shape trips
+        #     `cublasLtMatmulAlgoGetHeuristic → CUBLAS_STATUS_NOT_INITIALIZED`
+        #     on torch 2.10.0+cu130 (observed 2026-05-12 on A100 80GB,
+        #     driver ≥575.51).
+        #   * compile_image: SAM3's `vl_combiner._forward_image_no_act_ckpt`
+        #     runs through `activation_ckpt_wrapper` →
+        #     `torch.utils.checkpoint.checkpoint(use_reentrant=False)`, whose
+        #     selective-recompute path uses FX `proxy_tensor.make_fx`. When
+        #     the vitdet trunk's inner forward is `torch.compile`'d, the FX
+        #     trace hits a dynamo boundary and raises `RuntimeError: Detected
+        #     that you are using FX to symbolically trace a dynamo-optimized
+        #     function` from `processor.set_image` — breaking both
+        #     `probe_amg_seeded` (forcing the slow per-frame AMG fallback)
+        #     and the per-frame AMG path itself (observed 2026-05-13 on
+        #     4× A100, torch 2.10.0+cu130).
+        # Both run in eager mode. Revisit when upstream PyTorch / SAM3
+        # releases a fix; flip back to True and verify warmup completes plus
+        # an AMG `/detect_video` call streams without the FX/dynamo error.
+        compile_image=False,
         compile_video=False,
         # 720p prep clip + 96 frames/window: ~7.5 GiB per video session,
         # trivial against 40-80 GiB cards.
@@ -432,6 +448,12 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         min_driver_version="575.51",
         ubuntu_version="24.04",
         # H100 / H200: 80 GiB+ datacenter cards — full stack + compilation.
+        # Both compile flags stay True on sm_90+: the FX/dynamo conflict in
+        # SAM3's act_ckpt_wrapper (see ampere_sm80_86_datacenter note) hasn't
+        # been observed on Hopper, and the flash-attn-3 wheel runs natively
+        # here so the perflib path doesn't need the SDPA fallback. Revisit if
+        # the same `Detected that you are using FX to symbolically trace a
+        # dynamo-optimized function` shows up on H100/H200 logs.
         enable_tf32=True,
         compile_image=True,
         compile_video=True,
@@ -473,6 +495,9 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         min_driver_version="575.51",
         ubuntu_version="24.04",
         # B100 / B200 datacenter Blackwell — same generous budget as Hopper.
+        # compile_image / compile_video stay True deliberately on sm_100; the
+        # FX/dynamo conflict that forced them off for ampere_sm80_86_datacenter
+        # hasn't reproduced on Blackwell. Revisit if it does.
         enable_tf32=True,
         compile_image=True,
         compile_video=True,

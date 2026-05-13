@@ -628,6 +628,8 @@ def versions() -> dict[str, str]:
         "prithvi_flood": "ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL-Sen1Floods11",
         "prithvi_burn": "ibm-nasa-geospatial/Prithvi-EO-2.0-300M-BurnScars",
         "terramind": os.getenv("TERRAMIND_MODEL_ID", "terramind_v1_large"),
+        "yoloe_pf": os.getenv("YOLOE_PF_MODEL_ID", "yoloe-26x-seg-pf.pt"),
+        "yoloe_seg": os.getenv("YOLOE_SEG_MODEL_ID", "yoloe-26x-seg.pt"),
     }
 
 
@@ -2053,6 +2055,188 @@ def run_video_amg(
             video_path, emitted_frames, next_track_id - 1,
             emitted_count, dropped_unconfirmed,
             _time.monotonic() - amg_start,
+        )
+    finally:
+        cap.release()
+
+
+def run_video_yoloe(
+    bundle,
+    video_path: str,
+    prompts: list[str] | None,
+    *,
+    frame_stride: int,
+    start_frame: int,
+    end_frame: int | None,
+    max_frames: int | None,
+    score_threshold: float,
+):
+    """Standalone YOLOE FMV tracker — bypasses SAM 3.1 multiplex.
+
+    YOLOE-26x-seg(-pf) emits per-frame instance masks directly. Cross-frame
+    association uses the same Hungarian-IoU helper that ``run_video_amg``
+    applies to grid AMG masks, with the same track buffer + masklet
+    confirmation. NDJSON entries are emitted in the same shape as
+    ``run_video_amg`` so the worker's drain/insert code is unchanged
+    (``parent_class="yoloe_track"`` distinguishes them in the DB).
+
+    ``prompts`` non-empty → uses yoloe-26x-seg with text prompts (PCS).
+    ``prompts`` empty/None → uses yoloe-26x-seg-pf prompt-free (AMG).
+    """
+    import cv2
+    import time as _time
+
+    import yoloe
+
+    yoloe_bundle = bundle.get("yoloe")
+    if yoloe_bundle is None or (yoloe_bundle.get("pf") is None and yoloe_bundle.get("seg") is None):
+        logger.warning("run_video_yoloe called but yoloe bundle is unavailable")
+        return
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Could not open video: {video_path}")
+    try:
+        frame_idx = 0
+        emitted_frames = 0
+        tracks: dict[int, dict[str, Any]] = {}
+        next_track_id = 1
+        prev_masks: list[np.ndarray] = []
+        prev_track_ids: list[int] = []
+        confirm_n = max(1, SAM3_AMG_MIN_CONSECUTIVE_FRAMES)
+        emitted_count = 0
+        dropped_unconfirmed = 0
+        yoloe_start = _time.monotonic()
+
+        clean_prompts = [p for p in (prompts or []) if p and not str(p).startswith("__")]
+        variant = "seg" if clean_prompts else "pf"
+
+        logger.info(
+            "run_video_yoloe start: video=%s variant=%s prompts=%d max_frames=%s confirm_n=%d",
+            video_path, variant, len(clean_prompts), max_frames, confirm_n,
+        )
+
+        while True:
+            ok, bgr = cap.read()
+            if not ok:
+                break
+            if frame_idx < start_frame:
+                frame_idx += 1
+                continue
+            if end_frame is not None and frame_idx > int(end_frame):
+                break
+            if (frame_idx - start_frame) % frame_stride:
+                frame_idx += 1
+                continue
+            if max_frames is not None and emitted_frames >= int(max_frames):
+                break
+
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            try:
+                candidates = yoloe.run(yoloe_bundle, rgb, clean_prompts or None, score_threshold)
+            except Exception as exc:
+                logger.warning("yoloe.run failed on frame %d: %s", frame_idx, exc)
+                candidates = []
+
+            if not candidates:
+                prev_masks = []
+                prev_track_ids = []
+                frame_idx += 1
+                emitted_frames += 1
+                continue
+
+            curr_masks = [c[0] for c in candidates]
+            curr_boxes = [c[1] for c in candidates]
+            curr_scores = [c[2] for c in candidates]
+            curr_labels = [c[3] for c in candidates]
+
+            assignment = _hungarian_iou_link(prev_masks, curr_masks, SAM3_AMG_TRACK_IOU_MIN)
+            this_track_ids: list[int] = []
+            this_frame_tids: set[int] = set()
+            for i, prev_j in enumerate(assignment):
+                if prev_j >= 0 and prev_j < len(prev_track_ids):
+                    tid = prev_track_ids[prev_j]
+                else:
+                    tid = next_track_id
+                    next_track_id += 1
+                    tracks[tid] = {
+                        "first_seen_frame": frame_idx,
+                        "label": None,
+                        "consecutive": 0,
+                        "pending": [],
+                        "confirmed": False,
+                    }
+                tracks[tid]["last_seen_frame"] = frame_idx
+                tracks[tid]["score"] = curr_scores[i]
+                tracks[tid]["label"] = curr_labels[i]
+                this_track_ids.append(tid)
+                this_frame_tids.add(tid)
+
+            for tid in list(tracks.keys()):
+                if tid not in this_frame_tids and not tracks[tid].get("confirmed"):
+                    tracks[tid]["consecutive"] = 0
+                    if tracks[tid]["pending"]:
+                        dropped_unconfirmed += len(tracks[tid]["pending"])
+                        tracks[tid]["pending"] = []
+
+            stale = [tid for tid, info in tracks.items()
+                     if frame_idx - int(info.get("last_seen_frame", frame_idx)) > SAM3_AMG_TRACK_BUFFER]
+            for tid in stale:
+                tracks.pop(tid, None)
+
+            import fusion
+
+            for i, tid in enumerate(this_track_ids):
+                mask_arr = curr_masks[i]
+                bbox_px = curr_boxes[i]
+                score = float(curr_scores[i])
+                H, W = mask_arr.shape[-2:]
+                bbox_xyxy_norm = [bbox_px[0] / W, bbox_px[1] / H, bbox_px[2] / W, bbox_px[3] / H]
+                obb = fusion.mask_to_obb_record(mask_arr, bbox_px, W, H)
+                cls = tracks[tid].get("label") or "object"
+                entry: dict[str, Any] = {
+                    "frame_index": frame_idx,
+                    "track_id": int(tid),
+                    "class": cls,
+                    "original_class": cls,
+                    "parent_class": "yoloe_track",
+                    "score": score,
+                    "bbox_xyxy_norm": bbox_xyxy_norm,
+                    "obb": obb["points"],
+                    "obb_format": "yolo_obb_normalized_xyxyxyxy",
+                    "obb_source": obb["source"],
+                    "obb_angle_deg": obb["angle_deg"],
+                    "edge_truncated": obb["edge_truncated"],
+                    "mask_rle": fusion.coco_rle(mask_arr),
+                }
+                serialised = json.dumps(entry, separators=(",", ":"))
+                if tracks[tid].get("confirmed"):
+                    yield serialised
+                    emitted_count += 1
+                else:
+                    tracks[tid]["consecutive"] += 1
+                    tracks[tid]["pending"].append(serialised)
+                    if tracks[tid]["consecutive"] >= confirm_n:
+                        tracks[tid]["confirmed"] = True
+                        for buffered in tracks[tid]["pending"]:
+                            yield buffered
+                            emitted_count += 1
+                        tracks[tid]["pending"] = []
+
+            prev_masks = curr_masks
+            prev_track_ids = this_track_ids
+            emitted_frames += 1
+            frame_idx += 1
+
+        for tid, info in tracks.items():
+            if not info.get("confirmed"):
+                dropped_unconfirmed += len(info.get("pending", []))
+        logger.info(
+            "run_video_yoloe done: video=%s emitted_frames=%d tracks_seen=%d "
+            "emitted=%d dropped_unconfirmed=%d elapsed=%.2fs",
+            video_path, emitted_frames, next_track_id - 1,
+            emitted_count, dropped_unconfirmed,
+            _time.monotonic() - yoloe_start,
         )
     finally:
         cap.release()

@@ -1631,18 +1631,23 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
     """
     provider_lifecycle.ensure_running()
     mode = (prompt_mode or "pcs").strip().lower()
-    if mode not in {"pcs", "amg"}:
+    if mode not in {"pcs", "amg", "yoloe"}:
         raise ValueError(f"unknown prompt_mode {prompt_mode!r}")
     source_fps, duration_s = _probe_source(video_path)
     if duration_s <= 0:
         duration_s = FMV_TRACK_WINDOW_SECONDS
     windows = _slice_windows(duration_s)
+    # `prompts` drives the per-window task fan-out. For PCS we fan out one
+    # /detect_video session per prompt because SAM 3.1 multiplex resets state
+    # on every text prompt. For AMG and YOLOE we only need one session per
+    # window — YOLOE handles all classes in one forward pass. Use a single
+    # sentinel so the (window × prompt) cartesian product collapses to one
+    # task per window; the real prompt list is forwarded via closure below.
+    yoloe_prompts: list[str] = list(text_prompts or [])
     if mode == "amg":
-        # AMG is promptless — there is exactly one "session" per window. Use
-        # a synthetic prompt list of length one so the existing window-task
-        # fan-out shape (cartesian product with prompts) yields one task
-        # per window. The runner ignores the prompt value.
         prompts = ["_amg"]
+    elif mode == "yoloe":
+        prompts = ["_yoloe"]
     else:
         prompts = list(text_prompts or [])
         if not prompts:
@@ -1724,6 +1729,18 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
                     "frame_stride": 1,
                     "max_frames": FMV_TRACK_FRAMES_PER_WINDOW,
                     "modality": "fmv_amg",
+                })
+            elif mode == "yoloe":
+                # YOLOE runs one inference per window covering all classes.
+                # Empty text_prompts → service uses yoloe-26x-seg-pf
+                # (prompt-free); non-empty → yoloe-26x-seg with prompts.
+                payload = json.dumps({
+                    "video_path": str(win_path),
+                    "prompt_mode": "yoloe",
+                    "text_prompts": list(yoloe_prompts),
+                    "frame_stride": 1,
+                    "max_frames": FMV_TRACK_FRAMES_PER_WINDOW,
+                    "modality": "fmv",
                 })
             else:
                 payload = json.dumps({

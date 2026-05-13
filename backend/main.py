@@ -1909,6 +1909,7 @@ def upload_fmv_clip(
     srt: Optional[UploadFile] = File(None),
     prompts: Optional[str] = Form(None),
     prompt_mode: Optional[str] = Form(None),
+    model: Optional[str] = Form(None),
 ):
     ensure_platform_tables()
     filename = safe_filename(file.filename or "clip.mp4")
@@ -1986,6 +1987,9 @@ def upload_fmv_clip(
     mode = (prompt_mode or "amg").strip().lower()
     if mode not in {"pcs", "amg"}:
         raise HTTPException(status_code=400, detail=f"prompt_mode must be 'pcs' or 'amg', got {prompt_mode!r}")
+    model_choice = (model or "sam3").strip().lower()
+    if model_choice not in {"sam3", "yolo26"}:
+        raise HTTPException(status_code=400, detail=f"model must be 'sam3' or 'yolo26', got {model!r}")
     if mode == "amg":
         # Promptless path — prompts/ontology defaults are ignored. Worker
         # synthesises a single "_amg" sentinel prompt so the per-window task
@@ -2001,12 +2005,20 @@ def upload_fmv_clip(
             except Exception as exc:
                 logger.warning("ontology_default_prompts failed for FMV upload: %s", exc)
                 prompt_list = list(FMV_FALLBACK_PROMPTS)
+    # Map (model, mode) → the worker's prompt_mode token. YOLO 26 collapses
+    # both AMG and PCS onto a single "yoloe" worker mode; the empty vs
+    # non-empty prompt_list selects -pf vs -seg in the inference service.
+    if model_choice == "yolo26":
+        worker_mode = "yoloe"
+    else:
+        worker_mode = mode
     try:
         task = process_fmv.delay(clip["id"], str(local_path), prompt_list,
-                                 None, None, mode)
+                                 None, None, worker_mode)
         clip["task_id"] = task.id
         clip["status"] = "queued"
-        clip["prompt_mode"] = mode
+        clip["prompt_mode"] = mode  # UI-level mode preserved
+        clip["model"] = model_choice
     except Exception as exc:
         logger.warning("Failed to queue process_fmv for clip %s: %s", clip["id"], exc)
 
