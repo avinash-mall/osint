@@ -1491,9 +1491,9 @@ def _drain_response_entries(resp) -> list[dict]:
 
 
 # Session prompts that are bookkeeping sentinels, not real concept labels.
-# AMG and YOLOE modes fan out one session per window with a placeholder
-# prompt; the runner emits the per-detection class inside the NDJSON.
-_SENTINEL_PROMPTS = frozenset({"_amg", "_yoloe"})
+# YOLOE mode fans out one session per window with a placeholder prompt;
+# the runner emits the per-detection class inside the NDJSON.
+_SENTINEL_PROMPTS = frozenset({"_yoloe"})
 
 
 def _insert_detection_rows(cur, clip_id: int, source_fps: float, window_idx: int, window_start_frame: int,
@@ -1615,15 +1615,17 @@ def _insert_detection_rows(cur, clip_id: int, source_fps: float, window_idx: int
 @celery_app.task(name="worker.process_fmv", queue="imagery")
 def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = None,
                 frame_stride: int | None = None, max_frames: int | None = None,
-                prompt_mode: str = "amg") -> int:
-    """Run SAM3 FMV tracking over the full clip via sliding-window sessions.
+                prompt_mode: str = "pcs") -> int:
+    """Run FMV tracking over the full clip via sliding-window sessions.
 
     ``prompt_mode``:
-      * ``"pcs"`` (default) — Promptable Concept Segmentation. ``text_prompts``
-        defaults to ``["object"]``. One inference session per (window, prompt).
-      * ``"amg"`` — promptless Automatic Mask Generation. One inference
-        session per window; ``text_prompts`` is ignored. Requires the
-        inference service to report ``amg_available: true`` from /health.
+      * ``"pcs"`` (default) — SAM 3.1 Promptable Concept Segmentation.
+        ``text_prompts`` defaults to ``["object"]``. One inference session
+        per (window, prompt).
+      * ``"yoloe"`` — YOLOE-26x-seg standalone tracker. ``text_prompts``
+        non-empty → ``-seg`` checkpoint with those classes;
+        ``text_prompts`` empty → ``-pf`` prompt-free checkpoint. Single
+        inference session per window.
 
     Per-window flow:
       1. Slice source into overlapping windows (so SAM3's tracker is
@@ -1631,32 +1633,28 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
          of a predictor that loses targets within ~30 frames).
       2. For each window, extract a low-fps/low-res working clip with
          ffmpeg (caps VRAM at SAM3 session-init time).
-      3. Call inference. With the multiplex predictor (sam3.1-multiplex)
-         we batch all prompts into one /detect_video request; with the
-         base predictor we iterate prompts one-per-session (multiplex
-         supports multi-prompt sessions, base does not).
+      3. Call inference. For PCS, iterate prompts one-per-session
+         (multiplex resets state on each text add_prompt). For YOLOE, one
+         call per window covering all classes.
       4. Commit detections to PostGIS *per window*, then publish progress
          so the FmvPlayer sees boxes appear within seconds of the first
          window finishing — not 4 minutes after the whole clip processes.
     """
     provider_lifecycle.ensure_running()
     mode = (prompt_mode or "pcs").strip().lower()
-    if mode not in {"pcs", "amg", "yoloe"}:
+    if mode not in {"pcs", "yoloe"}:
         raise ValueError(f"unknown prompt_mode {prompt_mode!r}")
     source_fps, duration_s = _probe_source(video_path)
     if duration_s <= 0:
         duration_s = FMV_TRACK_WINDOW_SECONDS
     windows = _slice_windows(duration_s)
-    # `prompts` drives the per-window task fan-out. For PCS we fan out one
-    # /detect_video session per prompt because SAM 3.1 multiplex resets state
-    # on every text prompt. For AMG and YOLOE we only need one session per
-    # window — YOLOE handles all classes in one forward pass. Use a single
-    # sentinel so the (window × prompt) cartesian product collapses to one
-    # task per window; the real prompt list is forwarded via closure below.
+    # `prompts` drives the per-window task fan-out. PCS fans out one
+    # /detect_video session per prompt because SAM 3.1 multiplex resets
+    # state on every text prompt. YOLOE handles all classes in one forward
+    # pass per frame, so it collapses to a single sentinel-prompt task per
+    # window and the real prompt list is forwarded via closure below.
     yoloe_prompts: list[str] = list(text_prompts or [])
-    if mode == "amg":
-        prompts = ["_amg"]
-    elif mode == "yoloe":
+    if mode == "yoloe":
         prompts = ["_yoloe"]
     else:
         prompts = list(text_prompts or [])
@@ -1683,13 +1681,6 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
         health = _ensure_fmv_profile(session, clip_id)
         video_backend = (health.get("model_versions") or {}).get("sam3_video", "")
         multiplex = "multiplex" in str(video_backend).lower()
-        # AMG must be probed-available before we dispatch; the inference
-        # service exposes the cached probe result on /health.
-        if mode == "amg" and not bool(health.get("amg_available")):
-            raise RuntimeError(
-                f"AMG mode requested but inference service reports amg_available=False "
-                f"(amg_config={health.get('amg_config')})"
-            )
         # Bound concurrency by the inference-sam3 pool size. Each multiplex
         # replica accepts one in-flight session at a time (enforced by its
         # per-bundle lock on the server); going beyond pool_size just
@@ -1732,15 +1723,7 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
 
         def _run_one(args: tuple[int, int, Any, str]) -> int:
             win_idx, win_start_frame, win_path, prompt = args
-            if mode == "amg":
-                payload = json.dumps({
-                    "video_path": str(win_path),
-                    "prompt_mode": "amg",
-                    "frame_stride": 1,
-                    "max_frames": FMV_TRACK_FRAMES_PER_WINDOW,
-                    "modality": "fmv_amg",
-                })
-            elif mode == "yoloe":
+            if mode == "yoloe":
                 # YOLOE runs one inference per window covering all classes.
                 # Empty text_prompts → service uses yoloe-26x-seg-pf
                 # (prompt-free); non-empty → yoloe-26x-seg with prompts.

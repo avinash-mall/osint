@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """FMV end-to-end performance benchmark.
 
-Uploads each clip via /api/fmv/clips in both prompt_mode=pcs and
-prompt_mode=amg, polls the tracking status until complete (or failed),
-and reports wall-clock + detection counts to stdout and CSV.
+Uploads each clip via /api/fmv/clips in each configured prompt_mode,
+polls the tracking status until complete (or failed), and reports
+wall-clock + detection counts to stdout and CSV.
 
-Designed to compare Phase 1 (per-frame AMG) vs Phase 2 (AMG-seeded video
-propagation) without GPU instrumentation — pure black-box timing through
-the production HTTP route.
+Pure black-box timing through the production HTTP route — no GPU
+instrumentation needed.
 
 Usage:
     python scripts/bench_fmv.py clip1.mp4 [clip2.mp4 ...]
@@ -15,7 +14,7 @@ Usage:
 Optional env:
     SENTINEL_API_URL=http://localhost:3000  (nginx proxy; default)
     BENCH_TIMEOUT_S=1800                    (per-clip timeout)
-    BENCH_MODES=amg,pcs                     (which modes to test, comma sep)
+    BENCH_MODES=pcs                         (which modes to test, comma sep)
     BENCH_OUT_DIR=/tmp                      (where to write CSV)
 """
 from __future__ import annotations
@@ -32,7 +31,7 @@ import requests
 
 API_URL = os.getenv("SENTINEL_API_URL", "http://localhost:3000")
 TIMEOUT_S = int(os.getenv("BENCH_TIMEOUT_S", "1800"))
-MODES = [m.strip() for m in os.getenv("BENCH_MODES", "amg,pcs").split(",") if m.strip()]
+MODES = [m.strip() for m in os.getenv("BENCH_MODES", "pcs").split(",") if m.strip()]
 OUT_DIR = Path(os.getenv("BENCH_OUT_DIR", "/tmp"))
 
 

@@ -61,7 +61,8 @@
       "Bash(:)",
       "Bash(du -sh sample frontend/node_modules inference-sam3 backend)",
       "Bash(du -sh .)",
-      "Bash(git check-ignore *)"
+      "Bash(git check-ignore *)",
+      "Bash(python3)"
     ]
   }
 }

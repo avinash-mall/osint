@@ -160,7 +160,7 @@ export default function FmvPlayer() {
   const [frames, setFrames] = useState<FrameRow[]>([]);
   const [detections, setDetections] = useState<Detection[]>([]);
   const [uploading, setUploading] = useState(false);
-  const [promptMode, setPromptMode] = useState<'pcs' | 'amg'>('amg');
+  const [promptMode, setPromptMode] = useState<'pcs' | 'amg'>('pcs');
   const [model, setModel] = useState<'sam3' | 'yolo26'>('sam3');
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -1572,7 +1572,12 @@ function UploadTab({
         <div className="label-mono" style={{ marginBottom: 6 }}>Model</div>
         <select
           value={model}
-          onChange={(e) => setModel(e.target.value as 'sam3' | 'yolo26')}
+          onChange={(e) => {
+            const next = e.target.value as 'sam3' | 'yolo26';
+            setModel(next);
+            // SAM 3.1 only supports PCS; AMG is YOLO 26 only.
+            if (next === 'sam3' && promptMode === 'amg') setPromptMode('pcs');
+          }}
           disabled={uploading}
           style={{
             width: '100%',
@@ -1583,34 +1588,36 @@ function UploadTab({
             color: 'var(--ink-0)',
             fontSize: 12,
           }}
-          title="Inference engine. SAM 3.1 uses multiplex tracker; YOLO 26 runs YOLOE-26x-seg per-frame."
+          title="Inference engine. SAM 3.1 uses text-prompted multiplex tracking; YOLO 26 runs YOLOE-26x-seg(-pf) per-frame and supports promptless AMG."
         >
           <option value="sam3">SAM 3.1 (default)</option>
           <option value="yolo26">YOLO 26</option>
         </select>
       </div>
 
-      {/* PROMPT MODE — AMG (default) vs PCS */}
+      {/* PROMPT MODE — AMG (YOLO 26 only) vs PCS */}
       <div>
         <div className="label-mono" style={{ marginBottom: 6 }}>Detection mode</div>
         <div className="seg" style={{ width: '100%' }}>
-          <button
-            type="button"
-            className={promptMode === 'amg' ? 'on' : ''}
-            onClick={() => setPromptMode('amg')}
-            disabled={uploading}
-            style={{ flex: 1 }}
-            title="Automatic Mask Generation — dense, promptless detection (default)"
-          >
-            AMG
-          </button>
+          {model === 'yolo26' && (
+            <button
+              type="button"
+              className={promptMode === 'amg' ? 'on' : ''}
+              onClick={() => setPromptMode('amg')}
+              disabled={uploading}
+              style={{ flex: 1 }}
+              title="Automatic Mask Generation — YOLOE-26x-seg-pf promptless closed-set detection"
+            >
+              AMG
+            </button>
+          )}
           <button
             type="button"
             className={promptMode === 'pcs' ? 'on' : ''}
             onClick={() => setPromptMode('pcs')}
             disabled={uploading}
             style={{ flex: 1 }}
-            title="Promptable Concept Segmentation — track named classes"
+            title="Promptable Concept Segmentation — track named classes from the admin ontology"
           >
             PCS
           </button>

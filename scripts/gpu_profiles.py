@@ -111,21 +111,6 @@ class GpuBuildProfile:
     # overlapping decode + encode while inference is running.
     inference_chip_concurrency: int = 1
 
-    # --- AMG (Automatic Mask Generation) promptless FMV path ---
-    # Dense n×n point grid sampled on each seed frame; larger n = more recall
-    # but quadratic VRAM/latency growth. 32 ≈ 1024 candidate prompts/seed —
-    # the SAM 3 paper's default. Consumer cards drop to 24 (576 prompts) and
-    # T4 to 16 (256 prompts) to stay under the per-window VRAM budget.
-    sam3_amg_grid_size: int = 32
-    # Cadence for re-seeding the grid within a window. Lower = fresher
-    # detections of objects entering frame, higher = cheaper. Datacenter
-    # cards reseed every 2 frames (~very frequent); consumer every 6.
-    sam3_amg_reseed_frames: int = 4
-    # Master switch. Off on profiles that can't fit AMG's working set;
-    # operators can flip it on per-host in .env to override (the runner
-    # will refuse if the VRAM headroom is actually insufficient).
-    sam3_amg_enabled: bool = True
-
     def build_env(self, prefix: str = "SAM3_") -> dict[str, str]:
         return {
             f"{prefix}CUDA_VERSION": self.cuda_version,
@@ -182,47 +167,12 @@ class GpuBuildProfile:
             # Backend chip pipeline
             "INFERENCE_SPEED_PROFILE": self.inference_speed_profile,
             "INFERENCE_CHIP_CONCURRENCY": str(self.inference_chip_concurrency),
-            # AMG promptless FMV path
-            "SAM3_AMG_GRID_SIZE": str(self.sam3_amg_grid_size),
-            "SAM3_AMG_RESEED_FRAMES": str(self.sam3_amg_reseed_frames),
-            "SAM3_AMG_ENABLED": "1" if self.sam3_amg_enabled else "0",
-            # Phase 3 quality knobs. Profile-agnostic defaults: the quality
-            # trade-off doesn't depend on GPU class the way grid density does.
-            # Operators can override any of these per-host in .env after the
+            # Cross-frame tracker (used by YOLOE FMV path). Profile-agnostic
+            # defaults; operators can override per-host in .env after the
             # generated block.
-            "SAM3_AMG_PRED_IOU_THRESH": "0.50",
-            "SAM3_AMG_MIN_AREA_PX": "200",
-            "SAM3_AMG_MAX_AREA_FRAC": "0.50",
-            "SAM3_AMG_EDGE_FRAC_MAX": "0.80",
-            "SAM3_AMG_NMS_IOU": "0.5",
-            "SAM3_AMG_STABILITY_THRESH": "0.0",
-            "SAM3_AMG_MIN_CONSECUTIVE_FRAMES": "2",
-            "SAM3_AMG_LABEL_VIA_GD": "1",
-            "SAM3_AMG_LABEL_IOU_MIN": "0.20",
-            # Phase 6: Two-tier GD score floor driven by the admin ontology.
-            #   SAM3_AMG_LABEL_GD_THRESH (0.45) — floor for labels NOT in
-            #     the optical ontology. Raised from Phase 5's 0.25 so GD-
-            #     tiny "pole"/"tower"/"sign" hallucinations need strong
-            #     evidence to escape the filter.
-            #   SAM3_AMG_LABEL_GD_THRESH_ONTOLOGY (0.20) — floor for labels
-            #     declared in OntologyAdmin (vehicle/person/building/…) so
-            #     the core classes the user cares about regain recall.
-            # Backend-unreachable → ontology set empty → every label uses
-            # the high floor (safe default).
-            "SAM3_AMG_LABEL_GD_THRESH": "0.45",
-            "SAM3_AMG_LABEL_GD_THRESH_ONTOLOGY": "0.20",
-            # Phase 5: drone-HUD overlay auto-detection. The default 1
-            # enables detection across all GPU profiles. Set 0 in .env per
-            # host if HUD detection ever misfires on a non-HUD clip type.
-            "SAM3_AMG_HUD_MASK_ENABLED": "1",
-            "SAM3_AMG_HUD_STD_THRESH": "3.0",
-            "SAM3_AMG_HUD_SAMPLES": "5",
-            "SAM3_AMG_HUD_OVERLAP_MAX": "0.5",
-            # Phase 4: GD-first detection is default ("gd"). Operators on
-            # hosts where the broad GD vocab misses domain-specific objects
-            # can override to "grid" in .env to fall back to the dense
-            # 16×16 point-grid AMG path (slower but vocab-free).
-            "SAM3_AMG_DETECTOR": "gd",
+            "SAM3_TRACK_IOU_MIN": "0.30",
+            "SAM3_TRACK_BUFFER": "12",
+            "SAM3_TRACK_MIN_CONSECUTIVE_FRAMES": "2",
         }
         if vram_mib is not None:
             env["SAM3_GPU_VRAM_GIB"] = f"{vram_mib / 1024:.1f}"
@@ -263,15 +213,9 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_preload_profile="",
         inference_speed_profile="fast_review",
         inference_chip_concurrency=1,
-        # AMG off by default on T4: 16 GiB minus base SAM3 + DOTA-OBB + GD-tiny
         # leaves ~6 GiB headroom — not enough for a 16² grid + propagation
-        # buffers. Operators can flip SAM3_AMG_ENABLED=1 in .env after
-        # measuring per-workload. Tuned for hybrid AMG-seeded path (Phase 2):
         # grid 16 = 256 prompts on seed frame; reseed every 12 frames (≤ 4
         # seeds per 48-frame window).
-        sam3_amg_grid_size=16,
-        sam3_amg_reseed_frames=12,
-        sam3_amg_enabled=False,
     ),
     "ampere_sm80_86": GpuBuildProfile(
         name="ampere_sm80_86",
@@ -315,14 +259,9 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_preload_profile="",
         inference_speed_profile="fast_review",
         inference_chip_concurrency=1,
-        # AMG on for consumer Ampere (RTX 3080/3090/A4000/A5000). Phase 2
-        # hybrid path runs image AMG once per reseed_frames then propagates
         # in one video session, so a smaller grid (16² = 256 prompts) and
         # less frequent reseed (every 12 frames) cuts wall-clock ~5× vs
         # Phase 1 defaults without measurable recall loss on FMV fixtures.
-        sam3_amg_grid_size=16,
-        sam3_amg_reseed_frames=12,
-        sam3_amg_enabled=True,
     ),
     "ampere_sm80_86_datacenter": GpuBuildProfile(
         name="ampere_sm80_86_datacenter",
@@ -354,12 +293,9 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         #     trace hits a dynamo boundary and raises `RuntimeError: Detected
         #     that you are using FX to symbolically trace a dynamo-optimized
         #     function` from `processor.set_image` — breaking both
-        #     `probe_amg_seeded` (forcing the slow per-frame AMG fallback)
-        #     and the per-frame AMG path itself (observed 2026-05-13 on
         #     4× A100, torch 2.10.0+cu130).
         # Both run in eager mode. Revisit when upstream PyTorch / SAM3
         # releases a fix; flip back to True and verify warmup completes plus
-        # an AMG `/detect_video` call streams without the FX/dynamo error.
         compile_image=False,
         compile_video=False,
         # 720p prep clip + 96 frames/window: ~7.5 GiB per video session,
@@ -387,13 +323,8 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         # Full-coverage chip sweep + parallel chip threads.
         inference_speed_profile="recall_review",
         inference_chip_concurrency=2,
-        # AMG dense + frequent reseed: A100 40-80 GiB headroom makes the
         # 32² grid (1024 prompts/seed) and every-4-frames reseed cheap.
-        # Phase 2 hybrid path needs only one image-AMG per reseed window,
         # so density matters more than per-frame frequency.
-        sam3_amg_grid_size=32,
-        sam3_amg_reseed_frames=4,
-        sam3_amg_enabled=True,
     ),
     "ada_sm89": GpuBuildProfile(
         name="ada_sm89",
@@ -432,9 +363,6 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         # Ada (RTX 4090 / L40) is sm_89 with 24-48 GiB. Phase 2 hybrid path:
         # 16² grid + reseed-every-12 matches consumer Blackwell wall-clock
         # while leaving headroom for parallel chip+video sessions.
-        sam3_amg_grid_size=16,
-        sam3_amg_reseed_frames=12,
-        sam3_amg_enabled=True,
     ),
     "hopper_sm90": GpuBuildProfile(
         name="hopper_sm90",
@@ -476,12 +404,7 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_preload_profile="all",
         inference_speed_profile="recall_review",
         inference_chip_concurrency=2,
-        # H100/H200 80 GiB: dense AMG sweep, frequent reseed. Phase 2 hybrid
-        # path needs fewer image-AMG passes; 32² grid = 1024 prompts/seed
         # remains within ~2 s on Hopper.
-        sam3_amg_grid_size=32,
-        sam3_amg_reseed_frames=4,
-        sam3_amg_enabled=True,
     ),
     "blackwell_sm100": GpuBuildProfile(
         name="blackwell_sm100",
@@ -520,9 +443,6 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         inference_speed_profile="recall_review",
         inference_chip_concurrency=2,
         # B100/B200 datacenter Blackwell mirrors Hopper (Phase 2: 32²/4f).
-        sam3_amg_grid_size=32,
-        sam3_amg_reseed_frames=4,
-        sam3_amg_enabled=True,
     ),
     "blackwell_sm120": GpuBuildProfile(
         name="blackwell_sm120",
@@ -565,12 +485,8 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_preload_profile="",
         inference_speed_profile="fast_review",
         inference_chip_concurrency=1,
-        # AMG conservative on consumer Blackwell (RTX 5070/5080/5090): 16-32 GiB.
         # Phase 2 hybrid path: grid 16 + reseed-every-12 takes ~30 s per 48-frame
         # window on the RTX 5070 Ti (measured) — ~5× faster than Phase 1.
-        sam3_amg_grid_size=16,
-        sam3_amg_reseed_frames=12,
-        sam3_amg_enabled=True,
     ),
 }
 

@@ -1984,12 +1984,17 @@ def upload_fmv_clip(
     # fallback. `ontology_default_prompts(None)` returns ALL prompts in the
     # admin tree (across all sensors); admin edits to /admin propagate live
     # since the tree is cache-invalidated on every `/api/ontology/update`.
-    mode = (prompt_mode or "amg").strip().lower()
+    mode = (prompt_mode or "pcs").strip().lower()
     if mode not in {"pcs", "amg"}:
         raise HTTPException(status_code=400, detail=f"prompt_mode must be 'pcs' or 'amg', got {prompt_mode!r}")
     model_choice = (model or "sam3").strip().lower()
     if model_choice not in {"sam3", "yolo26"}:
         raise HTTPException(status_code=400, detail=f"model must be 'sam3' or 'yolo26', got {model!r}")
+    if model_choice == "sam3" and mode == "amg":
+        raise HTTPException(
+            status_code=400,
+            detail="SAM 3.1 no longer supports AMG; pick model='yolo26' for promptless detection, or use prompt_mode='pcs'",
+        )
     if mode == "amg":
         # Promptless path — prompts/ontology defaults are ignored. Worker
         # synthesises a single "_amg" sentinel prompt so the per-window task
