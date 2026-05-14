@@ -26,22 +26,26 @@ LICENSE_PATH="${ASSETS_DIR}/static/LICENSE.txt"
 mkdir -p "${FONT_DIR}"
 
 # IBM Plex Sans + Mono weights actually referenced by frontend/src/index.css.
+# IBM dropped the latin1 subset in 2024 — the upstream layout is now
+# `packages/plex-{family}/fonts/complete/woff2/IBMPlex{Family}-{Weight}.woff2`
+# (no `latin1/` segment, no `-Latin1` filename suffix). We keep the local
+# output filenames stable so the frontend @font-face URLs don't move.
 declare -A SANS_WEIGHTS=(
-    [400]="IBMPlexSans-Regular-Latin1.woff2"
-    [500]="IBMPlexSans-Medium-Latin1.woff2"
-    [600]="IBMPlexSans-SemiBold-Latin1.woff2"
-    [700]="IBMPlexSans-Bold-Latin1.woff2"
+    [400]="IBMPlexSans-Regular.woff2"
+    [500]="IBMPlexSans-Medium.woff2"
+    [600]="IBMPlexSans-SemiBold.woff2"
+    [700]="IBMPlexSans-Bold.woff2"
 )
 declare -A MONO_WEIGHTS=(
-    [400]="IBMPlexMono-Regular-Latin1.woff2"
-    [500]="IBMPlexMono-Medium-Latin1.woff2"
-    [600]="IBMPlexMono-SemiBold-Latin1.woff2"
+    [400]="IBMPlexMono-Regular.woff2"
+    [500]="IBMPlexMono-Medium.woff2"
+    [600]="IBMPlexMono-SemiBold.woff2"
 )
 
 fetch_one() {
     local family="$1"          # sans or mono
     local weight="$2"          # 400, 500, ...
-    local upstream_name="$3"   # IBMPlexSans-Regular-Latin1.woff2
+    local upstream_name="$3"   # IBMPlexSans-Regular.woff2
     local out="${FONT_DIR}/ibm-plex-${family}-${weight}.woff2"
 
     if [[ -s "${out}" ]]; then
@@ -49,7 +53,7 @@ fetch_one() {
         return 0
     fi
 
-    local url="${REPO_BASE}/plex-${family}/fonts/complete/woff2/latin1/${upstream_name}"
+    local url="${REPO_BASE}/plex-${family}/fonts/complete/woff2/${upstream_name}"
     echo "[fonts] fetch ${url}"
     curl -fsSL --retry 3 --retry-delay 2 -o "${out}.partial" "${url}"
     mv "${out}.partial" "${out}"
@@ -61,10 +65,10 @@ for w in "${!MONO_WEIGHTS[@]}"; do fetch_one mono "${w}" "${MONO_WEIGHTS[$w]}"; 
 # Bundle the SIL OFL 1.1 license — required by the IBM Plex distribution
 # terms whenever the fonts are redistributed.
 if [[ ! -s "${LICENSE_PATH}" ]]; then
-    echo "[fonts] fetch OFL.txt"
+    echo "[fonts] fetch LICENSE.txt (SIL OFL 1.1)"
     curl -fsSL --retry 3 --retry-delay 2 \
         -o "${LICENSE_PATH}" \
-        "https://raw.githubusercontent.com/IBM/plex/master/packages/plex-sans/OFL.txt"
+        "https://raw.githubusercontent.com/IBM/plex/master/packages/plex-sans/LICENSE.txt"
 fi
 
 # Emit a build-metadata stub the assets image surfaces at /.build-metadata.json.
