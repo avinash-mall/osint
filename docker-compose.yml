@@ -20,7 +20,9 @@ services:
       - POSTGRES_PASSWORD=sentinel
       - POSTGRES_DB=sentinel
     volumes:
-      - pg_data:/var/lib/postgresql/data
+      # PG 18+ stores data under a major-version subdir (/var/lib/postgresql/18/docker)
+      # to enable in-place pg_upgrade. Mount the parent dir, NOT /var/lib/postgresql/data.
+      - pg_data:/var/lib/postgresql
       - ./backend/init_postgis.sql:/docker-entrypoint-initdb.d/init_postgis.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sentinel -d sentinel"]
