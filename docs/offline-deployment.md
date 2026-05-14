@@ -22,19 +22,19 @@ all served from inside the cluster.
 | `sentinel-nginx:offline`         | `./nginx/Dockerfile`                | Reverse proxy only (lightweight; rebuilds in seconds)            |
 | `sentinel-assets:offline`        | `./assets/Dockerfile`               | Carto-Dark basemap pyramid (z=0..10) **and** IBM Plex webfonts   |
 | `sentinel-inference-sam3:gpu`    | `./inference-sam3/Dockerfile.gpu`   | CUDA 12.x + every HF weight under `/models/hf` (~18 GB)          |
-| `postgis/postgis:16-3.4`         | upstream                            | PostGIS DB                                                       |
-| `redis:7.4-alpine`               | upstream                            | Celery broker                                                    |
-| `neo4j:5.20.0`                   | upstream                            | Ontology graph                                                   |
-| `developmentseed/titiler:0.20.1` | upstream                            | Imagery COG tile server                                          |
-| `maplibre/martin:v0.15.0`        | upstream                            | Vector tile server from PostGIS                                  |
+| `postgis/postgis:18-3.6`         | upstream                            | PostGIS DB                                                       |
+| `redis:8-alpine`               | upstream                            | Celery broker                                                    |
+| `neo4j:5.26.26-community-ubi10`                   | upstream                            | Ontology graph                                                   |
+| `ghcr.io/developmentseed/titiler:2.0.2` | upstream                            | Imagery COG tile server                                          |
+| `ghcr.io/maplibre/martin:1.9.1`| upstream (GHCR)                     | Vector tile server from PostGIS                                  |
 
 All upstream images are pinned to specific versions. On the connected
 host, record the `@sha256:...` digests for any image you intend to ship
 so the air-gap target can verify byte-for-byte equivalence:
 
 ```bash
-for img in postgis/postgis:16-3.4 redis:7.4-alpine neo4j:5.20.0 \
-           developmentseed/titiler:0.20.1 maplibre/martin:v0.15.0; do
+for img in postgis/postgis:18-3.6 redis:8-alpine neo4j:5.26.26-community-ubi10 \
+           ghcr.io/developmentseed/titiler:2.0.2 ghcr.io/maplibre/martin:1.9.1; do
   docker pull "$img" && docker inspect --format '{{index .RepoDigests 0}}' "$img"
 done
 ```
@@ -84,11 +84,11 @@ docker save \
   sentinel-nginx:offline \
   sentinel-assets:offline \
   sentinel-inference-sam3:gpu \
-  postgis/postgis:16-3.4 \
-  redis:7.4-alpine \
-  neo4j:5.20.0 \
-  developmentseed/titiler:0.20.1 \
-  maplibre/martin:v0.15.0 \
+  postgis/postgis:18-3.6 \
+  redis:8-alpine \
+  neo4j:5.26.26-community-ubi10 \
+  ghcr.io/developmentseed/titiler:2.0.2 \
+  ghcr.io/maplibre/martin:1.9.1 \
   | gzip -1 > sentinel-offline-bundle.tar.gz
 # Expect ~22-26 GB compressed.
 

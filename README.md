@@ -121,15 +121,15 @@ To restart only inference after config changes, run `docker compose up -d --no-d
 
 | Service | Image | Port | Purpose |
 |---------|-------|------|---------|
-| `neo4j` | `neo4j:5.20.0` | 7474 / 7687 | Graph ontology + APOC |
-| `postgis` | `postgis/postgis:16-3.4` | 5432 | Spatial catalog, detections |
+| `neo4j` | `neo4j:5.26.26-community-ubi10` | 7474 / 7687 | Graph ontology + APOC |
+| `postgis` | `postgis/postgis:18-3.6` | 5432 | Spatial catalog, detections |
 | `backend` | `sentinel-backend:latest` | 8080 | REST API |
 | `worker` | `sentinel-backend:latest` | — | Celery imagery worker |
 | `frontend` | `sentinel-frontend:latest` | 3000 | Vite dev server |
-| `titiler` | `developmentseed/titiler:latest` | 8081 | COG tile server |
-| `martin` | `maplibre/martin:latest` | 3001 | PostGIS → MVT |
+| `titiler` | `ghcr.io/developmentseed/titiler:2.0.2` | 8081 | COG tile server |
+| `martin` | `ghcr.io/maplibre/martin:1.9.1` | 3001 | PostGIS → MVT |
 | `inference-sam3` | `sentinel-inference-sam3:gpu` | internal 8001 | Meta SAM 3 / 3.1 — open-vocabulary `/detect` (RGB · multispectral · SAR-via-RGB-proxy) and `/detect_video` (Object Multiplex FMV tracking). Returns mask RLE + normalized HBB + minAreaRect OBB + DINOv3 embedding; optional Prithvi flood/burn/crop overlays and TerraMind SAR features behind loader flags. See [SAM 3 — Open-Vocabulary RGB / Multispectral / SAR / FMV](#sam-3--open-vocabulary-rgb--multispectral--sar--fmv) below. |
-| `redis` | `redis:alpine` | 6379 | Task queue |
+| `redis` | `redis:8-alpine` | 6379 | Task queue |
 | `nginx` | `nginx:alpine` | 3000 | Reverse proxy + tile cache + FMV HLS |
 
 ---
@@ -577,7 +577,7 @@ cd frontend && npm run build
 | Tile server | TiTiler | latest |
 | Vector tiles | Martin | latest |
 | AI inference | SAM 3 / 3.1 | facebook/sam3 (image) + facebook/sam3.1 (multiplex video) — native API |
-| Worker queue | Celery + Redis | redis:alpine |
+| Worker queue | Celery + Redis | redis:8-alpine |
 | Reverse proxy | Nginx | alpine |
 | Frontend | React | 19 |
 | Build tool | Vite | 8 |

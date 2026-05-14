@@ -1,6 +1,6 @@
 services:
   neo4j:
-    image: neo4j:5.20.0
+    image: neo4j:5.26.26-community-ubi10
     environment:
       - NEO4J_AUTH=neo4j/password
       - NEO4J_PLUGINS=["apoc"]
@@ -14,7 +14,7 @@ services:
       start_period: 30s
 
   postgis:
-    image: postgis/postgis:16-3.4
+    image: postgis/postgis:18-3.6
     environment:
       - POSTGRES_USER=sentinel
       - POSTGRES_PASSWORD=sentinel
@@ -84,9 +84,9 @@ services:
 
   llm-local-proxy:
     # Pinned for reproducible air-gap shipping. Update the digest after a
-    # connected-host `docker pull alpine/socat:1.8.0.0` and verify with
-    # `docker inspect --format '{{index .RepoDigests 0}}' alpine/socat:1.8.0.0`.
-    image: alpine/socat:1.8.0.0
+    # connected-host `docker pull alpine/socat:1.8.0.3` and verify with
+    # `docker inspect --format '{{index .RepoDigests 0}}' alpine/socat:1.8.0.3`.
+    image: alpine/socat:1.8.0.3
     profiles:
       - llm-proxy
     network_mode: host
@@ -120,7 +120,7 @@ services:
     # Pinned for reproducible air-gap shipping; bump the tag after testing
     # on a connected host and record the @sha256 digest in
     # docs/offline-deployment.md.
-    image: developmentseed/titiler:0.20.1
+    image: ghcr.io/developmentseed/titiler:2.0.2
     volumes:
       - imagery_data:/data/imagery:ro
     environment:
@@ -136,7 +136,7 @@ services:
     # Pinned for reproducible air-gap shipping; bump the tag after testing
     # on a connected host and record the @sha256 digest in
     # docs/offline-deployment.md.
-    image: maplibre/martin:v0.15.0
+    image: ghcr.io/maplibre/martin:1.9.1
     restart: on-failure
     environment:
       - DATABASE_URL=postgresql://sentinel:sentinel@postgis:5432/sentinel
@@ -308,7 +308,7 @@ services:
 
   redis:
     # Pinned for reproducible air-gap shipping.
-    image: redis:7.4-alpine
+    image: redis:8-alpine
     healthcheck:
       test: ["CMD-SHELL", "redis-cli ping | grep PONG || exit 1"]
       interval: 10s
