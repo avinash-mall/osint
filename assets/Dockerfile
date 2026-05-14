@@ -1,20 +1,66 @@
-# Air-gap assets service: serves the offline raster basemap pyramid and
-# self-hosted webfonts that previously came from fonts.googleapis.com /
-# *.basemaps.cartocdn.com. Everything is baked in at build time on the
-# connected host so the running container has zero outbound dependencies.
+# syntax=docker/dockerfile:1.7
 #
-# Pre-bake steps (run once on the connected host, before `docker compose build`):
-#   python scripts/build_offline_basemap.py --zoom 0-10 --out assets/static/basemap
-#   bash assets/scripts/fetch_fonts.sh
+# Air-gap assets image: serves the offline basemap pyramid + IBM Plex
+# webfonts. The fetchers run inside the build, so a fresh clone needs
+# only `docker compose up -d --build` — no host-side pre-bake required.
+#
+# BuildKit cache mount (/cache/basemap) persists the ~3 GB tile fetch
+# across rebuilds; only the first build pays the 4-8 h wallclock.
+#
+# Override the zoom range for a quick smoke build:
+#   BASEMAP_ZOOM=0-4 docker compose up -d --build assets   # ~1 min
+#
+# Build context is the repo root (compose passes `context: .`) so the
+# basemap fetcher at scripts/build_offline_basemap.py is reachable.
+
+# ---------------------------------------------------------------- fetcher
+FROM python:3.11-slim AS fetcher
+
+ARG BASEMAP_ZOOM=0-10
+ARG BASEMAP_CONCURRENCY=16
+ARG PLEX_VERSION=@ibm/plex-sans@1.1.0
+ARG PLEX_MONO_VERSION=@ibm/plex-mono@1.1.0
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates bash \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY scripts/build_offline_basemap.py /build/build_offline_basemap.py
+COPY assets/scripts/fetch_fonts.sh    /build/fetch_fonts.sh
+COPY assets/static/                   /seed/
+
+# Mirror the repo layout fetch_fonts.sh assumes (it resolves paths
+# relative to its own location: ASSETS_DIR=$SCRIPT_DIR/..).
+RUN mkdir -p /work/static \
+             /stage/assets/scripts \
+             /stage/assets/static/fonts \
+ && cp /build/fetch_fonts.sh /stage/assets/scripts/fetch_fonts.sh \
+ && chmod +x /stage/assets/scripts/fetch_fonts.sh \
+ && if [ -d /seed/fonts ]; then cp -an /seed/fonts/. /stage/assets/static/fonts/ || true; fi
+
+# Basemap tiles — into a cache mount so re-runs are seconds, then
+# mirrored into /work for stage 2 to COPY.
+RUN --mount=type=cache,target=/cache/basemap \
+    if [ -d /seed/basemap ]; then cp -an /seed/basemap/. /cache/basemap/ || true; fi \
+ && python /build/build_offline_basemap.py \
+        --zoom        "${BASEMAP_ZOOM}" \
+        --concurrency "${BASEMAP_CONCURRENCY}" \
+        --out         /cache/basemap \
+ && mkdir -p /work/static/basemap \
+ && cp -an /cache/basemap/. /work/static/basemap/
+
+# Fonts — tiny payload, no cache mount needed.
+RUN PLEX_VERSION="${PLEX_VERSION}" PLEX_MONO_VERSION="${PLEX_MONO_VERSION}" \
+        bash /stage/assets/scripts/fetch_fonts.sh \
+ && cp -an /stage/assets/static/. /work/static/
+
+# ------------------------------------------------------------------ final
 FROM nginx:1.27.3-alpine
 
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY static/ /usr/share/nginx/html/
+COPY assets/nginx.conf            /etc/nginx/conf.d/default.conf
+COPY --from=fetcher /work/static/ /usr/share/nginx/html/
 
-# Fail-fast: a forgotten pre-bake step aborts the build here instead of at
-# first request seven minutes after a deploy. Tile 0/0/0.png is the root of
-# the pyramid (always present after a successful basemap fetch); the IBM
-# Plex Sans regular weight is the minimum payload the frontend needs.
 RUN test -f /usr/share/nginx/html/basemap/0/0/0.png \
  && test -f /usr/share/nginx/html/fonts/ibm-plex-sans-400.woff2 \
  && test -s /usr/share/nginx/html/basemap/ATTRIBUTION.txt

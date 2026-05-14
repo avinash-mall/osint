@@ -54,15 +54,12 @@ python scripts/configure_host.py
 export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 echo "HF_TOKEN=$HF_TOKEN" >> .env
 
-# 3. Pre-bake the assets payload: basemap tile pyramid (~1.4 M files,
-#    ~3 GB, 4-8 h) plus the IBM Plex webfont woff2 files.
-#    Idempotent — safe to ctrl-c and restart.
-python scripts/build_offline_basemap.py --zoom 0-10
-bash assets/scripts/fetch_fonts.sh
-
-# 4. Build every image. The sam3 build downloads ~18 GB of weights;
-#    expect 30-60 minutes on a fast connection. The assets and inference
-#    Dockerfiles both fail fast if the pre-bake step above was skipped.
+# 3. Build every image. The assets image runs the basemap + font
+#    fetchers inside its Dockerfile (~3 GB / 4-8 h on first build;
+#    cached on subsequent rebuilds via BuildKit `--mount=type=cache`).
+#    The sam3 build downloads ~18 GB of weights; expect 30-60 min.
+#    Override the basemap zoom for a quick smoke build:
+#       BASEMAP_ZOOM=0-4 docker compose build assets
 docker compose build
 ```
 

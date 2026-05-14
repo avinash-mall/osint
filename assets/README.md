@@ -7,16 +7,35 @@ runtime fetch to `fonts.googleapis.com` and `*.basemaps.cartocdn.com`.
 Routed through the main reverse proxy under `/basemap/` and `/assets/`
 (see `nginx/tile-proxy.conf`).
 
-## Build prerequisites (connected host, once per asset refresh)
+## Build (connected host)
+
+Both fetchers run inside the Dockerfile, so the only command needed is:
 
 ```bash
-# 1. Tile pyramid (z=0..10 Carto Dark equivalent) — ~3 GB, 4–8 h.
+docker compose up -d --build assets       # or just `docker compose up -d --build`
+```
+
+First build is slow — ~3 GB / 4–8 h for the full z=0..10 pyramid. A
+BuildKit cache mount (`/cache/basemap`) persists the fetched tiles
+across rebuilds, so subsequent builds complete in seconds.
+
+For a quick smoke build, override the zoom range via build arg:
+
+```bash
+BASEMAP_ZOOM=0-4 docker compose up -d --build assets   # ~340 tiles, <1 min
+```
+
+### Out-of-band pre-bake (optional)
+
+The host-side scripts still work standalone if you want progress
+visibility outside `docker build`, or to stage tiles on a different
+machine. Anything present under `assets/static/` at build time is
+copied into the cache before fetching, so the idempotent fetchers
+skip it:
+
+```bash
 python scripts/build_offline_basemap.py --zoom 0-10 --out assets/static/basemap
-
-# 2. IBM Plex Sans + Mono woff2 files (latin subset).
 bash assets/scripts/fetch_fonts.sh
-
-# 3. Build the image — fails fast if either step above was skipped.
 docker compose build assets
 ```
 

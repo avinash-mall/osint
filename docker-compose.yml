@@ -371,11 +371,18 @@ services:
   # (`nginx` below) routes `/basemap/` and `/assets/` to this service so the
   # browser never reaches the public internet.
   #
-  # Pre-bake on the connected build host before `docker compose build`:
-  #   python scripts/build_offline_basemap.py --zoom 0-10 --out assets/static/basemap
-  #   bash assets/scripts/fetch_fonts.sh
+  # The Dockerfile runs both fetchers inside the build — no host-side
+  # pre-bake required. First build is slow (4-8 h for z=0..10); subsequent
+  # builds use the BuildKit cache mount on /cache/basemap and complete in
+  # seconds. Override BASEMAP_ZOOM for a quick smoke build:
+  #   BASEMAP_ZOOM=0-4 docker compose up -d --build assets
   assets:
-    build: ./assets
+    build:
+      context: .
+      dockerfile: assets/Dockerfile
+      args:
+        BASEMAP_ZOOM: "${BASEMAP_ZOOM:-0-10}"
+        BASEMAP_CONCURRENCY: "${BASEMAP_CONCURRENCY:-16}"
     image: sentinel-assets:offline
     restart: unless-stopped
     healthcheck:
