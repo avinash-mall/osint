@@ -99,7 +99,10 @@ RUN mkdir -p /models/hf/hub /models/torch/ultralytics && \
     cd /models/torch/ultralytics && \
     python -c "from ultralytics import YOLO; YOLO('yolo11n-obb.pt')" || echo "[bake] dota-obb skipped"; \
     : "--- TerraMind (terratorch registry pulls weights to HF cache) ---"; \
-    python -c "from terratorch.registry import BACKBONE_REGISTRY; BACKBONE_REGISTRY.build('terramind_v1_large', pretrained=True, modalities=['S1GRD'])" || echo "[bake] terramind skipped"; \
+    : "  Build BOTH the backbone and the *_generate variant so the bake"; \
+    : "  caches the S1GRD input tokenizer + S2L2A output tokenizer that the"; \
+    : "  runtime generator path requires (see inference-sam3/terramind.py)."; \
+    python -c "from terratorch import BACKBONE_REGISTRY, FULL_MODEL_REGISTRY; BACKBONE_REGISTRY.build('terramind_v1_large', pretrained=True, modalities=['S1GRD']); FULL_MODEL_REGISTRY.build('terramind_v1_large_generate', pretrained=True, modalities=['S1GRD'], output_modalities=['S2L2A'], timesteps=10, standardize=True)" || echo "[bake] terramind skipped"; \
     : "--- Scrub token traces from the layer ---"; \
     rm -rf /root/.cache/huggingface/token /root/.huggingface
 ENV HF_TOKEN=
