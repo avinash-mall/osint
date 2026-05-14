@@ -82,8 +82,12 @@ RUN mkdir -p /models/hf/hub /models/torch/ultralytics && \
     huggingface-cli download 1038lab/sam3 sam3.safetensors; \
     : "--- DINOv3-SAT (gated) ---"; \
     huggingface-cli download facebook/dinov3-vitl16-pretrain-sat493m || echo "[bake] dinov3-sat skipped"; \
-    : "--- Prithvi backbone + task heads ---"; \
-    huggingface-cli download ibm-nasa-geospatial/Prithvi-EO-2.0-600M-TL || echo "[bake] prithvi backbone skipped"; \
+    : "--- Prithvi backbones + task heads ---"; \
+    : "  300M-TL is the backbone the Sen1Floods11 + BurnScars task models load"; \
+    : "  via terratorch key prithvi_eo_v2_300_tl (backbone_pretrained=True), so"; \
+    : "  it must be present in the cache or the heads fail offline at startup."; \
+    huggingface-cli download ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL || echo "[bake] prithvi 300M-TL backbone skipped"; \
+    huggingface-cli download ibm-nasa-geospatial/Prithvi-EO-2.0-600M-TL || echo "[bake] prithvi 600M-TL backbone skipped"; \
     huggingface-cli download ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL-Sen1Floods11 || echo "[bake] prithvi flood skipped"; \
     huggingface-cli download ibm-nasa-geospatial/Prithvi-EO-2.0-300M-BurnScars || echo "[bake] prithvi burn skipped"; \
     : "--- GroundingDINO ---"; \
