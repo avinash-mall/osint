@@ -426,7 +426,7 @@ export default function IngestConnect() {
   const transferOrJobProgress = uploading ? uploadTransferProgress : uploadProgress(activeJob);
 
   return (
-    <div className="w-full h-full bg-slate-950 text-slate-200 overflow-auto">
+    <div className="w-full flex-1 min-h-0 bg-slate-950 text-slate-200 overflow-auto">
       <div className="max-w-4xl mx-auto p-6 flex flex-col gap-5">
         <div className="flex items-center gap-3 border-b border-slate-800 pb-4">
           <UploadCloud className="w-7 h-7 text-blue-400" />

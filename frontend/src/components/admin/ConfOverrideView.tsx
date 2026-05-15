@@ -117,7 +117,7 @@ export default function ConfOverrideView() {
   }, [rows, globalFloor, highConf, load]);
 
   return (
-    <div style={{ padding: '20px 24px', overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 18 }}>
+    <div style={{ padding: '20px 24px', overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 18, flex: 1, minHeight: 0 }}>
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 14 }}>
         <div>
           <div style={{ fontSize: 16, fontWeight: 600 }}>Confidence overrides</div>

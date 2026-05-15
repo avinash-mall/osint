@@ -65,7 +65,7 @@ export default function HealthDashboardView() {
   const totalCount = (data?.models || []).length;
 
   return (
-    <div style={{ padding: '20px 24px', overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 18 }}>
+    <div style={{ padding: '20px 24px', overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 18, flex: 1, minHeight: 0 }}>
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 14 }}>
         <div>
           <div style={{ fontSize: 16, fontWeight: 600 }}>System health</div>

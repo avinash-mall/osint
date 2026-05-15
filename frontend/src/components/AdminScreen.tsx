@@ -162,6 +162,8 @@ export default function AdminScreen({
           display: 'flex',
           flexDirection: 'column',
           minWidth: 0,
+          minHeight: 0,
+          overflow: 'hidden',
         }}
       >
         {tab === 'ontology'   && (
