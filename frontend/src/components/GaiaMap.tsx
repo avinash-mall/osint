@@ -616,6 +616,8 @@ export default function GaiaMap({
     los: null,
     routes: null,
   });
+  const [analyticsTab, setAnalyticsTab] = useState<AnalyticsKind>('viewshed');
+  const [overlaysOpen, setOverlaysOpen] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   // Modern shell: each side panel can be collapsed to a 36 px floating handle so
   // the analyst can maximise the map canvas without losing context.
@@ -1467,13 +1469,21 @@ export default function GaiaMap({
           </div>
 
           <div className="flex items-center gap-2 border-b border-sentinel-line bg-sentinel-panel-2 px-3 py-2">
+            <button
+              type="button"
+              onClick={() => setOverlaysOpen((v) => !v)}
+              className="text-sentinel-muted hover:text-slate-200"
+              title={overlaysOpen ? 'Collapse overlays' : 'Expand overlays'}
+            >
+              {overlaysOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+            </button>
             <span className="sentinel-label flex-1">Overlays</span>
             <button type="button" onClick={() => setShowBbox((value) => !value)} className={`sentinel-btn h-6 ${showBbox ? 'primary' : ''}`}>
               BBOX
             </button>
           </div>
 
-          {[
+          {overlaysOpen && [
             { key: 'satellite', label: 'Satellite Imagery', metric: imagery.length, color: 'text-sentinel-info', available: true },
             { key: 'detections', label: 'AI Detections', metric: visibleDetectionCount, color: 'text-sentinel-accent', available: true },
             { key: 'tracks', label: 'Active Tracks', metric: data.tracks.length, color: 'text-sentinel-info', available: true },
@@ -1519,10 +1529,40 @@ export default function GaiaMap({
             );
           })}
 
+          <div className="flex border-y border-sentinel-line bg-sentinel-panel-2">
+            {([
+              ['viewshed', 'Viewshed', analyticsResults.viewshed?.result?.features?.length ?? 0],
+              ['los', 'Line of Sight', analyticsResults.los?.result?.features?.length ?? 0],
+              ['routes', 'Routes', analyticsResults.routes?.result?.features?.length ?? 0],
+            ] as const).map(([k, label, count]) => {
+              const isActive = analyticsTab === k;
+              return (
+                <button
+                  key={k}
+                  type="button"
+                  onClick={() => setAnalyticsTab(k)}
+                  className={`flex-1 h-[34px] font-mono text-[11px] uppercase tracking-[.08em] flex items-center justify-center gap-1.5 border-r border-sentinel-line last:border-r-0 ${
+                    isActive ? 'bg-sentinel-panel text-slate-100' : 'text-sentinel-muted'
+                  }`}
+                  style={{ borderBottom: isActive ? '2px solid var(--accent, #ff7a1a)' : '2px solid transparent' }}
+                >
+                  {label}
+                  <span className={isActive ? 'text-sentinel-accent' : 'text-sentinel-muted'}>{count}</span>
+                </button>
+              );
+            })}
+          </div>
+
           <AnalyticsToolsPanel
+            active={analyticsTab}
             pendingPick={pendingPick}
             onRequestPick={setPendingPick}
             lastMapClick={lastMapClick}
+            layerOn={!!activeLayers[analyticsTab]}
+            layerDisabled={!analyticsResults[analyticsTab]}
+            onToggleLayer={() =>
+              setActiveLayers((prev) => ({ ...prev, [analyticsTab]: !prev[analyticsTab] }))
+            }
             onResult={(kind, response) => {
               setAnalyticsResults((prev) => ({ ...prev, [kind]: response }));
               if (response) {

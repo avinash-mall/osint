@@ -6,7 +6,7 @@
  * back via the `onResult` callbacks. The parent owns layer-toggle state.
  */
 
-import { Crosshair, Eye, Route as RouteIcon, Spline, Sparkles } from 'lucide-react';
+import { Crosshair, Eye, EyeOff, Route as RouteIcon, Spline, Sparkles } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import {
   getCapabilities,
@@ -23,6 +23,8 @@ export type AnalyticsKind = 'viewshed' | 'los' | 'routes';
 export type AnalyticsPick = 'viewshed.observer' | 'los.observer' | 'los.target' | 'routes.start' | 'routes.end';
 
 type Props = {
+  /** Which tool to render — driven by the parent's tab strip. */
+  active: AnalyticsKind;
   /** Pending pick the parent map should react to (sets cursor crosshair). */
   pendingPick: AnalyticsPick | null;
   /** Called when this panel begins / cancels a pick request. */
@@ -31,6 +33,12 @@ type Props = {
   lastMapClick: { lat: number; lon: number; pickFor: AnalyticsPick | null } | null;
   /** Notify parent of fresh results so it can render + toggle the layer. */
   onResult: (kind: AnalyticsKind, response: AnalyticsResponse | null) => void;
+  /** Whether the active tool's map layer is currently visible. */
+  layerOn: boolean;
+  /** True when no result exists yet — the toggle is non-interactive. */
+  layerDisabled: boolean;
+  /** Flip the active tool's map layer visibility. */
+  onToggleLayer: () => void;
 };
 
 type ToolState = {
@@ -61,10 +69,14 @@ function pickLabel(point: LatLon | null, placeholder: string): string {
 }
 
 export default function AnalyticsToolsPanel({
+  active,
   pendingPick,
   onRequestPick,
   lastMapClick,
   onResult,
+  layerOn,
+  layerDisabled,
+  onToggleLayer,
 }: Props) {
   const [state, setState] = useState<ToolState>(initial);
   const [capabilities, setCapabilities] = useState<AnalyticsCapabilities | null>(null);
@@ -148,7 +160,7 @@ export default function AnalyticsToolsPanel({
   }, [onResult]);
 
   return (
-    <div className="border-b border-sentinel-line bg-sentinel-panel-2 px-3 py-2">
+    <div className="bg-sentinel-panel-2 px-3 py-2">
       <div className="flex items-center gap-2 pb-2">
         <Sparkles className="h-3.5 w-3.5 text-sentinel-accent" />
         <span className="sentinel-label flex-1">Terrain analytics</span>
@@ -180,108 +192,123 @@ export default function AnalyticsToolsPanel({
         )}
       </div>
 
-      <ToolCard
-        icon={<Eye className="h-3.5 w-3.5" />}
-        title="Viewshed"
-        busy={state.busy}
-        error={state.error}
-        onRun={() => onRun('viewshed')}
-        onClear={() => onClear('viewshed')}
-        runDisabled={!state.observer || state.busy}
-      >
-        <FieldPick
-          label="Observer"
-          value={pickLabel(state.observer, 'Click on map…')}
-          active={pendingPick === 'viewshed.observer'}
-          onPick={() => startPick('viewshed.observer')}
-        />
-        <FieldRange
-          label="Radius"
-          value={state.radius}
-          min={500}
-          max={20000}
-          step={500}
-          suffix="m"
-          onChange={(v) => setState((p) => ({ ...p, radius: v }))}
-        />
-        <FieldRange
-          label="Observer h"
-          value={state.observerHeight}
-          min={0}
-          max={50}
-          step={0.5}
-          suffix="m"
-          onChange={(v) => setState((p) => ({ ...p, observerHeight: v }))}
-        />
-      </ToolCard>
+      {active === 'viewshed' && (
+        <ToolCard
+          icon={<Eye className="h-3.5 w-3.5" />}
+          title="Viewshed"
+          busy={state.busy}
+          error={state.error}
+          onRun={() => onRun('viewshed')}
+          onClear={() => onClear('viewshed')}
+          runDisabled={!state.observer || state.busy}
+          layerOn={layerOn}
+          layerDisabled={layerDisabled}
+          onToggleLayer={onToggleLayer}
+        >
+          <FieldPick
+            label="Observer"
+            value={pickLabel(state.observer, 'Click on map…')}
+            active={pendingPick === 'viewshed.observer'}
+            onPick={() => startPick('viewshed.observer')}
+          />
+          <FieldRange
+            label="Radius"
+            value={state.radius}
+            min={500}
+            max={20000}
+            step={500}
+            suffix="m"
+            onChange={(v) => setState((p) => ({ ...p, radius: v }))}
+          />
+          <FieldRange
+            label="Observer h"
+            value={state.observerHeight}
+            min={0}
+            max={50}
+            step={0.5}
+            suffix="m"
+            onChange={(v) => setState((p) => ({ ...p, observerHeight: v }))}
+          />
+        </ToolCard>
+      )}
 
-      <ToolCard
-        icon={<Spline className="h-3.5 w-3.5" />}
-        title="Line of sight"
-        busy={state.busy}
-        error={state.error}
-        onRun={() => onRun('los')}
-        onClear={() => onClear('los')}
-        runDisabled={!state.observer || !state.destination || state.busy}
-      >
-        <FieldPick
-          label="Observer"
-          value={pickLabel(state.observer, 'Click on map…')}
-          active={pendingPick === 'los.observer'}
-          onPick={() => startPick('los.observer')}
-        />
-        <FieldPick
-          label="Target"
-          value={pickLabel(state.destination, 'Click on map…')}
-          active={pendingPick === 'los.target'}
-          onPick={() => startPick('los.target')}
-        />
-        <FieldRange
-          label="Target h"
-          value={state.targetHeight}
-          min={0}
-          max={50}
-          step={0.5}
-          suffix="m"
-          onChange={(v) => setState((p) => ({ ...p, targetHeight: v }))}
-        />
-      </ToolCard>
+      {active === 'los' && (
+        <ToolCard
+          icon={<Spline className="h-3.5 w-3.5" />}
+          title="Line of sight"
+          busy={state.busy}
+          error={state.error}
+          onRun={() => onRun('los')}
+          onClear={() => onClear('los')}
+          runDisabled={!state.observer || !state.destination || state.busy}
+          layerOn={layerOn}
+          layerDisabled={layerDisabled}
+          onToggleLayer={onToggleLayer}
+        >
+          <FieldPick
+            label="Observer"
+            value={pickLabel(state.observer, 'Click on map…')}
+            active={pendingPick === 'los.observer'}
+            onPick={() => startPick('los.observer')}
+          />
+          <FieldPick
+            label="Target"
+            value={pickLabel(state.destination, 'Click on map…')}
+            active={pendingPick === 'los.target'}
+            onPick={() => startPick('los.target')}
+          />
+          <FieldRange
+            label="Target h"
+            value={state.targetHeight}
+            min={0}
+            max={50}
+            step={0.5}
+            suffix="m"
+            onChange={(v) => setState((p) => ({ ...p, targetHeight: v }))}
+          />
+        </ToolCard>
+      )}
 
-      <ToolCard
-        icon={<RouteIcon className="h-3.5 w-3.5" />}
-        title="Routes"
-        busy={state.busy}
-        error={state.error}
-        onRun={() => onRun('routes')}
-        onClear={() => onClear('routes')}
-        runDisabled={!state.observer || !state.destination || state.busy}
-      >
-        <FieldPick
-          label="Start"
-          value={pickLabel(state.observer, 'Click on map…')}
-          active={pendingPick === 'routes.start'}
-          onPick={() => startPick('routes.start')}
-        />
-        <FieldPick
-          label="End"
-          value={pickLabel(state.destination, 'Click on map…')}
-          active={pendingPick === 'routes.end'}
-          onPick={() => startPick('routes.end')}
-        />
-        <div className="flex items-center justify-between gap-2 py-1">
-          <span className="text-[10px] text-sentinel-muted uppercase tracking-wider">Strategy</span>
-          <select
-            value={state.strategy}
-            onChange={(e) => setState((p) => ({ ...p, strategy: e.target.value as ToolState['strategy'] }))}
-            className="bg-sentinel-bg text-xs text-slate-200 border border-sentinel-line-2 px-1.5 py-0.5"
-          >
-            <option value="all">All options</option>
-            <option value="shortest">Shortest</option>
-            <option value="least_exposure">Least exposure</option>
-            <option value="balanced">Balanced</option>
-          </select>
-        </div>
-      </ToolCard>
+      {active === 'routes' && (
+        <ToolCard
+          icon={<RouteIcon className="h-3.5 w-3.5" />}
+          title="Routes"
+          busy={state.busy}
+          error={state.error}
+          onRun={() => onRun('routes')}
+          onClear={() => onClear('routes')}
+          runDisabled={!state.observer || !state.destination || state.busy}
+          layerOn={layerOn}
+          layerDisabled={layerDisabled}
+          onToggleLayer={onToggleLayer}
+        >
+          <FieldPick
+            label="Start"
+            value={pickLabel(state.observer, 'Click on map…')}
+            active={pendingPick === 'routes.start'}
+            onPick={() => startPick('routes.start')}
+          />
+          <FieldPick
+            label="End"
+            value={pickLabel(state.destination, 'Click on map…')}
+            active={pendingPick === 'routes.end'}
+            onPick={() => startPick('routes.end')}
+          />
+          <div className="flex items-center justify-between gap-2 py-1">
+            <span className="text-[10px] text-sentinel-muted uppercase tracking-wider">Strategy</span>
+            <select
+              value={state.strategy}
+              onChange={(e) => setState((p) => ({ ...p, strategy: e.target.value as ToolState['strategy'] }))}
+              className="bg-sentinel-bg text-xs text-slate-200 border border-sentinel-line-2 px-1.5 py-0.5"
+            >
+              <option value="all">All options</option>
+              <option value="shortest">Shortest</option>
+              <option value="least_exposure">Least exposure</option>
+              <option value="balanced">Balanced</option>
+            </select>
+          </div>
+        </ToolCard>
+      )}
     </div>
   );
 }
@@ -357,6 +384,9 @@ function ToolCard({
   onRun,
   onClear,
   runDisabled,
+  layerOn,
+  layerDisabled,
+  onToggleLayer,
   children,
 }: {
   icon: React.ReactNode;
@@ -366,13 +396,27 @@ function ToolCard({
   onRun: () => void;
   onClear: () => void;
   runDisabled: boolean;
+  layerOn: boolean;
+  layerDisabled: boolean;
+  onToggleLayer: () => void;
   children: React.ReactNode;
 }) {
+  const layerActive = layerOn && !layerDisabled;
   return (
-    <div className="border border-sentinel-line-2 bg-sentinel-bg p-2 mb-2">
+    <div className="border border-sentinel-line-2 bg-sentinel-bg p-2">
       <div className="flex items-center gap-2 pb-1">
         <span className="text-sentinel-accent">{icon}</span>
-        <span className="text-[11px] font-bold uppercase tracking-wider text-slate-200">{title}</span>
+        <span className="flex-1 text-[11px] font-bold uppercase tracking-wider text-slate-200">{title}</span>
+        <button
+          type="button"
+          onClick={onToggleLayer}
+          disabled={layerDisabled}
+          className={`sentinel-btn h-6 flex items-center gap-1 ${layerActive ? 'primary' : ''} ${layerDisabled ? 'opacity-40 cursor-not-allowed' : ''}`}
+          title={layerDisabled ? 'Run the tool first to enable this layer' : layerActive ? 'Hide on map' : 'Show on map'}
+        >
+          {layerActive ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+          <span className="font-mono text-[10px]">SHOW</span>
+        </button>
       </div>
       {children}
       <div className="flex items-center gap-2 pt-2">
