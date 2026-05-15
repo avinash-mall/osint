@@ -143,3 +143,8 @@ def conservative_detection_ontology(
         "generated_by": "open-vocab-rules",
         "status": "unrated",
     }
+
+
+# Backwards-compatible alias. The thin wrappers that used to live in main.py
+# and worker.py just forwarded a single positional argument here.
+detection_ontology = conservative_detection_ontology

@@ -30,7 +30,12 @@ import numpy as np
 from PIL import Image
 from imagery_metadata import extract_raster_metadata
 from detection_policy import active_detection_policy, detection_decision, parent_class_for_label
-from threat_assessment import assess_detection_threat, clean_detection_class, conservative_detection_ontology
+from threat_assessment import (
+    assess_detection_threat,
+    clean_detection_class,
+    conservative_detection_ontology,
+    detection_ontology,
+)
 from ontology import normalize as ontology_normalize
 import provider_lifecycle
 
@@ -130,32 +135,7 @@ def ensure_worker_imagery_schema() -> None:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_detection_target_candidates_target ON detection_target_candidates(target_id, status)")
 
 
-def record_timeline_event(domain: str, event_type: str, title: str, payload: dict, occurred_at: str = None) -> None:
-    try:
-        with postgis_db.get_cursor(commit=True) as cursor:
-            cursor.execute("""
-                INSERT INTO timeline_events (domain, event_type, title, payload, occurred_at)
-                VALUES (%s, %s, %s, %s, COALESCE(%s::timestamptz, NOW()))
-            """, (domain, event_type, title, json.dumps(payload or {}, default=str), occurred_at))
-    except Exception as exc:
-        logger.warning("Failed to record timeline event: %s", exc)
-
-
-import redis
-_REDIS_POOL = None
-
-def get_redis_client():
-    global _REDIS_POOL
-    if _REDIS_POOL is None:
-        _REDIS_POOL = redis.ConnectionPool.from_url(REDIS_URL, decode_responses=True)
-    return redis.Redis(connection_pool=_REDIS_POOL)
-
-def publish_event(topic: str, payload: dict) -> None:
-    try:
-        client = get_redis_client()
-        client.publish(f"events:{topic}", json.dumps(payload, default=str))
-    except Exception as e:
-        logger.warning("Failed to publish %s event: %s", topic, e)
+from events import get_redis_client, publish_event, record_timeline_event
 
 
 def update_upload_job(
@@ -394,22 +374,7 @@ def clip_box_to_valid_mask(
     return clipped_x1, clipped_y1, clipped_x2, clipped_y2
 
 
-def bbox_iou(a: list[float], b: list[float]) -> float:
-    if len(a) != 4 or len(b) != 4:
-        return 0.0
-    ax1, ay1, ax2, ay2 = a
-    bx1, by1, bx2, by2 = b
-    inter_x1 = max(ax1, bx1)
-    inter_y1 = max(ay1, by1)
-    inter_x2 = min(ax2, bx2)
-    inter_y2 = min(ay2, by2)
-    inter_area = max(0, inter_x2 - inter_x1) * max(0, inter_y2 - inter_y1)
-    if inter_area == 0:
-        return 0.0
-    area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
-    area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
-    union = area_a + area_b - inter_area
-    return inter_area / union if union else 0.0
+from geometry import iou_cxcywh, iou_xyxy as bbox_iou
 
 
 def polygon_iou(a: list[float], b: list[float]) -> float:
@@ -524,10 +489,6 @@ def plan_inference_grid(width: int, height: int, chip_size: int, overlap: int, m
         "sampled": sampled,
         "max_chips": max_chips,
     }
-
-
-def detection_ontology(det_class: str) -> dict:
-    return conservative_detection_ontology(det_class)
 
 
 def classify_detection_ontologies(detections: list, progress_callback=None) -> dict[str, dict]:
@@ -1455,24 +1416,7 @@ def _update_clip_tracking(clip_id: int, **fields) -> None:
         logger.exception("failed to update fmv_clips.metadata for clip %s", clip_id)
 
 
-def _bbox_iou(a: list[float], b: list[float]) -> float:
-    """IoU between two cxcywh-normalised bboxes; returns 0 for empty inputs."""
-    if not a or not b or len(a) < 4 or len(b) < 4:
-        return 0.0
-    acx, acy, aw, ah = a[:4]
-    bcx, bcy, bw, bh = b[:4]
-    if aw <= 0 or ah <= 0 or bw <= 0 or bh <= 0:
-        return 0.0
-    ax1, ay1 = acx - aw / 2, acy - ah / 2
-    ax2, ay2 = acx + aw / 2, acy + ah / 2
-    bx1, by1 = bcx - bw / 2, bcy - bh / 2
-    bx2, by2 = bcx + bw / 2, bcy + bh / 2
-    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
-    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
-    iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
-    inter = iw * ih
-    union = aw * ah + bw * bh - inter
-    return inter / union if union > 0 else 0.0
+_bbox_iou = iou_cxcywh
 
 
 def _drain_response_entries(resp) -> list[dict]:

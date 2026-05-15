@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Temporarily restart inference-sam3 with a "video profile" (only SAM3 image
-# + SAM3 video + DINOV3_LVD loaded), run a command, then restore the
+# + SAM3 video + DINOV3_SAT loaded), run a command, then restore the
 # default full-stack profile.
 #
 # Usage:  scripts/run_video_profile.sh <command> [args...]
@@ -34,12 +34,11 @@ trap cleanup EXIT
 echo "[run_video_profile] backing up $ENV_FILE ..."
 cp "$ENV_FILE" "$ENV_BACKUP"
 
-# Set video profile: keep DINOV3_LVD on, turn everything else off.
+# Set video profile: keep DINOV3_SAT on, turn satellite-only auxiliaries off.
 echo "[run_video_profile] applying video profile to $ENV_FILE ..."
 sed -i \
     -e 's/^SAM3_LOAD_OPTIONAL_MODELS=.*/SAM3_LOAD_OPTIONAL_MODELS=0/' \
-    -e 's/^SAM3_LOAD_DINOV3_SAT=.*/SAM3_LOAD_DINOV3_SAT=0/' \
-    -e 's/^SAM3_LOAD_DINOV3_LVD=.*/SAM3_LOAD_DINOV3_LVD=1/' \
+    -e 's/^SAM3_LOAD_DINOV3_SAT=.*/SAM3_LOAD_DINOV3_SAT=1/' \
     -e 's/^SAM3_LOAD_PRITHVI=.*/SAM3_LOAD_PRITHVI=0/' \
     -e 's/^SAM3_LOAD_TERRAMIND=.*/SAM3_LOAD_TERRAMIND=0/' \
     "$ENV_FILE"

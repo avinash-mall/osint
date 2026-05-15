@@ -110,7 +110,6 @@ EMBEDDING_CONFIGS: list[dict] = [
     {"name": "sam3_only",       "enabled_layers": ["sam3"]},
     {"name": "sam3+dinov3_sat", "enabled_layers": ["sam3", "dinov3_sat"]},
     {"name": "sam3+terramind",  "enabled_layers": ["sam3", "terramind"]},
-    # DINOV3_LVD removed: NaN on real video crops, 2.5× slower than SAT.
 ]
 
 
@@ -636,7 +635,7 @@ def _aggregate_segmenter_results(
 
 
 # ---------------------------------------------------------------------------
-# Embedding chip evaluation (DINOV3_SAT, DINOV3_LVD, TERRAMIND)
+# Embedding chip evaluation (DINOV3_SAT, TERRAMIND)
 # ---------------------------------------------------------------------------
 
 def _evaluate_embedding_chip(
@@ -1853,7 +1852,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "Dataset slice to evaluate (default: dota). "
             "Choices: dota (box detectors), hls_burn / sen1floods (PRITHVI segmenter heads), "
             "sar (synthetic 2-band SAR for TERRAMIND latency only), "
-            "embedding (DINOV3_SAT / DINOV3_LVD / TERRAMIND embedding latency), "
+            "embedding (DINOV3_SAT / TERRAMIND embedding latency), "
             "all (runs dota + hls_burn + embedding and combines into one full report)."
         ),
     )

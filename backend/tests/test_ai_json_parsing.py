@@ -5,11 +5,11 @@ import re
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 
 def load_ai_json_helpers():
-    path = REPO_ROOT / "backend" / "ai.py"
+    path = BACKEND_DIR / "ai.py"
     source = path.read_text(encoding="utf-8")
     start = source.index("class AIUnavailable")
     end = source.index("def get_ai_response", start)

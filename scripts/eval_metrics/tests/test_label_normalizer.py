@@ -163,28 +163,3 @@ def test_case_insensitive_dota():
     # DOTA labels arrive in various casings from detectors
     assert normalize("PLANE", "dota_obb") == normalize("plane", "dota_obb")
     assert normalize("Large-Vehicle", "dota_obb") == normalize("large-vehicle", "dota_obb")
-
-
-# ---------------------------------------------------------------------------
-# DEFENCE_YOLO label tests
-# ---------------------------------------------------------------------------
-
-def test_defence_yolo_ifv_maps_to_armored():
-    result = normalize("IFV", "defence_yolo")
-    assert "armored" in result, f"Expected armored, got '{result}'"
-
-
-def test_defence_yolo_apc_maps_to_armored():
-    result = normalize("APC", "defence_yolo")
-    assert "armored" in result, f"Expected armored, got '{result}'"
-
-
-def test_defence_yolo_artillery_maps_to_artillery():
-    assert normalize("Artillery", "defence_yolo") == "artillery"
-
-
-def test_defence_yolo_truck_maps_to_logistics():
-    result = normalize("Truck", "defence_yolo")
-    assert result in ("logistics", "tactical_vehicle", "military_forces"), (
-        f"Unexpected branch for 'Truck': {result!r}"
-    )

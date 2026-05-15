@@ -114,6 +114,14 @@ tar xzf /path/to/sentinel-repo.tar.gz
 #    HF_HUB_OFFLINE=1 will refuse any download attempt anyway.
 cp .env.offline.example .env
 
+# 3a. Generate per-deployment auth secrets BEFORE first boot.
+#     The backend refuses to start if SESSION_SECRET is missing or <16 chars.
+echo "SESSION_SECRET=$(openssl rand -hex 32)"          >> .env
+echo "ADMIN_USERNAME=admin"                            >> .env
+echo "ADMIN_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=')" >> .env
+# Optional: tighten cookie security if you're terminating TLS upstream of nginx.
+# echo "FORCE_HTTPS=1" >> .env
+
 # 4. Start the stack.
 docker compose up -d
 
@@ -122,10 +130,15 @@ docker compose up -d
 docker compose ps
 ```
 
-Open `http://<host>:3000` in a browser. The GEOINT map should render
-with dark tiles (served from `/basemap/...`), the FMV tab should accept
-uploads and stream them via HLS, and the detection pipeline should run
-end-to-end without any DNS resolution leaving the host.
+Open `http://<host>:3000` in a browser. Log in with the
+`ADMIN_USERNAME` / `ADMIN_PASSWORD` you wrote into `.env` in step 3a —
+every mutating endpoint is gated behind the `sentinel_session` cookie.
+The Geoint map should render with dark tiles (served from `/basemap/...`),
+the Drone Video tab should accept uploads and stream them via HLS, and
+the detection pipeline should run end-to-end without any DNS resolution
+leaving the host. For multi-user setups, configure LDAP from the
+**Admin → Auth · LDAP** tab; the config persists in the `auth_config`
+row in PostGIS.
 
 ## Verifying zero egress
 
@@ -144,7 +157,9 @@ networks:
 EOF
 docker compose -f docker-compose.yml -f docker-compose.airgap.yml up -d
 
-# 2. Click through every UI tab (Map, FMV, Detections, Ontology, Login).
+# 2. Click through every workspace (Geoint, Drone Video, Link Graph, Admin)
+#    and every Admin tab (Ontology, Upload, Processing, Models, Health,
+#    Conf overrides, Prompt profiles, Versions, Alerts, Auth).
 #    In browser devtools → Network, filter for `googleapis|gstatic|cartocdn`:
 #    expect ZERO hits. Every request must be same-origin (host:3000).
 

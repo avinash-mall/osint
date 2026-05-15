@@ -402,29 +402,89 @@ function ProcessingView({ onCount }: { onCount: (n: number) => void }) {
 /*  Models                                                             */
 /* ------------------------------------------------------------------ */
 
-type ModelRow = {
-  id: number;
-  name: string;
-  version: string;
-  status: string;
-  promoted: boolean;
-  metrics?: Record<string, number> | null;
-  created_at?: string;
+// model_versions entries that are tuning flags rather than actual model
+// identifiers — filtered out of the live model list.
+const INFERENCE_FLAG_KEYS = new Set<string>([
+  'sam3_weights_source',
+  'sam3_mirror_repo_id',
+  'sam3_compile_image',
+  'sam3_compile_video',
+  'sam3_batched_text',
+  'sam3_batched_text_chunk_size',
+  'sam3_category_threshold',
+  'flash_attn_3',
+]);
+
+const INFERENCE_MODEL_LABELS: Record<string, { title: string; family: string }> = {
+  sam3_image:        { title: 'SAM3 (image)',           family: 'Segmentation' },
+  sam3_video:        { title: 'SAM3 (video)',           family: 'Tracking'     },
+  dinov3_sat:        { title: 'DINOv3 SAT',             family: 'Embedding'    },
+  prithvi_backbone:  { title: 'Prithvi backbone',       family: 'Geospatial'   },
+  prithvi_flood:     { title: 'Prithvi flood',          family: 'Geospatial'   },
+  prithvi_burn:      { title: 'Prithvi burn scars',     family: 'Geospatial'   },
+  terramind:         { title: 'TerraMind',              family: 'Geospatial'   },
+  yoloe_pf:          { title: 'YOLOe (prompt-free)',    family: 'Detection'    },
+  yoloe_seg:         { title: 'YOLOe (segmentation)',   family: 'Detection'    },
 };
 
+type InferenceHealth = {
+  model_loaded: boolean;
+  current_profile: string | null;
+  available_profiles?: string[];
+  device?: string;
+  gpu_model?: string;
+  model_versions?: Record<string, string>;
+  load_flags?: Record<string, boolean>;
+};
+
+type LiveModel = {
+  key: string;
+  title: string;
+  family: string;
+  version: string;
+  status: 'LOADED' | 'ENABLED' | 'DISABLED' | 'AVAILABLE';
+};
+
+function buildLiveModels(h: InferenceHealth | null): LiveModel[] {
+  if (!h?.model_versions) return [];
+  const flags = h.load_flags || {};
+  const loaded = !!h.model_loaded;
+  const profile = (h.current_profile || '').toLowerCase();
+  const out: LiveModel[] = [];
+  for (const [key, version] of Object.entries(h.model_versions)) {
+    if (INFERENCE_FLAG_KEYS.has(key)) continue;
+    const meta = INFERENCE_MODEL_LABELS[key] ?? { title: key, family: '—' };
+
+    // sam3 is the gateway model — its load state is driven by the active
+    // inference profile rather than a per-key load_flag.
+    let status: LiveModel['status'];
+    if (key === 'sam3_image' || key === 'sam3_video') {
+      status = loaded && (profile === 'fmv' || profile === 'imagery' || profile === 'all')
+        ? 'LOADED'
+        : 'AVAILABLE';
+    } else if (key in flags) {
+      status = flags[key] ? 'ENABLED' : 'DISABLED';
+    } else {
+      status = 'AVAILABLE';
+    }
+
+    out.push({ key, title: meta.title, family: meta.family, version, status });
+  }
+  return out;
+}
+
 function ModelsView({ onCount }: { onCount: (n: number) => void }) {
-  const [models, setModels] = useState<ModelRow[]>([]);
+  const [health, setHealth] = useState<InferenceHealth | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     setErr(null);
     try {
-      const r = await axios.get<{ models?: ModelRow[] }>(`${API_URL}/api/models`);
-      setModels(r.data.models ?? []);
+      const r = await axios.get<InferenceHealth>(`${API_URL}/api/inference/health`);
+      setHealth(r.data);
     } catch (e: any) {
       setErr(e?.message ?? String(e));
-      setModels([]);
+      setHealth(null);
     }
   }, []);
 
@@ -432,30 +492,20 @@ function ModelsView({ onCount }: { onCount: (n: number) => void }) {
     load();
   }, [load]);
 
+  const models = useMemo(() => buildLiveModels(health), [health]);
+
   useEffect(() => {
     onCount(models.length);
   }, [models.length, onCount]);
 
-  const promote = useCallback(
-    async (id: number) => {
-      setBusy(id);
-      try {
-        await axios.post(`${API_URL}/api/models/${id}/promote`);
-        await load();
-      } catch (e: any) {
-        setErr(e?.message ?? String(e));
-      } finally {
-        setBusy(null);
-      }
-    },
-    [load],
-  );
+  const profile = health?.current_profile || '—';
+  const device = health?.gpu_model || health?.device || '—';
 
   return (
     <>
       <ViewHeader
         title="AI models"
-        sub={`${models.length} registered · POST /api/models/{id}/promote`}
+        sub={`${models.length} bundled · profile=${profile} · device=${device}`}
         actions={
           <button className="btn sm" type="button" onClick={load} title="Refresh">
             <RefreshCw size={12} />
@@ -470,7 +520,7 @@ function ModelsView({ onCount }: { onCount: (n: number) => void }) {
         )}
         {!err && models.length === 0 && (
           <div className="mono" style={{ color: 'var(--ink-2)', padding: 12, fontSize: 11 }}>
-            No models registered.  Promote one via POST /api/models/&lt;id&gt;/promote.
+            Inference service reported no models.
           </div>
         )}
         {models.length > 0 && (
@@ -478,61 +528,32 @@ function ModelsView({ onCount }: { onCount: (n: number) => void }) {
             <thead>
               <tr>
                 <th>Model</th>
+                <th>Family</th>
                 <th>Version</th>
+                <th>Key</th>
                 <th>Status</th>
-                <th>Registered</th>
-                <th>Promoted</th>
-                <th />
               </tr>
             </thead>
             <tbody>
-              {models.map((m) => (
-                <tr key={m.id}>
-                  <td style={{ fontWeight: 500 }}>{m.name}</td>
-                  <td className="mono">{m.version}</td>
-                  <td>
-                    <span
-                      className="mono"
-                      style={{
-                        fontSize: 10.5,
-                        color: m.status === 'available' ? 'var(--ok)' : 'var(--ink-2)',
-                        letterSpacing: '.08em',
-                      }}
-                    >
-                      {(m.status || 'unknown').toUpperCase()}
-                    </span>
-                  </td>
-                  <td className="mono">{relativeTime(m.created_at)}</td>
-                  <td>
-                    <span
-                      className="mono"
-                      style={{
-                        fontSize: 10.5,
-                        color: m.promoted ? 'var(--ok)' : 'var(--ink-2)',
-                        letterSpacing: '.08em',
-                      }}
-                    >
-                      {m.promoted ? 'PROMOTED' : 'CANDIDATE'}
-                    </span>
-                  </td>
-                  <td>
-                    {m.promoted ? (
-                      <button className="btn xs ghost icon" type="button" title="Details">
-                        <MoreHorizontal size={11} />
-                      </button>
-                    ) : (
-                      <button
-                        className="btn xs"
-                        type="button"
-                        disabled={busy === m.id}
-                        onClick={() => promote(m.id)}
-                      >
-                        {busy === m.id ? 'Promoting…' : 'Promote'}
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {models.map((m) => {
+                const color =
+                  m.status === 'LOADED' || m.status === 'ENABLED' ? 'var(--ok)'
+                  : m.status === 'DISABLED' ? 'var(--crit)'
+                  : 'var(--ink-2)';
+                return (
+                  <tr key={m.key}>
+                    <td style={{ fontWeight: 500 }}>{m.title}</td>
+                    <td className="mono" style={{ color: 'var(--ink-2)', fontSize: 11 }}>{m.family}</td>
+                    <td className="mono">{m.version}</td>
+                    <td className="mono" style={{ color: 'var(--ink-2)', fontSize: 11 }}>{m.key}</td>
+                    <td>
+                      <span className="mono" style={{ fontSize: 10.5, color, letterSpacing: '.08em' }}>
+                        {m.status}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
