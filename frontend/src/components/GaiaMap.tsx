@@ -21,10 +21,12 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Route as RouteIcon,
   Satellite,
   Search,
   Send,
   Shield,
+  Spline,
   Swords,
 } from 'lucide-react';
 import { objectIconComponent } from '../utils/branchIcons';
@@ -616,7 +618,7 @@ export default function GaiaMap({
     los: null,
     routes: null,
   });
-  const [analyticsTab, setAnalyticsTab] = useState<AnalyticsKind>('viewshed');
+  const [rightTab, setRightTab] = useState<'selection' | AnalyticsKind>('selection');
   const [overlaysOpen, setOverlaysOpen] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   // Modern shell: each side panel can be collapsed to a 36 px floating handle so
@@ -1135,11 +1137,12 @@ export default function GaiaMap({
       if (feat) {
         setSelectedDetection(feat);
         setRightOpen(true);
+        if (!pendingPick) setRightTab('selection');
       }
     };
     window.addEventListener('sentinel:jump-to-detection', handler);
     return () => window.removeEventListener('sentinel:jump-to-detection', handler);
-  }, [detectionsGeoJSON]);
+  }, [detectionsGeoJSON, pendingPick]);
 
   // Consume cross-workspace navigation: when the user clicks "Open on GEOINT"
   // from Ontology or FMV we land here with a detectionId or className. Select
@@ -1154,13 +1157,14 @@ export default function GaiaMap({
       if (feat) {
         setSelectedDetection(feat);
         setRightOpen(true);
+        if (!pendingPick) setRightTab('selection');
       }
     }
     if (crossNav.className) {
       setDetectionClassFilter(crossNav.className);
     }
     consumeCrossNav?.();
-  }, [crossNav, detectionsGeoJSON, consumeCrossNav]);
+  }, [crossNav, detectionsGeoJSON, consumeCrossNav, pendingPick]);
   useEffect(() => {
     if (!onCursorChange) return;
     return () => onCursorChange(null);
@@ -1214,6 +1218,7 @@ export default function GaiaMap({
           },
         });
         setRightOpen(true);
+        if (!pendingPick) setRightTab('selection');
         return data;
       } catch (err: any) {
         const detail = err?.response?.data?.detail || err?.message || 'manual detection failed';
@@ -1224,7 +1229,7 @@ export default function GaiaMap({
         setIsActionBusy(false);
       }
     },
-    [fetchDetections],
+    [fetchDetections, pendingPick],
   );
 
   const deleteDetection = useCallback(async (detectionId: number) => {
@@ -1529,48 +1534,6 @@ export default function GaiaMap({
             );
           })}
 
-          <div className="flex border-y border-sentinel-line bg-sentinel-panel-2">
-            {([
-              ['viewshed', 'Viewshed', analyticsResults.viewshed?.result?.features?.length ?? 0],
-              ['los', 'Line of Sight', analyticsResults.los?.result?.features?.length ?? 0],
-              ['routes', 'Routes', analyticsResults.routes?.result?.features?.length ?? 0],
-            ] as const).map(([k, label, count]) => {
-              const isActive = analyticsTab === k;
-              return (
-                <button
-                  key={k}
-                  type="button"
-                  onClick={() => setAnalyticsTab(k)}
-                  className={`flex-1 h-[34px] font-mono text-[11px] uppercase tracking-[.08em] flex items-center justify-center gap-1.5 border-r border-sentinel-line last:border-r-0 ${
-                    isActive ? 'bg-sentinel-panel text-slate-100' : 'text-sentinel-muted'
-                  }`}
-                  style={{ borderBottom: isActive ? '2px solid var(--accent, #ff7a1a)' : '2px solid transparent' }}
-                >
-                  {label}
-                  <span className={isActive ? 'text-sentinel-accent' : 'text-sentinel-muted'}>{count}</span>
-                </button>
-              );
-            })}
-          </div>
-
-          <AnalyticsToolsPanel
-            active={analyticsTab}
-            pendingPick={pendingPick}
-            onRequestPick={setPendingPick}
-            lastMapClick={lastMapClick}
-            layerOn={!!activeLayers[analyticsTab]}
-            layerDisabled={!analyticsResults[analyticsTab]}
-            onToggleLayer={() =>
-              setActiveLayers((prev) => ({ ...prev, [analyticsTab]: !prev[analyticsTab] }))
-            }
-            onResult={(kind, response) => {
-              setAnalyticsResults((prev) => ({ ...prev, [kind]: response }));
-              if (response) {
-                setActiveLayers((prev) => ({ ...prev, [kind]: true }));
-              }
-              setLastMapClick(null);
-            }}
-          />
 
           <div className="border-b border-sentinel-line bg-sentinel-panel-2 px-3 py-2">
             <div className="flex items-center gap-2">
@@ -2465,15 +2428,68 @@ export default function GaiaMap({
           minHeight: 0,
         }}
       >
-        <div className="sentinel-panel-header">
-          <Crosshair className="h-4 w-4" />
-          <span>Selection</span>
-          <span className="sentinel-tag acc ml-auto">DETAIL</span>
-          <button type="button" onClick={() => setRightOpen(false)} className="sentinel-icon-btn h-6 w-6" title="Collapse panel">
-            <ChevronRight className="h-3.5 w-3.5" />
-          </button>
+        {(() => {
+          const rightHeader =
+            rightTab === 'viewshed' ? { Icon: Eye,       label: 'Viewshed',      tag: 'ANALYTICS' } :
+            rightTab === 'los'      ? { Icon: Spline,    label: 'Line of Sight', tag: 'ANALYTICS' } :
+            rightTab === 'routes'   ? { Icon: RouteIcon, label: 'Routes',        tag: 'ANALYTICS' } :
+                                      { Icon: Crosshair, label: 'Selection',     tag: 'DETAIL'    };
+          const HeaderIcon = rightHeader.Icon;
+          return (
+            <div className="sentinel-panel-header">
+              <HeaderIcon className="h-4 w-4" />
+              <span>{rightHeader.label}</span>
+              <span className="sentinel-tag acc ml-auto">{rightHeader.tag}</span>
+              <button type="button" onClick={() => setRightOpen(false)} className="sentinel-icon-btn h-6 w-6" title="Collapse panel">
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          );
+        })()}
+        <div className="flex border-b border-sentinel-line bg-sentinel-panel-2">
+          {([
+            ['selection', 'Selection', selectedDetection ? 1 : 0],
+            ['viewshed', 'Viewshed', analyticsResults.viewshed?.result?.features?.length ?? 0],
+            ['los', 'Line of Sight', analyticsResults.los?.result?.features?.length ?? 0],
+            ['routes', 'Routes', analyticsResults.routes?.result?.features?.length ?? 0],
+          ] as const).map(([k, label, count]) => {
+            const isActive = rightTab === k;
+            return (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setRightTab(k)}
+                className={`flex-1 h-[34px] font-mono text-[10.5px] uppercase tracking-[.08em] flex items-center justify-center gap-1.5 border-r border-sentinel-line last:border-r-0 ${
+                  isActive ? 'bg-sentinel-panel text-slate-100' : 'text-sentinel-muted'
+                }`}
+                style={{ borderBottom: isActive ? '2px solid var(--accent, #ff7a1a)' : '2px solid transparent' }}
+              >
+                {label}
+                <span className={isActive ? 'text-sentinel-accent' : 'text-sentinel-muted'}>{count}</span>
+              </button>
+            );
+          })}
         </div>
         <div className="sentinel-scroll">
+          {rightTab !== 'selection' && (
+            <AnalyticsToolsPanel
+              active={rightTab}
+              pendingPick={pendingPick}
+              onRequestPick={setPendingPick}
+              lastMapClick={lastMapClick}
+              layerOn={!!activeLayers[rightTab]}
+              layerDisabled={!analyticsResults[rightTab]}
+              onToggleLayer={() =>
+                setActiveLayers((prev) => ({ ...prev, [rightTab]: !prev[rightTab] }))
+              }
+              onResult={(kind, response) => {
+                setAnalyticsResults((prev) => ({ ...prev, [kind]: response }));
+                if (response) setActiveLayers((prev) => ({ ...prev, [kind]: true }));
+                setLastMapClick(null);
+              }}
+            />
+          )}
+          {rightTab === 'selection' && (<>
           {selectedDetection ? (
             <>
               <div className="border-b border-sentinel-line p-3">
@@ -2728,6 +2744,7 @@ export default function GaiaMap({
               {actionStatus || (selectedDetection ? 'Detection action ready.' : 'Select a detection to enable actions.')}
             </div>
           </div>
+          </>)}
         </div>
       </section>
       ) : (
