@@ -1021,7 +1021,7 @@ export default function GaiaMap({
   }, [timeRange]);
 
   const fetchDetectionFeatures = useCallback(async () => {
-    if (!mapBounds || !detectionClassFilter) {
+    if (!mapBounds) {
       setDetectionsGeoJSON({ type: 'FeatureCollection', features: [] });
       setDetectionsLayerVersion((version) => version + 1);
       return;
@@ -1032,9 +1032,11 @@ export default function GaiaMap({
         start_time: timeRange.start,
         end_time: timeRange.end,
         bbox: mapBounds,
-        det_class: detectionClassFilter,
         limit: '20000',
       });
+      if (detectionClassFilter) {
+        geoParams.append('det_class', detectionClassFilter);
+      }
       const response = await axios.get(`${API_URL}/api/detections/geojson?${geoParams.toString()}`, { timeout: 10000 });
       setDetectionsGeoJSON(response.data || { type: 'FeatureCollection', features: [] });
       setDetectionsLayerVersion((version) => version + 1);
