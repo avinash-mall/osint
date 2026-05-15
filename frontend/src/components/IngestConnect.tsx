@@ -62,6 +62,8 @@ export default function IngestConnect() {
   const [file, setFile] = useState<File | null>(null);
   const [sidecarFile, setSidecarFile] = useState<File | null>(null);
   const [sensorType, setSensorType] = useState('Optical');
+  const [fmvModel, setFmvModel] = useState<'sam3' | 'yolo26'>('sam3');
+  const [fmvPromptMode, setFmvPromptMode] = useState<'pcs' | 'amg'>('pcs');
   const [selectedDefenceIds, setSelectedDefenceIds] = useState<Set<string>>(new Set());
   const [objectSearch, setObjectSearch] = useState('');
   const [customObjects, setCustomObjects] = useState('');
@@ -278,6 +280,8 @@ export default function IngestConnect() {
         // attached and the clip record is created with HLS transcode +
         // SAM3-video tracking queued in one shot.
         endpoint = `${API_URL}/api/fmv/clips`;
+        form.append('model', fmvModel);
+        form.append('prompt_mode', fmvPromptMode);
         if (sidecarFile) {
           form.append('srt', sidecarFile);
         }
@@ -521,6 +525,62 @@ export default function IngestConnect() {
           </label>
         )}
 
+        {mediaType === 'fmv' && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">Model</div>
+              <select
+                value={fmvModel}
+                onChange={(event) => {
+                  const next = event.target.value as 'sam3' | 'yolo26';
+                  setFmvModel(next);
+                  // SAM 3.1 only supports PCS; AMG is YOLO 26 only.
+                  if (next === 'sam3' && fmvPromptMode === 'amg') setFmvPromptMode('pcs');
+                }}
+                disabled={uploading}
+                className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm"
+                title="Inference engine. SAM 3.1 uses text-prompted multiplex tracking; YOLO 26 runs YOLOE-26x-seg(-pf) per-frame and supports promptless AMG."
+              >
+                <option value="sam3">SAM 3.1 (default)</option>
+                <option value="yolo26">YOLO 26</option>
+              </select>
+            </div>
+            <div>
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">Detection mode</div>
+              <div className="inline-flex border border-slate-700 rounded overflow-hidden w-full">
+                {fmvModel === 'yolo26' && (
+                  <button
+                    type="button"
+                    onClick={() => setFmvPromptMode('amg')}
+                    disabled={uploading}
+                    title="Automatic Mask Generation — YOLOE-26x-seg-pf promptless closed-set detection"
+                    className={`flex-1 px-3 py-2 text-xs font-bold uppercase tracking-wider ${
+                      fmvPromptMode === 'amg'
+                        ? 'bg-blue-500/20 text-blue-200'
+                        : 'bg-slate-900 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    AMG
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setFmvPromptMode('pcs')}
+                  disabled={uploading}
+                  title="Promptable Concept Segmentation — track named classes from the admin ontology"
+                  className={`flex-1 px-3 py-2 text-xs font-bold uppercase tracking-wider ${
+                    fmvPromptMode === 'pcs'
+                      ? 'bg-blue-500/20 text-blue-200'
+                      : 'bg-slate-900 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  PCS
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="flex flex-col gap-2">
           <div className="flex flex-col sm:flex-row gap-3">
             {mediaType === 'imagery' ? (
@@ -551,7 +611,10 @@ export default function IngestConnect() {
           </div>
           <div className="flex flex-wrap gap-1.5 items-center font-mono text-[10px] text-slate-400">
             <span className="text-slate-500 uppercase tracking-wider">Models:</span>
-            {(mediaType === 'fmv' ? ['SAM3-video', 'YOLOE-26x tracker'] : sensorPipeline.models).map((model) => (
+            {(mediaType === 'fmv'
+              ? (fmvModel === 'sam3' ? ['SAM 3.1 (video)'] : ['YOLOE-26x'])
+              : sensorPipeline.models
+            ).map((model) => (
               <span
                 key={model}
                 className="border border-blue-500/40 bg-blue-500/10 text-blue-300 px-2 py-0.5 rounded"
@@ -559,6 +622,11 @@ export default function IngestConnect() {
                 {model}
               </span>
             ))}
+            {mediaType === 'fmv' && (
+              <span className="border border-slate-600 bg-slate-800/40 text-slate-300 px-2 py-0.5 rounded uppercase">
+                {fmvPromptMode}
+              </span>
+            )}
           </div>
           {/* VRAM accounting bar from /api/inference/dashboard */}
           <VramBar />
@@ -575,7 +643,13 @@ export default function IngestConnect() {
           {mediaType === 'fmv' && (
             <div className="flex items-start gap-2 border border-blue-500/40 bg-blue-500/5 text-blue-200 text-xs px-3 py-2 rounded">
               <span className="font-bold uppercase tracking-wider text-[10px]">FMV:</span>
-              <span>Tracking runs on SAM3-video + YOLOE-26x. Concepts come from the ontology defaults; no per-upload prompt picker.</span>
+              <span>
+                {fmvModel === 'sam3'
+                  ? 'SAM 3.1 video tracking with PCS — concepts come from the ontology defaults.'
+                  : fmvPromptMode === 'amg'
+                    ? 'YOLO 26 promptless detection (AMG) — runs YOLOE-26x-seg-pf per frame, no prompts needed.'
+                    : 'YOLO 26 prompted detection (PCS) — concepts come from the ontology defaults.'}
+              </span>
             </div>
           )}
         </div>

@@ -66,7 +66,7 @@ type NavItemDef = {
 
 const NAV: NavItemDef[] = [
   { key: 'ontology',   label: 'Ontology',         Icon: GitBranch },
-  { key: 'upload',     label: 'Upload imagery',   Icon: UploadIcon },
+  { key: 'upload',     label: 'Upload',           Icon: UploadIcon },
   { key: 'processing', label: 'Processing',       Icon: Activity, badgeKey: 'processing' },
   { key: 'models',     label: 'AI models',        Icon: Box,      badgeKey: 'models' },
   { key: 'health',     label: 'Health dashboard', Icon: HeartPulse },
@@ -107,7 +107,7 @@ export default function AdminScreen({
       style={{
         height: '100%',
         display: 'grid',
-        gridTemplateColumns: '220px 1fr',
+        gridTemplateColumns: 'clamp(180px, 18vw, 220px) minmax(0, 1fr)',
         gap: 1,
         background: 'var(--line)',
       }}
@@ -363,8 +363,8 @@ function ProcessingView({ onCount }: { onCount: (n: number) => void }) {
         }
       />
       <div
-        className="scroll"
-        style={{ flex: 1, padding: 18, display: 'flex', flexDirection: 'column', gap: 8 }}
+        className="sentinel-scroll"
+        style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 8 }}
       >
         {err && (
           <div className="card" style={{ padding: 14, borderLeft: '3px solid var(--crit)' }}>
@@ -543,7 +543,7 @@ function ModelsView({ onCount }: { onCount: (n: number) => void }) {
           </button>
         }
       />
-      <div className="scroll" style={{ flex: 1, padding: 18 }}>
+      <div className="sentinel-scroll" style={{ padding: 18 }}>
         {err && (
           <div className="card" style={{ padding: 14, borderLeft: '3px solid var(--crit)' }}>
             <div style={{ color: 'var(--crit)', fontSize: 12 }}>Failed to load models: {err}</div>
@@ -643,8 +643,8 @@ function AlertsView({ onCount }: { onCount: (n: number) => void }) {
         }
       />
       <div
-        className="scroll"
-        style={{ flex: 1, padding: 18, display: 'flex', flexDirection: 'column', gap: 8 }}
+        className="sentinel-scroll"
+        style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 8 }}
       >
         {err && (
           <div className="card" style={{ padding: 14, borderLeft: '3px solid var(--crit)' }}>
