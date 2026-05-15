@@ -30,6 +30,12 @@ import ConfOverrideView from './admin/ConfOverrideView';
 import PromptProfilesView from './admin/PromptProfilesView';
 import TaxonomyVersionView from './admin/TaxonomyVersionView';
 import { Filter, HeartPulse, History, Key, Search } from 'lucide-react';
+import {
+  type UploadJob,
+  isUploadActive,
+  uploadProgress,
+  uploadStage,
+} from '../utils/uploadProgress';
 
 const API_URL = (import.meta as any).env?.VITE_API_URL || '';
 
@@ -236,8 +242,15 @@ type JobRow = {
   status: string;
   created_at?: string | null;
   pct?: number;
-  raw_source: 'analytics' | 'training';
+  raw_source: 'analytics' | 'training' | 'ingest';
 };
+
+function ingestStatus(job: UploadJob): 'running' | 'queued' | 'done' | 'failed' {
+  if (job.status === 'failed') return 'failed';
+  if (job.status === 'ready') return 'done';
+  if (job.status === 'queued') return 'queued';
+  return isUploadActive(job) ? 'running' : 'queued';
+}
 
 type Filter = 'all' | 'running' | 'queued' | 'done' | 'failed';
 
@@ -251,9 +264,10 @@ function ProcessingView({ onCount }: { onCount: (n: number) => void }) {
     setLoading(true);
     setErr(null);
     try {
-      const [a, t] = await Promise.allSettled([
+      const [a, t, u] = await Promise.allSettled([
         axios.get<{ jobs?: any[] }>(`${API_URL}/api/analytics/jobs`),
         axios.get<{ jobs?: any[] }>(`${API_URL}/api/training/jobs`),
+        axios.get<{ uploads?: UploadJob[] } | UploadJob[]>(`${API_URL}/api/ingest/uploads`),
       ]);
       const aRows: JobRow[] = a.status === 'fulfilled'
         ? (a.value.data.jobs ?? []).map((j) => ({
@@ -279,7 +293,22 @@ function ProcessingView({ onCount }: { onCount: (n: number) => void }) {
             raw_source: 'training' as const,
           }))
         : [];
-      setJobs([...aRows, ...tRows]);
+      const uploadsRaw: UploadJob[] = u.status === 'fulfilled'
+        ? (Array.isArray(u.value.data)
+            ? u.value.data
+            : (u.value.data as { uploads?: UploadJob[] }).uploads ?? [])
+        : [];
+      const uRows: JobRow[] = uploadsRaw.map((j) => ({
+        id: j.upload_id || j.id,
+        title: j.filename || `ingest:${j.upload_id || j.id}`,
+        model: (j as any).handler || j.media_type || 'ingest',
+        stage: uploadStage(j),
+        status: ingestStatus(j),
+        created_at: j.created_at,
+        pct: uploadProgress(j) / 100,
+        raw_source: 'ingest' as const,
+      }));
+      setJobs([...uRows, ...aRows, ...tRows]);
     } catch (e: any) {
       setErr(e?.message ?? String(e));
     } finally {
@@ -310,7 +339,7 @@ function ProcessingView({ onCount }: { onCount: (n: number) => void }) {
     <>
       <ViewHeader
         title="Processing jobs"
-        sub={`${jobs.length} jobs across analytics + training`}
+        sub={`${jobs.length} jobs across ingest + analytics + training`}
         actions={
           <>
             <div className="seg">

@@ -440,6 +440,7 @@ The backend exposes 100+ routes. The most commonly used groups:
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/api/analytics/change` · `/viewshed` · `/los` · `/routes` · `/pol` | Spatial analyses |
+| `GET`  | `/api/analytics/capabilities` | Reports whether real DEM + routing graph are present |
 | `GET`  | `/api/analytics/jobs` | Job log |
 | `GET`  | `/api/models` · `/api/models/datasets` | Registered detection models + curated training sets |
 | `POST` | `/api/models/datasets` | Register a dataset |
@@ -468,6 +469,8 @@ The backend exposes 100+ routes. The most commonly used groups:
 | `TITILER_URL` | `http://titiler:8080` | Internal tile server |
 | `INFERENCE_SAM3_URL` | `http://inference-sam3:8001` | Internal SAM3 service |
 | `IMAGERY_PATH` / `FMV_PATH` / `DATASET_PATH` | `/data/imagery` / `/data/fmv` / `/data/datasets` | Shared volume mounts |
+| `DEM_PATH` | `/data/dem/dem.tif` | DEM GeoTIFF used by viewshed + LOS analytics. Missing file ⇒ endpoints return offline fixtures with `mode: "fixture_no_dem"` |
+| `ROUTING_GRAPH_PATH` | `/data/routing/graph.pkl` | Pre-built NetworkX road graph (e.g. `osmnx.graph_from_bbox(...)` then `pickle.dump`). Missing file ⇒ `/api/analytics/routes` falls back to fixtures with `mode: "fixture_no_graph"` |
 | `CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Allowed browser origins |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / `changeme-bootstrap-admin` | Bootstrap admin credentials |
 | `SESSION_SECRET` | *(required, ≥ 16 chars)* | HMAC key for session cookies — `openssl rand -hex 32` |

@@ -49,6 +49,11 @@ import ReviewPanel from './map/ReviewPanel';
 import ProvenancePanel from './map/ProvenancePanel';
 import SimilarPanel from './map/SimilarPanel';
 import TimeMachineBar from './map/TimeMachineBar';
+import AnalyticsToolsPanel, {
+  type AnalyticsKind,
+  type AnalyticsPick,
+} from './map/AnalyticsToolsPanel';
+import type { AnalyticsResponse } from '../services/analytics';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 const TILE_PROXY_URL = import.meta.env.VITE_TILE_PROXY_URL || '/tiles';
@@ -381,6 +386,32 @@ function MapCursorTracker({
   return null;
 }
 
+/** Captures map clicks while a pick slot is active and forwards the
+ * resolved point to the AnalyticsToolsPanel via `onPicked`. */
+function AnalyticsPickHandler({
+  pickFor,
+  onPicked,
+}: {
+  pickFor: AnalyticsPick | null;
+  onPicked: (lat: number, lon: number, pickFor: AnalyticsPick) => void;
+}) {
+  const map = useMap();
+  useEffect(() => {
+    if (!pickFor) return;
+    const container = map.getContainer();
+    const prev = container.style.cursor;
+    container.style.cursor = 'crosshair';
+    return () => { container.style.cursor = prev; };
+  }, [pickFor, map]);
+  useMapEvents({
+    click(event) {
+      if (!pickFor) return;
+      onPicked(event.latlng.lat, event.latlng.lng, pickFor);
+    },
+  });
+  return null;
+}
+
 /**
  * Drag-to-draw a rectangle on the map and emit it as a Leaflet LatLngBounds.
  * Active only while `enabled` is true; disables map drag while active so the
@@ -574,6 +605,16 @@ export default function GaiaMap({
     detectionTracks: true,
     static: true,
     grid: true,
+    viewshed: false,
+    los: false,
+    routes: false,
+  });
+  const [pendingPick, setPendingPick] = useState<AnalyticsPick | null>(null);
+  const [lastMapClick, setLastMapClick] = useState<{ lat: number; lon: number; pickFor: AnalyticsPick | null } | null>(null);
+  const [analyticsResults, setAnalyticsResults] = useState<Record<AnalyticsKind, AnalyticsResponse | null>>({
+    viewshed: null,
+    los: null,
+    routes: null,
   });
   const [isLoading, setIsLoading] = useState(false);
   // Modern shell: each side panel can be collapsed to a 36 px floating handle so
@@ -1433,26 +1474,63 @@ export default function GaiaMap({
           </div>
 
           {[
-            { key: 'satellite', label: 'Satellite Imagery', metric: imagery.length, color: 'text-sentinel-info' },
-            { key: 'detections', label: 'AI Detections', metric: visibleDetectionCount, color: 'text-sentinel-accent' },
-            { key: 'tracks', label: 'Active Tracks', metric: data.tracks.length, color: 'text-sentinel-info' },
-            { key: 'static', label: 'Static Features', metric: data.static.length, color: 'text-sentinel-crit' },
-            { key: 'grid', label: 'Tactical Grid', metric: 'WGS84', color: 'text-sentinel-muted' },
+            { key: 'satellite', label: 'Satellite Imagery', metric: imagery.length, color: 'text-sentinel-info', available: true },
+            { key: 'detections', label: 'AI Detections', metric: visibleDetectionCount, color: 'text-sentinel-accent', available: true },
+            { key: 'tracks', label: 'Active Tracks', metric: data.tracks.length, color: 'text-sentinel-info', available: true },
+            { key: 'static', label: 'Static Features', metric: data.static.length, color: 'text-sentinel-crit', available: true },
+            { key: 'grid', label: 'Tactical Grid', metric: 'WGS84', color: 'text-sentinel-muted', available: true },
+            {
+              key: 'viewshed',
+              label: 'Viewshed',
+              metric: analyticsResults.viewshed?.result?.features?.length ?? 0,
+              color: 'text-sentinel-accent',
+              available: !!analyticsResults.viewshed,
+            },
+            {
+              key: 'los',
+              label: 'Line of Sight',
+              metric: analyticsResults.los?.result?.features?.length ?? 0,
+              color: 'text-sentinel-accent',
+              available: !!analyticsResults.los,
+            },
+            {
+              key: 'routes',
+              label: 'Routes',
+              metric: analyticsResults.routes?.result?.features?.length ?? 0,
+              color: 'text-sentinel-accent',
+              available: !!analyticsResults.routes,
+            },
           ].map((layer) => {
             const active = activeLayers[layer.key as keyof typeof activeLayers];
+            const disabled = layer.available === false;
             return (
               <button
                 key={layer.key}
                 type="button"
+                disabled={disabled}
                 onClick={() => setActiveLayers((prev) => ({ ...prev, [layer.key]: !active }))}
-                className="sentinel-row w-full grid-cols-[22px_1fr_auto] text-left"
+                className={`sentinel-row w-full grid-cols-[22px_1fr_auto] text-left ${disabled ? 'opacity-40 cursor-not-allowed' : ''}`}
+                title={disabled ? 'Run the tool first to enable this layer' : ''}
               >
-                <span className={active ? layer.color : 'text-sentinel-muted'}>{active ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}</span>
+                <span className={active && !disabled ? layer.color : 'text-sentinel-muted'}>{active && !disabled ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}</span>
                 <span className="truncate text-xs text-slate-200">{layer.label}</span>
                 <span className="font-mono text-[10px] text-sentinel-muted">{layer.metric}</span>
               </button>
             );
           })}
+
+          <AnalyticsToolsPanel
+            pendingPick={pendingPick}
+            onRequestPick={setPendingPick}
+            lastMapClick={lastMapClick}
+            onResult={(kind, response) => {
+              setAnalyticsResults((prev) => ({ ...prev, [kind]: response }));
+              if (response) {
+                setActiveLayers((prev) => ({ ...prev, [kind]: true }));
+              }
+              setLastMapClick(null);
+            }}
+          />
 
           <div className="border-b border-sentinel-line bg-sentinel-panel-2 px-3 py-2">
             <div className="flex items-center gap-2">
@@ -1644,6 +1722,12 @@ export default function GaiaMap({
             <ZoomControl position="bottomright" />
             <MapBoundsUpdater onBoundsChange={setMapBounds} />
             <MapCursorTracker onCursorChange={setCursor} />
+            <AnalyticsPickHandler
+              pickFor={pendingPick}
+              onPicked={(lat, lon, pickFor) => {
+                setLastMapClick({ lat, lon, pickFor });
+              }}
+            />
             <DrawRectHandler
               enabled={drawMode}
               onFinish={async (bounds) => {
@@ -1927,6 +2011,79 @@ export default function GaiaMap({
                   </div>
                 );
               })}
+
+            {activeLayers.viewshed && analyticsResults.viewshed?.result && (
+              <GeoJSON
+                key={`viewshed-${analyticsResults.viewshed.job.id}`}
+                data={analyticsResults.viewshed.result as any}
+                style={() => ({
+                  color: '#5ee0a0',
+                  weight: 1.5,
+                  opacity: 0.9,
+                  fillColor: '#5ee0a0',
+                  fillOpacity: 0.22,
+                })}
+                onEachFeature={(_feature, layer) => {
+                  const mode = (analyticsResults.viewshed?.result as any)?.mode;
+                  const tip = mode === 'dem'
+                    ? `Viewshed · DEM · job ${analyticsResults.viewshed?.job.id}`
+                    : `Viewshed · fixture (no DEM) · job ${analyticsResults.viewshed?.job.id}`;
+                  layer.bindTooltip(tip, { sticky: true, opacity: 0.92 });
+                }}
+              />
+            )}
+
+            {activeLayers.los && analyticsResults.los?.result && (
+              <GeoJSON
+                key={`los-${analyticsResults.los.job.id}`}
+                data={analyticsResults.los.result as any}
+                style={(feature) => {
+                  const visible = !!feature?.properties?.visible;
+                  const role = feature?.properties?.role;
+                  if (role === 'obstruction') {
+                    return { color: '#ff5577', weight: 0, fillColor: '#ff5577', fillOpacity: 0.7 };
+                  }
+                  return {
+                    color: visible ? '#5ee0a0' : '#ff5577',
+                    weight: 3,
+                    opacity: 0.95,
+                    dashArray: visible ? undefined : '6 4',
+                  };
+                }}
+                onEachFeature={(feature, layer) => {
+                  const p = feature?.properties || {};
+                  const tip = p.role === 'obstruction'
+                    ? `Obstructions · ${p.count} pts`
+                    : `LOS · ${p.visible ? 'visible' : 'blocked'} · clearance ${Number(p.clearance_m || 0).toFixed(1)} m`;
+                  layer.bindTooltip(tip, { sticky: true, opacity: 0.92 });
+                }}
+              />
+            )}
+
+            {activeLayers.routes && analyticsResults.routes?.result && (
+              <GeoJSON
+                key={`routes-${analyticsResults.routes.job.id}`}
+                data={analyticsResults.routes.result as any}
+                style={(feature) => {
+                  const palette = ['#5fc4ff', '#ffb14a', '#c87aff'];
+                  const idx = Math.max(0, ((feature?.properties?.option || 1) - 1) % palette.length);
+                  return {
+                    color: palette[idx],
+                    weight: 4,
+                    opacity: 0.9,
+                  };
+                }}
+                onEachFeature={(feature, layer) => {
+                  const p = feature?.properties || {};
+                  const km = (Number(p.length_m || 0) / 1000).toFixed(1);
+                  const min = Number(p.duration_minutes || 0).toFixed(0);
+                  layer.bindTooltip(
+                    `Route ${p.option} · ${p.label || p.risk || p.strategy} · ${km} km · ${min} min`,
+                    { sticky: true, opacity: 0.92 },
+                  );
+                }}
+              />
+            )}
           </MapContainer>
 
           <div className="pointer-events-none absolute inset-0">

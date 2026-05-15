@@ -257,6 +257,10 @@ class AnalyticsRequest(BaseModel):
     destination: Optional[dict] = None
     radius_m: Optional[float] = 5000
     minutes: Optional[int] = 15
+    observer_height_m: Optional[float] = 1.8
+    target_height_m: Optional[float] = 0.0
+    # Routes-only: strategy in {"shortest", "least_exposure", "balanced"}.
+    strategy: Optional[str] = None
 
 
 class TrainingJobCreate(BaseModel):

@@ -20,6 +20,7 @@ numpy
 requests
 scipy>=1.11
 pyproj>=3.6
+networkx>=3.0
 docker>=7.0
 klvdata
 construct>=2.10

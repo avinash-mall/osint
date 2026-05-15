@@ -251,7 +251,9 @@ function trackIdOf(det: Detection): string | null {
   return det.metadata?.track_id || det.bbox?.track_id || null;
 }
 
-type SidePanelTab = 'tracks' | 'upload' | 'detail';
+type SidePanelTab = 'tracks' | 'detections' | 'upload' | 'detail';
+
+type DetectionsSort = 'time_asc' | 'time_desc' | 'conf_desc' | 'class_asc';
 
 /**
  * Three states for the synced map:
@@ -306,6 +308,8 @@ export default function FmvPlayer({
   const [rightOpen, setRightOpen] = useState(true);
   const [sideTab, setSideTab] = useState<SidePanelTab>('tracks');
   const [trackFilter, setTrackFilter] = useState<'in-frame' | 'all'>('in-frame');
+  const [detectionFilter, setDetectionFilter] = useState<'in-frame' | 'all'>('all');
+  const [detectionsSort, setDetectionsSort] = useState<DetectionsSort>('time_asc');
   const [selectedDetectionId, setSelectedDetectionId] = useState<number | null>(null);
   const [mapCursor, setMapCursor] = useState<{ lat: number; lon: number } | null>(null);
   const { user } = useAuth();
@@ -1743,6 +1747,7 @@ export default function FmvPlayer({
             {(
               [
                 ['tracks', 'Tracks', trackRows.length] as [SidePanelTab, string, number],
+                ['detections', 'Detections', detections.length] as [SidePanelTab, string, number],
                 ['upload', 'Upload', clips.length] as [SidePanelTab, string, number],
                 ...(selectedDetectionId
                   ? ([['detail', 'Detail', 1] as [SidePanelTab, string, number]] as const)
@@ -1978,6 +1983,141 @@ export default function FmvPlayer({
                 ))}
               </>
             )}
+
+            {sideTab === 'detections' && (() => {
+              const list = detections.filter((d) => {
+                if (detectionFilter !== 'in-frame') return true;
+                const f = (d as any).frame_index;
+                if (typeof f !== 'number') return false;
+                return Math.abs(f - currentFrameIdx) <= detectionMaxAgeFrames;
+              });
+              const sorted = [...list].sort((a, b) => {
+                const fa = Number((a as any).frame_index ?? 0);
+                const fb = Number((b as any).frame_index ?? 0);
+                switch (detectionsSort) {
+                  case 'time_desc': return fb - fa;
+                  case 'conf_desc': return (b.confidence || 0) - (a.confidence || 0);
+                  case 'class_asc': return detectionClassLabel(a.class).localeCompare(detectionClassLabel(b.class));
+                  case 'time_asc':
+                  default: return fa - fb;
+                }
+              });
+              return (
+                <>
+                  <div
+                    style={{
+                      padding: '10px 14px',
+                      borderBottom: '1px solid var(--line)',
+                      display: 'flex',
+                      gap: 6,
+                      alignItems: 'center',
+                      flexWrap: 'wrap',
+                    }}
+                  >
+                    <div className="seg" style={{ flex: '1 0 auto' }}>
+                      <button
+                        type="button"
+                        className={detectionFilter === 'in-frame' ? 'on' : ''}
+                        onClick={() => setDetectionFilter('in-frame')}
+                      >
+                        IN FRAME
+                      </button>
+                      <button
+                        type="button"
+                        className={detectionFilter === 'all' ? 'on' : ''}
+                        onClick={() => setDetectionFilter('all')}
+                      >
+                        ALL
+                      </button>
+                    </div>
+                    <select
+                      value={detectionsSort}
+                      onChange={(e) => setDetectionsSort(e.target.value as DetectionsSort)}
+                      className="mono"
+                      style={{
+                        fontSize: 10,
+                        background: 'var(--bg-2)',
+                        color: 'var(--ink-0)',
+                        border: '1px solid var(--line)',
+                        padding: '3px 6px',
+                      }}
+                    >
+                      <option value="time_asc">time ↑</option>
+                      <option value="time_desc">time ↓</option>
+                      <option value="conf_desc">conf ↓</option>
+                      <option value="class_asc">class A→Z</option>
+                    </select>
+                    <span className="mono" style={{ fontSize: 10, color: 'var(--ink-3)' }}>
+                      {sorted.length} / {detections.length}
+                    </span>
+                  </div>
+
+                  {sorted.length === 0 && (
+                    <div style={{ fontSize: 11, color: 'var(--ink-2)', textAlign: 'center', padding: 16 }}>
+                      {selectedClip
+                        ? detections.length === 0
+                          ? 'No detections — SAM3 pipeline may still be running.'
+                          : 'No detections at this frame.'
+                        : 'Select a clip in the Upload tab.'}
+                    </div>
+                  )}
+
+                  {sorted.map((d) => {
+                    const frameIdx = Number((d as any).frame_index ?? 0);
+                    const t = frameIdx / fps;
+                    const trackId = trackIdOf(d);
+                    const selected = selectedDetectionId === d.id;
+                    return (
+                      <button
+                        key={d.id}
+                        type="button"
+                        onClick={() => {
+                          seekTo(t);
+                          setSelectedDetectionId(d.id);
+                          setSideTab('detail');
+                        }}
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: '16px 1fr auto',
+                          gap: 10,
+                          alignItems: 'center',
+                          width: '100%',
+                          padding: '8px 14px',
+                          borderBottom: '1px solid var(--line)',
+                          background: selected ? `color-mix(in oklab, ${accent} 14%, transparent)` : 'transparent',
+                          borderLeft: selected ? `2px solid ${accent}` : '2px solid transparent',
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                          color: 'var(--ink-0)',
+                        }}
+                      >
+                        <AffGlyph aff={affOf(d)} size={14} />
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 12, fontWeight: selected ? 600 : 500 }}>
+                            {detectionClassLabel(d.class)}
+                          </div>
+                          <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)' }}>
+                            f={frameIdx} · t={t.toFixed(2)}s · {trackId ? `TRK-${trackId}` : 'no track'}
+                          </div>
+                        </div>
+                        <span
+                          className="mono"
+                          style={{
+                            fontSize: 10,
+                            padding: '1px 5px',
+                            border: '1px solid var(--line-2)',
+                            color: '#5ee0a0',
+                            borderRadius: 2,
+                          }}
+                        >
+                          {Math.round((d.confidence || 0) * 100)}%
+                        </span>
+                      </button>
+                    );
+                  })}
+                </>
+              );
+            })()}
 
             {sideTab === 'upload' && (
               <UploadTab

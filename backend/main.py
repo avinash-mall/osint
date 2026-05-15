@@ -1020,6 +1020,7 @@ def upload_fmv_clip(
         worker_mode = "yoloe"
     else:
         worker_mode = mode
+    task_id: Optional[str] = None
     try:
         task = process_fmv.delay(clip["id"], str(local_path), prompt_list,
                                  None, None, worker_mode)
@@ -1027,8 +1028,43 @@ def upload_fmv_clip(
         clip["status"] = "queued"
         clip["prompt_mode"] = mode  # UI-level mode preserved
         clip["model"] = model_choice
+        task_id = task.id
     except Exception as exc:
         logger.warning("Failed to queue process_fmv for clip %s: %s", clip["id"], exc)
+
+    # Mirror the imagery path: record the clip as an upload_job so it shows up
+    # in the global StatusBar footer and the Admin → Processing tab without
+    # needing a separate FMV-jobs feed.
+    try:
+        with postgis_db.get_cursor(commit=True) as cursor:
+            cursor.execute("""
+                INSERT INTO upload_jobs (upload_id, filename, file_path, media_type, handler, status, celery_task_id, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (upload_id) DO NOTHING
+            """, (
+                upload_id,
+                filename,
+                str(local_path),
+                "fmv",
+                "fmv_video",
+                clip["status"],
+                task_id,
+                json.dumps({
+                    "clip_id": clip["id"],
+                    "duration_seconds": clip.get("duration_seconds"),
+                    "fps": clip.get("fps"),
+                    "model": model_choice,
+                    "prompt_mode": mode,
+                    "bytes": size,
+                    "stage": clip["status"],
+                    "progress": 5 if clip["status"] == "queued" else 0,
+                    "message": "FMV clip received and tracking queued."
+                        if clip["status"] == "queued"
+                        else "FMV clip stored.",
+                }),
+            ))
+    except Exception as exc:
+        logger.warning("Failed to record upload_job for FMV clip %s: %s", clip["id"], exc)
 
     publish_event("ops", {"type": "fmv_clip_ready", "clip": clip})
     publish_event(f"fmv:{clip['id']}", {"type": "fmv_clip_ready", "clip": clip})

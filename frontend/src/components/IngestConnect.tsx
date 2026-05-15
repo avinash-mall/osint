@@ -5,6 +5,7 @@ import {
   ChevronRight,
   DatabaseZap,
   FileImage,
+  Film,
   ListChecks,
   Search,
   ShieldCheck,
@@ -50,8 +51,16 @@ function branchIconComponent(iconKey: string | null | undefined) {
   return BRANCH_ICON_BY_KEY[iconKey as BranchIconKey] ?? CircleHelp;
 }
 
+type MediaType = 'imagery' | 'fmv';
+
+const FMV_FILE_ACCEPT = '.mp4,.mov,.ts,.mkv,.m4v';
+const FMV_SIDECAR_ACCEPT = '.srt,.klv,.csv';
+const IMAGERY_FILE_ACCEPT = '.tif,.tiff,.jp2,.j2k,.nc,.netcdf,.png,.jpg,.jpeg';
+
 export default function IngestConnect() {
+  const [mediaType, setMediaType] = useState<MediaType>('imagery');
   const [file, setFile] = useState<File | null>(null);
+  const [sidecarFile, setSidecarFile] = useState<File | null>(null);
   const [sensorType, setSensorType] = useState('Optical');
   const [selectedDefenceIds, setSelectedDefenceIds] = useState<Set<string>>(new Set());
   const [objectSearch, setObjectSearch] = useState('');
@@ -112,8 +121,8 @@ export default function IngestConnect() {
   }, [fetchUploadJobs]));
 
   const activeJob = uploadJobs.find((job) => job.upload_id === activeUploadId)
-    || uploadJobs.find((job) => job.media_type === 'imagery' && isUploadActive(job))
-    || uploadJobs.find((job) => job.media_type === 'imagery')
+    || uploadJobs.find((job) => job.media_type === mediaType && isUploadActive(job))
+    || uploadJobs.find((job) => job.media_type === mediaType)
     || null;
 
   const customPrompts = useMemo(() => parseCustomPrompts(customObjects), [customObjects]);
@@ -255,14 +264,25 @@ export default function IngestConnect() {
     try {
       const form = new FormData();
       form.append('file', file);
-      form.append('sensor_type', sensorType);
-      form.append('modality', sensorPipeline.modality);
-      form.append('enabled_layers', JSON.stringify(sensorPipeline.enabledLayers));
       form.append('auto_process', 'true');
-      if (selectedPrompts.length > 0) {
-        form.append('text_prompts', JSON.stringify(selectedPrompts));
+      let endpoint = `${API_URL}/api/ingest/upload`;
+      if (mediaType === 'imagery') {
+        form.append('sensor_type', sensorType);
+        form.append('modality', sensorPipeline.modality);
+        form.append('enabled_layers', JSON.stringify(sensorPipeline.enabledLayers));
+        if (selectedPrompts.length > 0) {
+          form.append('text_prompts', JSON.stringify(selectedPrompts));
+        }
+      } else {
+        // FMV: route through /api/fmv/clips so the sidecar (KLV/SRT) is
+        // attached and the clip record is created with HLS transcode +
+        // SAM3-video tracking queued in one shot.
+        endpoint = `${API_URL}/api/fmv/clips`;
+        if (sidecarFile) {
+          form.append('srt', sidecarFile);
+        }
       }
-      const response = await axios.post(`${API_URL}/api/ingest/upload`, form, {
+      const response = await axios.post(endpoint, form, {
         headers: { 'Content-Type': 'multipart/form-data' },
         onUploadProgress: (event) => {
           if (event.total) {
@@ -270,10 +290,18 @@ export default function IngestConnect() {
           }
         },
       });
-      setActiveUploadId(response.data.upload_id || null);
-      setUploadStatus(`Queued ${response.data.task_id || response.data.filename}`);
+      const uploadId = response.data.upload_id
+        || response.data.clip?.metadata?.upload_id
+        || (response.data.id != null ? String(response.data.id) : null);
+      setActiveUploadId(uploadId);
+      setUploadStatus(
+        mediaType === 'fmv'
+          ? `Queued FMV clip ${response.data.name || response.data.clip?.name || response.data.id || ''}`.trim()
+          : `Queued ${response.data.task_id || response.data.filename}`,
+      );
       await fetchUploadJobs();
       setFile(null);
+      setSidecarFile(null);
     } catch (error: any) {
       setUploadStatus(error.response?.data?.detail || 'Upload failed');
     } finally {
@@ -402,7 +430,38 @@ export default function IngestConnect() {
       <div className="max-w-4xl mx-auto p-6 flex flex-col gap-5">
         <div className="flex items-center gap-3 border-b border-slate-800 pb-4">
           <UploadCloud className="w-7 h-7 text-blue-400" />
-          <h2 className="text-xl font-bold uppercase tracking-wider">Imagery Upload</h2>
+          <h2 className="text-xl font-bold uppercase tracking-wider">
+            {mediaType === 'fmv' ? 'FMV Upload' : 'Imagery Upload'}
+          </h2>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Media type</span>
+          <div className="inline-flex border border-slate-700 rounded overflow-hidden self-start">
+            {([
+              { key: 'imagery', label: 'Imagery', icon: FileImage },
+              { key: 'fmv',     label: 'FMV (Video)', icon: Film },
+            ] as const).map(({ key, label, icon: Icon }) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => {
+                  if (mediaType === key) return;
+                  setMediaType(key);
+                  setFile(null);
+                  setSidecarFile(null);
+                  setUploadStatus('');
+                }}
+                className={`flex items-center gap-2 px-4 py-2 text-xs font-bold uppercase tracking-wider ${
+                  mediaType === key
+                    ? 'bg-blue-500/20 text-blue-200'
+                    : 'bg-slate-900 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5" /> {label}
+              </button>
+            ))}
+          </div>
         </div>
 
         {incompatibleNotice && (
@@ -412,30 +471,76 @@ export default function IngestConnect() {
         )}
 
         <label className="min-h-56 border border-dashed border-slate-700 bg-slate-900/40 hover:bg-slate-900 transition rounded flex flex-col items-center justify-center cursor-pointer">
-          <FileImage className="w-12 h-12 text-slate-500 mb-3" />
-          <div className="font-mono text-sm text-slate-300">{file ? file.name : 'Select raster'}</div>
-          <div className="font-mono text-xs text-slate-500 mt-2">TIF / JP2 / NetCDF / PNG / JPG</div>
+          {mediaType === 'fmv' ? (
+            <Film className="w-12 h-12 text-slate-500 mb-3" />
+          ) : (
+            <FileImage className="w-12 h-12 text-slate-500 mb-3" />
+          )}
+          <div className="font-mono text-sm text-slate-300">
+            {file ? file.name : mediaType === 'fmv' ? 'Select FMV clip' : 'Select raster'}
+          </div>
+          <div className="font-mono text-xs text-slate-500 mt-2">
+            {mediaType === 'fmv' ? 'MP4 / MOV / TS / MKV / M4V' : 'TIF / JP2 / NetCDF / PNG / JPG'}
+          </div>
           <input
             type="file"
-            accept=".tif,.tiff,.jp2,.j2k,.nc,.netcdf,.png,.jpg,.jpeg"
+            accept={mediaType === 'fmv' ? FMV_FILE_ACCEPT : IMAGERY_FILE_ACCEPT}
             onChange={(event) => setFile(event.target.files?.[0] || null)}
             className="hidden"
           />
         </label>
 
+        {mediaType === 'fmv' && (
+          <label className="border border-dashed border-slate-800 bg-slate-900/30 hover:bg-slate-900 transition rounded px-4 py-3 cursor-pointer flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                Telemetry sidecar (optional)
+              </div>
+              <div className="font-mono text-xs text-slate-300 truncate">
+                {sidecarFile ? sidecarFile.name : 'Attach .srt / .klv / .csv (MISB-0601 KLV)'}
+              </div>
+            </div>
+            {sidecarFile && (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.preventDefault();
+                  setSidecarFile(null);
+                }}
+                className="border border-slate-700 px-2 py-1 rounded text-slate-300 hover:border-rose-400"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
+            <input
+              type="file"
+              accept={FMV_SIDECAR_ACCEPT}
+              onChange={(event) => setSidecarFile(event.target.files?.[0] || null)}
+              className="hidden"
+            />
+          </label>
+        )}
+
         <div className="flex flex-col gap-2">
           <div className="flex flex-col sm:flex-row gap-3">
-            <select
-              value={sensorType}
-              onChange={(event) => setSensorType(event.target.value)}
-              className="bg-slate-900 border border-slate-700 rounded px-3 py-3 text-sm sm:w-56"
-              title="Sensor type — auto-selects relevant inference layers"
-            >
-              <option value="Optical">Optical (RGB)</option>
-              <option value="Multispectral">Multispectral</option>
-              <option value="Hyperspectral">Hyperspectral</option>
-              <option value="SAR">SAR</option>
-            </select>
+            {mediaType === 'imagery' ? (
+              <select
+                value={sensorType}
+                onChange={(event) => setSensorType(event.target.value)}
+                className="bg-slate-900 border border-slate-700 rounded px-3 py-3 text-sm sm:w-56"
+                title="Sensor type — auto-selects relevant inference layers"
+              >
+                <option value="Optical">Optical (RGB)</option>
+                <option value="Multispectral">Multispectral</option>
+                <option value="Hyperspectral">Hyperspectral</option>
+                <option value="SAR">SAR</option>
+              </select>
+            ) : (
+              <div className="bg-slate-900 border border-slate-700 rounded px-3 py-3 text-sm sm:w-56 text-slate-300 flex items-center gap-2">
+                <Film className="w-4 h-4 text-blue-300" />
+                <span>FMV pipeline</span>
+              </div>
+            )}
             <button
               onClick={uploadImage}
               disabled={!file || uploading}
@@ -446,7 +551,7 @@ export default function IngestConnect() {
           </div>
           <div className="flex flex-wrap gap-1.5 items-center font-mono text-[10px] text-slate-400">
             <span className="text-slate-500 uppercase tracking-wider">Models:</span>
-            {sensorPipeline.models.map((model) => (
+            {(mediaType === 'fmv' ? ['SAM3-video', 'YOLOE-26x tracker'] : sensorPipeline.models).map((model) => (
               <span
                 key={model}
                 className="border border-blue-500/40 bg-blue-500/10 text-blue-300 px-2 py-0.5 rounded"
@@ -461,14 +566,21 @@ export default function IngestConnect() {
           {/* Chip pipeline visualiser — live status of upload-job chips */}
           <ChipPipelineGrid activeJob={activeJob || undefined} />
 
-          {sensorPipeline.warning && (
+          {mediaType === 'imagery' && sensorPipeline.warning && (
             <div className="flex items-start gap-2 border border-yellow-500/40 bg-yellow-500/5 text-yellow-200 text-xs px-3 py-2 rounded">
               <span className="font-bold uppercase tracking-wider text-[10px]">Note:</span>
               <span>{sensorPipeline.warning}</span>
             </div>
           )}
+          {mediaType === 'fmv' && (
+            <div className="flex items-start gap-2 border border-blue-500/40 bg-blue-500/5 text-blue-200 text-xs px-3 py-2 rounded">
+              <span className="font-bold uppercase tracking-wider text-[10px]">FMV:</span>
+              <span>Tracking runs on SAM3-video + YOLOE-26x. Concepts come from the ontology defaults; no per-upload prompt picker.</span>
+            </div>
+          )}
         </div>
 
+        {mediaType === 'imagery' && (
         <div className="border border-slate-800 bg-slate-900/70 rounded">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
             <div className="flex items-center gap-3">
@@ -532,6 +644,7 @@ export default function IngestConnect() {
             </div>
           </div>
         </div>
+        )}
 
         {showProgressBar && (
           <div className="border border-slate-800 bg-slate-900/80 rounded px-4 py-3 text-sm">
