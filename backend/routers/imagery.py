@@ -63,7 +63,7 @@ def get_imagery_tiles(pass_id: int):
             raise HTTPException(status_code=404, detail="Satellite pass not found")
 
         titiler_url = os.getenv("PUBLIC_TITILER_URL", "/tiles")
-        tile_url = f"{titiler_url}/cog/tiles/{{z}}/{{x}}/{{y}}?url={row['file_path']}"
+        tile_url = f"{titiler_url}/cog/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}?url={row['file_path']}"
         return {"pass_id": pass_id, "tile_url": tile_url, "file_path": row["file_path"]}
 
 

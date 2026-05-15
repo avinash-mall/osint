@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Circle, CircleMarker, GeoJSON, ImageOverlay, MapContainer, Marker, Polyline, Popup, Rectangle, TileLayer, useMap, useMapEvents, ZoomControl } from 'react-leaflet';
 import L from 'leaflet';
 import axios from 'axios';
@@ -33,7 +33,7 @@ import { objectIconComponent } from '../utils/branchIcons';
 import { IconRenderer, iconComponentByKey } from '../utils/iconLibrary';
 import 'leaflet/dist/leaflet.css';
 import { useEventStream } from '../hooks/useEventStream';
-import { type UploadJob, isUploadActive, uploadMessage, uploadMetadata, uploadProgress, uploadProgressClass, uploadStage } from '../utils/uploadProgress';
+import { type UploadJob, isUploadActive, uploadMessage, uploadProgress, uploadProgressClass, uploadStage } from '../utils/uploadProgress';
 import {
   SOURCE_ORDER,
   branchIdForFeature,
@@ -559,7 +559,6 @@ export default function GaiaMap({
   const [basemapGeoJSON, setBasemapGeoJSON] = useState<any>({ type: 'FeatureCollection', features: [] });
   const [uploadJobs, setUploadJobs] = useState<UploadJob[]>([]);
   const [selectedImagery, setSelectedImagery] = useState<number | null>(null);
-  const lastAutoSelectedPassRef = useRef<number | null>(null);
   const [imageryOpacity, setImageryOpacity] = useState(0.8);
   const [hiddenDetectionLabels, setHiddenDetectionLabels] = useState<string[]>([]);
   const [hiddenDetectionCategories, setHiddenDetectionCategories] = useState<DetectionCategoryId[]>([]);
@@ -1111,13 +1110,6 @@ export default function GaiaMap({
   }, [focusTimeRange, fetchDetections, fetchDetectionTracks, fetchImagery, fetchUploadJobs]));
   useEventStream('imagery', useCallback((message: any) => {
     focusTimeRange(message?.acquisition_time);
-    if (message?.type === 'ingest_succeeded') {
-      const passId = Number(message?.pass_id);
-      if (Number.isFinite(passId)) {
-        setSelectedImagery(passId);
-        lastAutoSelectedPassRef.current = passId;
-      }
-    }
     fetchImagery();
     fetchUploadJobs();
   }, [focusTimeRange, fetchImagery, fetchUploadJobs]));
@@ -1127,28 +1119,6 @@ export default function GaiaMap({
       fetchUploadJobs();
     }
   }, [focusTimeRange, fetchUploadJobs]));
-
-  // Auto-select the most recently completed imagery upload on the map. Covers
-  // the navigate-after-upload case where the live websocket event fired before
-  // GaiaMap mounted — uploadJobs polling still surfaces the ready job, and the
-  // ref guard keeps us from clobbering a manual re-selection later.
-  useEffect(() => {
-    let latest: { passId: number; updatedAt: number } | null = null;
-    for (const job of uploadJobs) {
-      if (job.media_type !== 'imagery' || job.status !== 'ready') continue;
-      const passId = Number(uploadMetadata(job).pass_id);
-      if (!Number.isFinite(passId)) continue;
-      const updatedAt = job.updated_at ? new Date(job.updated_at).getTime() : 0;
-      if (!latest || updatedAt > latest.updatedAt) {
-        latest = { passId, updatedAt };
-      }
-    }
-    if (!latest) return;
-    if (lastAutoSelectedPassRef.current === latest.passId) return;
-    if (!imagery.some((img) => img.id === latest!.passId)) return;
-    lastAutoSelectedPassRef.current = latest.passId;
-    setSelectedImagery(latest.passId);
-  }, [uploadJobs, imagery]);
 
   // Bubble cursor coords up to the global status bar.
   useEffect(() => {
@@ -1836,7 +1806,7 @@ export default function GaiaMap({
 
             {activeLayers.satellite && selectedImageryData && (
               <TileLayer
-                url={`${TILE_PROXY_URL}/cog/tiles/{z}/{x}/{y}?url=${encodeURIComponent(selectedImageryData.file_path)}`}
+                url={`${TILE_PROXY_URL}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(selectedImageryData.file_path)}`}
                 opacity={imageryOpacity}
                 maxZoom={22}
               />
