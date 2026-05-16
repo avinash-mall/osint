@@ -117,7 +117,7 @@ export default function ConfOverrideView() {
   }, [rows, globalFloor, highConf, load]);
 
   return (
-    <div style={{ padding: '20px 24px', overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 18, flex: 1, minHeight: 0 }}>
+    <div className="admin-view" style={{ padding: '20px 24px', overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 18, flex: 1, minHeight: 0 }}>
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 14 }}>
         <div>
           <div style={{ fontSize: 16, fontWeight: 600 }}>Confidence overrides</div>
@@ -155,7 +155,7 @@ export default function ConfOverrideView() {
       )}
 
       <Panel title="Global thresholds" sub="Apply to every detection unless a per-class override below wins">
-        <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr 220px 1fr', gap: 14, alignItems: 'center' }}>
+        <div className="conf-threshold-grid">
           <label className="label-mono">Global floor</label>
           <input
             type="number"
@@ -193,7 +193,7 @@ export default function ConfOverrideView() {
                 if (e.key === 'Enter') addRow();
               }}
               placeholder="class label · e.g. destroyer"
-              style={{ ...inputStyle, width: 220 }}
+              style={{ ...inputStyle, inlineSize: 'min(13.75rem, 100%)' }}
             />
             <button type="button" className="btn xs" onClick={addRow} disabled={!newClass.trim()}>
               <Plus size={11} /> Add
@@ -201,7 +201,7 @@ export default function ConfOverrideView() {
           </div>
         }
       >
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 80px 1fr 80px 30px', gap: 0 }}>
+        <div className="conf-overrides-grid">
           {['CLASS', 'BASE', 'OVERRIDE', 'VALUE', ''].map((h) => (
             <div
               key={h}

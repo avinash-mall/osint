@@ -416,7 +416,7 @@ export default function IngestConnect() {
           <div className="space-y-2 px-3 pb-3 pt-2">
             {branch.children?.map((child) => renderBranch(child, depth + 1))}
             {branch.objects && branch.objects.length > 0 && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              <div className="ingest-object-grid grid grid-cols-1 gap-2">
                 {branch.objects.map((obj) => renderObject(obj, branch))}
               </div>
             )}
@@ -430,7 +430,7 @@ export default function IngestConnect() {
   const transferOrJobProgress = uploading ? uploadTransferProgress : uploadProgress(activeJob);
 
   return (
-    <div className="w-full flex-1 min-h-0 bg-slate-950 text-slate-200 overflow-auto">
+    <div className="ingest-connect w-full flex-1 min-h-0 bg-slate-950 text-slate-200 overflow-auto">
       <div className="max-w-4xl mx-auto p-6 flex flex-col gap-5">
         <div className="flex items-center gap-3 border-b border-slate-800 pb-4">
           <UploadCloud className="w-7 h-7 text-blue-400" />
@@ -526,7 +526,7 @@ export default function IngestConnect() {
         )}
 
         {mediaType === 'fmv' && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="ingest-two-col grid grid-cols-1 gap-3">
             <div>
               <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">Model</div>
               <select

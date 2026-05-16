@@ -33,6 +33,7 @@ export default function LoginScreen() {
 
   return (
     <div
+      className="login-screen"
       style={{
         height: '100%',
         width: '100%',
@@ -45,18 +46,17 @@ export default function LoginScreen() {
     >
       <ClassifiedBar />
 
-      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1.1fr .9fr', minHeight: 0 }}>
+      <div className="login-layout" style={{ flex: 1 }}>
         {/* ===== Brand pane ===== */}
         <div
+          className="login-brand-pane"
           style={{
             position: 'relative',
             overflow: 'hidden',
             background: 'linear-gradient(135deg, var(--bg-0) 0%, var(--bg-1) 100%)',
             borderRight: '1px solid var(--line)',
-            padding: '48px 56px',
             display: 'flex',
             flexDirection: 'column',
-            gap: 22,
           }}
         >
           <GraticuleBG />
@@ -83,11 +83,11 @@ export default function LoginScreen() {
             <h1
               style={{
                 margin: 0,
-                fontSize: 42,
+                fontSize: 'var(--text-hero)',
                 lineHeight: 1.05,
                 fontWeight: 500,
                 letterSpacing: '-0.01em',
-                maxWidth: 560,
+                maxInlineSize: '35rem',
               }}
             >
               All-source geospatial intelligence.
@@ -98,9 +98,9 @@ export default function LoginScreen() {
               style={{
                 margin: 0,
                 color: 'var(--ink-1)',
-                fontSize: 14,
+                fontSize: 'var(--text-md)',
                 lineHeight: 1.55,
-                maxWidth: 520,
+                maxInlineSize: '32.5rem',
               }}
             >
               SAM 3, DINOv3, Prithvi and TerraMind fused on a single map. Sign in to your operator
@@ -113,10 +113,10 @@ export default function LoginScreen() {
 
         {/* ===== Auth pane ===== */}
         <form
+          className="login-auth-pane"
           onSubmit={onSubmit}
           style={{
             background: 'var(--bg-1)',
-            padding: '56px 64px',
             display: 'flex',
             flexDirection: 'column',
             justifyContent: 'center',
@@ -334,10 +334,9 @@ function GraticuleBG() {
 function TelemetryStrip() {
   return (
     <div
+      className="telemetry-strip"
       style={{
         marginTop: 18,
-        display: 'grid',
-        gridTemplateColumns: 'repeat(4, 1fr)',
         border: '1px solid var(--line)',
         background: 'color-mix(in oklab, var(--bg-1) 92%, transparent)',
       }}

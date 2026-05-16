@@ -104,16 +104,16 @@ export default function AdminScreen({
 
   return (
     <div
+      className="admin-shell"
       style={{
         height: '100%',
         display: 'grid',
-        gridTemplateColumns: 'clamp(180px, 18vw, 220px) minmax(0, 1fr)',
         gap: 1,
         background: 'var(--line)',
       }}
     >
       <nav
-        className="panel"
+        className="panel admin-nav"
         style={{ border: 0, display: 'flex', flexDirection: 'column' }}
       >
         <div className="panel-h">
@@ -157,6 +157,7 @@ export default function AdminScreen({
       </nav>
 
       <section
+        className="admin-content"
         style={{
           background: 'var(--bg-0)',
           display: 'flex',
@@ -201,22 +202,19 @@ function ViewHeader({
 }) {
   return (
     <div
+      className="view-header"
       style={{
-        padding: '16px 22px',
         borderBottom: '1px solid var(--line)',
-        display: 'flex',
-        alignItems: 'flex-end',
-        gap: 14,
       }}
     >
-      <div>
+      <div className="view-header-copy">
         <div style={{ fontSize: 16, fontWeight: 600, lineHeight: 1.2 }}>{title}</div>
         <div className="mono" style={{ fontSize: 11, color: 'var(--ink-2)', marginTop: 4 }}>
           {sub}
         </div>
       </div>
       <div style={{ flex: 1 }} />
-      {actions}
+      {actions && <div className="view-header-actions">{actions}</div>}
     </div>
   );
 }
@@ -384,7 +382,7 @@ function ProcessingView({ onCount }: { onCount: (n: number) => void }) {
           const pct = j.pct ?? 0;
           return (
             <div key={`${j.raw_source}-${j.id}`} className="card" style={{ padding: 14 }}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 10 }}>
+              <div className="job-row-head">
                 <div style={{ minWidth: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                     <span className="mono" style={{ fontSize: 10.5, color: 'var(--ink-3)' }}>
@@ -555,38 +553,40 @@ function ModelsView({ onCount }: { onCount: (n: number) => void }) {
           </div>
         )}
         {models.length > 0 && (
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th>Model</th>
-                <th>Family</th>
-                <th>Version</th>
-                <th>Key</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {models.map((m) => {
-                const color =
-                  m.status === 'LOADED' || m.status === 'ENABLED' ? 'var(--ok)'
-                  : m.status === 'DISABLED' ? 'var(--crit)'
-                  : 'var(--ink-2)';
-                return (
-                  <tr key={m.key}>
-                    <td style={{ fontWeight: 500 }}>{m.title}</td>
-                    <td className="mono" style={{ color: 'var(--ink-2)', fontSize: 11 }}>{m.family}</td>
-                    <td className="mono">{m.version}</td>
-                    <td className="mono" style={{ color: 'var(--ink-2)', fontSize: 11 }}>{m.key}</td>
-                    <td>
-                      <span className="mono" style={{ fontSize: 10.5, color, letterSpacing: '.08em' }}>
-                        {m.status}
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <div className="table-scroll">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>Model</th>
+                  <th>Family</th>
+                  <th>Version</th>
+                  <th>Key</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {models.map((m) => {
+                  const color =
+                    m.status === 'LOADED' || m.status === 'ENABLED' ? 'var(--ok)'
+                    : m.status === 'DISABLED' ? 'var(--crit)'
+                    : 'var(--ink-2)';
+                  return (
+                    <tr key={m.key}>
+                      <td style={{ fontWeight: 500 }}>{m.title}</td>
+                      <td className="mono" style={{ color: 'var(--ink-2)', fontSize: 11 }}>{m.family}</td>
+                      <td className="mono">{m.version}</td>
+                      <td className="mono" style={{ color: 'var(--ink-2)', fontSize: 11 }}>{m.key}</td>
+                      <td>
+                        <span className="mono" style={{ fontSize: 10.5, color, letterSpacing: '.08em' }}>
+                          {m.status}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </>

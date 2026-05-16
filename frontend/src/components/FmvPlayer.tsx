@@ -1017,10 +1017,9 @@ export default function FmvPlayer({
 
   return (
     <div
+      className={`fmv-shell ${rightOpen ? 'is-sidebar-open' : 'is-sidebar-collapsed'}`}
       style={{
         height: '100%',
-        display: 'grid',
-        gridTemplateColumns: rightOpen ? '1fr 360px' : '1fr 36px',
         gap: 1,
         background: 'var(--line)',
         transition: 'grid-template-columns .18s ease',
@@ -1028,12 +1027,11 @@ export default function FmvPlayer({
       }}
     >
       {/* === LEFT COLUMN: video + (optional) synced map + transport === */}
-      <section style={{ display: 'flex', flexDirection: 'column', background: 'var(--bg-0)', minWidth: 0, minHeight: 0 }}>
+      <section className="fmv-primary" style={{ display: 'flex', flexDirection: 'column', background: 'var(--bg-0)', minWidth: 0, minHeight: 0 }}>
         <div
+          className={`fmv-stage-grid ${mapSplitVisible ? '' : 'is-map-hidden'}`}
           style={{
             flex: 1,
-            display: 'grid',
-            gridTemplateColumns: mapSplitVisible ? '1.55fr 1fr' : '1fr',
             minHeight: 0,
             gap: 1,
             background: 'var(--line)',
@@ -1218,12 +1216,11 @@ export default function FmvPlayer({
                 {/* PiP minimized synced-map overlay (300x190, bottom-right) */}
                 {mapPipVisible && (
                   <div
+                    className="fmv-map-pip"
                     style={{
                       position: 'absolute',
                       right: 14,
                       bottom: 14,
-                      width: 300,
-                      height: 190,
                       background: 'var(--bg-0)',
                       border: '1px solid rgba(255,255,255,.22)',
                       boxShadow: '0 12px 32px rgba(0,0,0,.55)',
@@ -1657,7 +1654,7 @@ export default function FmvPlayer({
       {/* === RIGHT COLUMN: Tracks / Detections / Clips tabs (collapsible) === */}
       {rightOpen ? (
         <aside
-          className="panel"
+          className="panel fmv-sidebar"
           style={{ display: 'flex', flexDirection: 'column', minWidth: 0, border: 0, position: 'relative' }}
         >
           <button
@@ -2093,6 +2090,7 @@ export default function FmvPlayer({
         </aside>
       ) : (
         <aside
+          className="fmv-sidebar"
           onClick={() => setRightOpen(true)}
           title="Show tracks"
           style={{

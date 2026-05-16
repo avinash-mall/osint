@@ -1410,18 +1410,17 @@ export default function GaiaMap({
   };
 
   return (
-    <div style={{ position: 'relative', height: '100%', width: '100%', background: 'var(--bg-0)', overflow: 'hidden' }}>
+    <div className="map-workspace" style={{ position: 'relative', height: '100%', width: '100%', background: 'var(--bg-0)', overflow: 'hidden' }}>
       {/* Full-bleed map column (rendered below, sandwiched between the floating
           left / right panels via z-index).  This is now the workspace canvas. */}
       {leftOpen ? (
       <section
-        className="sentinel-panel"
+        className="sentinel-panel map-float-panel map-left-panel"
         style={{
           position: 'absolute',
           left: 14,
           top: 14,
           bottom: 14,
-          width: 320,
           zIndex: 500,
           border: '1px solid var(--line)',
           borderRadius: 10,
@@ -2208,10 +2207,15 @@ export default function GaiaMap({
           always uses the maximum free width. */}
       {timelineOpen ? (
         <div
+          className="map-timeline"
           style={{
+            ['--map-timeline-start' as any]: leftOpen
+              ? 'calc(min(20rem, calc(100cqi - 1.75rem)) + 1.75rem)'
+              : '4rem',
+            ['--map-timeline-end' as any]: rightOpen
+              ? 'calc(min(21.25rem, calc(100cqi - 1.75rem)) + 1.75rem)'
+              : '4rem',
             position: 'absolute',
-            left: leftOpen ? 348 : 64,
-            right: rightOpen ? 368 : 64,
             bottom: 14,
             zIndex: 500,
             background: 'color-mix(in oklab, var(--bg-1) 94%, transparent)',
@@ -2366,13 +2370,12 @@ export default function GaiaMap({
 
       {rightOpen ? (
       <section
-        className="sentinel-panel"
+        className="sentinel-panel map-float-panel map-right-panel"
         style={{
           position: 'absolute',
           right: 14,
           top: 14,
           bottom: 14,
-          width: 340,
           zIndex: 500,
           border: '1px solid var(--line)',
           borderRadius: 10,

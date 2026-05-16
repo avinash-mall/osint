@@ -55,8 +55,8 @@ function Gate() {
     return (
       <div
         style={{
-          width: '100vw',
-          height: '100vh',
+          width: '100%',
+          height: '100%',
           display: 'grid',
           placeItems: 'center',
           background: 'var(--bg-0)',
@@ -148,12 +148,12 @@ function CursorReadout({ cursor }: { cursor: NonNullable<CursorPosition> }) {
       title="Cursor latitude / longitude (WGS84)"
     >
       <span style={{ color: 'var(--ink-2)' }}>LAT</span>
-      <span style={{ color: 'var(--ink-0)', minWidth: 64, textAlign: 'right' }}>
+      <span style={{ color: 'var(--ink-0)', minInlineSize: '4rem', textAlign: 'right' }}>
         {cursor.lat.toFixed(4)}° {cursor.lat >= 0 ? 'N' : 'S'}
       </span>
       <span style={{ width: 1, height: 12, background: 'var(--line-2)' }} />
       <span style={{ color: 'var(--ink-2)' }}>LON</span>
-      <span style={{ color: 'var(--ink-0)', minWidth: 64, textAlign: 'right' }}>
+      <span style={{ color: 'var(--ink-0)', minInlineSize: '4rem', textAlign: 'right' }}>
         {Math.abs(cursor.lon).toFixed(4)}° {cursor.lon >= 0 ? 'E' : 'W'}
       </span>
     </span>

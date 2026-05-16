@@ -197,6 +197,7 @@ export default function ObjectDetailsForm({
 
   return (
     <div
+      className="object-details-form"
       style={{
         display: 'flex',
         flexDirection: 'column',
@@ -207,7 +208,7 @@ export default function ObjectDetailsForm({
       }}
     >
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+      <div className="object-details-header">
         <Crosshair size={14} style={{ color: 'var(--accent)' }} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.15 }}>
@@ -223,7 +224,7 @@ export default function ObjectDetailsForm({
 
       {/* Cross-screen navigation */}
       {(onViewOnMap || onViewInFmv) && (
-        <div style={{ display: 'flex', gap: 6 }}>
+        <div className="object-details-actions">
           {onViewOnMap && (
             <button type="button" className="btn xs" onClick={onViewOnMap} title="Open on GEOINT map">
               <MapIcon size={11} /> View on map

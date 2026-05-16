@@ -148,7 +148,7 @@ export default function PromptProfilesView() {
   }, [profiles]);
 
   return (
-    <div style={{ padding: '20px 24px', overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 18, flex: 1, minHeight: 0 }}>
+    <div className="admin-view" style={{ padding: '20px 24px', overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 18, flex: 1, minHeight: 0 }}>
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 14 }}>
         <div>
           <div style={{ fontSize: 16, fontWeight: 600 }}>Prompt profiles</div>
@@ -178,7 +178,7 @@ export default function PromptProfilesView() {
       )}
 
       <Panel title="New profile" sub="Sensor + version + prompts (comma or newline separated)">
-        <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr 200px 1fr', gap: 12, alignItems: 'center' }}>
+        <div className="prompt-form-grid">
           <label className="label-mono">Sensor</label>
           <select value={newSensor} onChange={(e) => setNewSensor(e.target.value as Sensor)} style={inputStyle}>
             {SENSOR_LIST.map((s) => (
@@ -234,7 +234,7 @@ export default function PromptProfilesView() {
         </div>
       </Panel>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+      <div className="prompt-columns">
         {SENSOR_LIST.map((sensor) => {
           const items = grouped[sensor] || [];
           const seedPrompts = defaults[sensor] || [];

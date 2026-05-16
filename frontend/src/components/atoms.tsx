@@ -240,17 +240,16 @@ export function Panel({
 }) {
   return (
     <div
-      className="card"
+      className="card responsive-panel"
       style={{
         background: 'var(--bg-1)',
         border: '1px solid var(--line)',
         borderRadius: 10,
-        padding: 16,
         ...style,
       }}
     >
       {(title || sub || right) && (
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 12 }}>
+        <div className="panel-title-row" style={{ alignItems: 'baseline', marginBottom: 12 }}>
           {title && <span style={{ fontSize: 13, fontWeight: 600 }}>{title}</span>}
           {sub && <span className="mono" style={{ fontSize: 10.5, color: 'var(--ink-3)' }}>{sub}</span>}
           <span style={{ flex: 1 }} />

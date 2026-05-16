@@ -110,8 +110,6 @@ type ShellProps = {
 
 export function Shell({ active, onNavigate, children, contextLine, statusRight }: ShellProps) {
   const [hover, setHover] = useState(false);
-  const W_COL = 64;
-  const W_OPEN = 224;
   const activeNav = useMemo(() => NAV.find((n) => n.key === active) ?? NAV[0], [active]);
   const { health, uploadCount, activeImageryJob } = useSystemStatus();
   const clock = useClock();
@@ -129,14 +127,14 @@ export function Shell({ active, onNavigate, children, contextLine, statusRight }
   return (
     <div
       data-shell="modern"
+      className="shell-grid"
       style={{
         height: '100%',
         display: 'grid',
-        gridTemplateColumns: `${W_COL}px minmax(0, 1fr)`,
         background: 'var(--bg-0)',
         color: 'var(--ink-0)',
         fontFamily: 'var(--font-sans)',
-        fontSize: 12,
+        fontSize: 'var(--text-sm)',
         overflow: 'hidden',
         position: 'relative',
       }}
@@ -146,23 +144,25 @@ export function Shell({ active, onNavigate, children, contextLine, statusRight }
           (zIndex 500) so the sidebar overlays them instead of getting
           covered when it expands. */}
       <div
+        className="shell-rail"
         style={{ position: 'relative', height: '100%', zIndex: 1000 }}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
       >
         <aside
+          className="shell-aside"
           style={{
+            ['--rail-width' as any]: hover ? 'var(--rail-expanded)' : 'var(--rail-collapsed)',
             position: 'absolute',
             top: 0,
             left: 0,
             bottom: 0,
-            width: hover ? W_OPEN : W_COL,
             background: 'var(--bg-1)',
             borderRight: '1px solid var(--line)',
             display: 'flex',
             flexDirection: 'column',
-            padding: hover ? '14px 12px' : '14px 8px',
-            gap: 14,
+            padding: hover ? 'var(--space-3)' : 'var(--space-3) var(--space-2)',
+            gap: 'var(--space-3)',
             transition: 'width .18s ease, padding .18s ease, box-shadow .18s ease',
             boxShadow: hover ? '10px 0 28px rgba(0,0,0,.40)' : 'none',
             overflow: 'hidden',
@@ -194,14 +194,14 @@ export function Shell({ active, onNavigate, children, contextLine, statusRight }
         </aside>
       </div>
 
-      <div style={{ minWidth: 0, display: 'grid', gridTemplateRows: '52px minmax(0,1fr) 28px' }}>
+      <div className="shell-body" style={{ minWidth: 0, display: 'grid' }}>
         <Topbar
           workspaceLabel={activeNav.label}
           contextLine={contextLine ?? `AOR · Live · UTC ${clock.toISOString().slice(11, 19)}`}
           onNavigate={onNavigate}
         />
 
-        <main style={{ minWidth: 0, minHeight: 0, overflow: 'hidden', background: 'var(--bg-0)' }}>
+        <main className="shell-main" style={{ minWidth: 0, minHeight: 0, overflow: 'hidden', background: 'var(--bg-0)' }}>
           {children}
         </main>
 
@@ -400,11 +400,12 @@ function Topbar({
   };
   return (
     <header
+      className="shell-topbar"
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 14,
-        padding: '0 18px',
+        gap: 'var(--space-3)',
+        paddingInline: 'var(--space-4)',
         borderBottom: '1px solid var(--line)',
         background: 'var(--bg-1)',
       }}
@@ -628,14 +629,15 @@ function StatusBar({
 }) {
   return (
     <footer
+      className="shell-statusbar"
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 18,
-        padding: '0 18px',
+        gap: 'var(--space-3)',
+        paddingInline: 'var(--space-4)',
         borderTop: '1px solid var(--line)',
         background: 'var(--bg-1)',
-        fontSize: 10.5,
+        fontSize: 'var(--text-2xs)',
         color: 'var(--ink-2)',
       }}
     >

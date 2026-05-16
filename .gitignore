@@ -55,6 +55,7 @@ vite-*.log
 *.mlmodel
 *.safetensors
 *.ckpt
+/inference-sam3/mobileclip2_b.ts
 !inference/yolov8n.pt
 !inference/models/.gitkeep
 inference/models/*

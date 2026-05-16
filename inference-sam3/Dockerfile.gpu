@@ -138,6 +138,13 @@ RUN python /tmp/verify_bake.py && rm /tmp/verify_bake.py
 
 COPY . /app
 
+# YOLOE's text-prompted path resolves this TorchScript MobileCLIP2 sidecar by
+# filename at runtime. Keep it out of Git, but ensure clean-clone image builds
+# still contain it for offline inference.
+RUN if [ ! -s mobileclip2_b.ts ]; then \
+        python -c "from pathlib import Path; from ultralytics.utils.downloads import attempt_download_asset; path = Path(attempt_download_asset('mobileclip2_b.ts')); assert path.is_file() and path.stat().st_size > 0, f'failed to download mobileclip2_b.ts: {path}'"; \
+    fi
+
 ENV PORT=8001 \
     PYTHONUNBUFFERED=1
 # HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE are decided by the compose service

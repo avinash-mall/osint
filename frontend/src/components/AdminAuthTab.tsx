@@ -174,7 +174,7 @@ export default function AdminAuthTab() {
   };
 
   return (
-    <div style={{ padding: '20px 24px', overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 18, flex: 1, minHeight: 0 }}>
+    <div className="admin-view" style={{ padding: '20px 24px', overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 18, flex: 1, minHeight: 0 }}>
       <div>
         <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 4 }}>Authentication</div>
         <div className="mono" style={{ fontSize: 11, color: 'var(--ink-2)' }}>
@@ -461,7 +461,7 @@ function Card({
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label style={{ display: 'grid', gridTemplateColumns: '180px 1fr', gap: 14, alignItems: 'center' }}>
+    <label className="auth-row">
       <span className="label-mono">{label}</span>
       {children}
     </label>

@@ -234,8 +234,8 @@ export default function GraphExplorer() {
   }, [graphData, selectedNode]);
 
   return (
-    <div className="h-full min-h-0 grid grid-cols-[300px_minmax(0,1fr)_320px] bg-sentinel-bg text-sentinel-text overflow-hidden" onClick={() => setContextMenu(null)}>
-      <aside className="sentinel-panel border-y-0 border-l-0 min-h-0 flex flex-col">
+    <div className="graph-shell h-full min-h-0 bg-sentinel-bg text-sentinel-text overflow-hidden" onClick={() => setContextMenu(null)}>
+      <aside className="graph-entity-panel sentinel-panel border-y-0 border-l-0 min-h-0 flex flex-col">
         <div className="sentinel-panel-header">
           <GitBranch size={14} className="text-sentinel-accent" />
           <span>Entities · {data.nodes.length}</span>
@@ -290,7 +290,7 @@ export default function GraphExplorer() {
         </div>
       </aside>
 
-      <main className="sentinel-panel border-y-0 min-w-0 min-h-0 flex flex-col">
+      <main className="graph-main-panel sentinel-panel border-y-0 min-w-0 min-h-0 flex flex-col">
         <div className="sentinel-panel-header">
           <span>Link Graph · 2-hop neighborhood</span>
           <div className="ml-auto flex items-center gap-2">
@@ -406,7 +406,7 @@ export default function GraphExplorer() {
             ))}
           </div>
         </div>
-        <div className="h-20 border-t border-sentinel-line bg-sentinel-panel flex overflow-hidden">
+        <div className="graph-updates-strip border-t border-sentinel-line bg-sentinel-panel overflow-hidden">
           <div className="w-44 border-r border-sentinel-line p-3">
             <div className="sentinel-label">Ontology Updates</div>
             <div className="text-xl font-mono text-sentinel-accent">{updates.length}</div>
@@ -425,7 +425,7 @@ export default function GraphExplorer() {
         </div>
       </main>
 
-      <aside className="sentinel-panel border-y-0 border-r-0 min-h-0 flex flex-col">
+      <aside className="graph-detail-panel sentinel-panel border-y-0 border-r-0 min-h-0 flex flex-col">
         <div className="sentinel-panel-header">
           <Info size={14} className="text-sentinel-accent" />
           <span>Entity</span>

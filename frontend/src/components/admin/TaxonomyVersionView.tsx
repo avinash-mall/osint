@@ -51,7 +51,7 @@ export default function TaxonomyVersionView() {
   }, [load]);
 
   return (
-    <div style={{ padding: '20px 24px', overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 18, flex: 1, minHeight: 0 }}>
+    <div className="admin-view" style={{ padding: '20px 24px', overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 18, flex: 1, minHeight: 0 }}>
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 14 }}>
         <div>
           <div style={{ fontSize: 16, fontWeight: 600 }}>Taxonomy version history</div>
@@ -95,10 +95,8 @@ export default function TaxonomyVersionView() {
             return (
               <div
                 key={v.id}
+                className="version-row"
                 style={{
-                  display: 'grid',
-                  gridTemplateColumns: '90px 1fr 140px 140px',
-                  gap: 10,
                   padding: '12px 10px',
                   borderBottom: '1px solid var(--line)',
                   background: isCurrent ? 'color-mix(in oklab, var(--accent) 8%, transparent)' : 'transparent',

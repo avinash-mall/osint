@@ -876,7 +876,7 @@ function UnknownRow({ row, expanded, onToggle, branches, onAssigned }: UnknownRo
           : 'border-l-2 border-transparent hover:bg-slate-900/40'
       }
     >
-      <div className="grid grid-cols-[1fr_60px_140px_80px_100px] items-center gap-2 px-3 py-2 text-xs">
+      <div className="ontology-unknown-grid grid items-center gap-2 px-3 py-2 text-xs">
         <span className="font-mono text-slate-200 truncate" title={row.label}>
           {row.label}
         </span>
@@ -1295,7 +1295,7 @@ export default function OntologyAdmin({
   }, [mode]);
 
   return (
-    <div className="w-full flex-1 min-h-0 bg-slate-950 text-slate-200 overflow-auto">
+    <div className="ontology-admin w-full flex-1 min-h-0 bg-slate-950 text-slate-200 overflow-auto">
       <div className="max-w-6xl mx-auto p-6 flex flex-col gap-4">
         {/* Header */}
         <div className="flex items-center gap-3 border-b border-slate-800 pb-3">
@@ -1319,7 +1319,7 @@ export default function OntologyAdmin({
         </div>
 
         {/* Two-pane layout */}
-        <div className="grid grid-cols-1 lg:grid-cols-[minmax(280px,360px)_1fr] gap-4">
+        <div className="ontology-split grid grid-cols-1 gap-4">
           {/* Tree */}
           <div className="border border-slate-800 rounded bg-slate-950/40 flex flex-col max-h-[70vh]">
             <div className="px-2 py-2 border-b border-slate-800 flex items-center gap-2">
@@ -1445,7 +1445,7 @@ export default function OntologyAdmin({
             </div>
           ) : (
             <>
-              <div className="grid grid-cols-[1fr_60px_140px_80px_100px] items-center gap-2 px-3 py-2 border-b border-slate-800 font-mono text-[9px] uppercase tracking-wider text-slate-500">
+              <div className="ontology-unknown-grid grid items-center gap-2 px-3 py-2 border-b border-slate-800 font-mono text-[9px] uppercase tracking-wider text-slate-500">
                 <span>label</span>
                 <span className="text-right">count</span>
                 <span>first_seen</span>

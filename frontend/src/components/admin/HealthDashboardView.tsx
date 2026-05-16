@@ -126,7 +126,7 @@ export default function HealthDashboardView() {
   const cpuPct = sys.cpu_pct == null ? null : Number(sys.cpu_pct);
 
   return (
-    <div style={{ padding: '20px 24px', overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 18, flex: 1, minHeight: 0 }}>
+    <div className="admin-view" style={{ padding: '20px 24px', overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 18, flex: 1, minHeight: 0 }}>
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 14 }}>
         <div>
           <div style={{ fontSize: 16, fontWeight: 600 }}>System health</div>
@@ -156,7 +156,7 @@ export default function HealthDashboardView() {
       )}
 
       {/* Row 1 — GPU / VRAM / Profile / Mode */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+      <div className="admin-grid-4">
         <KPI
           title="GPU"
           big={data?.gpu?.model || data?.gpu?.profile || '—'}
@@ -198,7 +198,7 @@ export default function HealthDashboardView() {
       </div>
 
       {/* Row 2 — throughput / host */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+      <div className="admin-grid-4">
         <KPI
           title="Active req"
           big={String(data?.active_requests ?? 0)}
@@ -296,7 +296,7 @@ export default function HealthDashboardView() {
           ) : null
         }
       >
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 200px 100px 70px 60px 80px 80px 110px', gap: 0 }}>
+        <div className="health-model-grid">
           {['Model', 'Version', 'Status', 'Req', 'Err', 'p50 ms', 'p95 ms', 'Last used'].map((h) => (
             <div
               key={h}
