@@ -658,7 +658,7 @@ img, svg, video, canvas { max-inline-size: 100%; }
   overflow-x: auto;
 }
 
-@container shell (max-width: 46rem) {
+@media (max-width: 46rem) {
   .shell-grid {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -669,6 +669,10 @@ img, svg, video, canvas { max-inline-size: 100%; }
     pointer-events: none;
   }
   .shell-rail > * { pointer-events: auto; }
+  .shell-body {
+    grid-column: 1;
+    grid-row: 1;
+  }
 }
 
 @container workspace (max-width: 42rem) {
@@ -697,7 +701,7 @@ img, svg, video, canvas { max-inline-size: 100%; }
   }
 }
 
-@container admin-shell (max-width: 52rem) {
+@container shell-main (max-width: 52rem) {
   .admin-shell {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
@@ -745,7 +749,7 @@ img, svg, video, canvas { max-inline-size: 100%; }
   }
 }
 
-@container graph-shell (max-width: 72rem) {
+@container shell-main (max-width: 72rem) {
   .graph-shell {
     grid-template-columns: minmax(15rem, 18rem) minmax(0, 1fr);
   }
@@ -755,7 +759,7 @@ img, svg, video, canvas { max-inline-size: 100%; }
   }
 }
 
-@container graph-shell (max-width: 48rem) {
+@container shell-main (max-width: 48rem) {
   .graph-shell {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -768,7 +772,7 @@ img, svg, video, canvas { max-inline-size: 100%; }
   }
 }
 
-@container fmv-shell (max-width: 64rem) {
+@container shell-main (max-width: 64rem) {
   .fmv-shell {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -777,7 +781,7 @@ img, svg, video, canvas { max-inline-size: 100%; }
   }
 }
 
-@container fmv-shell (max-width: 48rem) {
+@container shell-main (max-width: 48rem) {
   .fmv-stage-grid {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -798,12 +802,21 @@ img, svg, video, canvas { max-inline-size: 100%; }
 @container map-workspace (max-width: 42rem) {
   .map-float-panel,
   .map-right-panel {
-    inline-size: calc(100cqi - 1.75rem);
-    max-block-size: min(42cqb, 24rem);
+    left: calc(var(--rail-collapsed, 0rem) + .875rem) !important;
+    inline-size: calc(100cqi - var(--rail-collapsed, 0rem) - 1.75rem);
+    max-block-size: min(38cqb, 22rem);
+  }
+  .map-left-panel {
+    bottom: auto !important;
   }
   .map-right-panel {
     top: auto !important;
     bottom: .875rem !important;
+  }
+  .map-timeline {
+    inset-inline-start: calc(var(--rail-collapsed, 0rem) + .875rem) !important;
+    inset-inline-end: .875rem !important;
+    bottom: calc(min(38cqb, 22rem) + 1.75rem) !important;
   }
 }
 

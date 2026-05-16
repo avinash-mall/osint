@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Circle, CircleMarker, GeoJSON, ImageOverlay, MapContainer, Marker, Polyline, Popup, Rectangle, TileLayer, useMap, useMapEvents, ZoomControl } from 'react-leaflet';
 import L from 'leaflet';
 import axios from 'axios';
@@ -625,6 +625,26 @@ export default function GaiaMap({
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
   const [timelineOpen, setTimelineOpen] = useState(true);
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const autoCollapsedRef = useRef(false);
+
+  // Respect the workspace's own container, not the viewport: when this map is
+  // mounted inside a narrow shell, begin with the side drawers collapsed so
+  // the canvas remains useful. The analyst can reopen either drawer manually.
+  useEffect(() => {
+    const node = workspaceRef.current;
+    if (!node) return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (!entry || autoCollapsedRef.current) return;
+      if (entry.contentRect.width < 640) {
+        setLeftOpen(false);
+        setRightOpen(false);
+        autoCollapsedRef.current = true;
+      }
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
 
   const selectedImageryData = imagery.find((img) => img.id === selectedImagery);
 
@@ -1410,7 +1430,7 @@ export default function GaiaMap({
   };
 
   return (
-    <div className="map-workspace" style={{ position: 'relative', height: '100%', width: '100%', background: 'var(--bg-0)', overflow: 'hidden' }}>
+    <div ref={workspaceRef} className="map-workspace" style={{ position: 'relative', height: '100%', width: '100%', background: 'var(--bg-0)', overflow: 'hidden' }}>
       {/* Full-bleed map column (rendered below, sandwiched between the floating
           left / right panels via z-index).  This is now the workspace canvas. */}
       {leftOpen ? (

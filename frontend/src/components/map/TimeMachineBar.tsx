@@ -95,10 +95,10 @@ export default function TimeMachineBar({
           <RotateCcw size={12} />
         </button>
         <span style={{ fontSize: 11.5, fontWeight: 500 }}>Time-machine</span>
-        <span className="mono" style={{ fontSize: 10.5, color: 'var(--ink-2)' }}>
+        <span className="time-machine-stamp mono" style={{ fontSize: 10.5, color: 'var(--ink-2)' }}>
           {new Date(playheadIso).toUTCString().replace('GMT', 'Z')} · {range} window
         </span>
-        <div style={{ flex: 1 }} />
+        <div className="time-machine-spacer" style={{ flex: 1 }} />
         <div className="seg" style={{ borderRadius: 999, overflow: 'hidden' }}>
           {(['24h', '7d', '30d'] as Range[]).map((w) => (
             <button
@@ -112,7 +112,7 @@ export default function TimeMachineBar({
           ))}
         </div>
         <span
-          className="mono"
+          className="time-machine-confidence mono"
           style={{
             display: 'inline-flex',
             alignItems: 'center',
