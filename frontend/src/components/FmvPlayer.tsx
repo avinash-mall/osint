@@ -15,7 +15,6 @@ import {
   Play,
   SkipBack,
   SkipForward,
-  UploadCloud,
 } from 'lucide-react';
 import { useEventStream } from '../hooks/useEventStream';
 import { AffGlyph, type Affiliation } from './atoms';
@@ -251,7 +250,7 @@ function trackIdOf(det: Detection): string | null {
   return det.metadata?.track_id || det.bbox?.track_id || null;
 }
 
-type SidePanelTab = 'tracks' | 'detections' | 'upload' | 'detail';
+type SidePanelTab = 'tracks' | 'detections' | 'clips' | 'detail';
 
 type DetectionsSort = 'time_asc' | 'time_desc' | 'conf_desc' | 'class_asc';
 
@@ -291,14 +290,8 @@ export default function FmvPlayer({
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [frames, setFrames] = useState<FrameRow[]>([]);
   const [detections, setDetections] = useState<Detection[]>([]);
-  const [uploading, setUploading] = useState(false);
-  const [promptMode, setPromptMode] = useState<'pcs' | 'amg'>('pcs');
-  const [model, setModel] = useState<'sam3' | 'yolo26'>('sam3');
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const [uploadError, setUploadError] = useState<string | null>(null);
   const [trackingError, setTrackingError] = useState<string | null>(null);
   const [trackingProgress, setTrackingProgress] = useState<{ window: number; windows: number } | null>(null);
-  const [inferenceStatus, setInferenceStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -332,7 +325,6 @@ export default function FmvPlayer({
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const rafRef = useRef<number | null>(null);
   const dragRef = useRef(false);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const { categories } = useDetectionCategories();
 
@@ -402,13 +394,10 @@ export default function FmvPlayer({
   // inference container and can interrupt queued or in-flight FMV tracking.
   useEffect(() => {
     let cancelled = false;
-    setInferenceStatus('loading');
     axios
       .post(`${API_URL}/api/inference/load`, null, { params: { profile: 'fmv' }, timeout: 600_000 })
-      .then(() => { if (!cancelled) setInferenceStatus('ready'); })
       .catch((err) => {
         if (cancelled) return;
-        setInferenceStatus('error');
         setTrackingError(
           err?.response?.data?.detail || err?.message || 'inference profile load failed',
         );
@@ -814,53 +803,6 @@ export default function FmvPlayer({
     return () => obs.disconnect();
   }, [selectedClip]);
 
-  // -------------------- Upload --------------------
-
-  const handleUpload = useCallback(
-    async (file: File, srt?: File | null) => {
-      setUploadError(null);
-      setUploading(true);
-      setUploadProgress(0);
-      try {
-        const fd = new FormData();
-        fd.append('file', file);
-        fd.append('name', file.name);
-        if (srt) fd.append('srt', srt);
-        fd.append('prompt_mode', promptMode);
-        fd.append('model', model);
-        const res = await axios.post(`${API_URL}/api/fmv/clips`, fd, {
-          onUploadProgress: (e) => {
-            const pct = Math.round((e.loaded / (e.total || 1)) * 100);
-            setUploadProgress(pct);
-          },
-        });
-        await fetchClips();
-        if (res.data?.clip?.id) setSelectedId(res.data.clip.id);
-      } catch (err: any) {
-        setUploadError(err?.response?.data?.detail || err?.message || 'Upload failed');
-      } finally {
-        setUploading(false);
-        setUploadProgress(0);
-      }
-    },
-    [fetchClips, promptMode, model],
-  );
-
-  const onPickFiles = useCallback(
-    (fileList: FileList | null) => {
-      if (!fileList || fileList.length === 0) return;
-      const files = Array.from(fileList);
-      const video = files.find((f) => /\.(mp4|mov|m4v|ts|mpeg|mpg)$/i.test(f.name));
-      const srt = files.find((f) => /\.srt$/i.test(f.name));
-      if (!video) {
-        setUploadError('Drop an .mp4 / .mov / .ts file. SRT sidecar is optional.');
-        return;
-      }
-      handleUpload(video, srt || null);
-    },
-    [handleUpload],
-  );
-
   // -------------------- Transport --------------------
 
   const seekTo = useCallback(
@@ -1087,16 +1029,6 @@ export default function FmvPlayer({
     >
       {/* === LEFT COLUMN: video + (optional) synced map + transport === */}
       <section style={{ display: 'flex', flexDirection: 'column', background: 'var(--bg-0)', minWidth: 0, minHeight: 0 }}>
-        {/* hidden file input — wired by Upload tab and drop overlay */}
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          accept=".mp4,.mov,.m4v,.ts,.mpeg,.mpg,.srt"
-          style={{ display: 'none' }}
-          onChange={(e) => onPickFiles(e.target.files)}
-        />
-
         <div
           style={{
             flex: 1,
@@ -1120,16 +1052,11 @@ export default function FmvPlayer({
               justifyContent: 'center',
               minWidth: 0,
             }}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => {
-              e.preventDefault();
-              onPickFiles(e.dataTransfer.files);
-            }}
           >
             {!selectedClip && (
               <div style={{ color: 'var(--ink-2)', fontSize: 12, textAlign: 'center', padding: 24 }}>
                 <Film size={36} style={{ opacity: 0.5 }} />
-                <div style={{ marginTop: 12 }}>Select a clip from the Upload tab, or drop a file here.</div>
+                <div style={{ marginTop: 12 }}>Select a clip from the Clips tab.</div>
               </div>
             )}
             {selectedClip && (
@@ -1727,7 +1654,7 @@ export default function FmvPlayer({
         )}
       </section>
 
-      {/* === RIGHT COLUMN: Tracks / Upload tabs (collapsible) === */}
+      {/* === RIGHT COLUMN: Tracks / Detections / Clips tabs (collapsible) === */}
       {rightOpen ? (
         <aside
           className="panel"
@@ -1748,7 +1675,7 @@ export default function FmvPlayer({
               [
                 ['tracks', 'Tracks', trackRows.length] as [SidePanelTab, string, number],
                 ['detections', 'Detections', detections.length] as [SidePanelTab, string, number],
-                ['upload', 'Upload', clips.length] as [SidePanelTab, string, number],
+                ['clips', 'Clips', clips.length] as [SidePanelTab, string, number],
                 ...(selectedDetectionId
                   ? ([['detail', 'Detail', 1] as [SidePanelTab, string, number]] as const)
                   : []),
@@ -1819,7 +1746,7 @@ export default function FmvPlayer({
                           ? 'No tracks active at this frame.'
                           : 'No detections yet — SAM3 pipeline may still be running.'
                         : 'Waiting for transcode…'
-                      : 'Select a clip in the Upload tab.'}
+                      : 'Select a clip in the Clips tab.'}
                   </div>
                 )}
 
@@ -2058,7 +1985,7 @@ export default function FmvPlayer({
                         ? detections.length === 0
                           ? 'No detections — SAM3 pipeline may still be running.'
                           : 'No detections at this frame.'
-                        : 'Select a clip in the Upload tab.'}
+                        : 'Select a clip in the Clips tab.'}
                     </div>
                   )}
 
@@ -2119,21 +2046,11 @@ export default function FmvPlayer({
               );
             })()}
 
-            {sideTab === 'upload' && (
-              <UploadTab
+            {sideTab === 'clips' && (
+              <ClipsTab
                 clips={clips}
                 selectedId={selectedId}
                 setSelectedId={setSelectedId}
-                fileInputRef={fileInputRef}
-                onPickFiles={onPickFiles}
-                uploading={uploading}
-                uploadProgress={uploadProgress}
-                uploadError={uploadError}
-                inferenceStatus={inferenceStatus}
-                promptMode={promptMode}
-                setPromptMode={setPromptMode}
-                model={model}
-                setModel={setModel}
               />
             )}
             {sideTab === 'detail' && selectedDetectionId != null && (() => {
@@ -2222,166 +2139,22 @@ export default function FmvPlayer({
 }
 
 /* ----------------------------------------------------------------------
- * Upload tab — drop zone + clip library + prompt-mode toggle.
- * Lives in the right sidebar; data + handlers are passed in from the
- * parent so all state stays in one place.
+ * Clips tab — clip library for selection. Uploads happen on the admin
+ * Upload page (IngestConnect), not here.
  * --------------------------------------------------------------------*/
 
-function UploadTab({
+function ClipsTab({
   clips,
   selectedId,
   setSelectedId,
-  fileInputRef,
-  onPickFiles,
-  uploading,
-  uploadProgress,
-  uploadError,
-  inferenceStatus,
-  promptMode,
-  setPromptMode,
-  model,
-  setModel,
 }: {
   clips: Clip[];
   selectedId: number | null;
   setSelectedId: (id: number) => void;
-  fileInputRef: React.MutableRefObject<HTMLInputElement | null>;
-  onPickFiles: (fl: FileList | null) => void;
-  uploading: boolean;
-  uploadProgress: number;
-  uploadError: string | null;
-  inferenceStatus: 'idle' | 'loading' | 'ready' | 'error';
-  promptMode: 'pcs' | 'amg';
-  setPromptMode: (m: 'pcs' | 'amg') => void;
-  model: 'sam3' | 'yolo26';
-  setModel: (m: 'sam3' | 'yolo26') => void;
 }) {
   const accent = 'var(--accent)';
   return (
     <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-      {/* DROP ZONE */}
-      <div
-        onClick={() => fileInputRef.current?.click()}
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={(e) => {
-          e.preventDefault();
-          onPickFiles(e.dataTransfer.files);
-        }}
-        style={{
-          border: '1px dashed var(--line-2)',
-          background: 'color-mix(in oklab, var(--bg-2) 60%, transparent)',
-          borderRadius: 10,
-          padding: '14px 16px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 12,
-          cursor: 'pointer',
-          transition: 'border-color .15s, background .15s',
-        }}
-      >
-        <div
-          style={{
-            width: 38,
-            height: 38,
-            borderRadius: 10,
-            display: 'grid',
-            placeItems: 'center',
-            background: `color-mix(in oklab, ${accent} 14%, transparent)`,
-            border: `1px solid color-mix(in oklab, ${accent} 50%, transparent)`,
-            color: accent,
-            flexShrink: 0,
-          }}
-        >
-          <UploadCloud size={18} />
-        </div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink-0)', marginBottom: 2 }}>
-            Upload drone video
-          </div>
-          <div className="mono" style={{ fontSize: 10.5, color: 'var(--ink-2)' }}>
-            MP4 / MOV / TS · MISB-0601 auto-extract · optional .srt sidecar
-          </div>
-        </div>
-      </div>
-
-      {/* MODEL SELECTOR — SAM 3.1 (default) vs YOLO 26 */}
-      <div>
-        <div className="label-mono" style={{ marginBottom: 6 }}>Model</div>
-        <select
-          value={model}
-          onChange={(e) => {
-            const next = e.target.value as 'sam3' | 'yolo26';
-            setModel(next);
-            // SAM 3.1 only supports PCS; AMG is YOLO 26 only.
-            if (next === 'sam3' && promptMode === 'amg') setPromptMode('pcs');
-          }}
-          disabled={uploading}
-          style={{
-            width: '100%',
-            padding: '6px 8px',
-            background: 'var(--bg-2)',
-            border: '1px solid var(--line-2)',
-            borderRadius: 6,
-            color: 'var(--ink-0)',
-            fontSize: 12,
-          }}
-          title="Inference engine. SAM 3.1 uses text-prompted multiplex tracking; YOLO 26 runs YOLOE-26x-seg(-pf) per-frame and supports promptless AMG."
-        >
-          <option value="sam3">SAM 3.1 (default)</option>
-          <option value="yolo26">YOLO 26</option>
-        </select>
-      </div>
-
-      {/* PROMPT MODE — AMG (YOLO 26 only) vs PCS */}
-      <div>
-        <div className="label-mono" style={{ marginBottom: 6 }}>Detection mode</div>
-        <div className="seg" style={{ width: '100%' }}>
-          {model === 'yolo26' && (
-            <button
-              type="button"
-              className={promptMode === 'amg' ? 'on' : ''}
-              onClick={() => setPromptMode('amg')}
-              disabled={uploading}
-              style={{ flex: 1 }}
-              title="Automatic Mask Generation — YOLOE-26x-seg-pf promptless closed-set detection"
-            >
-              AMG
-            </button>
-          )}
-          <button
-            type="button"
-            className={promptMode === 'pcs' ? 'on' : ''}
-            onClick={() => setPromptMode('pcs')}
-            disabled={uploading}
-            style={{ flex: 1 }}
-            title="Promptable Concept Segmentation — track named classes from the admin ontology"
-          >
-            PCS
-          </button>
-        </div>
-      </div>
-
-      {/* STATUS PILLS */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        {uploading && (
-          <div>
-            <div className="mono" style={{ fontSize: 10, color: 'var(--ink-2)' }}>
-              UPLOADING {uploadProgress}%
-            </div>
-            <div style={{ height: 4, background: 'var(--bg-3)', borderRadius: 999, overflow: 'hidden', marginTop: 4 }}>
-              <div style={{ width: `${uploadProgress}%`, height: '100%', background: accent }} />
-            </div>
-          </div>
-        )}
-        {uploadError && (
-          <span className="tag crit" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-            <AlertTriangle size={11} /> {uploadError}
-          </span>
-        )}
-        {inferenceStatus === 'loading' && <span className="tag accent">Loading FMV models…</span>}
-        {inferenceStatus === 'error' && <span className="tag crit">Inference profile failed to load</span>}
-      </div>
-
       {/* CLIP LIBRARY */}
       <div>
         <div className="label-mono" style={{ marginBottom: 6 }}>
@@ -2389,7 +2162,7 @@ function UploadTab({
         </div>
         {clips.length === 0 && (
           <div className="mono" style={{ fontSize: 11, color: 'var(--ink-2)', padding: 8 }}>
-            No clips yet.  Drop a file above to begin.
+            No clips yet. Use the admin Upload tab to add one.
           </div>
         )}
         {clips.map((clip) => {

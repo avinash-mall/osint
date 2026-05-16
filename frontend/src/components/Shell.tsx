@@ -24,6 +24,14 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import { StatusDot } from './atoms';
 import { useAuth } from '../hooks/useAuth';
+import {
+  type UploadJob,
+  isUploadActive,
+  uploadMessage,
+  uploadMetadata,
+  uploadProgress,
+  uploadStage,
+} from '../utils/uploadProgress';
 
 const API_URL = (import.meta as any).env?.VITE_API_URL || '';
 
@@ -57,30 +65,37 @@ function useClock() {
 
 function useSystemStatus() {
   const [health, setHealth] = useState<Health>({});
-  const [uploadCount, setUploadCount] = useState(0);
+  const [activeUploads, setActiveUploads] = useState<UploadJob[]>([]);
   useEffect(() => {
     let cancelled = false;
     const refresh = async () => {
       try {
         const [h, u] = await Promise.all([
           axios.get<Health>(`${API_URL}/api/health`),
-          axios.get<{ uploads?: unknown[] }>(`${API_URL}/api/ingest/uploads`),
+          axios.get<{ uploads?: UploadJob[] }>(`${API_URL}/api/ingest/uploads`),
         ]);
         if (cancelled) return;
         setHealth(h.data ?? {});
-        setUploadCount(u.data?.uploads?.length ?? 0);
+        setActiveUploads((u.data?.uploads ?? []).filter(isUploadActive));
       } catch {
         if (!cancelled) setHealth({ healthy: false });
       }
     };
     refresh();
-    const id = window.setInterval(refresh, 15000);
+    // Fast polling while an upload is in flight so the status-bar progress
+    // tracks chip-by-chip movement; slow otherwise.
+    const fastTickWindow = activeUploads.length > 0 ? 2000 : 15000;
+    const id = window.setInterval(refresh, fastTickWindow);
     return () => {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, []);
-  return { health, uploadCount };
+  }, [activeUploads.length]);
+  const activeImageryJob = useMemo(
+    () => activeUploads.find((job) => job.media_type === 'imagery') || null,
+    [activeUploads],
+  );
+  return { health, uploadCount: activeUploads.length, activeImageryJob };
 }
 
 type ShellProps = {
@@ -98,7 +113,7 @@ export function Shell({ active, onNavigate, children, contextLine, statusRight }
   const W_COL = 64;
   const W_OPEN = 224;
   const activeNav = useMemo(() => NAV.find((n) => n.key === active) ?? NAV[0], [active]);
-  const { health, uploadCount } = useSystemStatus();
+  const { health, uploadCount, activeImageryJob } = useSystemStatus();
   const clock = useClock();
 
   const services = (() => {
@@ -190,7 +205,13 @@ export function Shell({ active, onNavigate, children, contextLine, statusRight }
           {children}
         </main>
 
-        <StatusBar uploadCount={uploadCount} allOk={allOk} clock={clock} statusRight={statusRight} />
+        <StatusBar
+          uploadCount={uploadCount}
+          activeImageryJob={activeImageryJob}
+          allOk={allOk}
+          clock={clock}
+          statusRight={statusRight}
+        />
       </div>
     </div>
   );
@@ -525,13 +546,82 @@ function AnalystChip() {
   );
 }
 
+function formatEta(secondsRemaining: number): string {
+  if (!Number.isFinite(secondsRemaining) || secondsRemaining <= 0) return '';
+  if (secondsRemaining < 60) return `≈ ${Math.round(secondsRemaining)}s`;
+  const minutes = Math.round(secondsRemaining / 60);
+  return `≈ ${minutes}m`;
+}
+
+function ImageryJobIndicator({ job }: { job: UploadJob }) {
+  const progress = uploadProgress(job);
+  const meta = uploadMetadata(job);
+  const processed = Number(meta.processed_chips);
+  const total = Number(meta.total_chips ?? meta.planned_chips);
+  const createdAt = job.created_at ? new Date(job.created_at).getTime() : NaN;
+  let eta = '';
+  if (Number.isFinite(createdAt) && Number.isFinite(processed) && Number.isFinite(total) && processed > 0 && processed < total) {
+    const elapsedSec = (Date.now() - createdAt) / 1000;
+    eta = formatEta((elapsedSec / processed) * (total - processed));
+  }
+  const stage = uploadStage(job);
+  const message = uploadMessage(job);
+  return (
+    <span
+      role="status"
+      aria-live="polite"
+      style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0 }}
+    >
+      <span className="mono" style={{ color: 'var(--ink-1)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {job.filename}
+      </span>
+      <span className="mono" style={{ color: 'var(--ink-2)' }}>
+        {stage}
+      </span>
+      <span className="mono" style={{ color: 'var(--ink-3)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {message}
+      </span>
+      <span
+        aria-hidden
+        style={{
+          width: 96,
+          height: 4,
+          background: 'var(--line-2)',
+          border: '1px solid var(--line)',
+          position: 'relative',
+        }}
+      >
+        <span
+          style={{
+            position: 'absolute',
+            inset: 0,
+            width: `${progress}%`,
+            background: 'var(--accent)',
+            transition: 'width 400ms linear',
+          }}
+        />
+      </span>
+      <span className="mono" style={{ color: 'var(--ink-2)' }}>
+        {progress}%
+      </span>
+      {eta && (
+        <span className="mono" style={{ color: 'var(--ink-3)' }}>
+          {eta}
+        </span>
+      )}
+    </span>
+  );
+}
+
 function StatusBar({
   uploadCount,
+  activeImageryJob,
   allOk,
   clock,
   statusRight,
 }: {
   uploadCount: number;
+  activeImageryJob: UploadJob | null;
   allOk: boolean;
   clock: Date;
   statusRight?: ReactNode;
@@ -558,6 +648,7 @@ function StatusBar({
       <span className="mono">
         {uploadCount} upload{uploadCount === 1 ? '' : 's'} active
       </span>
+      {activeImageryJob && <ImageryJobIndicator job={activeImageryJob} />}
       <div style={{ flex: 1 }} />
       {statusRight}
       <span className="mono">{clock.toISOString().slice(0, 19)}Z</span>

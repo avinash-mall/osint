@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import collections
+import contextlib
 import gc
 import io
 import json
 import logging
 import os
+import statistics
 import tempfile
 import threading
 import time
@@ -14,6 +17,7 @@ from typing import Any
 
 import cv2
 import numpy as np
+import psutil
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from PIL import Image
@@ -166,6 +170,83 @@ _active_lock = threading.Lock()
 _active_requests = 0
 _model_error: str | None = None
 _current_profile: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Health metrics: per-component latency, request count, error count, and a
+# rolling 60-second request rate. Powers the Admin · Health Dashboard.
+# ---------------------------------------------------------------------------
+BOOT_TS = time.time()
+# Prime psutil's internal counter so the first /health call returns a real
+# CPU percentage instead of 0.0.
+psutil.cpu_percent(interval=None)
+
+_HEALTH_COMPONENT_SLUGS = (
+    "sam3_image", "sam3_video", "dinov3_sat", "prithvi", "terramind",
+    "dota_obb", "grounding_dino", "yoloe_pf", "yoloe_seg",
+)
+_METRIC_WINDOW = int(os.getenv("SAM3_METRIC_WINDOW", "200"))
+_metrics_lock = threading.Lock()
+_metrics: dict[str, dict[str, Any]] = {}
+_req_log: collections.deque[float] = collections.deque(maxlen=2048)
+
+
+def _record_metric(slug: str, ms: float, *, error: bool = False) -> None:
+    with _metrics_lock:
+        m = _metrics.setdefault(slug, {
+            "samples": collections.deque(maxlen=_METRIC_WINDOW),
+            "count": 0,
+            "errors": 0,
+            "last_ts": 0.0,
+        })
+        if not error:
+            m["samples"].append(float(ms))
+        m["count"] += 1
+        if error:
+            m["errors"] += 1
+        m["last_ts"] = time.time()
+
+
+def _metrics_snapshot() -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    with _metrics_lock:
+        for slug in _HEALTH_COMPONENT_SLUGS:
+            m = _metrics.get(slug)
+            if not m:
+                out[slug] = {"requests": 0, "errors": 0, "last_request_ts": None, "p50_ms": None, "p95_ms": None}
+                continue
+            samples_sorted = sorted(m["samples"])
+            p50 = statistics.median(samples_sorted) if samples_sorted else None
+            p95 = samples_sorted[int(0.95 * (len(samples_sorted) - 1))] if samples_sorted else None
+            out[slug] = {
+                "requests": m["count"],
+                "errors": m["errors"],
+                "last_request_ts": m["last_ts"] or None,
+                "p50_ms": round(p50, 2) if p50 is not None else None,
+                "p95_ms": round(p95, 2) if p95 is not None else None,
+            }
+    return out
+
+
+def _request_rate_60s() -> float:
+    now = time.time()
+    cutoff = now - 60.0
+    while _req_log and _req_log[0] < cutoff:
+        _req_log.popleft()
+    return len(_req_log) / 60.0
+
+
+@contextlib.contextmanager
+def _track(slug: str):
+    t0 = time.perf_counter()
+    err = False
+    try:
+        yield
+    except BaseException:
+        err = True
+        raise
+    finally:
+        _record_metric(slug, (time.perf_counter() - t0) * 1000, error=err)
 
 
 # ---------------------------------------------------------------------------
@@ -462,8 +543,67 @@ def _acquire_video_bundle() -> dict[str, Any]:
     )
 
 
+def _vram_stats_gib() -> tuple[float | None, float | None]:
+    """Aggregate VRAM (used, total) in GiB across every visible CUDA device.
+
+    Surfaced on /health so the backend's inference dashboard can show real
+    GPU pressure instead of "sidecar not reporting". Returns (None, None)
+    on CPU-only or any cuda error — the caller treats that as unknown."""
+    try:
+        if not torch.cuda.is_available():
+            return None, None
+        used_bytes = 0
+        total_bytes = 0
+        for idx in range(torch.cuda.device_count()):
+            free, total = torch.cuda.mem_get_info(idx)
+            used_bytes += total - free
+            total_bytes += total
+        if total_bytes == 0:
+            return None, None
+        gib = float(1024 ** 3)
+        return used_bytes / gib, total_bytes / gib
+    except Exception:
+        return None, None
+
+
+def _system_stats() -> dict[str, Any]:
+    """Host-level CPU/RAM/disk stats for the inference dashboard.
+
+    Disk usage walks up from $HF_HOME (defaulting to /models/hf) to the first
+    real directory — covers both bind-mounted host caches and ephemeral
+    container paths. The chosen path is returned as `disk_path` so operators
+    aren't confused when the numbers reflect the host volume."""
+    gib = float(1024 ** 3)
+    try:
+        vm = psutil.virtual_memory()
+        cpu_pct = psutil.cpu_percent(interval=None)
+        disk_root = os.getenv("HF_HOME", "/models/hf")
+        probe = disk_root
+        while probe and not os.path.isdir(probe):
+            probe = os.path.dirname(probe) or "/"
+        du = psutil.disk_usage(probe or "/")
+        return {
+            "cpu_pct": round(cpu_pct, 1),
+            "ram_used_gib": round((vm.total - vm.available) / gib, 2),
+            "ram_total_gib": round(vm.total / gib, 2),
+            "disk_used_gib": round(du.used / gib, 2),
+            "disk_total_gib": round(du.total / gib, 2),
+            "disk_path": probe,
+        }
+    except Exception:
+        return {
+            "cpu_pct": None,
+            "ram_used_gib": None,
+            "ram_total_gib": None,
+            "disk_used_gib": None,
+            "disk_total_gib": None,
+            "disk_path": None,
+        }
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
+    vram_used_gib, vram_total_gib = _vram_stats_gib()
     return {
         "status": "ok",
         "model_loaded": bool(_pool),
@@ -476,6 +616,8 @@ def health() -> dict[str, Any]:
         "model_versions": sam3_runner.versions(),
         "model_version": MODEL_VERSION,
         "gpu_model": GPU_MODEL,
+        "vram_used_gib": vram_used_gib,
+        "vram_total_gib": vram_total_gib,
         "active_requests": _active_requests,
         "embed_detections": SAM3_EMBED_DETECTIONS,
         "track_config": {
@@ -491,6 +633,10 @@ def health() -> dict[str, Any]:
             "grounding_dino": SAM3_LOAD_GROUNDING_DINO,
             "yoloe": SAM3_LOAD_YOLOE,
         },
+        "uptime_s": round(time.time() - BOOT_TS, 1),
+        "system": _system_stats(),
+        "metrics": _metrics_snapshot(),
+        "request_rate_60s": round(_request_rate_60s(), 3),
     }
 
 
@@ -582,7 +728,8 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
                 chip2 = None
             elif modality == "sar":
                 chip2 = await run_in_threadpool(sar.decode_s1grd, raw)
-                chip3 = await run_in_threadpool(terramind.s1_to_s2_rgb, bundle.get("terramind"), chip2, chip2.shape[-2:])
+                with _track("terramind"):
+                    chip3 = await run_in_threadpool(terramind.s1_to_s2_rgb, bundle.get("terramind"), chip2, chip2.shape[-2:])
                 chip6 = None
             else:
                 modality = "rgb"
@@ -599,7 +746,8 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
         prompts: list[str] = []
         if isinstance(prompt_boxes, list) and prompt_boxes:
             prompt_count = len(prompt_boxes)
-            candidates = await run_in_threadpool(sam3_runner.run_box_prompts, bundle, chip3, prompt_boxes, SAM3_BOX_THR)
+            with _track("sam3_image"):
+                candidates = await run_in_threadpool(sam3_runner.run_box_prompts, bundle, chip3, prompt_boxes, SAM3_BOX_THR)
         else:
             try:
                 prompts = resolve_prompts(meta)
@@ -608,7 +756,8 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             prompt_count = len(prompts)
-            candidates = await run_in_threadpool(sam3_runner.run_text_prompts, bundle, chip3, prompts, SAM3_TEXT_THR)
+            with _track("sam3_image"):
+                candidates = await run_in_threadpool(sam3_runner.run_text_prompts, bundle, chip3, prompts, SAM3_TEXT_THR)
         t0 = mark("sam3_inference", t0)
 
         # Specialist detectors run alongside SAM 3 and feed into the same fusion
@@ -618,9 +767,10 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
         # we sent to SAM 3. fusion.mask_aware_nms dedupes overlapping
         # detections across SAM 3 + specialists.
         if bundle.get("dota_obb") and _layer_active("dota_obb"):
-            candidates.extend(
-                await run_in_threadpool(dota_obb.run, bundle["dota_obb"], chip3, dota_obb.DOTA_OBB_THRESHOLD)
-            )
+            with _track("dota_obb"):
+                candidates.extend(
+                    await run_in_threadpool(dota_obb.run, bundle["dota_obb"], chip3, dota_obb.DOTA_OBB_THRESHOLD)
+                )
         # GROUNDING_DINO: auto-gated unless prompts include uncommon classes.
         # The gate skips GROUNDING_DINO (~115 ms) when SAM3's pretrained vocab
         # already covers every prompt — see grounding_dino_gate.py for the
@@ -636,15 +786,16 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
             and _layer_active("grounding_dino")
             and gd_should_run
         ):
-            candidates.extend(
-                await run_in_threadpool(
-                    grounding_dino.run,
-                    bundle["grounding_dino"],
-                    chip3,
-                    prompts,
-                    grounding_dino.GROUNDING_DINO_THR,
+            with _track("grounding_dino"):
+                candidates.extend(
+                    await run_in_threadpool(
+                        grounding_dino.run,
+                        bundle["grounding_dino"],
+                        chip3,
+                        prompts,
+                        grounding_dino.GROUNDING_DINO_THR,
+                    )
                 )
-            )
         elif _layer_active("grounding_dino") and gd_gated_reason:
             logger.debug(
                 "grounding_dino auto-gated: reason=%s n_prompts=%d", gd_gated_reason, len(prompts),
@@ -654,13 +805,15 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
         overlays: dict[str, np.ndarray] = {}
         if modality == "multispectral":
             if _layer_active("prithvi"):
-                overlays = await run_in_threadpool(prithvi_heads.run_all, bundle.get("prithvi"), chip6, (height, width))
+                with _track("prithvi"):
+                    overlays = await run_in_threadpool(prithvi_heads.run_all, bundle.get("prithvi"), chip6, (height, width))
             else:
                 overlays = {}
         t0 = mark("overlays", t0)
 
         detections = []
         embedding_ms = 0.0
+        dinov3_calls = 0
         for mask, bbox_xyxy, score, label in candidates:
             det = fusion.candidate_to_detection(
                 mask,
@@ -680,6 +833,7 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
                 emb_start = time.perf_counter()
                 det["embedding"] = embedding.embed_crop(bundle.get("dinov3_sat"), chip3, bbox_xyxy)
                 embedding_ms += (time.perf_counter() - emb_start) * 1000
+                dinov3_calls += 1
             else:
                 det["embedding"] = {"model": "disabled", "dim": 0, "fp16_b64": ""}
             if modality == "multispectral":
@@ -693,6 +847,10 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
                 else:
                     det["terramind_embedding"] = None
             detections.append(det)
+        # Record dinov3_sat once per request (not per detection) so the rolling
+        # p50 reflects request-level cost rather than detection count bias.
+        if dinov3_calls > 0:
+            _record_metric("dinov3_sat", embedding_ms)
         timings["embedding"] = round(embedding_ms, 3)
         t0 = mark("postprocess", t0)
         detections = fusion.mask_aware_nms(detections, iou=0.50)
@@ -835,7 +993,13 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
                     detail="YOLOE not loaded (set SAM3_LOAD_YOLOE=1 and reload the fmv profile)",
                 )
             _yoloe_prompts = list(prompts) if prompts else None
+            # Record latency as wall-clock per detect_video session — slug is
+            # yoloe_seg when prompts steer the model, else yoloe_pf (the
+            # prompt-free general detector).
+            _yoloe_slug = "yoloe_seg" if _yoloe_prompts else "yoloe_pf"
             def stream():
+                _stream_t0 = time.perf_counter()
+                _stream_err = False
                 try:
                     yield from (
                         line + "\n"
@@ -850,7 +1014,11 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
                             score_threshold=SAM3_BOX_THR,
                         )
                     )
+                except BaseException:
+                    _stream_err = True
+                    raise
                 finally:
+                    _record_metric(_yoloe_slug, (time.perf_counter() - _stream_t0) * 1000, error=_stream_err)
                     if cleanup_path is not None:
                         cleanup_path.unlink(missing_ok=True)
                     reserved["lock"].release()
@@ -860,6 +1028,8 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
             # the multi-prompt 400 check above.
             _video_prompt = prompts[0] if prompts else ""
             def stream():
+                _stream_t0 = time.perf_counter()
+                _stream_err = False
                 try:
                     yield from (
                         line + "\n"
@@ -875,7 +1045,11 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
                             score_threshold=SAM3_TEXT_THR,
                         )
                     )
+                except BaseException:
+                    _stream_err = True
+                    raise
                 finally:
+                    _record_metric("sam3_video", (time.perf_counter() - _stream_t0) * 1000, error=_stream_err)
                     if cleanup_path is not None:
                         cleanup_path.unlink(missing_ok=True)
                     reserved["lock"].release()
@@ -915,6 +1089,7 @@ def _enter_request() -> int:
     global _active_requests
     with _active_lock:
         _active_requests += 1
+        _req_log.append(time.time())
         return _active_requests
 
 

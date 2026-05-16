@@ -40,6 +40,8 @@ export default function TimeMachineBar({
   onTogglePlay,
   onRecenter,
   isoNow,
+  confidence,
+  onConfidenceChange,
 }: {
   passes: ImageryPass[];
   range: Range;
@@ -50,6 +52,8 @@ export default function TimeMachineBar({
   onTogglePlay: () => void;
   onRecenter: () => void;
   isoNow: string;
+  confidence: number; // 0..1 — hide detections below this floor
+  onConfidenceChange: (v: number) => void;
 }) {
   const ms = RANGE_HOURS[range] * 3600_000;
   const end = Date.parse(isoNow);
@@ -70,8 +74,8 @@ export default function TimeMachineBar({
   const playheadIso = new Date(start + value * (end - start)).toISOString();
 
   return (
-    <Panel style={{ padding: 12 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+    <Panel style={{ padding: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
         <button
           type="button"
           className="btn icon sm"
@@ -107,19 +111,46 @@ export default function TimeMachineBar({
             </button>
           ))}
         </div>
+        <span
+          className="mono"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            fontSize: 10.5,
+            color: 'var(--ink-2)',
+            flexShrink: 0,
+          }}
+          title="Hide detections below this confidence"
+        >
+          <span style={{ color: 'var(--ink-3)' }}>CONF</span>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={confidence}
+            onChange={(e) => onConfidenceChange(Number(e.target.value))}
+            aria-label="Detection confidence threshold"
+            style={{ width: 72, accentColor: 'var(--accent)' }}
+          />
+          <span style={{ color: 'var(--accent)', minWidth: 28, textAlign: 'right' }}>
+            {Math.round(confidence * 100)}%
+          </span>
+        </span>
         <span className="mono" style={{ fontSize: 10.5, color: 'var(--accent)' }}>
           {dots.length} passes
         </span>
       </div>
 
-      <div style={{ position: 'relative', height: 30 }}>
+      <div style={{ position: 'relative', height: 22 }}>
         {/* Track */}
         <div
           style={{
             position: 'absolute',
             left: 0,
             right: 0,
-            top: 13,
+            top: 9,
             height: 4,
             background: 'var(--bg-3)',
             borderRadius: 2,
@@ -129,7 +160,7 @@ export default function TimeMachineBar({
           style={{
             position: 'absolute',
             left: 0,
-            top: 13,
+            top: 9,
             width: `${value * 100}%`,
             height: 4,
             background: 'color-mix(in oklab, var(--accent) 40%, transparent)',
@@ -153,7 +184,7 @@ export default function TimeMachineBar({
               style={{
                 position: 'absolute',
                 left: `calc(${p.frac * 100}% - 6px)`,
-                top: 9,
+                top: 5,
                 width: 12,
                 height: 12,
                 background: c,
@@ -201,7 +232,7 @@ export default function TimeMachineBar({
         style={{
           display: 'flex',
           justifyContent: 'space-between',
-          marginTop: 4,
+          marginTop: 2,
           fontSize: 9.5,
           color: 'var(--ink-3)',
           fontFamily: 'var(--font-mono)',
@@ -213,7 +244,7 @@ export default function TimeMachineBar({
       </div>
 
       {/* Legend strip */}
-      <div style={{ display: 'flex', gap: 14, marginTop: 8, fontSize: 10.5 }}>
+      <div style={{ display: 'flex', gap: 14, marginTop: 4, fontSize: 10.5 }}>
         <LegendDot color="#9bd1ff" label="RGB" m="rgb" />
         <LegendDot color="#a78bfa" label="MSI" m="multispectral" />
         <LegendDot color="#fca56a" label="SAR" m="sar" />

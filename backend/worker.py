@@ -405,42 +405,73 @@ def clamp_float(value: float, low: float, high: float) -> float:
     return max(low, min(high, float(value)))
 
 
+class _DetectionDedupeIndex:
+    """Incremental NMS with the same IoU+bucket algorithm as the old
+    deduplicate_detections, but with state that persists across chip
+    boundaries — so slice_and_infer can dedupe and store survivors as each
+    chip completes (instead of one giant batch at the very end of inference)."""
+
+    BUCKET_SIZE = 512
+
+    def __init__(self, iou_threshold: float = 0.45) -> None:
+        self.iou_threshold = iou_threshold
+        self.buckets: dict[tuple[str, int, int], list[dict]] = {}
+        self.raw_seen = 0
+        self.kept_count = 0
+
+    def add(self, detections: list) -> list:
+        """Run the new batch through NMS against the running index.
+
+        Returns the list of survivors (mutated state). The batch is sorted
+        confidence-DESC so within-batch the highest scorer suppresses its
+        lower-confidence overlapping siblings — matching the prior global
+        dedup behaviour for detections found in the same chip."""
+        if not detections:
+            return []
+
+        survivors: list[dict] = []
+        for det in sorted(detections, key=lambda item: item.get("confidence", 0), reverse=True):
+            self.raw_seen += 1
+            if not det.get("pixel_bbox"):
+                det.setdefault("dedupe_method", "obb_nms")
+                survivors.append(det)
+                self.kept_count += 1
+                continue
+
+            x1, y1, x2, y2 = det["pixel_bbox"]
+            cx = int(((x1 + x2) / 2) // self.BUCKET_SIZE)
+            cy = int(((y1 + y2) / 2) // self.BUCKET_SIZE)
+            det_class = det.get("parent_class") or det.get("class")
+            suppressed = False
+            for dx in (-1, 0, 1):
+                if suppressed:
+                    break
+                for dy in (-1, 0, 1):
+                    for existing in self.buckets.get((det_class, cx + dx, cy + dy), ()):
+                        if detection_overlap(det, existing) >= self.iou_threshold:
+                            suppressed = True
+                            break
+                    if suppressed:
+                        break
+            if suppressed:
+                continue
+
+            det.setdefault("dedupe_method", "obb_nms")
+            self.buckets.setdefault((det_class, cx, cy), []).append(det)
+            survivors.append(det)
+            self.kept_count += 1
+        return survivors
+
+
 def deduplicate_detections(
     detections: list,
     iou_threshold: float = 0.45,
 ) -> list:
+    """Stateless dedup wrapper preserved for callers that batch up detections
+    themselves (tests, FMV pipeline)."""
     if not detections:
         return []
-
-    raw = sorted(detections, key=lambda item: item.get("confidence", 0), reverse=True)
-    kept = []
-    buckets: dict[tuple[str, int, int], list[dict]] = {}
-    bucket_size = 512
-
-    for det in raw:
-        if not det.get("pixel_bbox"):
-            kept.append(det)
-            continue
-
-        x1, y1, x2, y2 = det["pixel_bbox"]
-        cx = int(((x1 + x2) / 2) // bucket_size)
-        cy = int(((y1 + y2) / 2) // bucket_size)
-        det_class = det.get("parent_class") or det.get("class")
-        nearby = []
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                nearby.extend(buckets.get((det_class, cx + dx, cy + dy), []))
-
-        overlap_kept = next(
-            (existing for existing in nearby
-             if detection_overlap(det, existing) >= iou_threshold),
-            None,
-        )
-        if overlap_kept is None:
-            det.setdefault("dedupe_method", "obb_nms")
-            kept.append(det)
-            buckets.setdefault((det_class, cx, cy), []).append(det)
-    return kept
+    return _DetectionDedupeIndex(iou_threshold=iou_threshold).add(detections)
 
 
 def sample_axis_indices(count: int, sample_count: int) -> list[int]:
@@ -672,17 +703,28 @@ def slice_and_infer(
     max_chips: int = MAX_INFERENCE_CHIPS,
     progress_callback=None,
     inference_metadata: dict | None = None,
+    on_chip_store=None,
 ):
-    """Slice COG into chips, send each to SAM3 /detect, dedupe and return detections."""
+    """Slice COG into chips, send each to SAM3 /detect, dedupe and return detections.
+
+    When `on_chip_store` is provided, surviving detections from each chip are
+    handed off to that callback (which inserts them into the DB and fires a
+    `detections_partial` WS event) instead of being accumulated for a single
+    bulk store at the end. The returned `summary` reflects the same totals
+    either way; the returned `detections` list is empty in the streaming path
+    because every survivor has already been persisted."""
     inference_metadata = inference_metadata or {}
+    streaming = on_chip_store is not None
     with rasterio.open(cog_path) as src:
         width = src.width
         height = src.height
         transform = src.transform
         crs = src.crs
-        
-        detections = []
-        
+
+        dedupe_idx = _DetectionDedupeIndex()
+        all_kept: list[dict] = []  # only populated when not streaming
+        completed_chip_count = 0
+
         grid = plan_inference_grid(width, height, chip_size, overlap, max_chips)
         step = grid["step"]
         total_windows = grid["planned_total"]
@@ -748,11 +790,17 @@ def slice_and_infer(
         )
         pending: dict[concurrent.futures.Future, dict] = {}
 
-        def _apply_chip_response(ctx: dict, inference_response: dict) -> None:
+        def _apply_chip_response(ctx: dict, inference_response: dict) -> list[dict]:
+            """Convert the chip's inference response into pass-frame detections.
+
+            Returns the per-chip detection list (one entry per surviving
+            inference output). The caller is responsible for running NMS and
+            either streaming-store or accumulating these."""
             x = ctx["x"]; y = ctx["y"]
             win_width = ctx["win_width"]; win_height = ctx["win_height"]
             valid_mask = ctx.get("valid_mask")
             chip_detections = []
+            chip_results: list[dict] = []
             for det in inference_response.get("detections", []):
                 det["model_version"] = (
                     inference_response.get("model_version")
@@ -867,7 +915,8 @@ def slice_and_infer(
                 det["source_total_chips"] = grid["source_total"]
                 det["sampling_enabled"] = grid["sampled"]
                 det["dedupe_method"] = "obb_nms"
-                detections.append(det)
+                chip_results.append(det)
+            return chip_results
 
         def _report_inference_progress() -> None:
             nonlocal last_reported_percent
@@ -898,7 +947,7 @@ def slice_and_infer(
                 )
 
         def _consume_one(fut: concurrent.futures.Future) -> None:
-            nonlocal processed_windows, failed_windows
+            nonlocal processed_windows, failed_windows, completed_chip_count
             ctx = pending.pop(fut)
             try:
                 response = fut.result()
@@ -920,8 +969,21 @@ def slice_and_infer(
                 )
                 _report_inference_progress()
                 return
-            _apply_chip_response(ctx, response)
+            chip_dets = _apply_chip_response(ctx, response)
+            kept = dedupe_idx.add(chip_dets)
             processed_windows += 1
+            completed_chip_count += 1
+            if streaming:
+                if kept:
+                    try:
+                        on_chip_store(kept, completed_chip_count)
+                    except Exception as exc:
+                        logger.exception(
+                            "[WORKER] on_chip_store callback failed for pass=%s chip=%s: %s",
+                            pass_id, completed_chip_count, exc,
+                        )
+            else:
+                all_kept.extend(kept)
             _report_inference_progress()
 
         # Cap in-flight chips and spool oversized PNGs to disk so large rasters
@@ -992,13 +1054,13 @@ def slice_and_infer(
             executor.shutdown(wait=False, cancel_futures=True)
             session.close()
     
-    deduped = deduplicate_detections(detections)
     inference_summary["processed_chips"] = processed_windows
     inference_summary["failed_chips"] = failed_windows
-    inference_summary["raw_detections"] = len(detections)
-    inference_summary["deduped_detections"] = len(deduped)
-    inference_summary["suppressed_detections"] = max(0, len(detections) - len(deduped))
-    return {"detections": deduped, "summary": inference_summary}
+    inference_summary["raw_detections"] = dedupe_idx.raw_seen
+    inference_summary["deduped_detections"] = dedupe_idx.kept_count
+    inference_summary["suppressed_detections"] = max(0, dedupe_idx.raw_seen - dedupe_idx.kept_count)
+    # When streaming, `all_kept` is empty and survivors are already persisted.
+    return {"detections": all_kept, "summary": inference_summary}
 
 
 def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str, dict] = None):
@@ -2088,6 +2150,33 @@ def process_satellite_imagery(
         if layers_to_use:
             inference_metadata["enabled_layers"] = list(layers_to_use)
             logger.info("[WORKER] Forwarding enabled_layers=%s to /detect", layers_to_use)
+
+        # Streaming detection storage: each chip's surviving detections are
+        # written to PostGIS as soon as the chip finishes inference, and a
+        # `detections_partial` WS event lets the frontend pick them up. The
+        # ontology cache memoises the deterministic ontology so every new
+        # class hits detection_ontology() once and reuses the result.
+        ontology_cache: dict[str, dict] = {}
+        streaming_total = {"stored": 0}
+
+        def _store_chip(kept_dets: list[dict], chip_index: int) -> None:
+            for det in kept_dets:
+                cls = det.get("class", "Unknown")
+                if cls not in ontology_cache:
+                    ontology_cache[cls] = {
+                        **detection_ontology(cls),
+                        "status": "deterministic",
+                    }
+            stored = store_detections(kept_dets, pass_id, ontology_cache)
+            streaming_total["stored"] += stored
+            publish_event("detections", {
+                "type": "detections_partial",
+                "pass_id": pass_id,
+                "chip_index": chip_index,
+                "stored": stored,
+                "stored_total": streaming_total["stored"],
+            })
+
         inference_result = slice_and_infer(
             cog_path,
             pass_id,
@@ -2101,39 +2190,27 @@ def process_satellite_imagery(
                 message,
                 {"pass_id": pass_id, **(extra or {})},
             ),
+            on_chip_store=_store_chip,
         )
-        detections = inference_result["detections"]
         inference_summary = inference_result["summary"]
         try:
             provider_lifecycle.mark_active()
         except Exception as exc:
             logger.warning("[WORKER] provider_lifecycle.mark_active(post-infer) failed: %s", exc)
-        logger.info("[WORKER] Total detections after dedupe: %s", len(detections))
+        stored_count = streaming_total["stored"]
+        logger.info("[WORKER] Total detections after dedupe: %s", stored_count)
+
+        # 6. Finalise: detections were stored progressively per chip, so only
+        # candidate links + tracker need the post-inference pass.
         report_progress(
             self,
             upload_id,
             input_path,
-            "classification",
-            90,
-            "Inference complete; labeling detection classes.",
-            {"pass_id": pass_id, "detections_count": len(detections), "inference_summary": inference_summary},
+            "storage",
+            95,
+            "Generating candidate links.",
+            {"pass_id": pass_id, "detections_count": stored_count, "inference_summary": inference_summary},
         )
-        ontology_by_class = classify_detection_ontologies(
-            detections,
-            progress_callback=lambda stage, progress, message, extra=None: report_progress(
-                self,
-                upload_id,
-                input_path,
-                stage,
-                progress,
-                message,
-                {"pass_id": pass_id, "detections_count": len(detections), **(extra or {})},
-            ),
-        )
-
-        # 6. Store detections
-        report_progress(self, upload_id, input_path, "storage", 95, "Storing all detections and generating candidate links.", {"pass_id": pass_id, "detections_count": len(detections)})
-        stored_count = store_detections(detections, pass_id, ontology_by_class)
         candidate_count = generate_candidate_links_for_pass(pass_id)
         logger.info("[WORKER] Stored %s detections and generated %s candidate links.", stored_count, candidate_count)
 

@@ -132,37 +132,145 @@ def put_confidence_overrides(body: ConfidenceConfig, user: SessionUser = Depends
     return {"saved": True, **payload}
 
 
+# Component → dashboard-row mapping. Single source of truth used by the
+# dashboard endpoint to build the models table from real inference-sam3
+# health data instead of falling back to a hardcoded list.
+#
+# `flag = None` means always-loaded with whatever profile is active (sam3
+# image/video are part of every profile). `version_from` is either the
+# top-level field name (e.g. "model_version") or "model_versions.<key>"
+# from inference-sam3 /health. `subslugs` collapses multi-component models
+# (YOLOE has -pf and -seg variants) into a single dashboard row.
+_COMPONENT_ROWS: tuple[dict, ...] = (
+    {"slug": "sam3_image",     "name": "SAM 3 image",      "flag": None,             "version_from": "model_version"},
+    {"slug": "sam3_video",     "name": "SAM 3.1 video",    "flag": None,             "version_from": "model_version"},
+    {"slug": "dinov3_sat",     "name": "DINOv3-SAT",       "flag": "dinov3_sat",     "version_from": "model_versions.dinov3_sat"},
+    {"slug": "prithvi",        "name": "Prithvi-EO",       "flag": "prithvi",        "version_from": "model_versions.prithvi_backbone"},
+    {"slug": "terramind",      "name": "TerraMind",        "flag": "terramind",      "version_from": "model_versions.terramind"},
+    {"slug": "dota_obb",       "name": "DOTA-OBB",         "flag": "dota_obb",       "version_from": None},
+    {"slug": "grounding_dino", "name": "Grounding-DINO",   "flag": "grounding_dino", "version_from": None},
+    {"slug": "yoloe",          "name": "YOLOE-26x",        "flag": "yoloe",          "version_from": None,
+     "subslugs": ("yoloe_pf", "yoloe_seg")},
+)
+
+
+def _resolve_version(health: dict, version_from: str | None) -> str | None:
+    if not version_from:
+        return None
+    if "." in version_from:
+        section, key = version_from.split(".", 1)
+        return (health.get(section) or {}).get(key)
+    return health.get(version_from)
+
+
+def _build_models(health: dict, reachable: bool) -> list[dict]:
+    """Build the dashboard model rows from an inference-sam3 /health payload.
+
+    `reachable=False` short-circuits every row to `status="offline"` so the
+    UI shows an honest "service down" picture instead of stale data."""
+    replicas = health.get("replicas") or []
+    load_flags = health.get("load_flags") or {}
+    metrics = health.get("metrics") or {}
+    rows: list[dict] = []
+    for row in _COMPONENT_ROWS:
+        slug = row["slug"]
+        subslugs: tuple[str, ...] = row.get("subslugs") or (slug,)
+
+        # Loaded if any replica has any sub-slug loaded.
+        loaded = False
+        for r in replicas:
+            comp = r.get("components") or {}
+            if any(bool(comp.get(s)) for s in subslugs):
+                loaded = True
+                break
+
+        if not reachable:
+            status = "offline"
+        elif loaded:
+            status = "online"
+        elif row["flag"] is not None and not load_flags.get(row["flag"]):
+            status = "disabled"
+        else:
+            status = "configured"
+
+        version = _resolve_version(health, row.get("version_from"))
+        sub_versions: dict[str, str] | None = None
+        if row.get("subslugs"):
+            mv = health.get("model_versions") or {}
+            sub_versions = {s: mv.get(s) for s in subslugs if mv.get(s)}
+
+        # Metrics: for combined rows pick the higher-traffic sub-slug for
+        # top-level numbers, but expose every sub-slug under submetrics.
+        submetrics: dict[str, dict] | None = None
+        primary_metrics: dict = {}
+        if row.get("subslugs"):
+            submetrics = {s: metrics.get(s) or {} for s in subslugs}
+            primary = max(subslugs, key=lambda s: (metrics.get(s) or {}).get("requests") or 0)
+            primary_metrics = metrics.get(primary) or {}
+        else:
+            primary_metrics = metrics.get(slug) or {}
+
+        rows.append({
+            "id": slug,
+            "name": row["name"],
+            "version": version,
+            "sub_versions": sub_versions,
+            "status": status,
+            "requests": primary_metrics.get("requests") or 0,
+            "errors": primary_metrics.get("errors") or 0,
+            "last_request_ts": primary_metrics.get("last_request_ts"),
+            "p50_ms": primary_metrics.get("p50_ms"),
+            "p95_ms": primary_metrics.get("p95_ms"),
+            "submetrics": submetrics,
+        })
+    return rows
+
+
 @router.get("/api/inference/dashboard")
 def inference_dashboard(user: SessionUser = Depends(get_current_user)):
     """Aggregate health + model status for the Admin · Health view."""
-    base = {
+    base: dict = {
         "gpu": {
             "model": os.getenv("GPU_MODEL") or "unknown",
             "profile": os.getenv("SAM3_GPU_PROFILE") or os.getenv("CUDA_VISIBLE_DEVICES") or "cpu",
             "cuda_version": os.getenv("SAM3_CUDA_VERSION") or "n/a",
         },
+        "mode": "online" if os.getenv("OPENAI_API_BASE") else "offline_safe",
         "vram_total_gib": None,
         "vram_used_gib": None,
+        "device": None,
+        "profile_loaded": None,
+        "available_profiles": [],
+        "pool_size": 0,
+        "replicas": [],
+        "active_requests": 0,
+        "uptime_s": None,
+        "system": {},
+        "request_rate_60s": None,
         "models": [],
-        "mode": "online" if os.getenv("OPENAI_API_BASE") else "offline_safe",
     }
+    health: dict = {}
+    reachable = False
     try:
         resp = requests.get(f"{_INFERENCE_SAM3_URL}/health", timeout=2.5)
         if resp.status_code == 200:
-            data = resp.json() if resp.text else {}
-            base["vram_total_gib"] = data.get("vram_total_gib") or data.get("vram_total_gb")
-            base["vram_used_gib"] = data.get("vram_used_gib") or data.get("vram_used_gb")
-            base["models"] = data.get("models") or data.get("loaded_models") or []
-            base["device"] = data.get("device")
-            base["profile_loaded"] = data.get("profile_loaded") or data.get("profile")
+            health = resp.json() if resp.text else {}
+            reachable = True
+        else:
+            base["inference_error"] = f"sidecar returned HTTP {resp.status_code}"
     except Exception as exc:
         base["inference_error"] = str(exc)
-    if not base["models"]:
-        env_models = [
-            {"id": "sam3", "name": "SAM 3 image", "version": os.getenv("SAM3_MODEL_VERSION", "facebook/sam3"), "status": "configured"},
-            {"id": "dinov3-sat", "name": "DINOv3-SAT", "version": os.getenv("DINOV3_SAT_MODEL_ID", "facebook/dinov3-vitl16-pretrain-sat493m"), "status": "configured"},
-            {"id": "prithvi", "name": "Prithvi-EO", "version": os.getenv("PRITHVI_BACKBONE_ID", "ibm-nasa-geospatial/Prithvi-EO-2.0-600M-TL"), "status": "configured"},
-            {"id": "terramind", "name": "TerraMind", "version": os.getenv("TERRAMIND_MODEL_ID", "terramind_v1_large"), "status": "configured"},
-        ]
-        base["models"] = env_models
+
+    base["vram_total_gib"] = health.get("vram_total_gib") or health.get("vram_total_gb")
+    base["vram_used_gib"] = health.get("vram_used_gib") or health.get("vram_used_gb")
+    base["device"] = health.get("device")
+    base["profile_loaded"] = health.get("current_profile") or health.get("profile_loaded") or health.get("profile")
+    base["available_profiles"] = health.get("available_profiles") or []
+    base["pool_size"] = health.get("pool_size") or 0
+    base["replicas"] = health.get("replicas") or []
+    base["active_requests"] = health.get("active_requests") or 0
+    base["uptime_s"] = health.get("uptime_s")
+    base["system"] = health.get("system") or {}
+    base["request_rate_60s"] = health.get("request_rate_60s")
+    base["models"] = _build_models(health, reachable)
     return base

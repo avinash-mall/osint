@@ -33,7 +33,6 @@ import { objectIconComponent } from '../utils/branchIcons';
 import { IconRenderer, iconComponentByKey } from '../utils/iconLibrary';
 import 'leaflet/dist/leaflet.css';
 import { useEventStream } from '../hooks/useEventStream';
-import { type UploadJob, isUploadActive, uploadMessage, uploadProgress, uploadProgressClass, uploadStage } from '../utils/uploadProgress';
 import {
   SOURCE_ORDER,
   branchIdForFeature,
@@ -557,7 +556,6 @@ export default function GaiaMap({
   const [detectionsGeoJSON, setDetectionsGeoJSON] = useState<any>({ type: 'FeatureCollection', features: [] });
   const [detectionClasses, setDetectionClasses] = useState<any[]>([]);
   const [basemapGeoJSON, setBasemapGeoJSON] = useState<any>({ type: 'FeatureCollection', features: [] });
-  const [uploadJobs, setUploadJobs] = useState<UploadJob[]>([]);
   const [selectedImagery, setSelectedImagery] = useState<number | null>(null);
   const [imageryOpacity, setImageryOpacity] = useState(0.8);
   const [hiddenDetectionLabels, setHiddenDetectionLabels] = useState<string[]>([]);
@@ -594,6 +592,7 @@ export default function GaiaMap({
   const [tmRange, setTmRange] = useState<'24h' | '7d' | '30d'>('24h');
   const [tmValue, setTmValue] = useState(1);
   const [tmPlaying, setTmPlaying] = useState(false);
+  const [confidenceThreshold, setConfidenceThreshold] = useState(0);
   const [timeRange, setTimeRange] = useState<{ start: string; end: string }>(() => {
     const now = new Date();
     const hourAgo = new Date(now.getTime() - 60 * 60 * 1000);
@@ -628,10 +627,6 @@ export default function GaiaMap({
   const [timelineOpen, setTimelineOpen] = useState(true);
 
   const selectedImageryData = imagery.find((img) => img.id === selectedImagery);
-  const processingUploads = useMemo(
-    () => uploadJobs.filter((job) => job.media_type === 'imagery' && isUploadActive(job)).slice(0, 3),
-    [uploadJobs],
-  );
 
   // Live ontology categories (sensor-agnostic — the map shows all detections
   // regardless of sensor). Order/colour/short come from the API and update
@@ -715,6 +710,9 @@ export default function GaiaMap({
   const filteredDetectionsGeoJSON = useMemo(() => ({
     ...detectionsGeoJSON,
     features: (detectionsGeoJSON.features || []).filter((feature: any) => {
+      const rawConf = feature?.properties?.confidence;
+      const conf = (typeof rawConf === 'number' && Number.isFinite(rawConf)) ? rawConf : 1;
+      if (conf < confidenceThreshold) return false;
       const labels = detectionClassKeys(feature);
       if (detectionClassFilter) {
         // SOLO mode: restrict to features whose own raw class matches.
@@ -735,7 +733,7 @@ export default function GaiaMap({
       if (hiddenDetectionCategories.includes(branchIdForFeature(feature))) return false;
       return !labels.some((label) => hiddenDetectionLabels.includes(label));
     }),
-  }), [detectionsGeoJSON, detectionClassFilter, hiddenDetectionCategories, hiddenDetectionLabels]);
+  }), [detectionsGeoJSON, detectionClassFilter, hiddenDetectionCategories, hiddenDetectionLabels, confidenceThreshold]);
 
   // Map+ geometry mode — rewrite each feature's geometry into the requested
   // shape:
@@ -969,14 +967,6 @@ export default function GaiaMap({
     }
   }, [fetchDetectionTracks]);
 
-  const fetchUploadJobs = useCallback(async () => {
-    try {
-      const response = await axios.get(`${API_URL}/api/ingest/uploads`);
-      setUploadJobs(response.data.uploads || []);
-    } catch (error) {
-      console.error('Error fetching upload jobs:', error);
-    }
-  }, []);
 
   const fetchImagery = useCallback(async () => {
     try {
@@ -1052,7 +1042,6 @@ export default function GaiaMap({
   }, [fetchDetectionClasses, fetchDetectionFeatures]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
-  useEffect(() => { fetchUploadJobs(); }, [fetchUploadJobs]);
   useEffect(() => { fetchImagery(); }, [fetchImagery]);
   useEffect(() => { fetchDetectionClasses(); }, [fetchDetectionClasses]);
   useEffect(() => { fetchDetectionFeatures(); }, [fetchDetectionFeatures]);
@@ -1096,31 +1085,22 @@ export default function GaiaMap({
     fetchBasemap();
   }, []);
 
-  useEffect(() => {
-    if (processingUploads.length === 0) return;
-    const timer = window.setInterval(fetchUploadJobs, 2000);
-    return () => window.clearInterval(timer);
-  }, [processingUploads.length, fetchUploadJobs]);
-
   useEventStream('geotime', useCallback(() => { fetchData(); }, [fetchData]));
   useEventStream('detections', useCallback((message: any) => {
     focusTimeRange(message?.acquisition_time);
     fetchDetections();
     fetchDetectionTracks();
     fetchImagery();
-    fetchUploadJobs();
-  }, [focusTimeRange, fetchDetections, fetchDetectionTracks, fetchImagery, fetchUploadJobs]));
+  }, [focusTimeRange, fetchDetections, fetchDetectionTracks, fetchImagery]));
   useEventStream('imagery', useCallback((message: any) => {
     focusTimeRange(message?.acquisition_time);
     fetchImagery();
-    fetchUploadJobs();
-  }, [focusTimeRange, fetchImagery, fetchUploadJobs]));
+  }, [focusTimeRange, fetchImagery]));
   useEventStream('ops', useCallback((message: any) => {
     if (String(message?.type || '').startsWith('imagery_') || message?.type === 'upload_received') {
       focusTimeRange(message?.acquisition_time);
-      fetchUploadJobs();
     }
-  }, [focusTimeRange, fetchUploadJobs]));
+  }, [focusTimeRange]));
 
   // Bubble cursor coords up to the global status bar.
   useEffect(() => {
@@ -2219,34 +2199,6 @@ export default function GaiaMap({
             </div>
           )}
 
-          {processingUploads.length > 0 && (
-            <div className="absolute bottom-24 left-4 z-[500] w-96 max-w-[calc(100%-2rem)] border border-sentinel-line bg-sentinel-panel p-3">
-              <div className="mb-2 flex items-center justify-between text-xs font-bold uppercase tracking-widest text-sentinel-muted">
-                <span>Imagery Processing</span>
-                <span>{processingUploads.length}</span>
-              </div>
-              <div className="space-y-2">
-                {processingUploads.map((job) => {
-                  const progress = uploadProgress(job);
-                  return (
-                    <div key={job.upload_id} className="border border-sentinel-line bg-sentinel-bg px-2 py-2">
-                      <div className="flex items-center justify-between gap-2 text-xs">
-                        <span className="truncate font-semibold text-slate-200">{job.filename}</span>
-                        <span className="font-mono text-sentinel-muted">{progress}%</span>
-                      </div>
-                      <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-sentinel-muted">
-                        <span className="uppercase">{uploadStage(job)}</span>
-                        <span className="truncate">{uploadMessage(job)}</span>
-                      </div>
-                      <div className="mt-2 h-1.5 w-full bg-sentinel-panel-2">
-                        <div className={`h-full transition-all duration-500 ${uploadProgressClass(job)}`} style={{ width: `${progress}%` }} />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
         </div>
 
       </section>
@@ -2266,7 +2218,7 @@ export default function GaiaMap({
             backdropFilter: 'blur(8px)',
             border: '1px solid var(--line)',
             borderRadius: 10,
-            padding: '10px 38px 10px 14px',
+            padding: '6px 38px 6px 14px',
             boxShadow: '0 6px 24px rgba(0,0,0,.3)',
             transition: 'left .18s ease, right .18s ease',
           }}
@@ -2283,7 +2235,7 @@ export default function GaiaMap({
 
           {/* Time-machine scrubber (imagery acquisition timeline) */}
           {imagery.length > 0 && (
-            <div style={{ marginBottom: 12 }}>
+            <div style={{ marginBottom: 6 }}>
               <TimeMachineBar
                 passes={imagery.map((p: any) => ({
                   id: Number(p.id),
@@ -2299,11 +2251,13 @@ export default function GaiaMap({
                 onTogglePlay={() => setTmPlaying((p) => !p)}
                 onRecenter={() => setTmValue(1)}
                 isoNow={new Date().toISOString()}
+                confidence={confidenceThreshold}
+                onConfidenceChange={setConfidenceThreshold}
               />
             </div>
           )}
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
             <button
               type="button"
               className="btn icon sm"
@@ -2347,7 +2301,7 @@ export default function GaiaMap({
               display: 'flex',
               alignItems: 'flex-end',
               gap: 1,
-              height: 40,
+              height: 28,
               border: '1px solid var(--line)',
               background: 'var(--bg-0)',
               padding: 2,
