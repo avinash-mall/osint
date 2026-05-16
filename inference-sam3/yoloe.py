@@ -25,6 +25,51 @@ YOLOE_THRESHOLD = float(os.getenv("YOLOE_THRESHOLD", "0.25"))
 YOLOE_IOU = float(os.getenv("YOLOE_IOU", "0.50"))
 YOLOE_IMGSZ = int(os.getenv("YOLOE_IMGSZ", "640"))
 
+# Where the Dockerfile bakes the MobileCLIP2-B TorchScript text encoder that
+# ultralytics' YOLOE pulls in text-prompt mode. Default matches the path used
+# by the bake step in Dockerfile.gpu — see MODEL_MANIFEST.json.
+MOBILECLIP2_TS_PATH = os.getenv(
+    "MOBILECLIP2_TS_PATH", "/models/torch/ultralytics/mobileclip2_b.ts"
+)
+_mobileclip_patch_applied = False
+
+
+def _patch_mobileclip_asset_path() -> None:
+    """Redirect ultralytics' attempt_download_asset for mobileclip2_b.ts.
+
+    Ultralytics' build_text_model() resolves the weight via
+    attempt_download_asset("mobileclip2_b.ts"), which writes to CWD on
+    miss. CWD here is the bind-mounted /app, so the 242 MB asset leaks
+    onto the host every time YOLOE.get_text_pe() runs on a fresh checkout.
+    We force resolution to the baked copy under /models/torch/ultralytics
+    instead — leaving the host tree clean. If the baked file is missing
+    (dev mode, partial bake), we fall through to ultralytics' default
+    behaviour so the call still works."""
+    global _mobileclip_patch_applied
+    if _mobileclip_patch_applied:
+        return
+    try:
+        from ultralytics.utils import downloads as ul_downloads
+    except ImportError:
+        return
+    original = ul_downloads.attempt_download_asset
+
+    def _resolve(file, *args, **kwargs):
+        name = os.path.basename(str(file))
+        if name == "mobileclip2_b.ts" and os.path.exists(MOBILECLIP2_TS_PATH):
+            return MOBILECLIP2_TS_PATH
+        return original(file, *args, **kwargs)
+
+    ul_downloads.attempt_download_asset = _resolve
+    # ultralytics.nn.text_model imports the symbol directly, so the
+    # rebinding above is invisible to it — patch the binding it sees.
+    try:
+        from ultralytics.nn import text_model as ul_text_model
+        ul_text_model.attempt_download_asset = _resolve
+    except ImportError:
+        pass
+    _mobileclip_patch_applied = True
+
 
 def load(device: str) -> dict[str, Any]:
     """Load both YOLOE checkpoints; either failure is non-fatal."""
@@ -42,6 +87,8 @@ def load(device: str) -> dict[str, Any]:
         print(f"[yoloe] ultralytics YOLOE class not available: {exc}")
         bundle["error"] = str(exc)
         return bundle
+
+    _patch_mobileclip_asset_path()
 
     try:
         pf = YOLOE(YOLOE_PF_MODEL_ID)

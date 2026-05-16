@@ -98,6 +98,15 @@ RUN mkdir -p /models/hf/hub /models/torch/ultralytics && \
     : "--- DOTA-OBB (Ultralytics auto-fetch into YOLO_CONFIG_DIR) ---"; \
     cd /models/torch/ultralytics && \
     python -c "from ultralytics import YOLO; YOLO('yolo11n-obb.pt')" || echo "[bake] dota-obb skipped"; \
+    : "--- YOLOE text encoder: MobileCLIP2-B TorchScript (Ultralytics asset) ---"; \
+    : "  Pulled by ultralytics' build_text_model() the first time YOLOE is given"; \
+    : "  text prompts. attempt_download_asset() writes to CWD by default, which"; \
+    : "  is the bind-mounted /app at runtime — pre-staging here keeps the asset"; \
+    : "  off the host and out of the bind mount. inference-sam3/yoloe.py patches"; \
+    : "  ultralytics to load it from this directory."; \
+    cd /models/torch/ultralytics && \
+    python -c "from ultralytics.utils.downloads import attempt_download_asset; attempt_download_asset('mobileclip2_b.ts')" \
+        || echo "[bake] mobileclip2_b.ts skipped"; \
     : "--- TerraMind (terratorch registry pulls weights to HF cache) ---"; \
     : "  Build BOTH the backbone and the *_generate variant so the bake"; \
     : "  caches the S1GRD input tokenizer + S2L2A output tokenizer that the"; \
@@ -133,17 +142,13 @@ if missing:
         "check HF_TOKEN: " + ", ".join(missing)
     )
 print("[bake] required model weights present:", sorted(p.name for p in HF.glob("models--*")))
+
+mobileclip = Path("/models/torch/ultralytics/mobileclip2_b.ts")
+print(f"[bake] yoloe text encoder: {mobileclip}", "(present)" if mobileclip.is_file() else "(MISSING — YOLOE text-prompt mode will fail offline)")
 PY
 RUN python /tmp/verify_bake.py && rm /tmp/verify_bake.py
 
 COPY . /app
-
-# YOLOE's text-prompted path resolves this TorchScript MobileCLIP2 sidecar by
-# filename at runtime. Keep it out of Git, but ensure clean-clone image builds
-# still contain it for offline inference.
-RUN if [ ! -s mobileclip2_b.ts ]; then \
-        python -c "from pathlib import Path; from ultralytics.utils.downloads import attempt_download_asset; path = Path(attempt_download_asset('mobileclip2_b.ts')); assert path.is_file() and path.stat().st_size > 0, f'failed to download mobileclip2_b.ts: {path}'"; \
-    fi
 
 ENV PORT=8001 \
     PYTHONUNBUFFERED=1

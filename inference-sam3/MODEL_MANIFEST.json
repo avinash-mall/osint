@@ -48,6 +48,16 @@
         {"path": "preprocessor_config.json", "oid": null},
         {"path": "tokenizer.json", "oid": null}
       ]
+    },
+    "ultralytics/assets/mobileclip2_b.ts": {
+      "role": "yoloe_text_encoder",
+      "gated": false,
+      "license": "Apple ML-MobileCLIP research license — see https://github.com/apple/ml-mobileclip",
+      "url": "https://github.com/ultralytics/assets/releases/download/v8.4.0/mobileclip2_b.ts",
+      "note": "TorchScript text encoder (~242 MB) used by YOLOE in text-prompt mode. Ultralytics' build_text_model() pulls it via attempt_download_asset() the first time YOLOE.set_classes() runs and writes it to CWD by default — which is the bind-mounted /app at runtime, leaking the asset onto the host. The Dockerfile pre-stages it under /models/torch/ultralytics and inference-sam3/yoloe.py patches attempt_download_asset to resolve it from that path. Override with MOBILECLIP2_TS_PATH if you stage it elsewhere.",
+      "files": [
+        {"path": "/models/torch/ultralytics/mobileclip2_b.ts", "lfs": false, "sha256": null}
+      ]
     }
   }
 }
