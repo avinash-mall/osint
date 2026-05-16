@@ -266,7 +266,7 @@ export default function ObjectDetailsForm({
       </ObjField>
 
       <ObjField label="Threat level">
-        <div className="seg" style={{ display: 'flex' }}>
+        <div className="seg object-details-seg" style={{ display: 'flex' }}>
           {THREAT_LEVELS.map((t) => (
             <button
               key={t.id}
@@ -282,7 +282,7 @@ export default function ObjectDetailsForm({
       </ObjField>
 
       <ObjField label="Affiliation (NATO APP-6)">
-        <div className="seg" style={{ display: 'flex' }}>
+        <div className="seg object-details-seg" style={{ display: 'flex' }}>
           {AFFILIATIONS.map((a) => (
             <button
               key={a.id}
@@ -343,6 +343,7 @@ export default function ObjectDetailsForm({
       )}
 
       <div
+        className="object-details-footer"
         style={{
           display: 'flex',
           gap: 8,

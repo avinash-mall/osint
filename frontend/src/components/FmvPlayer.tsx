@@ -2170,6 +2170,7 @@ function ClipsTab({
             clip.status === 'error' ? 'crit' : 'unknown';
           return (
             <button
+              className="clip-row"
               key={clip.id}
               type="button"
               onClick={() => setSelectedId(clip.id)}

@@ -102,6 +102,7 @@ export default function ProvenancePanel({ selectedDetection }: { selectedDetecti
 function Kv({ label, value, mono }: { label: string; value: string | number; mono?: boolean }) {
   return (
     <div
+      className="provenance-kv"
       style={{
         display: 'grid',
         gridTemplateColumns: '120px 1fr',

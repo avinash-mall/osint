@@ -86,7 +86,7 @@ export default function ReviewPanel({
         title="Review this detection"
         sub={detectionId ? `DET-${detectionId}` : 'select a detection on the map to begin'}
       >
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 }}>
+        <div className="review-actions" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 }}>
           <button
             type="button"
             className="btn sm"
@@ -181,6 +181,7 @@ export default function ReviewPanel({
             const modality = (r.metadata?.modality || 'rgb') as any;
             return (
               <button
+                className="review-queue-row"
                 type="button"
                 key={r.id}
                 onClick={() => onJump?.(r.id)}

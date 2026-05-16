@@ -106,7 +106,7 @@ export default function SimilarPanel({
             No close peers.
           </div>
         )}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+        <div className="similar-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
           {results.map((r) => {
             const modality = (r.metadata?.modality || 'rgb') as any;
             const embedding = (r.metadata?.embedding_head || 'sat') as any;

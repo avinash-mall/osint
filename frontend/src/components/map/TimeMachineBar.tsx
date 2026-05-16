@@ -75,7 +75,7 @@ export default function TimeMachineBar({
 
   return (
     <Panel style={{ padding: 8 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+      <div className="time-machine-header" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
         <button
           type="button"
           className="btn icon sm"
@@ -244,7 +244,7 @@ export default function TimeMachineBar({
       </div>
 
       {/* Legend strip */}
-      <div style={{ display: 'flex', gap: 14, marginTop: 4, fontSize: 10.5 }}>
+      <div className="time-machine-legend" style={{ display: 'flex', gap: 14, marginTop: 4, fontSize: 10.5 }}>
         <LegendDot color="#9bd1ff" label="RGB" m="rgb" />
         <LegendDot color="#a78bfa" label="MSI" m="multispectral" />
         <LegendDot color="#fca56a" label="SAR" m="sar" />

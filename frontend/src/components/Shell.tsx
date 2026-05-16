@@ -421,7 +421,7 @@ function Topbar({
       </div>
       <div style={{ flex: 1 }} />
       <button
-        className="btn ghost sm rounded"
+        className="btn ghost sm rounded shell-jump"
         style={{ gap: 8, height: 30, border: '1px solid var(--line)' }}
         type="button"
         onClick={handleJump}
@@ -458,7 +458,7 @@ function AnalystChip() {
   const accent =
     user?.role === 'admin' ? 'var(--accent)' : 'var(--nato-friend)';
   return (
-    <div style={{ position: 'relative' }}>
+    <div className="analyst-chip" style={{ position: 'relative' }}>
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -490,8 +490,8 @@ function AnalystChip() {
         >
           {initials}
         </div>
-        <span style={{ fontSize: 11.5 }}>{user?.display_name || user?.username || 'Operator'}</span>
-        <span className="mono" style={{ color: 'var(--ink-2)', fontSize: 10 }}>
+        <span className="analyst-chip-name" style={{ fontSize: 11.5 }}>{user?.display_name || user?.username || 'Operator'}</span>
+        <span className="analyst-chip-role mono" style={{ color: 'var(--ink-2)', fontSize: 10 }}>
           · {(user?.role || 'analyst').toUpperCase()}
         </span>
         <ChevronDown size={12} style={{ color: 'var(--ink-3)' }} />
@@ -569,17 +569,18 @@ function ImageryJobIndicator({ job }: { job: UploadJob }) {
   const message = uploadMessage(job);
   return (
     <span
+      className="imagery-job-indicator"
       role="status"
       aria-live="polite"
       style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0 }}
     >
-      <span className="mono" style={{ color: 'var(--ink-1)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      <span className="imagery-job-filename mono" style={{ color: 'var(--ink-1)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {job.filename}
       </span>
       <span className="mono" style={{ color: 'var(--ink-2)' }}>
         {stage}
       </span>
-      <span className="mono" style={{ color: 'var(--ink-3)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      <span className="imagery-job-message mono" style={{ color: 'var(--ink-3)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
         {message}
       </span>
       <span

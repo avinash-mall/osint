@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+.env
+.env.*
+*.log
+
+# Development-only assets are useful in-repo, but they do not belong in the
+# runtime image build context.
+tests/
+eval/
+probes/
+
+# Large local model sidecars are fetched/baked by Dockerfile.gpu when needed;
+# keeping them out of the context avoids shipping hundreds of MB on each build.
+*.pt
+*.ts
