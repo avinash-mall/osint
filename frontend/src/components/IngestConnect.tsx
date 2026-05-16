@@ -699,7 +699,7 @@ export default function IngestConnect() {
                 className="min-w-0 flex-1 bg-transparent text-sm text-slate-200 outline-none placeholder:text-slate-600"
               />
             </div>
-            <div className="max-h-96 overflow-auto space-y-2 pr-1">
+            <div className="ingest-object-tree space-y-2 pr-1">
               {ontologyBranches.map((branch) => renderBranch(branch))}
             </div>
             <label className="block">

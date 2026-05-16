@@ -15,6 +15,29 @@ async function openAuthed(page: Page) {
   await stabilize(page);
 }
 
+async function expectCanScroll(page: Page, selector: string, label = selector) {
+  const scroller = page.locator(selector).first();
+  await expect(scroller).toBeVisible();
+  await scroller.evaluate((node) => {
+    const spacer = document.createElement('div');
+    spacer.dataset.testid = 'overflow-spacer';
+    spacer.style.blockSize = '80rem';
+    spacer.style.flexShrink = '0';
+    node.appendChild(spacer);
+  });
+  const metrics = await scroller.evaluate((node) => ({
+    clientHeight: node.clientHeight,
+    scrollHeight: node.scrollHeight,
+  }));
+  expect(metrics.scrollHeight, `${label} should overflow once content exceeds its bounds`).toBeGreaterThan(metrics.clientHeight);
+  await expect
+    .poll(() => scroller.evaluate((node) => {
+      node.scrollTop = node.scrollHeight;
+      return node.scrollTop;
+    }))
+    .toBeGreaterThan(0);
+}
+
 test.describe('responsive visual regression', () => {
   test('login shell stays composed on a narrow viewport', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
@@ -23,6 +46,14 @@ test.describe('responsive visual regression', () => {
     await expect(page.getByText('Resume operations')).toBeVisible();
     await stabilize(page);
     await expect(page).toHaveScreenshot('login-mobile.png');
+  });
+
+  test('login view can scroll on short screens', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 520 });
+    await installMockApi(page, { authenticated: false });
+    await page.goto('/');
+    await expect(page.getByText('Resume operations')).toBeVisible();
+    await expectCanScroll(page, '.login-screen', 'login');
   });
 
   test('map workspace adapts at compact and wide widths', async ({ page }) => {
@@ -55,5 +86,59 @@ test.describe('responsive visual regression', () => {
     await page.getByText('visual-sortie-07.mp4').click();
     await expect(page.getByText('visual-sortie-07.mp4', { exact: true })).toBeVisible();
     await expect(page).toHaveScreenshot('fmv-medium.png');
+  });
+
+  test('admin tabs route vertical overflow to an intentional scroll owner', async ({ page }) => {
+    await page.setViewportSize({ width: 1365, height: 900 });
+    await openAuthed(page);
+    await page.getByTitle('Admin').click();
+
+    const cases = [
+      ['ontology', '.ontology-admin'],
+      ['upload', '.ingest-connect'],
+      ['processing', '.admin-content > .sentinel-scroll'],
+      ['models', '.admin-content > .sentinel-scroll'],
+      ['alerts', '.admin-content > .sentinel-scroll'],
+      ['auth', '.admin-view'],
+      ['health', '.admin-view'],
+      ['confidence', '.admin-view'],
+      ['prompts', '.admin-view'],
+      ['versions', '.admin-view'],
+    ] as const;
+
+    for (const [tab, selector] of cases) {
+      await page.evaluate((nextTab) => {
+        window.dispatchEvent(new CustomEvent('sentinel:admin-tab', { detail: { tab: nextTab } }));
+      }, tab);
+      await expectCanScroll(page, selector, tab);
+    }
+  });
+
+  test('upload object chooser does not trap the page above lower controls', async ({ page }) => {
+    await page.setViewportSize({ width: 1365, height: 700 });
+    await openAuthed(page);
+    await page.getByTitle('Admin').click();
+    await page.evaluate(() => {
+      window.dispatchEvent(new CustomEvent('sentinel:admin-tab', { detail: { tab: 'upload' } }));
+    });
+
+    const tree = page.locator('.ingest-object-tree');
+    await expect(tree).toBeVisible();
+    await tree.evaluate((node) => {
+      const spacer = document.createElement('div');
+      spacer.dataset.testid = 'tall-object-tree';
+      spacer.style.blockSize = '60rem';
+      node.appendChild(spacer);
+    });
+    const treeStyle = await tree.evaluate((node) => ({
+      overflowY: getComputedStyle(node).overflowY,
+      maxHeight: getComputedStyle(node).maxHeight,
+    }));
+    expect(treeStyle).toEqual({ overflowY: 'visible', maxHeight: 'none' });
+
+    const lowerControls = page.getByPlaceholder('one object per line, or comma separated');
+    await lowerControls.scrollIntoViewIfNeeded();
+    await expect(lowerControls).toBeVisible();
+    await expect.poll(() => page.locator('.ingest-connect').evaluate((node) => node.scrollTop)).toBeGreaterThan(0);
   });
 });

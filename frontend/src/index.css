@@ -461,6 +461,8 @@ img, svg, video, canvas { max-inline-size: 100%; }
   --rail-expanded: clamp(12rem, 10rem + 5vw, 14rem);
   container: shell / inline-size;
   grid-template-columns: var(--rail-collapsed) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  min-block-size: 0;
 }
 .shell-rail { inline-size: var(--rail-collapsed); }
 .shell-aside { inline-size: var(--rail-width, var(--rail-collapsed)); }
@@ -470,6 +472,7 @@ img, svg, video, canvas { max-inline-size: 100%; }
     clamp(2.9rem, 2.65rem + .65vw, 3.25rem)
     minmax(0, 1fr)
     clamp(1.75rem, 1.55rem + .35vw, 2rem);
+  min-block-size: 0;
 }
 .shell-main { container: shell-main / inline-size; }
 .shell-topbar,
@@ -490,7 +493,10 @@ img, svg, video, canvas { max-inline-size: 100%; }
   min-inline-size: 0;
 }
 
-.login-screen { container: login / inline-size; }
+.login-screen {
+  container: login / inline-size;
+  overflow-y: auto;
+}
 .login-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(18rem, .9fr);
@@ -513,6 +519,8 @@ img, svg, video, canvas { max-inline-size: 100%; }
 .admin-shell {
   container: admin-shell / inline-size;
   grid-template-columns: minmax(11rem, 15rem) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  min-block-size: 0;
 }
 .admin-content,
 .admin-view,
@@ -522,6 +530,8 @@ img, svg, video, canvas { max-inline-size: 100%; }
 }
 .admin-nav {
   min-inline-size: 0;
+  min-block-size: 0;
+  overflow-y: auto;
 }
 .admin-nav button {
   min-inline-size: 0;
