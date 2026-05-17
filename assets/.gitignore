@@ -1,0 +1,8 @@
+# Baked-in payloads — these are large, operator-fetched on the connected
+# host, and not part of the source tree. The Dockerfile fails fast if they
+# aren't present at build time.
+static/basemap/
+static/terrain/
+static/fonts/*.woff2
+static/LICENSE.txt
+static/.build-metadata.json
