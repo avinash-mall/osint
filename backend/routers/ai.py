@@ -13,8 +13,8 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from ai import AIUnavailable, get_ai_response
-from database import postgis_db
+from ai import AIUnavailable, get_ai_response, get_llm_json
+from database import db, postgis_db
 from events import normalize_domain, publish_event, record_timeline_event
 from platform_schema import ensure_platform_tables
 from schemas import AIActionProposalRequest, AIAnalysisRequest, AnalyticsRequest
@@ -48,22 +48,145 @@ def ai_analyze(req: AIAnalysisRequest):
     return {"analysis": analysis, "status": "ok"}
 
 
+_EXTRACT_TYPES = ("Person", "Place", "Asset", "Org", "Event", "Vessel", "Aircraft", "Other")
+
+
 @router.post("/api/ai/extract")
 def ai_extract(req: AIAnalysisRequest):
     ensure_platform_tables()
-    text = req.prompt or json.dumps(req.context)
-    tokens = sorted({word.strip(".,:;()[]{}").title() for word in text.split() if len(word.strip(".,:;()[]{}")) > 4})[:12]
-    entities = [{"label": token, "type": "Entity", "confidence": 0.52} for token in tokens]
-    return {"entities": entities, "citations": [{"type": "input", "label": "submitted text/context"}], "status": "ok"}
+    text = (req.prompt or "").strip()
+    if not text and req.context:
+        text = json.dumps(req.context, default=str)
+    if not text:
+        return {"entities": [], "citations": [], "status": "empty_input"}
+
+    system = (
+        "You are an OSINT entity-extraction assistant. Return strict JSON: "
+        '{"entities": [{"label": <surface form>, "type": <one of '
+        + ", ".join(_EXTRACT_TYPES)
+        + '>, "confidence": <0..1>}]}. Drop generic stopwords. Cap at 20 entities.'
+    )
+    try:
+        data = get_llm_json(prompt=f"Extract entities from:\n{text}", system=system, max_tokens=600)
+    except AIUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    raw = data.get("entities") or []
+    entities = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or "").strip()
+        if not label:
+            continue
+        type_ = str(item.get("type") or "Other")
+        if type_ not in _EXTRACT_TYPES:
+            type_ = "Other"
+        try:
+            conf = float(item.get("confidence") or 0)
+        except (TypeError, ValueError):
+            conf = 0.0
+        entities.append({"label": label[:200], "type": type_, "confidence": max(0.0, min(1.0, conf))})
+    entities = entities[:20]
+    record_timeline_event(
+        normalize_domain(req.domain, "WORKFLOW"),
+        "ai_extract",
+        f"Extracted {len(entities)} entities",
+        {"input_chars": len(text)},
+        entity_id=req.entity_id,
+    )
+    return {
+        "entities": entities,
+        "citations": [{"type": "input", "label": "submitted text/context"}],
+        "status": "ok",
+    }
+
+
+def _fetch_target_summaries(limit: int = 25) -> list[dict]:
+    try:
+        with db.get_session() as session:
+            rows = session.run(
+                """
+                MATCH (t:Target)
+                WHERE t.name IS NOT NULL
+                RETURN coalesce(t.id, elementId(t)) AS id,
+                       t.name AS name,
+                       t.type AS type,
+                       t.category AS category,
+                       t.priority AS priority
+                ORDER BY coalesce(t.priority, '') DESC, t.name ASC
+                LIMIT $limit
+                """,
+                {"limit": limit},
+            )
+            return [dict(record) for record in rows]
+    except Exception:
+        return []
 
 
 @router.post("/api/ai/link")
 def ai_link(req: AIAnalysisRequest):
     ensure_platform_tables()
+
+    # Detection-id path: numeric entity_id → deterministic candidate generation.
+    entity_id = (req.entity_id or "").strip()
+    if entity_id.isdigit():
+        from main import generate_candidate_links_for_detection
+        candidates = generate_candidate_links_for_detection(int(entity_id))
+        return {
+            "links": candidates,
+            "source": "detection_candidate_links",
+            "status": "review_required",
+            "policy": "human_approval_required",
+        }
+
+    # Free-text path: ask the LLM to rank against a slice of the target graph.
+    targets = _fetch_target_summaries()
+    if not targets:
+        return {"links": [], "status": "no_targets", "policy": "human_approval_required"}
+
+    target_lines = "\n".join(
+        f"- id={t['id']} name={t.get('name')} type={t.get('type') or '?'} category={t.get('category') or '?'}"
+        for t in targets
+    )
+    system = (
+        "You match OSINT mentions to known targets. Return strict JSON: "
+        '{"links": [{"target_id": <id from list>, "relationship": '
+        '"CANDIDATE_MATCH", "confidence": 0..1, "reason": <short string>}]}. '
+        "Only include links you have evidence for. Empty list is fine."
+    )
+    prompt_text = (
+        f"Context: {req.prompt or json.dumps(req.context, default=str)}\n\n"
+        f"Known targets:\n{target_lines}"
+    )
+    try:
+        data = get_llm_json(prompt=prompt_text, system=system, max_tokens=600)
+    except AIUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+    by_id = {str(t["id"]): t for t in targets}
+    links = []
+    for item in data.get("links") or []:
+        if not isinstance(item, dict):
+            continue
+        tid = str(item.get("target_id") or "").strip()
+        if tid not in by_id:
+            continue
+        try:
+            conf = float(item.get("confidence") or 0)
+        except (TypeError, ValueError):
+            conf = 0.0
+        links.append({
+            "source": entity_id or "submitted_context",
+            "target_id": tid,
+            "target_name": by_id[tid].get("name"),
+            "relationship": "CANDIDATE_MATCH",
+            "confidence": max(0.0, min(1.0, conf)),
+            "reason": str(item.get("reason") or "")[:300],
+        })
     return {
-        "links": [
-            {"source": req.entity_id or "submitted_context", "target": "ontology", "relationship": "CANDIDATE_MATCH", "confidence": 0.58}
-        ],
+        "links": links,
+        "source": "llm_rank",
         "status": "review_required",
         "policy": "human_approval_required",
     }
@@ -159,15 +282,27 @@ def execute_action_proposal(proposal_id: int):
     payload = proposal.get("payload") or {}
     result = {"executed": True, "mode": "internal_only"}
     if proposal["action_type"] == "queue_analytic":
-        # Lazy import — analytics router lives in a separate module.
         from routers.analytics import run_viewshed
         result["analytic"] = run_viewshed(AnalyticsRequest(target_id=proposal.get("target_id"), radius_m=payload.get("radius_m", 5000))).get("job")
+    elif proposal["action_type"] == "generate_report":
+        from reports import create_target_package
+        result["report"] = create_target_package(
+            proposal.get("target_id"),
+            proposal["title"],
+            payload.get("sources", []),
+            payload,
+        )
+    elif proposal["action_type"] == "create_requirement":
+        from reports import create_collection_requirement
+        result["requirement"] = create_collection_requirement(
+            proposal.get("target_id"),
+            proposal["title"],
+            payload.get("description", proposal.get("rationale") or ""),
+            payload.get("priority", "Medium"),
+            payload.get("aoi", {}),
+        )
     else:
-        # ``generate_report`` and ``create_requirement`` paths are placeholders
-        # in the current build — the helpers (`create_target_package`,
-        # `create_collection_requirement`) aren't wired in this image. Log
-        # and return the internal-only outcome instead of crashing.
-        result["message"] = "Action logged; no external dispatch connector is allowlisted."
+        result["message"] = f"Action type '{proposal['action_type']}' has no internal connector."
 
     with postgis_db.get_cursor(commit=True) as cursor:
         cursor.execute("""

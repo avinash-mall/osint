@@ -273,7 +273,7 @@ type FmvPlayerProps = {
   onOpenMap?: (detectionId: number) => void;
   /** Cross-workspace navigation: focus a specific clip on mount. */
   crossNav?: {
-    workspace: 'map' | 'fmv' | 'graph' | 'admin';
+    workspace: 'ingest' | 'map' | 'fmv' | 'graph' | 'admin';
     fmvClipId?: number;
     detectionId?: number;
   } | null;

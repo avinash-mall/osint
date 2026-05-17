@@ -3,6 +3,7 @@ import { Circle, CircleMarker, GeoJSON, ImageOverlay, MapContainer, Marker, Poly
 import L from 'leaflet';
 import axios from 'axios';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { forward as mgrsForward } from 'mgrs';
 import {
   Activity,
   ChevronDown,
@@ -21,12 +22,11 @@ import {
   Play,
   Plus,
   RefreshCw,
-  Route as RouteIcon,
   Satellite,
   Search,
   Send,
   Shield,
-  Spline,
+  Sparkles,
   Swords,
 } from 'lucide-react';
 import { objectIconComponent } from '../utils/branchIcons';
@@ -47,7 +47,6 @@ import type { OntologyBranch } from '../utils/useOntology';
 import ObjectDetailsForm from './ObjectDetailsForm';
 import { useAuth } from '../hooks/useAuth';
 import ReviewPanel from './map/ReviewPanel';
-import ProvenancePanel from './map/ProvenancePanel';
 import SimilarPanel from './map/SimilarPanel';
 import TimeMachineBar from './map/TimeMachineBar';
 import AnalyticsToolsPanel, {
@@ -59,6 +58,7 @@ import type { AnalyticsResponse } from '../services/analytics';
 const API_URL = import.meta.env.VITE_API_URL || '';
 const TILE_PROXY_URL = import.meta.env.VITE_TILE_PROXY_URL || '/tiles';
 const CARTO_BASEMAP_URL = '/basemap/{z}/{x}/{y}.png';
+const TERRAIN_BASEMAP_URL = '/terrain/{z}/{x}/{y}.png';
 const DETECTION_CENTER_MARKER_LIMIT = 800;
 const CanvasGeoJSON = GeoJSON as any;
 
@@ -236,6 +236,28 @@ function geojsonFeatureBounds(geojson: any): L.LatLngBounds | null {
     extendBoundsWithCoordinates(bounds, feature?.geometry?.coordinates);
   }
   return bounds.isValid() ? bounds : null;
+}
+
+function featureCentroid(feature: any): [number, number] | null {
+  if (!feature?.geometry) return null;
+  const bounds = L.latLngBounds([]);
+  extendBoundsWithCoordinates(bounds, feature.geometry.coordinates);
+  if (!bounds.isValid()) return null;
+  const center = bounds.getCenter();
+  return [center.lat, center.lng];
+}
+
+function featureLatLonBounds(feature: any): { south: number; west: number; north: number; east: number } | null {
+  if (!feature?.geometry) return null;
+  const bounds = L.latLngBounds([]);
+  extendBoundsWithCoordinates(bounds, feature.geometry.coordinates);
+  if (!bounds.isValid()) return null;
+  return {
+    south: bounds.getSouth(),
+    west: bounds.getWest(),
+    north: bounds.getNorth(),
+    east: bounds.getEast(),
+  };
 }
 
 function threatClass(level?: string) {
@@ -532,7 +554,7 @@ type GaiaMapProps = {
   onCursorChange?: (cursor: { lat: number; lon: number } | null) => void;
   /** Cross-workspace navigation: focus a specific detection on mount. */
   crossNav?: {
-    workspace: 'map' | 'fmv' | 'graph' | 'admin';
+    workspace: 'ingest' | 'map' | 'fmv' | 'graph' | 'admin';
     detectionId?: number;
     className?: string;
   } | null;
@@ -557,7 +579,8 @@ export default function GaiaMap({
   const [detectionClasses, setDetectionClasses] = useState<any[]>([]);
   const [basemapGeoJSON, setBasemapGeoJSON] = useState<any>({ type: 'FeatureCollection', features: [] });
   const [selectedImagery, setSelectedImagery] = useState<number | null>(null);
-  const [imageryOpacity, setImageryOpacity] = useState(0.8);
+  const [activeBaseLayer, setActiveBaseLayer] = useState<'base' | 'sat' | 'terrain'>('base');
+  const [layerOpacities, setLayerOpacities] = useState<{ base: number; sat: number; terrain: number }>({ base: 1, sat: 0.8, terrain: 1 });
   const [hiddenDetectionLabels, setHiddenDetectionLabels] = useState<string[]>([]);
   const [hiddenDetectionCategories, setHiddenDetectionCategories] = useState<DetectionCategoryId[]>([]);
   const [detectionClassFilter, setDetectionClassFilter] = useState<string | null>(null);
@@ -588,7 +611,7 @@ export default function GaiaMap({
     crops: false,
   });
   const [prithviGeojson, setPrithviGeojson] = useState<Record<string, any>>({});
-  const [selectionTab, setSelectionTab] = useState<'edit' | 'review' | 'provenance' | 'similar'>('edit');
+  const [selectionTab, setSelectionTab] = useState<'edit' | 'review'>('edit');
   const [tmRange, setTmRange] = useState<'24h' | '7d' | '30d'>('24h');
   const [tmValue, setTmValue] = useState(1);
   const [tmPlaying, setTmPlaying] = useState(false);
@@ -617,7 +640,7 @@ export default function GaiaMap({
     los: null,
     routes: null,
   });
-  const [rightTab, setRightTab] = useState<'selection' | AnalyticsKind>('selection');
+  const [rightTab, setRightTab] = useState<'details' | 'analytics' | 'similar' | 'tracks'>('details');
   const [overlaysOpen, setOverlaysOpen] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   // Modern shell: each side panel can be collapsed to a 36 px floating handle so
@@ -1139,7 +1162,7 @@ export default function GaiaMap({
       if (feat) {
         setSelectedDetection(feat);
         setRightOpen(true);
-        if (!pendingPick) setRightTab('selection');
+        if (!pendingPick) setRightTab('details');
       }
     };
     window.addEventListener('sentinel:jump-to-detection', handler);
@@ -1159,7 +1182,7 @@ export default function GaiaMap({
       if (feat) {
         setSelectedDetection(feat);
         setRightOpen(true);
-        if (!pendingPick) setRightTab('selection');
+        if (!pendingPick) setRightTab('details');
       }
     }
     if (crossNav.className) {
@@ -1220,7 +1243,7 @@ export default function GaiaMap({
           },
         });
         setRightOpen(true);
-        if (!pendingPick) setRightTab('selection');
+        if (!pendingPick) setRightTab('details');
         return data;
       } catch (err: any) {
         const detail = err?.response?.data?.detail || err?.message || 'manual detection failed';
@@ -1466,11 +1489,37 @@ export default function GaiaMap({
         <div className="sentinel-scroll">
           <div className="border-b border-sentinel-line p-2">
             <div className="grid grid-cols-3 border border-sentinel-line-2">
-              {['BASE', 'SAT', 'TERRAIN'].map((item, index) => (
-                <button key={item} className={`h-7 text-[10px] ${index === 0 ? 'bg-sentinel-panel-2 text-sentinel-text' : 'text-sentinel-muted'}`} type="button">
-                  {item}
-                </button>
-              ))}
+              {(['base', 'sat', 'terrain'] as const).map((key) => {
+                const isActive = activeBaseLayer === key;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setActiveBaseLayer(key)}
+                    className={`h-7 font-mono text-[10px] uppercase tracking-widest ${isActive ? 'bg-sentinel-panel-2 text-slate-100' : 'text-sentinel-muted'}`}
+                  >
+                    {key}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-2 flex items-center gap-2">
+              <span className="sentinel-label">OPACITY</span>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value={layerOpacities[activeBaseLayer]}
+                onChange={(event) => {
+                  const next = parseFloat(event.target.value);
+                  setLayerOpacities((prev) => ({ ...prev, [activeBaseLayer]: next }));
+                }}
+                className="flex-1"
+              />
+              <span className="font-mono text-[10px] text-sentinel-muted w-8 text-right">
+                {Math.round(layerOpacities[activeBaseLayer] * 100)}%
+              </span>
             </div>
           </div>
 
@@ -1657,7 +1706,11 @@ export default function GaiaMap({
                 <button
                   key={img.id}
                   type="button"
-                  onClick={() => setSelectedImagery(selectedImagery === img.id ? null : img.id)}
+                  onClick={() => {
+                    const next = selectedImagery === img.id ? null : img.id;
+                    setSelectedImagery(next);
+                    if (next !== null) setActiveBaseLayer('sat');
+                  }}
                   className={`sentinel-row w-full grid-cols-[1fr_auto] text-left ${selectedImagery === img.id ? 'selected' : ''}`}
                 >
                   <span className="min-w-0">
@@ -1750,14 +1803,27 @@ export default function GaiaMap({
             <MapFitToImagery imagery={selectedImageryData} />
             <MapFitToDetections geojson={filteredDetectionsGeoJSON} filterKey={detectionClassFilter} />
 
-            <TileLayer
-              url={CARTO_BASEMAP_URL}
-              subdomains="abcd"
-              maxZoom={20}
-              maxNativeZoom={10}
-              opacity={1}
-              attribution="&copy; OpenStreetMap &copy; CARTO"
-            />
+            {activeBaseLayer === 'base' && (
+              <TileLayer
+                key="base-carto"
+                url={CARTO_BASEMAP_URL}
+                subdomains="abcd"
+                maxZoom={20}
+                maxNativeZoom={10}
+                opacity={layerOpacities.base}
+                attribution="&copy; OpenStreetMap &copy; CARTO"
+              />
+            )}
+            {activeBaseLayer === 'terrain' && (
+              <TileLayer
+                key="base-terrain"
+                url={TERRAIN_BASEMAP_URL}
+                maxZoom={20}
+                maxNativeZoom={10}
+                opacity={layerOpacities.terrain}
+                attribution="&copy; OpenStreetMap &copy; OpenTopoMap (CC-BY-SA)"
+              />
+            )}
 
             <ImageOverlay url="/world_map.svg" bounds={[[-85, -180], [85, 180]]} opacity={0.32} />
 
@@ -1805,10 +1871,11 @@ export default function GaiaMap({
               />
             )}
 
-            {activeLayers.satellite && selectedImageryData && (
+            {activeBaseLayer === 'sat' && activeLayers.satellite && selectedImageryData && (
               <TileLayer
+                key={`sat-${selectedImageryData.id}`}
                 url={`${TILE_PROXY_URL}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(selectedImageryData.file_path)}`}
-                opacity={imageryOpacity}
+                opacity={layerOpacities.sat}
                 maxZoom={22}
               />
             )}
@@ -2409,16 +2476,26 @@ export default function GaiaMap({
       >
         {(() => {
           const rightHeader =
-            rightTab === 'viewshed' ? { Icon: Eye,       label: 'Viewshed',      tag: 'ANALYTICS' } :
-            rightTab === 'los'      ? { Icon: Spline,    label: 'Line of Sight', tag: 'ANALYTICS' } :
-            rightTab === 'routes'   ? { Icon: RouteIcon, label: 'Routes',        tag: 'ANALYTICS' } :
-                                      { Icon: Crosshair, label: 'Selection',     tag: 'DETAIL'    };
+            rightTab === 'analytics' ? { Icon: Sparkles,    label: 'Analytics',     tag: 'ANALYTICS' } :
+            rightTab === 'similar'   ? { Icon: Crosshair,   label: 'Similar',       tag: 'NEAREST'   } :
+            rightTab === 'tracks'    ? { Icon: Navigation,  label: 'Active Tracks', tag: 'TRACKS'    } :
+                                       { Icon: Crosshair,   label: selectedDetection ? `DET-${selectedDetection.properties?.id}` : 'Selection', tag: 'DETAIL' };
           const HeaderIcon = rightHeader.Icon;
+          const allegianceLabel = String(selectedDetection?.properties?.allegiance || '').toLowerCase();
+          const allegianceTagClass =
+            allegianceLabel === 'hostile' ? 'crit' :
+            allegianceLabel === 'friendly' ? 'ok' :
+            allegianceLabel === 'neutral' ? 'info' :
+            'acc';
           return (
             <div className="sentinel-panel-header">
               <HeaderIcon className="h-4 w-4" />
               <span>{rightHeader.label}</span>
-              <span className="sentinel-tag acc ml-auto">{rightHeader.tag}</span>
+              {rightTab === 'details' && selectedDetection ? (
+                <span className={`sentinel-tag ${allegianceTagClass} ml-auto uppercase`}>{selectedDetection.properties?.allegiance || 'unknown'}</span>
+              ) : (
+                <span className="sentinel-tag acc ml-auto">{rightHeader.tag}</span>
+              )}
               <button type="button" onClick={() => setRightOpen(false)} className="sentinel-icon-btn h-6 w-6" title="Collapse panel">
                 <ChevronRight className="h-3.5 w-3.5" />
               </button>
@@ -2427,11 +2504,11 @@ export default function GaiaMap({
         })()}
         <div className="flex border-b border-sentinel-line bg-sentinel-panel-2">
           {([
-            ['selection', 'Selection', selectedDetection ? 1 : 0],
-            ['viewshed', 'Viewshed', analyticsResults.viewshed?.result?.features?.length ?? 0],
-            ['los', 'Line of Sight', analyticsResults.los?.result?.features?.length ?? 0],
-            ['routes', 'Routes', analyticsResults.routes?.result?.features?.length ?? 0],
-          ] as const).map(([k, label, count]) => {
+            ['details', 'Details'],
+            ['analytics', 'Analytics'],
+            ['similar', 'Similar'],
+            ['tracks', 'Active Tracks'],
+          ] as const).map(([k, label]) => {
             const isActive = rightTab === k;
             return (
               <button
@@ -2444,22 +2521,254 @@ export default function GaiaMap({
                 style={{ borderBottom: isActive ? '2px solid var(--accent, #ff7a1a)' : '2px solid transparent' }}
               >
                 {label}
-                <span className={isActive ? 'text-sentinel-accent' : 'text-sentinel-muted'}>{count}</span>
               </button>
             );
           })}
         </div>
         <div className="sentinel-scroll">
-          {rightTab !== 'selection' && (
+          {rightTab === 'details' && (selectedDetection ? (() => {
+            const props = selectedDetection.properties || {};
+            const category = detectionCategoryForFeature(selectedDetection);
+            const categoryMeta = categoryFor(category, DETECTION_CATEGORIES);
+            const confidencePct = Math.round(Number(props.confidence || 0) * 100);
+            const centroid = featureCentroid(selectedDetection);
+            const llBounds = featureLatLonBounds(selectedDetection);
+            const mgrsString = centroid
+              ? (() => { try { return mgrsForward([centroid[1], centroid[0]], 5); } catch { return null; } })()
+              : null;
+            const trackForDetection = detectionTracks.find((t) => {
+              const ids = (t.metadata as any)?.detection_ids;
+              return Array.isArray(ids) && ids.includes(Number(props.id));
+            });
+            const vx = trackForDetection?.last_velocity?.vx_mps;
+            const vy = trackForDetection?.last_velocity?.vy_mps;
+            const motion = (typeof vx === 'number' && typeof vy === 'number')
+              ? (() => {
+                  const speedMs = Math.sqrt(vx * vx + vy * vy);
+                  const speedKmh = speedMs * 3.6;
+                  let bearing = (Math.atan2(vx, vy) * 180) / Math.PI;
+                  if (bearing < 0) bearing += 360;
+                  return `${speedKmh.toFixed(1)} km/h · bearing ${String(Math.round(bearing)).padStart(3, '0')}°`;
+                })()
+              : null;
+            const captureSource = selectedImageryData?.name
+              ? `${selectedImageryData.name}${selectedImageryData.sensor_type ? ` / ${selectedImageryData.sensor_type}` : ''}`
+              : props.metadata?.source_cog || 'n/a';
+            const captureTime = props.metadata?.acquisition_time || selectedImageryData?.acquisition_time;
+            const resolution = props.metadata?.resolution_m ?? selectedImageryData?.resolution_m;
+            return (
+              <>
+                <div className="border-b border-sentinel-line p-3">
+                  <div className="font-mono text-[10px] text-sentinel-muted">DET-{props.id} / {props.parent_class || props.class}</div>
+                  <div className="mt-1 flex items-center gap-2">
+                    <span style={{ color: categoryMeta.color }}><CategoryIcon category={category} branchById={branchById} /></span>
+                    <div className="text-lg font-semibold uppercase tracking-wide text-slate-100">
+                      {props.label || detectionClassLabel(props.class)}
+                    </div>
+                  </div>
+                  <div className="mt-3 flex items-center gap-2">
+                    <div className="h-1 flex-1 bg-sentinel-bg">
+                      <div className="h-full" style={{ width: `${confidencePct}%`, background: 'var(--accent, #ff7a1a)' }} />
+                    </div>
+                    <span className="font-mono text-[10px] text-sentinel-muted">{confidencePct}% CONF</span>
+                  </div>
+                </div>
+
+                <div className="border-b border-sentinel-line p-3">
+                  <div className="flex items-center gap-2 pb-2">
+                    <span className="inline-flex h-4 w-4 items-center justify-center bg-sentinel-line-2 font-mono text-[9px] text-slate-200">B</span>
+                    <span className="sentinel-label">Capture</span>
+                  </div>
+                  <div className="grid grid-cols-[92px_1fr] gap-y-1 font-mono text-[10.5px]">
+                    <span className="text-sentinel-muted">SOURCE</span><span className="truncate">{captureSource}</span>
+                    <span className="text-sentinel-muted">CAPTURE</span><span className="truncate">{captureTime ? new Date(captureTime).toISOString().replace(/\.\d+/, '') : 'n/a'}</span>
+                    <span className="text-sentinel-muted">RESOLUTION</span><span>{resolution ? `${Number(resolution).toFixed(2)} m / px` : 'n/a'}</span>
+                    <span className="text-sentinel-muted">BBOX</span>
+                    <span className="truncate">
+                      {llBounds
+                        ? `${llBounds.south.toFixed(4)},${llBounds.west.toFixed(4)} → ${llBounds.north.toFixed(4)},${llBounds.east.toFixed(4)}`
+                        : 'n/a'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="border-b border-sentinel-line p-3">
+                  <div className="flex items-center gap-2 pb-2">
+                    <span className="inline-flex h-4 w-4 items-center justify-center bg-sentinel-line-2 font-mono text-[9px] text-slate-200">C</span>
+                    <span className="sentinel-label">Geolocation</span>
+                  </div>
+                  <div className="grid grid-cols-[92px_1fr] gap-y-1 font-mono text-[10.5px]">
+                    <span className="text-sentinel-muted">WGS84</span>
+                    <span>{centroid ? `${centroid[0].toFixed(4)}° N, ${centroid[1].toFixed(4)}° E` : 'n/a'}</span>
+                    <span className="text-sentinel-muted">MGRS</span><span>{mgrsString || 'n/a'}</span>
+                    <span className="text-sentinel-muted">MOTION</span><span>{motion || 'static'}</span>
+                  </div>
+                </div>
+
+                <div className="border-b border-sentinel-line p-3">
+                  <div className="flex items-center gap-2 pb-2">
+                    <span className="inline-flex h-4 w-4 items-center justify-center bg-sentinel-line-2 font-mono text-[9px] text-slate-200">D</span>
+                    <span className="sentinel-label">Taxonomy</span>
+                  </div>
+                  <div className="grid grid-cols-[92px_1fr] gap-y-1 font-mono text-[10.5px]">
+                    <span className="text-sentinel-muted">CLASS</span><span className="truncate">{props.class || 'n/a'}</span>
+                    <span className="text-sentinel-muted">VERSION</span><span>{props.metadata?.taxonomy_version || 'n/a'}</span>
+                    <span className="text-sentinel-muted">MODEL</span><span>{props.metadata?.model_version || 'n/a'}</span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 border-b border-sentinel-line p-3">
+                  <button
+                    type="button"
+                    disabled={!props.fmv_clip_id || !onOpenFmv}
+                    onClick={() => props.fmv_clip_id && onOpenFmv && onOpenFmv(Number(props.fmv_clip_id))}
+                    className="sentinel-btn justify-center disabled:opacity-40"
+                  >
+                    OPEN IN FMV →
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isActionBusy}
+                    onClick={addToLinkGraph}
+                    className="sentinel-btn justify-center disabled:opacity-40"
+                  >
+                    OPEN IN GRAPH →
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 border-b border-sentinel-line p-3">
+                  <button type="button" disabled={isActionBusy} onClick={() => tagDetection(props.id, 'friendly')} className="sentinel-btn justify-center disabled:opacity-40"><Shield className="h-3.5 w-3.5" /> Friendly</button>
+                  <button type="button" disabled={isActionBusy} onClick={() => tagDetection(props.id, 'hostile')} className="sentinel-btn justify-center disabled:opacity-40"><Swords className="h-3.5 w-3.5" /> Hostile</button>
+                  <button type="button" disabled={isActionBusy} onClick={() => tagDetection(props.id, 'neutral')} className="sentinel-btn justify-center disabled:opacity-40"><CircleHelp className="h-3.5 w-3.5" /> Neutral</button>
+                  <button type="button" disabled={isActionBusy} onClick={() => tagDetection(props.id, 'unknown')} className="sentinel-btn justify-center disabled:opacity-40">Clear</button>
+                </div>
+
+                <div className="flex border-b border-sentinel-line">
+                  {(['edit', 'review'] as const).map((k) => (
+                    <button
+                      key={k}
+                      type="button"
+                      onClick={() => setSelectionTab(k)}
+                      className={`flex-1 px-2 py-2 font-mono text-[10.5px] uppercase tracking-widest transition border-b-2 ${
+                        selectionTab === k
+                          ? 'border-sentinel-accent text-sentinel-accent bg-sentinel-panel-2'
+                          : 'border-transparent text-sentinel-muted hover:text-slate-200'
+                      }`}
+                    >
+                      {k}
+                    </button>
+                  ))}
+                </div>
+
+                {selectionTab === 'edit' && (
+                  <ObjectDetailsForm
+                    key={`map-det-${props.id}`}
+                    source="map"
+                    detectionId={Number(props.id)}
+                    defaultClass={props.class}
+                    title={props.label || detectionClassLabel(props.class)}
+                    initial={{
+                      designation: props.metadata?.designation,
+                      military_classification: props.metadata?.military_classification,
+                      threat_level: props.threat_level,
+                      affiliation: props.allegiance,
+                    }}
+                    canDelete={
+                      (props.source || props.metadata?.source) === 'operator'
+                      || user?.role === 'admin'
+                    }
+                    onDeleted={() => deleteDetection(Number(props.id))}
+                    onSaved={() => fetchDetections()}
+                    onViewInFmv={
+                      props.fmv_clip_id && onOpenFmv
+                        ? () => onOpenFmv(Number(props.fmv_clip_id))
+                        : undefined
+                    }
+                  />
+                )}
+                {selectionTab === 'review' && (
+                  <ReviewPanel
+                    selectedDetection={selectedDetection}
+                    onReviewed={() => fetchDetections()}
+                    onJump={(id) => {
+                      const feat = detectionsGeoJSON?.features?.find(
+                        (f: any) => Number(f.properties?.id) === id,
+                      );
+                      if (feat) setSelectedDetection(feat);
+                    }}
+                  />
+                )}
+
+                <div className="border-b border-sentinel-line p-3">
+                  <div className="mb-2 flex items-center gap-2">
+                    <span className="sentinel-label flex-1">Candidate Links</span>
+                    <span className="sentinel-tag">{candidateLinks.length}</span>
+                  </div>
+                  {candidateLinks.length === 0 && (
+                    <div className="text-[11px] text-sentinel-muted">No candidate target links. Use Add To Link Graph to generate review candidates.</div>
+                  )}
+                  <div className="space-y-2">
+                    {candidateLinks.slice(0, 4).map((candidate) => (
+                      <div key={candidate.id} className="border border-sentinel-line bg-sentinel-bg p-2">
+                        <div className="flex items-center gap-2">
+                          <span className="min-w-0 flex-1 truncate text-xs text-slate-200">{candidate.target_name || candidate.target_id}</span>
+                          <span className={`sentinel-tag ${candidate.status === 'approved' ? 'ok' : candidate.status === 'rejected' ? 'crit' : 'warn'}`}>{candidate.status}</span>
+                        </div>
+                        <div className="mt-1 font-mono text-[10px] text-sentinel-muted">{Math.round(Number(candidate.score || 0) * 100)} score / {candidate.reason}</div>
+                        {candidate.status === 'pending' && (
+                          <div className="mt-2 grid grid-cols-2 gap-2">
+                            <button type="button" disabled={isActionBusy} onClick={() => approveCandidate(candidate.id)} className="sentinel-btn justify-center disabled:opacity-40">Approve</button>
+                            <button type="button" disabled={isActionBusy} onClick={() => rejectCandidate(candidate.id)} className="sentinel-btn justify-center disabled:opacity-40">Reject</button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="sentinel-panel-header">
+                  <Activity className="h-4 w-4" />
+                  <span>Actions</span>
+                </div>
+                <div className="space-y-2 p-3">
+                  <button
+                    type="button"
+                    disabled={isActionBusy || !selectedDetection}
+                    onClick={cueCollection}
+                    className="sentinel-btn primary w-full justify-center disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <Send className="h-3.5 w-3.5" /> Cue Collection
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isActionBusy || !selectedDetection}
+                    onClick={addToLinkGraph}
+                    className="sentinel-btn w-full justify-center disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <GitBranch className="h-3.5 w-3.5" /> Add To Link Graph
+                  </button>
+                  <div className="min-h-8 border border-sentinel-line bg-sentinel-bg px-2 py-1 font-mono text-[10px] text-sentinel-muted">
+                    {actionStatus || 'Detection action ready.'}
+                  </div>
+                </div>
+              </>
+            );
+          })() : (
+            <div className="border-b border-sentinel-line p-3 text-xs text-sentinel-muted">Select a detection polygon to inspect classification details.</div>
+          ))}
+
+          {rightTab === 'analytics' && (
             <AnalyticsToolsPanel
-              active={rightTab}
               pendingPick={pendingPick}
               onRequestPick={setPendingPick}
               lastMapClick={lastMapClick}
-              layerOn={!!activeLayers[rightTab]}
-              layerDisabled={!analyticsResults[rightTab]}
-              onToggleLayer={() =>
-                setActiveLayers((prev) => ({ ...prev, [rightTab]: !prev[rightTab] }))
+              layers={{
+                viewshed: { on: !!activeLayers.viewshed, disabled: !analyticsResults.viewshed },
+                los: { on: !!activeLayers.los, disabled: !analyticsResults.los },
+                routes: { on: !!activeLayers.routes, disabled: !analyticsResults.routes },
+              }}
+              onToggleLayer={(kind) =>
+                setActiveLayers((prev) => ({ ...prev, [kind]: !prev[kind] }))
               }
               onResult={(kind, response) => {
                 setAnalyticsResults((prev) => ({ ...prev, [kind]: response }));
@@ -2468,262 +2777,56 @@ export default function GaiaMap({
               }}
             />
           )}
-          {rightTab === 'selection' && (<>
-          {selectedDetection ? (
-            <>
-              <div className="border-b border-sentinel-line p-3">
-                {(() => {
-                  const category = detectionCategoryForFeature(selectedDetection);
-                  const categoryMeta = categoryFor(category, DETECTION_CATEGORIES);
-                  return (
-                    <>
-                      <div className="font-mono text-[10px] text-sentinel-muted">DET-{selectedDetection.properties?.id} / {selectedDetection.properties?.parent_class || selectedDetection.properties?.class}</div>
-                      <div className="mt-1 flex items-center gap-2">
-                        <span style={{ color: categoryMeta.color }}><CategoryIcon category={category} branchById={branchById} /></span>
-                        <div className="text-lg font-semibold text-slate-100">{selectedDetection.properties?.label || detectionClassLabel(selectedDetection.properties?.class)}</div>
-                      </div>
-                    </>
+
+          {rightTab === 'similar' && (
+            selectedDetection ? (
+              <SimilarPanel
+                selectedDetection={selectedDetection}
+                onSelect={(id) => {
+                  const feat = detectionsGeoJSON?.features?.find(
+                    (f: any) => Number(f.properties?.id) === id,
                   );
-                })()}
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <span className={`sentinel-tag ${threatClass(selectedDetection.properties?.threat_level)}`}>{selectedDetection.properties?.threat_level || 'low'}</span>
-                  <span className="sentinel-tag">{selectedDetection.properties?.allegiance || 'unknown'}</span>
-                  <span className="sentinel-tag info">{Math.round(Number(selectedDetection.properties?.confidence || 0) * 100)}% CONF</span>
-                  <span className="sentinel-tag acc">{selectedDetection.properties?.review_status || selectedDetection.properties?.metadata?.review_status || 'review'}</span>
-                </div>
+                  if (feat) setSelectedDetection(feat);
+                }}
+              />
+            ) : (
+              <div className="border-b border-sentinel-line p-3 text-xs text-sentinel-muted">Select a detection polygon to inspect similar objects.</div>
+            )
+          )}
+
+          {rightTab === 'tracks' && (
+            <>
+              <div className="sentinel-panel-header">
+                <Navigation className="h-4 w-4" />
+                <span>Active Tracks</span>
+                <span className="sentinel-tag info ml-auto">{data.tracks.length}</span>
               </div>
-              <div className="border-b border-sentinel-line p-3 text-xs leading-relaxed text-sentinel-muted">
-                {selectedDetection.properties?.ontology?.description || 'Detection ontology unavailable.'}
-                <div className="mt-2 grid grid-cols-[92px_1fr] gap-y-1 font-mono text-[10px]">
-                  <span>ASSESS</span><span>{selectedDetection.properties?.assessment_status || selectedDetection.properties?.ontology?.assessment_status || 'unconfirmed'}</span>
-                  <span>ORIGINAL</span><span>{selectedDetection.properties?.original_class || selectedDetection.properties?.metadata?.original_class || selectedDetection.properties?.class || 'unknown'}</span>
-                  <span>PROFILE</span><span>{selectedDetection.properties?.threshold_profile || selectedDetection.properties?.metadata?.threshold_profile || 'n/a'}</span>
-                  <span>COVERAGE</span><span>{selectedDetection.properties?.coverage_fraction ? `${Math.round(Number(selectedDetection.properties.coverage_fraction) * 100)}%` : 'n/a'}</span>
-                  <span>THREAT SCORE</span><span>{Number(selectedDetection.properties?.threat_confidence || selectedDetection.properties?.ontology?.threat_confidence || 0).toFixed(2)}</span>
-                  <span>EVIDENCE</span><span>{(selectedDetection.properties?.evidence || selectedDetection.properties?.ontology?.evidence || []).join(' / ') || 'none'}</span>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-2 border-b border-sentinel-line p-3">
-                <button type="button" disabled={isActionBusy} onClick={() => tagDetection(selectedDetection.properties.id, 'friendly')} className="sentinel-btn justify-center disabled:opacity-40"><Shield className="h-3.5 w-3.5" /> Friendly</button>
-                <button type="button" disabled={isActionBusy} onClick={() => tagDetection(selectedDetection.properties.id, 'hostile')} className="sentinel-btn justify-center disabled:opacity-40"><Swords className="h-3.5 w-3.5" /> Hostile</button>
-                <button type="button" disabled={isActionBusy} onClick={() => tagDetection(selectedDetection.properties.id, 'neutral')} className="sentinel-btn justify-center disabled:opacity-40"><CircleHelp className="h-3.5 w-3.5" /> Neutral</button>
-                <button type="button" disabled={isActionBusy} onClick={() => tagDetection(selectedDetection.properties.id, 'unknown')} className="sentinel-btn justify-center disabled:opacity-40">Clear</button>
+              <div className="border-b border-sentinel-line p-3">
                 <button
                   type="button"
-                  disabled={isActionBusy}
-                  onClick={() => pinTrack(selectedDetection.properties.id)}
-                  className="sentinel-btn col-span-2 justify-center disabled:opacity-40"
-                  title="Force-create a track from this detection regardless of confidence"
+                  disabled={isActionBusy || !selectedDetection}
+                  onClick={() => selectedDetection && pinTrack(selectedDetection.properties.id)}
+                  className="sentinel-btn w-full justify-center disabled:cursor-not-allowed disabled:opacity-40"
+                  title={selectedDetection ? 'Force-create a track from the selected detection' : 'Select a detection first'}
                 >
                   <Crosshair className="h-3.5 w-3.5" /> Track Object
                 </button>
               </div>
-
-              {/* Map+ Selection tabs: Edit / Review / Provenance / Similar */}
-              <div className="flex border-b border-sentinel-line">
-                {(['edit', 'review', 'provenance', 'similar'] as const).map((k) => (
-                  <button
-                    key={k}
-                    type="button"
-                    onClick={() => setSelectionTab(k)}
-                    className={`flex-1 px-2 py-2 font-mono text-[10.5px] uppercase tracking-widest transition border-b-2 ${
-                      selectionTab === k
-                        ? 'border-sentinel-accent text-sentinel-accent bg-sentinel-panel-2'
-                        : 'border-transparent text-sentinel-muted hover:text-slate-200'
-                    }`}
-                  >
-                    {k}
-                  </button>
-                ))}
-              </div>
-
-              {selectionTab === 'edit' && (
-                <ObjectDetailsForm
-                  key={`map-det-${selectedDetection.properties.id}`}
-                  source="map"
-                  detectionId={Number(selectedDetection.properties.id)}
-                  defaultClass={selectedDetection.properties?.class}
-                  title={selectedDetection.properties?.label || detectionClassLabel(selectedDetection.properties?.class)}
-                  initial={{
-                    designation: selectedDetection.properties?.metadata?.designation,
-                    military_classification: selectedDetection.properties?.metadata?.military_classification,
-                    threat_level: selectedDetection.properties?.threat_level,
-                    affiliation: selectedDetection.properties?.allegiance,
-                  }}
-                  canDelete={
-                    (selectedDetection.properties?.source || selectedDetection.properties?.metadata?.source) === 'operator'
-                    || user?.role === 'admin'
-                  }
-                  onDeleted={() => deleteDetection(Number(selectedDetection.properties.id))}
-                  onSaved={() => fetchDetections()}
-                  onViewInFmv={
-                    selectedDetection.properties?.fmv_clip_id && onOpenFmv
-                      ? () => onOpenFmv(Number(selectedDetection.properties.fmv_clip_id))
-                      : undefined
-                  }
-                />
+              {data.tracks.length === 0 ? (
+                <div className="border-b border-sentinel-line p-3 text-[11px] text-sentinel-muted">No active tracks.</div>
+              ) : (
+                data.tracks.map((track: any) => (
+                  <div key={track.id} className="sentinel-row grid-cols-[1fr_auto]">
+                    <span className="min-w-0">
+                      <span className="block truncate text-xs text-slate-200">{track.properties?.callsign || track.asset_id || track.id}</span>
+                      <span className="block truncate font-mono text-[10px] text-sentinel-muted">{track.label}</span>
+                    </span>
+                    <span className="sentinel-tag info">LIVE</span>
+                  </div>
+                ))
               )}
-              {selectionTab === 'review' && (
-                <ReviewPanel
-                  selectedDetection={selectedDetection}
-                  onReviewed={() => fetchDetections()}
-                  onJump={(id) => {
-                    const feat = detectionsGeoJSON?.features?.find(
-                      (f: any) => Number(f.properties?.id) === id,
-                    );
-                    if (feat) setSelectedDetection(feat);
-                  }}
-                />
-              )}
-              {selectionTab === 'provenance' && (
-                <ProvenancePanel selectedDetection={selectedDetection} />
-              )}
-              {selectionTab === 'similar' && (
-                <SimilarPanel
-                  selectedDetection={selectedDetection}
-                  onSelect={(id) => {
-                    const feat = detectionsGeoJSON?.features?.find(
-                      (f: any) => Number(f.properties?.id) === id,
-                    );
-                    if (feat) setSelectedDetection(feat);
-                  }}
-                />
-              )}
-              <div className="border-b border-sentinel-line p-3">
-                <div className="mb-2 flex items-center gap-2">
-                  <span className="sentinel-label flex-1">Candidate Links</span>
-                  <span className="sentinel-tag">{candidateLinks.length}</span>
-                </div>
-                {candidateLinks.length === 0 && (
-                  <div className="text-[11px] text-sentinel-muted">No candidate target links. Use Add To Link Graph to generate review candidates.</div>
-                )}
-                <div className="space-y-2">
-                  {candidateLinks.slice(0, 4).map((candidate) => (
-                    <div key={candidate.id} className="border border-sentinel-line bg-sentinel-bg p-2">
-                      <div className="flex items-center gap-2">
-                        <span className="min-w-0 flex-1 truncate text-xs text-slate-200">{candidate.target_name || candidate.target_id}</span>
-                        <span className={`sentinel-tag ${candidate.status === 'approved' ? 'ok' : candidate.status === 'rejected' ? 'crit' : 'warn'}`}>{candidate.status}</span>
-                      </div>
-                      <div className="mt-1 font-mono text-[10px] text-sentinel-muted">{Math.round(Number(candidate.score || 0) * 100)} score / {candidate.reason}</div>
-                      {candidate.status === 'pending' && (
-                        <div className="mt-2 grid grid-cols-2 gap-2">
-                          <button type="button" disabled={isActionBusy} onClick={() => approveCandidate(candidate.id)} className="sentinel-btn justify-center disabled:opacity-40">Approve</button>
-                          <button type="button" disabled={isActionBusy} onClick={() => rejectCandidate(candidate.id)} className="sentinel-btn justify-center disabled:opacity-40">Reject</button>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
             </>
-          ) : (
-            <div className="border-b border-sentinel-line p-3 text-xs text-sentinel-muted">Select a detection polygon to inspect classification details.</div>
           )}
-
-          <div className="sentinel-panel-header">
-            <Satellite className="h-4 w-4" />
-            <span>Selected Imagery</span>
-          </div>
-          <div className="border-b border-sentinel-line p-3">
-            <div className="text-sm font-semibold text-slate-100">{selectedImageryData?.name || 'No imagery selected'}</div>
-            <div className="mt-2 grid grid-cols-[80px_1fr] gap-y-1 font-mono text-[11px]">
-              <span className="text-sentinel-muted">SENSOR</span><span>{selectedImageryData?.sensor_type || 'n/a'}</span>
-              <span className="text-sentinel-muted">CLOUD</span><span>{selectedImageryData?.cloud_cover ?? 'n/a'}%</span>
-              <span className="text-sentinel-muted">ACQ</span><span className="truncate">{selectedImageryData?.acquisition_time ? new Date(selectedImageryData.acquisition_time).toLocaleString() : 'n/a'}</span>
-            </div>
-            {selectedImageryData && (
-              <div className="mt-3">
-                <div className="mb-1 sentinel-label">Opacity</div>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.05"
-                  value={imageryOpacity}
-                  onChange={(event) => setImageryOpacity(parseFloat(event.target.value))}
-                  className="w-full"
-                />
-              </div>
-            )}
-          </div>
-
-          <div className="sentinel-panel-header">
-            <Navigation className="h-4 w-4" />
-            <span>Active Tracks</span>
-            <span className="sentinel-tag info ml-auto">{data.tracks.length}</span>
-          </div>
-          {data.tracks.slice(0, 8).map((track: any) => (
-            <div key={track.id} className="sentinel-row grid-cols-[1fr_auto]">
-              <span className="min-w-0">
-                <span className="block truncate text-xs text-slate-200">{track.properties?.callsign || track.asset_id || track.id}</span>
-                <span className="block truncate font-mono text-[10px] text-sentinel-muted">{track.label}</span>
-              </span>
-              <span className="sentinel-tag info">LIVE</span>
-            </div>
-          ))}
-
-          <div className="sentinel-panel-header">
-            <Crosshair className="h-4 w-4" />
-            <span>Detection Tracks</span>
-            <span className="sentinel-tag info ml-auto">{detectionTracks.filter((t) => t.status !== 'lost').length}</span>
-          </div>
-          {detectionTracks.length === 0 && (
-            <div className="border-b border-sentinel-line p-3 text-[11px] text-sentinel-muted">No detection tracks. Process imagery to generate tracks.</div>
-          )}
-          {detectionTracks.filter((t) => t.status !== 'lost').slice(0, 8).map((track) => {
-            const color = trackColor(track.category);
-            const isSelected = selectedDetectionTrack?.track_uid === track.track_uid;
-            return (
-              <button
-                type="button"
-                key={track.track_uid}
-                className={`sentinel-row grid-cols-[1fr_auto] w-full text-left ${isSelected ? 'bg-sentinel-line-2' : ''}`}
-                onClick={() => setSelectedDetectionTrack(isSelected ? null : track)}
-              >
-                <span className="min-w-0">
-                  <span className="flex items-center gap-1.5">
-                    <span style={{ color }} className="text-[8px]">●</span>
-                    <span className="truncate text-xs text-slate-200">{track.primary_class}</span>
-                    <span className={`sentinel-tag ${threatClass(track.threat_level)}`}>{track.threat_level}</span>
-                    {track.pinned && <span className="sentinel-tag warn">PIN</span>}
-                  </span>
-                  <span className="block truncate font-mono text-[10px] text-sentinel-muted">
-                    DT-{track.track_uid.slice(-6)} · {track.obs_count} obs · {relativeTime(track.last_seen)}
-                  </span>
-                </span>
-                <span className={`sentinel-tag ${track.status === 'confirmed' || track.status === 'pinned' ? 'ok' : track.status === 'coast' ? 'warn' : 'info'}`}>
-                  {track.status.toUpperCase()}
-                </span>
-              </button>
-            );
-          })}
-
-          <div className="sentinel-panel-header">
-            <Activity className="h-4 w-4" />
-            <span>Actions</span>
-          </div>
-          <div className="space-y-2 p-3">
-            <button
-              type="button"
-              disabled={isActionBusy || !selectedDetection}
-              onClick={cueCollection}
-              className="sentinel-btn primary w-full justify-center disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <Send className="h-3.5 w-3.5" /> Cue Collection
-            </button>
-            <button
-              type="button"
-              disabled={isActionBusy || !selectedDetection}
-              onClick={addToLinkGraph}
-              className="sentinel-btn w-full justify-center disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <GitBranch className="h-3.5 w-3.5" /> Add To Link Graph
-            </button>
-            <div className="min-h-8 border border-sentinel-line bg-sentinel-bg px-2 py-1 font-mono text-[10px] text-sentinel-muted">
-              {actionStatus || (selectedDetection ? 'Detection action ready.' : 'Select a detection to enable actions.')}
-            </div>
-          </div>
-          </>)}
         </div>
       </section>
       ) : (

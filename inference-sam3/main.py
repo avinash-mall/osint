@@ -1142,3 +1142,116 @@ def _decode_valid_mask(payload: Any, expected_hw: tuple[int, int]) -> np.ndarray
     raw = base64.b64decode(str(data_b64))
     bits = np.unpackbits(np.frombuffer(raw, dtype=np.uint8), bitorder=payload.get("bitorder", "little"))
     return bits[: height * width].reshape(height, width).astype(bool)
+
+
+# ============================================================================
+# Training: fine-tune YOLOE on a user-supplied YOLO-format dataset. Runs in a
+# background thread and exposes status via GET /train/{job_id}. Output weights
+# land at <MODEL_OUT_DIR>/<job_id>/best.pt.
+# ============================================================================
+
+
+_TRAIN_LOCK = threading.Lock()
+_TRAIN_JOBS: dict[str, dict[str, Any]] = {}
+_TRAIN_BASE_WEIGHTS = os.getenv("YOLOE_BASE_WEIGHTS", "/data/weights/yoloe-11l-seg.pt")
+_TRAIN_OUT_ROOT = Path(os.getenv("MODEL_OUT_DIR", "/data/models"))
+
+
+def _train_worker(job_id: str) -> None:
+    """Run an ultralytics YOLO.train() in this thread; mutates _TRAIN_JOBS in place."""
+    job = _TRAIN_JOBS[job_id]
+    try:
+        from ultralytics import YOLO  # local import — large package
+    except Exception as exc:  # noqa: BLE001
+        with _TRAIN_LOCK:
+            job["status"] = "failed"
+            job["error"] = f"ultralytics import failed: {exc}"
+            job["finished_at"] = time.time()
+        return
+
+    base_weights = job.get("base_weights") or _TRAIN_BASE_WEIGHTS
+    if not Path(base_weights).exists():
+        with _TRAIN_LOCK:
+            job["status"] = "failed"
+            job["error"] = f"base weights not found: {base_weights}"
+            job["finished_at"] = time.time()
+        return
+
+    out_dir = _TRAIN_OUT_ROOT / job_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        model = YOLO(base_weights)
+        results = model.train(
+            data=job["dataset_path"],
+            epochs=int(job["epochs"]),
+            project=str(out_dir.parent),
+            name=out_dir.name,
+            exist_ok=True,
+            verbose=False,
+        )
+        weights_src = Path(results.save_dir) / "weights" / "best.pt"
+        weights_dst = out_dir / "best.pt"
+        if weights_src.exists() and weights_src != weights_dst:
+            weights_dst.write_bytes(weights_src.read_bytes())
+        metrics = {}
+        if hasattr(results, "results_dict"):
+            metrics = {k: float(v) for k, v in results.results_dict.items() if isinstance(v, (int, float))}
+        with _TRAIN_LOCK:
+            job["status"] = "done"
+            job["weights_path"] = str(weights_dst)
+            job["metrics"] = metrics
+            job["finished_at"] = time.time()
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger("inference-sam3").exception("training job %s failed", job_id)
+        with _TRAIN_LOCK:
+            job["status"] = "failed"
+            job["error"] = str(exc)[:2000]
+            job["finished_at"] = time.time()
+
+
+@app.post("/train")
+def start_training(payload: dict = None) -> dict:  # type: ignore[assignment]
+    """Spawn an ultralytics YOLO fine-tune in the background.
+
+    Body: ``{"name": str, "dataset_path": str, "epochs": int, "base_weights": str?}``.
+    Returns ``{"job_id", "status": "running"}`` immediately.
+    """
+    payload = payload or {}
+    dataset_path = str(payload.get("dataset_path") or "").strip()
+    if not dataset_path or not Path(dataset_path).exists():
+        raise HTTPException(status_code=400, detail=f"dataset_path missing or not found: {dataset_path}")
+    try:
+        epochs = int(payload.get("epochs") or 1)
+    except (TypeError, ValueError):
+        epochs = 1
+    if epochs <= 0:
+        raise HTTPException(status_code=400, detail="epochs must be > 0")
+    name = str(payload.get("name") or "yoloe-finetune")[:120]
+
+    job_id = f"train-{int(time.time())}-{name.replace('/', '_')}"
+    job = {
+        "job_id": job_id,
+        "name": name,
+        "dataset_path": dataset_path,
+        "epochs": epochs,
+        "base_weights": payload.get("base_weights") or _TRAIN_BASE_WEIGHTS,
+        "status": "running",
+        "started_at": time.time(),
+        "finished_at": None,
+        "metrics": {},
+    }
+    with _TRAIN_LOCK:
+        _TRAIN_JOBS[job_id] = job
+    thread = threading.Thread(target=_train_worker, args=(job_id,), name=f"train-{job_id}", daemon=True)
+    thread.start()
+    return {"job_id": job_id, "status": "running", "name": name}
+
+
+@app.get("/train/{job_id}")
+def training_status(job_id: str) -> dict:
+    with _TRAIN_LOCK:
+        job = _TRAIN_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="training job not found")
+    return dict(job)

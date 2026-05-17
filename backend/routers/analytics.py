@@ -7,9 +7,10 @@ either resource is absent the endpoints return the offline GeoJSON fixtures
 the frontend was originally wired against, with ``mode: "fixture_no_dem"``
 or ``mode: "fixture_no_graph"`` on the result so the UI can warn.
 
-Change and POL remain as the previous module — POL already issues real
-PostGIS queries against ``track_points``; change is still a fixture pending
-a real raster differencer.
+Change-detection runs a rasterio absolute-difference pipeline against two
+``satellite_passes`` rows when both IDs are supplied; without them, falls
+back to the offline GeoJSON fixture (``mode: "fixture_no_passes"``). POL
+already issues real PostGIS queries against ``track_points``.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import math
 
 from fastapi import APIRouter
 
+from change_detection import compute_change
 from database import postgis_db
 from events import publish_event
 from geometry import make_square_feature
@@ -55,12 +57,26 @@ def _observer_lat_lon(payload: dict | None, default_lat: float, default_lon: flo
 
 @router.post("/api/analytics/change")
 def run_change_detection(req: AnalyticsRequest):
-    lat, lon = _observer_lat_lon(req.observer, 25.078, 55.179)
-    features = [
-        make_square_feature(lon - 0.018, lat + 0.012, 0.012, {"score": 0.82, "label": "new construction"}),
-        make_square_feature(lon + 0.015, lat - 0.01, 0.009, {"score": 0.64, "label": "surface disturbance"}),
-    ]
-    result = {"type": "FeatureCollection", "features": features, "mode": "offline_fixture"}
+    real = None
+    if req.before_pass_id is not None and req.after_pass_id is not None:
+        try:
+            real = compute_change(int(req.before_pass_id), int(req.after_pass_id))
+        except Exception as exc:
+            logger.warning(
+                "change: rasterio diff failed (%s) for passes %s/%s, falling back to fixture",
+                exc, req.before_pass_id, req.after_pass_id,
+            )
+            real = None
+    if real is not None:
+        result = real
+    else:
+        lat, lon = _observer_lat_lon(req.observer, 25.078, 55.179)
+        features = [
+            make_square_feature(lon - 0.018, lat + 0.012, 0.012, {"score": 0.82, "label": "new construction"}),
+            make_square_feature(lon + 0.015, lat - 0.01, 0.009, {"score": 0.64, "label": "surface disturbance"}),
+        ]
+        mode = "fixture_no_passes" if (req.before_pass_id or req.after_pass_id) else "offline_fixture"
+        result = {"type": "FeatureCollection", "features": features, "mode": mode}
     return {"job": _store_analytics_result("change", req.dict(), result), "result": result}
 
 

@@ -141,4 +141,24 @@ test.describe('responsive visual regression', () => {
     await expect(lowerControls).toBeVisible();
     await expect.poll(() => page.locator('.ingest-connect').evaluate((node) => node.scrollTop)).toBeGreaterThan(0);
   });
+
+  test('workspace side panels expose their own scroll surfaces when canvases stay fixed', async ({ page }) => {
+    await page.setViewportSize({ width: 1365, height: 700 });
+    await openAuthed(page);
+
+    await expectCanScroll(page, '.map-left-panel .sentinel-scroll', 'map left panel');
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent('sentinel:jump-to-detection', { detail: { id: 1 } })));
+    await expect(page.getByText('Tank').first()).toBeVisible();
+    await expectCanScroll(page, '.map-right-panel .sentinel-scroll', 'map right panel');
+
+    await page.getByTitle('Link Graph').click();
+    await expect(page.getByText('Link Graph · 2-hop neighborhood')).toBeVisible();
+    await page.locator('.graph-entity-panel .sentinel-row').first().evaluate((node) => (node as HTMLButtonElement).click());
+    await expectCanScroll(page, '.graph-entity-panel .sentinel-scroll', 'graph entity panel');
+    await expectCanScroll(page, '.graph-detail-panel .sentinel-scroll', 'graph detail panel');
+
+    await page.getByTitle('Drone Video').click();
+    await expect(page.getByText('Tracks')).toBeVisible();
+    await expectCanScroll(page, '.fmv-sidebar .scroll', 'fmv sidebar');
+  });
 });

@@ -104,6 +104,17 @@ INFERENCE_CHIP_SPOOL_MAX_BYTES = max(
 logger = logging.getLogger(__name__)
 
 celery_app = Celery("sentinel_worker", broker=REDIS_URL, backend=REDIS_URL)
+celery_app.conf.beat_schedule = {
+    "tick-collection-scheduler": {
+        "task": "worker.tick_collection_scheduler",
+        "schedule": float(env_int("COLLECTION_SCHEDULER_INTERVAL_S", 300)),
+    },
+    "tick-feed-poll": {
+        "task": "worker.tick_feed_poll",
+        "schedule": float(env_int("FEED_POLL_INTERVAL_S", 60)),
+    },
+}
+celery_app.conf.timezone = "UTC"
 
 
 def ensure_worker_imagery_schema() -> None:
@@ -2255,6 +2266,12 @@ def process_satellite_imagery(
         publish_event("imagery", {"type": "ingest_succeeded", "stage": "ready", "progress": 100, **payload})
         publish_event("ops", {"type": "imagery_ready", "stage": "ready", "progress": 100, **payload})
 
+        if (sensor_type or "").lower() in {"multispectral", "hyperspectral"}:
+            try:
+                run_prithvi_multitemporal.delay(pass_id)
+            except Exception as exc:
+                logger.warning("[WORKER] Failed to queue prithvi multitemporal for pass %s: %s", pass_id, exc)
+
         return payload
     except Exception as e:
         logger.exception("[WORKER] Imagery ingest failed: %s", e)
@@ -2273,6 +2290,135 @@ def process_satellite_imagery(
         publish_event("imagery", {"type": "ingest_failed", "image_url": image_url, "upload_id": upload_id, "error": str(e)})
         publish_event("ops", {"type": "imagery_failed", "image_url": image_url, "upload_id": upload_id, "error": str(e)})
         raise
+
+
+# ============================================================================
+# Prithvi multi-temporal consistency — runs after a multispectral pass lands.
+# Looks for prior overlapping passes within
+# PRITHVI_MULTI_TEMPORAL_WINDOW_DAYS and tags each Prithvi-labeled detection
+# in the current pass with a per-label `pass_count` indicating how often the
+# same label appears within
+# PRITHVI_MULTI_TEMPORAL_MATCH_RADIUS_M of the same point in priors.
+# ============================================================================
+
+
+PRITHVI_MULTI_TEMPORAL_WINDOW_DAYS = env_int("PRITHVI_MULTI_TEMPORAL_WINDOW_DAYS", 30)
+PRITHVI_MULTI_TEMPORAL_MIN_PRIORS = env_int("PRITHVI_MULTI_TEMPORAL_MIN_PRIORS", 2)
+PRITHVI_MULTI_TEMPORAL_MATCH_RADIUS_M = env_float("PRITHVI_MULTI_TEMPORAL_MATCH_RADIUS_M", 200.0)
+
+
+@celery_app.task(name="worker.run_prithvi_multitemporal", queue="imagery")
+def run_prithvi_multitemporal(pass_id: int) -> dict:
+    with postgis_db.get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, acquisition_time, sensor_type
+            FROM satellite_passes
+            WHERE id = %s AND footprint IS NOT NULL
+            """,
+            (pass_id,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return {"status": "skipped", "reason": "pass_not_found", "pass_id": pass_id}
+
+    with postgis_db.get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, acquisition_time
+            FROM satellite_passes
+            WHERE id <> %s
+              AND footprint IS NOT NULL
+              AND ST_Intersects(footprint, (SELECT footprint FROM satellite_passes WHERE id = %s))
+              AND acquisition_time >= NOW() - (%s || ' days')::interval
+            ORDER BY acquisition_time DESC
+            LIMIT 5
+            """,
+            (pass_id, pass_id, PRITHVI_MULTI_TEMPORAL_WINDOW_DAYS),
+        )
+        priors = [dict(r) for r in cur.fetchall()]
+
+    if len(priors) < PRITHVI_MULTI_TEMPORAL_MIN_PRIORS:
+        return {"status": "skipped", "reason": "insufficient_history", "found": len(priors), "pass_id": pass_id}
+
+    prior_ids = [int(p["id"]) for p in priors]
+
+    with postgis_db.get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, ST_X(centroid) AS lon, ST_Y(centroid) AS lat, metadata
+            FROM detections
+            WHERE pass_id = %s
+              AND deleted_at IS NULL
+              AND metadata ? 'prithvi_labels'
+            """,
+            (pass_id,),
+        )
+        detections = [dict(r) for r in cur.fetchall()]
+
+    if not detections:
+        return {"status": "skipped", "reason": "no_prithvi_detections", "pass_id": pass_id}
+
+    updated = 0
+    for det in detections:
+        metadata = det.get("metadata") or {}
+        labels = metadata.get("prithvi_labels") or []
+        if not isinstance(labels, list) or not labels:
+            continue
+        consistency: dict[str, dict] = {}
+        with postgis_db.get_cursor() as cur:
+            for label in labels:
+                if not isinstance(label, str):
+                    continue
+                cur.execute(
+                    """
+                    SELECT COUNT(DISTINCT pass_id) AS pass_count
+                    FROM detections
+                    WHERE pass_id = ANY(%s)
+                      AND deleted_at IS NULL
+                      AND metadata->'prithvi_labels' ? %s
+                      AND ST_DWithin(
+                        centroid::geography,
+                        ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography,
+                        %s
+                      )
+                    """,
+                    (prior_ids, label, det["lon"], det["lat"], PRITHVI_MULTI_TEMPORAL_MATCH_RADIUS_M),
+                )
+                pc = int((cur.fetchone() or {}).get("pass_count") or 0)
+                consistency[label] = {"pass_count": pc, "consistent": pc >= 1}
+        if not consistency:
+            continue
+        with postgis_db.get_cursor(commit=True) as cur:
+            cur.execute(
+                """
+                UPDATE detections
+                SET metadata = coalesce(metadata, '{}'::jsonb) || %s::jsonb
+                WHERE id = %s
+                """,
+                (
+                    json.dumps({
+                        "prithvi_temporal_consistency": consistency,
+                        "prithvi_temporal_priors": prior_ids,
+                    }),
+                    det["id"],
+                ),
+            )
+            updated += 1
+
+    record_timeline_event(
+        "GEOINT",
+        "prithvi_multitemporal_complete",
+        f"Prithvi multi-temporal pass {pass_id}: tagged {updated} detections across {len(priors) + 1} passes",
+        {"pass_id": pass_id, "prior_pass_ids": prior_ids, "updated": updated},
+    )
+    publish_event("imagery", {
+        "type": "prithvi_multitemporal_complete",
+        "pass_id": pass_id,
+        "prior_pass_ids": prior_ids,
+        "updated": updated,
+    })
+    return {"status": "ok", "pass_id": pass_id, "prior_pass_ids": prior_ids, "updated": updated}
 
 
 # ============================================================================
@@ -2374,7 +2520,7 @@ def train_model(job_id: int) -> dict:
 
     cmd = [
         "python", str(train_script),
-        "--name", str(job.get("name") or f"job-{job_id}"),
+        "--job", str(job_id),
         "--dataset", str(job.get("dataset_path") or ""),
         "--epochs", str(int(job.get("epochs") or 1)),
         "--out", str(Path(os.getenv("MODEL_OUT_DIR", "/data/models")) / f"job-{job_id}"),
@@ -2405,3 +2551,148 @@ def train_model(job_id: int) -> dict:
                 (json.dumps({"error": str(exc)}), job_id),
             )
         return {"status": "failed", "error": str(exc)}
+
+
+# ============================================================================
+# Beat-driven housekeeping: collection-task scheduler and feed pollers.
+# ============================================================================
+
+
+COLLECTION_TASK_TTL_HOURS = env_int("COLLECTION_TASK_TTL_HOURS", 72)
+
+
+@celery_app.task(name="worker.tick_collection_scheduler", queue="default")
+def tick_collection_scheduler() -> dict:
+    """Transition proposed→scheduled and scheduled→expired based on age + priority."""
+    from platform_schema import ensure_collection_tables
+    ensure_collection_tables()
+    with postgis_db.get_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            UPDATE collection_tasks
+            SET status = 'scheduled',
+                scheduled_for = NOW() + (
+                    CASE lower(coalesce(priority, ''))
+                        WHEN 'high'   THEN INTERVAL '1 hour'
+                        WHEN 'medium' THEN INTERVAL '6 hours'
+                        WHEN 'low'    THEN INTERVAL '24 hours'
+                        ELSE               INTERVAL '6 hours'
+                    END
+                ),
+                updated_at = NOW()
+            WHERE status = 'proposed'
+            RETURNING id
+            """
+        )
+        scheduled_ids = [int(r["id"]) for r in cur.fetchall()]
+
+        cur.execute(
+            """
+            UPDATE collection_tasks
+            SET status = 'expired', updated_at = NOW()
+            WHERE status = 'scheduled'
+              AND created_at < NOW() - (%s || ' hours')::interval
+            RETURNING id
+            """,
+            (COLLECTION_TASK_TTL_HOURS,),
+        )
+        expired_ids = [int(r["id"]) for r in cur.fetchall()]
+
+    if scheduled_ids or expired_ids:
+        publish_event("ops", {
+            "type": "collection_tasks_ticked",
+            "scheduled": scheduled_ids,
+            "expired": expired_ids,
+        })
+    return {"scheduled": len(scheduled_ids), "expired": len(expired_ids)}
+
+
+@celery_app.task(name="worker.tick_feed_poll", queue="default")
+def tick_feed_poll() -> dict:
+    """Poll all enabled HTTP/HTTPS feed_sources whose poll interval has elapsed."""
+    from feed_collectors import poll_http_feed
+    from platform_schema import ensure_feed_tables
+    ensure_feed_tables()
+    with postgis_db.get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, name, feed_type, protocol, endpoint, parser, metadata,
+                   poll_interval_seconds, last_seen
+            FROM feed_sources
+            WHERE enabled = TRUE
+              AND lower(protocol) IN ('http', 'https')
+              AND (
+                last_seen IS NULL
+                OR last_seen < NOW() - (coalesce(poll_interval_seconds, 60) || ' seconds')::interval
+              )
+            ORDER BY coalesce(last_seen, '1970-01-01'::timestamptz) ASC
+            LIMIT 20
+            """
+        )
+        due = [dict(r) for r in cur.fetchall()]
+
+    polled = 0
+    total_events = 0
+    for source in due:
+        try:
+            events = poll_http_feed(source)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("feed poll failed for %s: %s", source.get("name"), exc)
+            with postgis_db.get_cursor(commit=True) as cur:
+                cur.execute(
+                    """
+                    UPDATE feed_sources
+                    SET status = 'error', last_error = %s, updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (str(exc)[:1000], source["id"]),
+                )
+            continue
+        if events:
+            with postgis_db.get_cursor(commit=True) as cur:
+                for evt in events:
+                    lat = evt.get("latitude")
+                    lon = evt.get("longitude")
+                    if lat is not None and lon is not None:
+                        cur.execute(
+                            """
+                            INSERT INTO feed_events (source_id, event_type, payload, geom, observed_at)
+                            VALUES (%s, %s, %s::jsonb, ST_SetSRID(ST_MakePoint(%s, %s), 4326),
+                                    COALESCE(%s::timestamptz, NOW()))
+                            """,
+                            (
+                                source["id"],
+                                evt.get("event_type", "observation"),
+                                json.dumps(evt.get("payload") or {}, default=str),
+                                lon, lat,
+                                evt.get("observed_at"),
+                            ),
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            INSERT INTO feed_events (source_id, event_type, payload, observed_at)
+                            VALUES (%s, %s, %s::jsonb, COALESCE(%s::timestamptz, NOW()))
+                            """,
+                            (
+                                source["id"],
+                                evt.get("event_type", "observation"),
+                                json.dumps(evt.get("payload") or {}, default=str),
+                                evt.get("observed_at"),
+                            ),
+                        )
+                total_events += len(events)
+        with postgis_db.get_cursor(commit=True) as cur:
+            cur.execute(
+                """
+                UPDATE feed_sources
+                SET status = 'connected', last_seen = NOW(), last_error = NULL, updated_at = NOW()
+                WHERE id = %s
+                """,
+                (source["id"],),
+            )
+        polled += 1
+
+    if total_events:
+        publish_event("feeds", {"type": "feed_events_collected", "polled": polled, "events": total_events})
+    return {"polled": polled, "events": total_events, "due": len(due)}

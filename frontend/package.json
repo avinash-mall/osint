@@ -31,6 +31,7 @@
     "hls.js": "^1.5.17",
     "leaflet": "^1.9.4",
     "lucide-react": "^1.8.0",
+    "mgrs": "^2.1.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "react-force-graph-2d": "^1.29.1",

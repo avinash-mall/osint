@@ -8,9 +8,6 @@
  * through `utils/ontologyApi.ts`; on success we call `useOntology().refresh()`
  * so the tree (and every other consumer in the app) reloads immediately
  * without waiting for the 30s version watcher.
- *
- * Step 12 will replace the placeholder section at the bottom with the
- * unknown-labels triage panel.
  */
 import axios from 'axios';
 import { useCallback, useEffect, useMemo, useState } from 'react';

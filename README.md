@@ -407,7 +407,7 @@ The backend exposes 100+ routes. The most commonly used groups:
 | `GET`  | `/api/detections/{id}/similar` · `/api/fmv/detections/{id}/similar` | Embedding-based nearest neighbors |
 | `GET`  | `/api/detections/queue` | High-priority review queue |
 | `POST` | `/api/detections/resolve` | Entity resolution — links or creates a Target |
-| `GET`  | `/api/detections/{id}/candidate-links` · `POST` | LLM-proposed entity link candidates |
+| `GET`  | `/api/detections/{id}/candidate-links` · `POST` | Deterministic geo-proximity + class-compatibility candidates against existing Targets. Approve/reject below. (LLM-assisted ranking is a roadmap item.) |
 | `POST` | `/api/detection-target-candidates/{id}/approve` · `/reject` | Operator workflow |
 | `GET`  | `/api/detections/prithvi-overlays` | Multispectral overlay polygons |
 

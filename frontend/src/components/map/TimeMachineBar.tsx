@@ -132,7 +132,7 @@ export default function TimeMachineBar({
             value={confidence}
             onChange={(e) => onConfidenceChange(Number(e.target.value))}
             aria-label="Detection confidence threshold"
-            style={{ width: 72, accentColor: 'var(--accent)' }}
+            style={{ width: 140, accentColor: 'var(--accent)' }}
           />
           <span style={{ color: 'var(--accent)', minWidth: 28, textAlign: 'right' }}>
             {Math.round(confidence * 100)}%

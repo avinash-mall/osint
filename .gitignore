@@ -105,6 +105,9 @@ inference/models/*
 *.7z
 *.rar
 
+# Operator-fetched static assets (terrain tiles, basemap, fonts, etc.)
+/assets/
+
 # Local runtime data
 /data/
 /logs/

@@ -20,6 +20,7 @@ import {
   LogOut,
   Map as MapIcon,
   Search,
+  UploadCloud,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { StatusDot } from './atoms';
@@ -35,7 +36,7 @@ import {
 
 const API_URL = (import.meta as any).env?.VITE_API_URL || '';
 
-export type WorkspaceKey = 'map' | 'fmv' | 'graph' | 'admin';
+export type WorkspaceKey = 'ingest' | 'map' | 'fmv' | 'graph' | 'admin';
 
 type NavItem = {
   key: WorkspaceKey;
@@ -46,10 +47,11 @@ type NavItem = {
 };
 
 const NAV: NavItem[] = [
-  { key: 'map',   label: 'Geoint',      short: 'GEO', Icon: MapIcon },
-  { key: 'fmv',   label: 'Drone Video', short: 'FMV', Icon: Film },
-  { key: 'graph', label: 'Link Graph',  short: 'LNK', Icon: Crosshair },
-  { key: 'admin', label: 'Admin',       short: 'ADM', Icon: GitBranch },
+  { key: 'ingest', label: 'Ingest',      short: 'ING', Icon: UploadCloud },
+  { key: 'map',    label: 'Geoint',      short: 'GEO', Icon: MapIcon },
+  { key: 'fmv',    label: 'Drone Video', short: 'FMV', Icon: Film },
+  { key: 'graph',  label: 'Link Graph',  short: 'LNK', Icon: Crosshair },
+  { key: 'admin',  label: 'Admin',       short: 'ADM', Icon: GitBranch },
 ];
 
 type Health = { healthy?: boolean; neo4j?: string; postgis?: string };

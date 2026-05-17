@@ -368,16 +368,47 @@ services:
       timeout: 5s
       retries: 3
 
+  worker_beat:
+    image: sentinel-backend:latest
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: celery -A worker.celery_app beat --loglevel=info
+    env_file:
+      - .env
+    environment:
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USERNAME=neo4j
+      - NEO4J_PASSWORD=password
+      - REDIS_URL=redis://redis:6379/0
+      - POSTGIS_URI=postgresql://sentinel:sentinel@postgis:5432/sentinel
+      - PYTHONPATH=/app
+    depends_on:
+      postgis:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ./backend:/app
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'celery.*beat' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
   # Strict-air-gap static-file service. Hosts the baked-in basemap tile
-  # pyramid and the self-hosted IBM Plex webfonts. The reverse proxy
-  # (`nginx` below) routes `/basemap/` and `/assets/` to this service so the
-  # browser never reaches the public internet.
+  # pyramid, OpenTopoMap terrain pyramid, and the self-hosted IBM Plex
+  # webfonts. The reverse proxy (`nginx` below) routes `/basemap/`,
+  # `/terrain/`, and `/assets/` to this service so the browser never
+  # reaches the public internet.
   #
-  # The Dockerfile runs both fetchers inside the build — no host-side
-  # pre-bake required. First build is slow (4-8 h for z=0..10); subsequent
-  # builds use the BuildKit cache mount on /cache/basemap and complete in
-  # seconds. Override BASEMAP_ZOOM for a quick smoke build:
-  #   BASEMAP_ZOOM=0-4 docker compose up -d --build assets
+  # The Dockerfile runs all fetchers inside the build — no host-side
+  # pre-bake required. First build is slow (4-8 h for z=0..10 basemap,
+  # longer for terrain since OpenTopoMap rate-limits aggressively);
+  # subsequent builds use the BuildKit cache mounts on /cache/basemap and
+  # /cache/terrain and complete in seconds. Override the zoom args for a
+  # quick smoke build:
+  #   BASEMAP_ZOOM=0-4 TERRAIN_ZOOM=0-4 docker compose up -d --build assets
   assets:
     build:
       context: .
@@ -385,6 +416,8 @@ services:
       args:
         BASEMAP_ZOOM: "${BASEMAP_ZOOM:-0-10}"
         BASEMAP_CONCURRENCY: "${BASEMAP_CONCURRENCY:-16}"
+        TERRAIN_ZOOM: "${TERRAIN_ZOOM:-0-10}"
+        TERRAIN_CONCURRENCY: "${TERRAIN_CONCURRENCY:-4}"
     image: sentinel-assets:offline
     restart: unless-stopped
     healthcheck:

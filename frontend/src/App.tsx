@@ -19,16 +19,18 @@ import AdminScreen from './components/AdminScreen';
 import FmvPlayer from './components/FmvPlayer';
 import GaiaMap from './components/GaiaMap';
 import GraphExplorer from './components/GraphExplorer';
+import IngestConnect from './components/IngestConnect';
 import LoginScreen from './components/LoginScreen';
 import { Shell } from './components/Shell';
 import type { WorkspaceKey } from './components/Shell';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 
 const CONTEXT_LINE: Record<WorkspaceKey, string> = {
-  map:   'Common Operating Picture · live detections + imagery',
-  fmv:   'Full-motion video · synced map · MISB 0601 telemetry',
-  graph: 'Entity graph · Neo4j-backed link analysis',
-  admin: 'Ontology · uploads · processing · models · alerts · auth',
+  ingest: 'Ingest · upload imagery, video, and feeds',
+  map:    'Common Operating Picture · live detections + imagery',
+  fmv:    'Full-motion video · synced map · MISB 0601 telemetry',
+  graph:  'Entity graph · Neo4j-backed link analysis',
+  admin:  'Ontology · processing · models · alerts · auth',
 };
 
 export type CursorPosition = { lat: number; lon: number } | null;
@@ -102,6 +104,7 @@ function AuthedApp() {
       contextLine={CONTEXT_LINE[active]}
       statusRight={cursor ? <CursorReadout cursor={cursor} /> : undefined}
     >
+      {active === 'ingest' && <IngestConnect />}
       {active === 'map'   && (
         <GaiaMap
           onOpenGraph={() => onNavigate('graph')}

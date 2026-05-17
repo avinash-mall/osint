@@ -60,6 +60,7 @@ def ensure_feed_tables() -> None:
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             )
         """)
+        cursor.execute("ALTER TABLE feed_sources ADD COLUMN IF NOT EXISTS poll_interval_seconds INTEGER DEFAULT 60")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_feed_sources_type ON feed_sources(feed_type)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_feed_events_geom ON feed_events USING GIST(geom)")
 
@@ -83,6 +84,7 @@ def ensure_collection_tables() -> None:
                 updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             )
         """)
+        cursor.execute("ALTER TABLE collection_tasks ADD COLUMN IF NOT EXISTS scheduled_for TIMESTAMP WITH TIME ZONE")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_collection_tasks_target ON collection_tasks(target_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_collection_tasks_status ON collection_tasks(status)")
 

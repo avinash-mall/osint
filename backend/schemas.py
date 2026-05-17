@@ -261,6 +261,11 @@ class AnalyticsRequest(BaseModel):
     target_height_m: Optional[float] = 0.0
     # Routes-only: strategy in {"shortest", "least_exposure", "balanced"}.
     strategy: Optional[str] = None
+    # Change-detection: when both IDs are present, a real raster diff is run
+    # against the two referenced satellite_passes rows; otherwise the endpoint
+    # returns the offline fixture (mode="fixture_no_passes").
+    before_pass_id: Optional[int] = None
+    after_pass_id: Optional[int] = None
 
 
 class TrainingJobCreate(BaseModel):

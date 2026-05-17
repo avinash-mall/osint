@@ -19,10 +19,8 @@ import {
   GitBranch,
   MoreHorizontal,
   RefreshCw,
-  Upload as UploadIcon,
 } from 'lucide-react';
 import OntologyAdmin from './OntologyAdmin';
-import IngestConnect from './IngestConnect';
 import AdminAuthTab from './AdminAuthTab';
 import { StatusDot } from './atoms';
 import HealthDashboardView from './admin/HealthDashboardView';
@@ -44,7 +42,6 @@ type AdminTab =
   | 'processing'
   | 'models'
   | 'alerts'
-  | 'upload'
   | 'auth'
   | 'health'
   | 'confidence'
@@ -66,7 +63,6 @@ type NavItemDef = {
 
 const NAV: NavItemDef[] = [
   { key: 'ontology',   label: 'Ontology',         Icon: GitBranch },
-  { key: 'upload',     label: 'Upload',           Icon: UploadIcon },
   { key: 'processing', label: 'Processing',       Icon: Activity, badgeKey: 'processing' },
   { key: 'models',     label: 'AI models',        Icon: Box,      badgeKey: 'models' },
   { key: 'health',     label: 'Health dashboard', Icon: HeartPulse },
@@ -173,7 +169,6 @@ export default function AdminScreen({
             onOpenDetectionInFmv={onOpenDetectionInFmv}
           />
         )}
-        {tab === 'upload'     && <IngestConnect />}
         {tab === 'processing' && <ProcessingView onCount={(n) => setCounts((c) => ({ ...c, processing: n }))} />}
         {tab === 'models'     && <ModelsView onCount={(n) => setCounts((c) => ({ ...c, models: n }))} />}
         {tab === 'alerts'     && <AlertsView onCount={(n) => setCounts((c) => ({ ...c, alerts: n }))} />}

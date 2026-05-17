@@ -1,9 +1,15 @@
 /**
- * Terrain analytics tools panel: Viewshed, Line-of-Sight, and Routes. Each
- * tool stages observer/destination picks via map clicks (orchestrated by the
- * parent GaiaMap, which forwards click locations through `pendingPick`), then
- * POSTs to the matching backend endpoint and hands the resulting GeoJSON
- * back via the `onResult` callbacks. The parent owns layer-toggle state.
+ * Terrain analytics tools panel: Viewshed, Line-of-Sight, and Routes.
+ *
+ * Renders all three tools stacked in one scrollable panel. Each tool keeps
+ * its own observer/destination/parameter state, so picking an observer for
+ * Viewshed does not blow away a different observer staged for Line of Sight.
+ *
+ * Picks are orchestrated by the parent map: a pick request flows out via
+ * `onRequestPick`, and the resulting click point flows back in via
+ * `lastMapClick` (the `pickFor` field tells us which tool/slot to fill).
+ * Results POST to the matching backend endpoint and hand the GeoJSON back
+ * through `onResult`; the parent owns layer-toggle state.
  */
 
 import { Crosshair, Eye, EyeOff, Route as RouteIcon, Spline, Sparkles } from 'lucide-react';
@@ -22,9 +28,9 @@ export type AnalyticsKind = 'viewshed' | 'los' | 'routes';
 
 export type AnalyticsPick = 'viewshed.observer' | 'los.observer' | 'los.target' | 'routes.start' | 'routes.end';
 
+export type AnalyticsLayerStatus = { on: boolean; disabled: boolean };
+
 type Props = {
-  /** Which tool to render — driven by the parent's tab strip. */
-  active: AnalyticsKind;
   /** Pending pick the parent map should react to (sets cursor crosshair). */
   pendingPick: AnalyticsPick | null;
   /** Called when this panel begins / cancels a pick request. */
@@ -33,12 +39,10 @@ type Props = {
   lastMapClick: { lat: number; lon: number; pickFor: AnalyticsPick | null } | null;
   /** Notify parent of fresh results so it can render + toggle the layer. */
   onResult: (kind: AnalyticsKind, response: AnalyticsResponse | null) => void;
-  /** Whether the active tool's map layer is currently visible. */
-  layerOn: boolean;
-  /** True when no result exists yet — the toggle is non-interactive. */
-  layerDisabled: boolean;
-  /** Flip the active tool's map layer visibility. */
-  onToggleLayer: () => void;
+  /** Per-tool layer toggle status. */
+  layers: Record<AnalyticsKind, AnalyticsLayerStatus>;
+  /** Flip a specific tool's map-layer visibility. */
+  onToggleLayer: (kind: AnalyticsKind) => void;
 };
 
 type ToolState = {
@@ -52,7 +56,7 @@ type ToolState = {
   error: string | null;
 };
 
-const initial: ToolState = {
+const initialTool: ToolState = {
   observer: null,
   destination: null,
   radius: 5000,
@@ -63,22 +67,38 @@ const initial: ToolState = {
   error: null,
 };
 
+type ToolStates = Record<AnalyticsKind, ToolState>;
+
+const initialToolStates: ToolStates = {
+  viewshed: { ...initialTool },
+  los: { ...initialTool },
+  routes: { ...initialTool },
+};
+
+function toolForPick(pick: AnalyticsPick): { kind: AnalyticsKind; slot: 'observer' | 'destination' } {
+  switch (pick) {
+    case 'viewshed.observer': return { kind: 'viewshed', slot: 'observer' };
+    case 'los.observer':      return { kind: 'los',      slot: 'observer' };
+    case 'los.target':        return { kind: 'los',      slot: 'destination' };
+    case 'routes.start':      return { kind: 'routes',   slot: 'observer' };
+    case 'routes.end':        return { kind: 'routes',   slot: 'destination' };
+  }
+}
+
 function pickLabel(point: LatLon | null, placeholder: string): string {
   if (!point) return placeholder;
   return `${point.latitude.toFixed(4)}, ${point.longitude.toFixed(4)}`;
 }
 
 export default function AnalyticsToolsPanel({
-  active,
   pendingPick,
   onRequestPick,
   lastMapClick,
   onResult,
-  layerOn,
-  layerDisabled,
+  layers,
   onToggleLayer,
 }: Props) {
-  const [state, setState] = useState<ToolState>(initial);
+  const [tools, setTools] = useState<ToolStates>(initialToolStates);
   const [capabilities, setCapabilities] = useState<AnalyticsCapabilities | null>(null);
 
   useEffect(() => {
@@ -89,20 +109,14 @@ export default function AnalyticsToolsPanel({
     return () => { cancelled = true; };
   }, []);
 
-  // Consume the last map click — depending on the pending pick slot.
   useEffect(() => {
     if (!lastMapClick || !lastMapClick.pickFor) return;
     const { lat, lon, pickFor } = lastMapClick;
-    setState((prev) => {
-      const next = { ...prev };
-      const ll = { latitude: lat, longitude: lon };
-      if (pickFor === 'viewshed.observer') next.observer = ll;
-      if (pickFor === 'los.observer') next.observer = ll;
-      if (pickFor === 'los.target') next.destination = ll;
-      if (pickFor === 'routes.start') next.observer = ll;
-      if (pickFor === 'routes.end') next.destination = ll;
-      return next;
-    });
+    const { kind, slot } = toolForPick(pickFor);
+    setTools((prev) => ({
+      ...prev,
+      [kind]: { ...prev[kind], [slot]: { latitude: lat, longitude: lon } },
+    }));
     onRequestPick(null);
   }, [lastMapClick, onRequestPick]);
 
@@ -110,205 +124,173 @@ export default function AnalyticsToolsPanel({
     onRequestPick(pendingPick === slot ? null : slot);
   }, [onRequestPick, pendingPick]);
 
+  const updateTool = useCallback((kind: AnalyticsKind, patch: Partial<ToolState>) => {
+    setTools((prev) => ({ ...prev, [kind]: { ...prev[kind], ...patch } }));
+  }, []);
+
   const onRun = useCallback(async (kind: AnalyticsKind) => {
-    setState((p) => ({ ...p, busy: true, error: null }));
+    const s = tools[kind];
+    updateTool(kind, { busy: true, error: null });
     try {
       if (kind === 'viewshed') {
-        if (!state.observer) throw new Error('Pick an observer first');
+        if (!s.observer) throw new Error('Pick an observer first');
         const res = await runViewshed({
-          observer: state.observer,
-          radius_m: state.radius,
-          observer_height_m: state.observerHeight,
-          target_height_m: state.targetHeight,
+          observer: s.observer,
+          radius_m: s.radius,
+          observer_height_m: s.observerHeight,
+          target_height_m: s.targetHeight,
         });
         onResult('viewshed', res);
       } else if (kind === 'los') {
-        if (!state.observer || !state.destination) throw new Error('Pick both observer and target');
+        if (!s.observer || !s.destination) throw new Error('Pick both observer and target');
         const res = await runLineOfSight({
-          observer: state.observer,
-          destination: state.destination,
-          observer_height_m: state.observerHeight,
-          target_height_m: state.targetHeight,
+          observer: s.observer,
+          destination: s.destination,
+          observer_height_m: s.observerHeight,
+          target_height_m: s.targetHeight,
         });
         onResult('los', res);
       } else {
-        if (!state.observer || !state.destination) throw new Error('Pick both start and end');
+        if (!s.observer || !s.destination) throw new Error('Pick both start and end');
         const res = await runRoutes({
-          observer: state.observer,
-          destination: state.destination,
-          strategy: state.strategy === 'all' ? undefined : state.strategy,
+          observer: s.observer,
+          destination: s.destination,
+          strategy: s.strategy === 'all' ? undefined : s.strategy,
         });
         onResult('routes', res);
       }
     } catch (e: any) {
-      setState((p) => ({ ...p, error: e?.message ?? String(e) }));
+      updateTool(kind, { error: e?.message ?? String(e) });
       onResult(kind, null);
     } finally {
-      setState((p) => ({ ...p, busy: false }));
+      updateTool(kind, { busy: false });
     }
-  }, [state, onResult]);
+  }, [tools, updateTool, onResult]);
 
   const onClear = useCallback((kind: AnalyticsKind) => {
-    if (kind === 'viewshed') {
-      setState((p) => ({ ...p, observer: null }));
-    } else if (kind === 'los') {
-      setState((p) => ({ ...p, observer: null, destination: null }));
-    } else {
-      setState((p) => ({ ...p, observer: null, destination: null }));
-    }
+    updateTool(kind, { observer: null, destination: null });
     onResult(kind, null);
-  }, [onResult]);
+  }, [updateTool, onResult]);
+
+  const vs = tools.viewshed;
+  const los = tools.los;
+  const rt = tools.routes;
 
   return (
-    <div className="bg-sentinel-panel-2 px-3 py-2">
-      <div className="flex items-center gap-2 pb-2">
-        <Sparkles className="h-3.5 w-3.5 text-sentinel-accent" />
-        <span className="sentinel-label flex-1">Terrain analytics</span>
-        {capabilities && (
-          <span
-            className="font-mono text-[9px]"
-            style={{ color: capabilities.dem ? '#5ee0a0' : '#e0a05e' }}
-            title={
-              capabilities.dem
-                ? 'DEM mounted — real terrain results'
-                : 'No DEM mounted at DEM_PATH — falling back to fixtures'
-            }
+    <div className="bg-sentinel-panel-2 px-3 py-2 space-y-2">
+      <ToolCard
+        icon={<Eye className="h-3.5 w-3.5" />}
+        title="Viewshed"
+        busy={vs.busy}
+        error={vs.error}
+        onRun={() => onRun('viewshed')}
+        onClear={() => onClear('viewshed')}
+        runDisabled={!vs.observer || vs.busy}
+        layerOn={layers.viewshed.on}
+        layerDisabled={layers.viewshed.disabled}
+        onToggleLayer={() => onToggleLayer('viewshed')}
+      >
+        <FieldPick
+          label="Observer"
+          value={pickLabel(vs.observer, 'Click on map…')}
+          active={pendingPick === 'viewshed.observer'}
+          onPick={() => startPick('viewshed.observer')}
+        />
+        <FieldRange
+          label="Radius"
+          value={vs.radius}
+          min={500}
+          max={20000}
+          step={500}
+          suffix="m"
+          onChange={(v) => updateTool('viewshed', { radius: v })}
+        />
+        <FieldRange
+          label="Height"
+          value={vs.observerHeight}
+          min={0}
+          max={50}
+          step={0.5}
+          suffix="m"
+          onChange={(v) => updateTool('viewshed', { observerHeight: v })}
+        />
+      </ToolCard>
+
+      <ToolCard
+        icon={<Spline className="h-3.5 w-3.5" />}
+        title="Line of sight"
+        busy={los.busy}
+        error={los.error}
+        onRun={() => onRun('los')}
+        onClear={() => onClear('los')}
+        runDisabled={!los.observer || !los.destination || los.busy}
+        layerOn={layers.los.on}
+        layerDisabled={layers.los.disabled}
+        onToggleLayer={() => onToggleLayer('los')}
+      >
+        <FieldPick
+          label="OBS"
+          value={pickLabel(los.observer, 'Click on map…')}
+          active={pendingPick === 'los.observer'}
+          onPick={() => startPick('los.observer')}
+        />
+        <FieldPick
+          label="TGT"
+          value={pickLabel(los.destination, 'pick on map…')}
+          active={pendingPick === 'los.target'}
+          onPick={() => startPick('los.target')}
+        />
+      </ToolCard>
+
+      <ToolCard
+        icon={<RouteIcon className="h-3.5 w-3.5" />}
+        title="Routes"
+        busy={rt.busy}
+        error={rt.error}
+        onRun={() => onRun('routes')}
+        onClear={() => onClear('routes')}
+        runDisabled={!rt.observer || !rt.destination || rt.busy}
+        layerOn={layers.routes.on}
+        layerDisabled={layers.routes.disabled}
+        onToggleLayer={() => onToggleLayer('routes')}
+      >
+        <FieldPick
+          label="START"
+          value={pickLabel(rt.observer, 'OBSERVER')}
+          active={pendingPick === 'routes.start'}
+          onPick={() => startPick('routes.start')}
+        />
+        <FieldPick
+          label="END"
+          value={pickLabel(rt.destination, 'pick on map…')}
+          active={pendingPick === 'routes.end'}
+          onPick={() => startPick('routes.end')}
+        />
+        <div className="flex items-center justify-between gap-2 py-1">
+          <span className="text-[10px] text-sentinel-muted uppercase tracking-wider">Strategy</span>
+          <select
+            value={rt.strategy}
+            onChange={(e) => updateTool('routes', { strategy: e.target.value as ToolState['strategy'] })}
+            className="bg-sentinel-bg text-xs text-slate-200 border border-sentinel-line-2 px-1.5 py-0.5"
           >
-            DEM {capabilities.dem ? 'OK' : 'NONE'}
-          </span>
-        )}
-        {capabilities && (
-          <span
-            className="font-mono text-[9px]"
-            style={{ color: capabilities.routing_graph ? '#5ee0a0' : '#e0a05e' }}
-            title={
-              capabilities.routing_graph
-                ? 'Routing graph available'
-                : 'No routing graph at ROUTING_GRAPH_PATH — routes will be fixtures'
-            }
-          >
-            GRAPH {capabilities.routing_graph ? 'OK' : 'NONE'}
-          </span>
-        )}
+            <option value="all">COVER · DEM</option>
+            <option value="shortest">Shortest</option>
+            <option value="least_exposure">Least exposure</option>
+            <option value="balanced">Balanced</option>
+          </select>
+        </div>
+      </ToolCard>
+
+      <div className="flex items-center justify-center gap-3 pt-1 font-mono text-[9px] uppercase tracking-wider">
+        <Sparkles className="h-3 w-3 text-sentinel-accent" />
+        <span style={{ color: capabilities?.dem ? '#5ee0a0' : '#e0a05e' }}>
+          DEM · {capabilities?.dem ? 'OK' : 'NONE'}
+        </span>
+        <span className="text-sentinel-muted">·</span>
+        <span style={{ color: capabilities?.routing_graph ? '#5ee0a0' : '#e0a05e' }}>
+          ROUTING GRAPH · {capabilities?.routing_graph ? 'OK' : 'NONE'}
+        </span>
       </div>
-
-      {active === 'viewshed' && (
-        <ToolCard
-          icon={<Eye className="h-3.5 w-3.5" />}
-          title="Viewshed"
-          busy={state.busy}
-          error={state.error}
-          onRun={() => onRun('viewshed')}
-          onClear={() => onClear('viewshed')}
-          runDisabled={!state.observer || state.busy}
-          layerOn={layerOn}
-          layerDisabled={layerDisabled}
-          onToggleLayer={onToggleLayer}
-        >
-          <FieldPick
-            label="Observer"
-            value={pickLabel(state.observer, 'Click on map…')}
-            active={pendingPick === 'viewshed.observer'}
-            onPick={() => startPick('viewshed.observer')}
-          />
-          <FieldRange
-            label="Radius"
-            value={state.radius}
-            min={500}
-            max={20000}
-            step={500}
-            suffix="m"
-            onChange={(v) => setState((p) => ({ ...p, radius: v }))}
-          />
-          <FieldRange
-            label="Observer h"
-            value={state.observerHeight}
-            min={0}
-            max={50}
-            step={0.5}
-            suffix="m"
-            onChange={(v) => setState((p) => ({ ...p, observerHeight: v }))}
-          />
-        </ToolCard>
-      )}
-
-      {active === 'los' && (
-        <ToolCard
-          icon={<Spline className="h-3.5 w-3.5" />}
-          title="Line of sight"
-          busy={state.busy}
-          error={state.error}
-          onRun={() => onRun('los')}
-          onClear={() => onClear('los')}
-          runDisabled={!state.observer || !state.destination || state.busy}
-          layerOn={layerOn}
-          layerDisabled={layerDisabled}
-          onToggleLayer={onToggleLayer}
-        >
-          <FieldPick
-            label="Observer"
-            value={pickLabel(state.observer, 'Click on map…')}
-            active={pendingPick === 'los.observer'}
-            onPick={() => startPick('los.observer')}
-          />
-          <FieldPick
-            label="Target"
-            value={pickLabel(state.destination, 'Click on map…')}
-            active={pendingPick === 'los.target'}
-            onPick={() => startPick('los.target')}
-          />
-          <FieldRange
-            label="Target h"
-            value={state.targetHeight}
-            min={0}
-            max={50}
-            step={0.5}
-            suffix="m"
-            onChange={(v) => setState((p) => ({ ...p, targetHeight: v }))}
-          />
-        </ToolCard>
-      )}
-
-      {active === 'routes' && (
-        <ToolCard
-          icon={<RouteIcon className="h-3.5 w-3.5" />}
-          title="Routes"
-          busy={state.busy}
-          error={state.error}
-          onRun={() => onRun('routes')}
-          onClear={() => onClear('routes')}
-          runDisabled={!state.observer || !state.destination || state.busy}
-          layerOn={layerOn}
-          layerDisabled={layerDisabled}
-          onToggleLayer={onToggleLayer}
-        >
-          <FieldPick
-            label="Start"
-            value={pickLabel(state.observer, 'Click on map…')}
-            active={pendingPick === 'routes.start'}
-            onPick={() => startPick('routes.start')}
-          />
-          <FieldPick
-            label="End"
-            value={pickLabel(state.destination, 'Click on map…')}
-            active={pendingPick === 'routes.end'}
-            onPick={() => startPick('routes.end')}
-          />
-          <div className="flex items-center justify-between gap-2 py-1">
-            <span className="text-[10px] text-sentinel-muted uppercase tracking-wider">Strategy</span>
-            <select
-              value={state.strategy}
-              onChange={(e) => setState((p) => ({ ...p, strategy: e.target.value as ToolState['strategy'] }))}
-              className="bg-sentinel-bg text-xs text-slate-200 border border-sentinel-line-2 px-1.5 py-0.5"
-            >
-              <option value="all">All options</option>
-              <option value="shortest">Shortest</option>
-              <option value="least_exposure">Least exposure</option>
-              <option value="balanced">Balanced</option>
-            </select>
-          </div>
-        </ToolCard>
-      )}
     </div>
   );
 }
