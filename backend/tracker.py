@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from math import atan2, degrees, radians, sin, cos, sqrt
@@ -23,15 +24,45 @@ from threat_assessment import category_for_class, assess_detection_threat
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Constants
+# Constants — Phase 4.17 (per-state V_MAX) + Phase 4.19 (configurable weights)
 # ---------------------------------------------------------------------------
 
+# Phase 4.17: V_MAX now keyed by (category, state) instead of category alone.
+# Aircraft taxi speed (14 m/s) is correct for the "ground" state but absurdly
+# slow for an airborne aircraft (which can do 250+ m/s). Ground vehicles on
+# a highway exceed the 22 m/s cap. Per-state limits remove the gate that
+# silently rejects every airborne or highway update.
+V_MAX_PER_STATE: dict[str, dict[str, float]] = {
+    "maritime": {
+        "default": 16.0,    # ~30 kt typical merchant
+        "underway": 25.0,   # ~50 kt fast warship / patrol craft
+        "stationary": 1.0,
+    },
+    "ground": {
+        "default": 22.0,    # ~80 km/h urban
+        "highway": 40.0,    # ~144 km/h motorway / convoy at speed
+        "stationary": 1.0,
+    },
+    "air": {
+        "default": 14.0,    # on-ground aircraft taxi
+        "ground": 14.0,
+        "airborne": 300.0,  # commercial jet ~M0.85 at altitude
+        "stationary": 1.0,
+    },
+    "infrastructure": {
+        "default": 0.0,     # pinned; never moves
+    },
+    "default": {
+        "default": 16.0,
+    },
+}
+
+# Legacy ``V_MAX[category] = scalar`` view, preserved so any external caller
+# / test that reads V_MAX directly still gets the per-category default. New
+# code should use ``_v_max(category, state)`` below.
 V_MAX: dict[str, float] = {
-    "maritime":       16.0,   # ~30 kt
-    "ground":         22.0,   # ~80 km/h
-    "air":            14.0,   # on-ground aircraft taxi only
-    "infrastructure":  0.0,   # pinned; never moves
-    "default":        16.0,   # unknown / combat / fallback
+    cat: states.get("default", states[next(iter(states))])
+    for cat, states in V_MAX_PER_STATE.items()
 }
 
 MATCH_THRESHOLD = 1.5
@@ -40,12 +71,202 @@ MAX_TRACK_AGE_DAYS = 14
 MAX_MISS_COUNT = 3
 CLOUD_COVER_OCCLUSION = 0.7
 
-# Cost weights
-ALPHA = 1.0   # spatial distance weight
-BETA  = 0.6   # class penalty weight
-GAMMA = 0.2   # confidence penalty weight
+
+def _load_tracker_weights() -> dict[str, float]:
+    """Phase 4.19: per-deployment overrides for the Hungarian cost weights.
+
+    Default tuple ``(1.0, 0.6, 0.2)`` is unchanged. Operators tuning the
+    tracker for a specific scenario (e.g. low-confidence FMV detections
+    in dense urban) can override via ``TRACKER_COST_WEIGHTS`` env JSON::
+
+        {"alpha": 0.8, "beta": 1.0, "gamma": 0.4}
+
+    Or via the ``inference_config`` DB row if/when an admin UI hooks
+    that path. Both sources fall back to the defaults below; this keeps
+    legacy callers working without any change.
+    """
+    defaults = {"alpha": 1.0, "beta": 0.6, "gamma": 0.2}
+    raw_env = (os.getenv("TRACKER_COST_WEIGHTS") or "").strip()
+    if raw_env:
+        try:
+            parsed = json.loads(raw_env)
+            if isinstance(parsed, dict):
+                for key in defaults:
+                    if key in parsed:
+                        try:
+                            defaults[key] = max(0.0, float(parsed[key]))
+                        except (TypeError, ValueError):
+                            continue
+        except json.JSONDecodeError:
+            logger.warning("TRACKER_COST_WEIGHTS is not valid JSON; ignoring")
+    return defaults
+
+
+_TRACKER_WEIGHTS = _load_tracker_weights()
+ALPHA = _TRACKER_WEIGHTS["alpha"]   # spatial distance weight
+BETA  = _TRACKER_WEIGHTS["beta"]    # class penalty weight
+GAMMA = _TRACKER_WEIGHTS["gamma"]   # confidence penalty weight
+# Phase 4.18: re-ID via DINOv3-SAT embedding cosine similarity. Default 0.0
+# (disabled) preserves legacy behaviour for callers that don't carry embeddings.
+# When set > 0, the Hungarian cost incorporates (1 - cos_sim) so a detection
+# whose visual embedding matches an existing track's anchor embedding is
+# preferred over one with similar geometry but different appearance.
+DELTA = max(0.0, float(os.getenv("TRACKER_EMBEDDING_WEIGHT", "0.0") or "0.0"))
+
+
+def _embedding_vector(item: dict | None) -> np.ndarray | None:
+    """Best-effort extraction of a unit-norm embedding from a track or
+    detection dict. Accepts either a raw list/array under ``embedding`` /
+    ``embedding_vector`` or the structured ``{"fp16_b64": ..., "dim": ...}``
+    shape the inference service emits. Returns ``None`` when no usable
+    embedding is found — callers should fall back to the geometry+class cost.
+    """
+    if not item:
+        return None
+    embedding = item.get("embedding") or item.get("embedding_vector")
+    arr: np.ndarray | None = None
+    if isinstance(embedding, dict):
+        b64 = embedding.get("fp16_b64") or embedding.get("b64")
+        if b64:
+            try:
+                import base64
+                raw = base64.b64decode(b64)
+                arr = np.frombuffer(raw, dtype=np.float16).astype(np.float32)
+            except Exception:
+                arr = None
+    elif isinstance(embedding, (list, tuple)):
+        try:
+            arr = np.asarray(embedding, dtype=np.float32)
+        except (TypeError, ValueError):
+            arr = None
+    elif isinstance(embedding, np.ndarray):
+        arr = embedding.astype(np.float32)
+    if arr is None or arr.size == 0 or not np.all(np.isfinite(arr)):
+        return None
+    norm = float(np.linalg.norm(arr))
+    if norm <= 0.0:
+        return None
+    return arr / norm
+
+
+def _embedding_cost(track: dict, det: dict) -> float:
+    """Return ``1 - cos_sim`` in ``[0, 2]`` (0 = identical, 2 = opposite).
+
+    Returns ``0.0`` when either side lacks a usable embedding so the cost
+    function degrades gracefully to the geometry+class score.
+    """
+    if DELTA <= 0.0:
+        return 0.0
+    t_vec = _embedding_vector(track)
+    d_vec = _embedding_vector(det)
+    if t_vec is None or d_vec is None:
+        return 0.0
+    if t_vec.shape != d_vec.shape:
+        # Dimension mismatch — different embedding heads. Bail to identity
+        # so the rest of the cost still applies.
+        return 0.0
+    sim = float(np.dot(t_vec, d_vec))
+    return max(0.0, 1.0 - sim)
 
 _GEOD = Geod(ellps="WGS84")
+
+
+# ---------------------------------------------------------------------------
+# Phase 4.16 — light Kalman state: process-noise scalars (m/s²) per
+# (category, state). These are the σ_a values driving the constant-velocity
+# CA→CV process model (position growth ~= σ_a · dt² / 2). Manoeuvring
+# aircraft have the highest acceleration potential; pinned infrastructure
+# is effectively zero. The "ground/highway" entry covers convoys at speed
+# changing direction at junctions.
+# ---------------------------------------------------------------------------
+
+KALMAN_PROCESS_NOISE: dict[str, dict[str, float]] = {
+    "air":            {"default": 5.0, "ground": 1.5, "airborne": 10.0, "stationary": 0.1},
+    "ground":         {"default": 2.0, "highway": 3.0, "stationary": 0.05},
+    "maritime":       {"default": 1.0, "underway": 2.0, "stationary": 0.05},
+    "infrastructure": {"default": 0.0},
+    "default":        {"default": 2.0},
+}
+
+# Observation-noise σ in metres — driven by the GSD-derived position
+# uncertainty in worker.py. When the detection carries
+# ``position_uncertainty_m``, we use it directly; otherwise this floor
+# applies. Tracks initialised from a single observation start at this σ.
+KALMAN_OBSERVATION_NOISE_FLOOR_M = max(0.5, float(os.getenv("KALMAN_OBS_NOISE_FLOOR_M", "5.0") or "5.0"))
+
+# Multiplier on the predicted 1-σ gate when computing the per-track
+# assignment cutoff. 3σ ≈ 99.7% under Gaussian assumptions; raise this if
+# the operator wants more permissive gating.
+KALMAN_GATE_SIGMAS = max(1.0, float(os.getenv("KALMAN_GATE_SIGMAS", "3.0") or "3.0"))
+
+
+def _kalman_process_sigma_a(category: str, state: str | None) -> float:
+    """Return process-noise σ_a (m/s²) for the given (category, state)."""
+    table = KALMAN_PROCESS_NOISE.get(category) or KALMAN_PROCESS_NOISE["default"]
+    if state and state in table:
+        return table[state]
+    return table.get("default", KALMAN_PROCESS_NOISE["default"]["default"])
+
+
+def _predicted_position_sigma_m(track: dict, delta_t_seconds: float, category: str, state: str | None) -> float:
+    """Phase 4.16: predicted 1-σ positional uncertainty in metres after dt.
+
+    Constant-velocity Kalman propagation gives::
+
+        σ_x(t+dt)² = σ_x(t)²  +  (σ_v · dt)²  +  (σ_a · dt² / 2)²
+
+    The σ_v term collapses to 0 when the track has no observed velocity
+    (cold start), and σ_a is the per-(category, state) process noise. The
+    σ_x(t) base is taken from the track's last stored ``position_sigma_m``
+    or falls back to the observation-noise floor.
+    """
+    try:
+        sigma_x = float(track.get("position_sigma_m") or KALMAN_OBSERVATION_NOISE_FLOOR_M)
+    except (TypeError, ValueError):
+        sigma_x = KALMAN_OBSERVATION_NOISE_FLOOR_M
+    try:
+        sigma_v = float(track.get("velocity_sigma_mps") or 0.0)
+    except (TypeError, ValueError):
+        sigma_v = 0.0
+    sigma_a = _kalman_process_sigma_a(category, state)
+    sigma_pred_sq = (
+        sigma_x ** 2
+        + (sigma_v * delta_t_seconds) ** 2
+        + (0.5 * sigma_a * delta_t_seconds ** 2) ** 2
+    )
+    return sqrt(max(0.0, sigma_pred_sq))
+
+
+def _kalman_update_sigma(track: dict, observation_sigma_m: float) -> float:
+    """1-D scalar Kalman update on positional σ.
+
+    σ_post² = (σ_prior² · σ_obs²) / (σ_prior² + σ_obs²)
+
+    Returns the posterior σ. Caller should also write the posterior σ_v
+    via ``_velocity_sigma_after_update`` if a velocity was just observed.
+    """
+    sigma_prior = max(0.01, float(track.get("position_sigma_m") or KALMAN_OBSERVATION_NOISE_FLOOR_M))
+    sigma_obs = max(0.01, float(observation_sigma_m))
+    denom = sigma_prior ** 2 + sigma_obs ** 2
+    if denom <= 0.0:
+        return sigma_prior
+    sigma_post_sq = (sigma_prior ** 2 * sigma_obs ** 2) / denom
+    return sqrt(max(0.0, sigma_post_sq))
+
+
+def _velocity_sigma_after_update(track: dict, dt_seconds: float, observation_sigma_m: float) -> float:
+    """Posterior 1-σ on velocity given a position observation with σ_obs at
+    elapsed time ``dt_seconds`` since the last observation. Standard CV
+    Kalman closed-form. Returns σ_v in m/s.
+    """
+    if dt_seconds <= 0.0:
+        try:
+            return max(0.0, float(track.get("velocity_sigma_mps") or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+    sigma_pos = max(0.01, float(observation_sigma_m))
+    return sigma_pos / dt_seconds
+
 
 # ---------------------------------------------------------------------------
 # Category helpers
@@ -59,8 +280,48 @@ def _tracker_category(class_name: str) -> str:
     return "default"
 
 
-def _v_max(category: str) -> float:
-    return V_MAX.get(category, V_MAX["default"])
+def _v_max(category: str, state: str | None = None) -> float:
+    """Phase 4.17: return the maximum velocity for ``(category, state)``.
+
+    ``state`` is one of ``stationary | ground | airborne | underway |
+    highway | default`` — meaning is category-specific. When state is
+    None or unknown, falls back to the category's ``"default"``. When
+    the category is unknown, falls back to the global default.
+    """
+    table = V_MAX_PER_STATE.get(category) or V_MAX_PER_STATE["default"]
+    if state and state in table:
+        return table[state]
+    return table.get("default", V_MAX_PER_STATE["default"]["default"])
+
+
+def _track_state(track: dict, category: str) -> str:
+    """Infer the kinematic state of a track for V_MAX lookup.
+
+    Uses an explicit ``state`` field if the upstream pipeline set one;
+    otherwise derives from the track's last observed velocity:
+      * speed < 0.5 m/s → "stationary"
+      * category=air and speed > 20 m/s → "airborne"
+      * category=ground and speed > 25 m/s → "highway"
+      * category=maritime and speed > 18 m/s → "underway"
+      * else "default"
+    """
+    explicit = track.get("state") or track.get("kinematic_state")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip().lower()
+    vel = track.get("last_velocity") or {}
+    try:
+        speed = float(vel.get("speed_mps") or vel.get("speed") or 0.0)
+    except (TypeError, ValueError):
+        speed = 0.0
+    if speed < 0.5:
+        return "stationary"
+    if category == "air" and speed > 20.0:
+        return "airborne"
+    if category == "ground" and speed > 25.0:
+        return "highway"
+    if category == "maritime" and speed > 18.0:
+        return "underway"
+    return "default"
 
 
 # ---------------------------------------------------------------------------
@@ -127,10 +388,27 @@ def _compute_cost(
     det: dict,
     delta_t_seconds: float,
 ) -> float:
-    """Return cost for assigning detection to track, or np.inf if outside gate."""
+    """Return cost for assigning detection to track, or np.inf if outside gate.
+
+    Phase 4.17: V_MAX is per-(category, state) so an airborne aircraft track
+    isn't rejected at the 14 m/s taxi gate and a highway-state ground
+    vehicle isn't rejected at the 22 m/s urban gate.
+
+    Phase 4.16: gate widens with predicted state uncertainty (Kalman σ_pred)
+    so high-uncertainty tracks (newborn, manoeuvring, long Δt) accept
+    farther-out detections while well-localised tracks stay tight. The gate
+    is now ``max(V_MAX-based ring, KALMAN_GATE_SIGMAS · σ_pred)`` — old
+    V_MAX gate kept as a lower bound to retain legacy semantics on tracks
+    without stored uncertainty.
+    """
     category = track.get("category") or "default"
-    vm = _v_max(category)
-    r_gate = vm * delta_t_seconds * 1.25
+    state = _track_state(track, category)
+    vm = _v_max(category, state)
+    r_gate_vmax = vm * delta_t_seconds * 1.25
+    # Phase 4.16: Kalman-predicted positional uncertainty after dt seconds.
+    sigma_pred_m = _predicted_position_sigma_m(track, delta_t_seconds, category, state)
+    r_gate_kalman = KALMAN_GATE_SIGMAS * sigma_pred_m
+    r_gate = max(r_gate_vmax, r_gate_kalman)
     if r_gate == 0:
         r_gate = 10.0  # minimum gate for infrastructure / stationary tracks
 
@@ -153,7 +431,12 @@ def _compute_cost(
 
     conf_penalty = (1.0 - float(det.get("confidence", 0.0))) * 0.2
 
-    return ALPHA * d_norm + BETA * class_penalty + GAMMA * conf_penalty
+    # Phase 4.18: re-ID term via embedding cosine. Adds a tie-breaker that
+    # disambiguates two same-class detections at similar distances by
+    # appearance. No-op when DELTA == 0 or either side lacks an embedding.
+    embedding_cost = _embedding_cost(track, det) if DELTA > 0.0 else 0.0
+
+    return ALPHA * d_norm + BETA * class_penalty + GAMMA * conf_penalty + DELTA * embedding_cost
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 import struct
 import subprocess
@@ -27,6 +28,27 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _fmv_demo_mode_enabled() -> bool:
+    """Phase 8.41: synthetic Dubai sine-wave is opt-in.
+
+    Returns True when ``FMV_ALLOW_SYNTHETIC_TELEMETRY=1`` so the existing
+    offline demo path keeps working. In production the default is OFF so a
+    silent telemetry-extraction failure no longer ships garbage georeference
+    to the analyst.
+    """
+    return (os.getenv("FMV_ALLOW_SYNTHETIC_TELEMETRY", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+class TelemetryMissingError(RuntimeError):
+    """Raised by ``extract_telemetry`` when no real telemetry was found and
+    demo mode is not explicitly enabled. Callers should fail the upload with
+    a user-actionable error so the operator either:
+
+      a) re-uploads with a sidecar SRT / KLV / GPMD track, or
+      b) enables demo mode for this clip.
+    """
 
 
 # Subset of MISB 0601 UDS keys we care about for the map view.
@@ -56,12 +78,18 @@ def extract_telemetry(
     duration_s: float,
     fps: Optional[float],
     sidecar_srt: Optional[Path] = None,
+    allow_synthetic: Optional[bool] = None,
 ) -> list[tuple]:
     """Return rows ready for `INSERT INTO fmv_frames`.
 
-    Falls through extractors until one yields samples; if all fail,
-    returns the synthetic sine-wave fixture so the schema is always
-    populated.
+    Phase 8.41: synthetic fallback is opt-in. When no real telemetry was
+    found, raise ``TelemetryMissingError`` unless either:
+      * ``allow_synthetic=True`` is passed explicitly (operator ticked
+        "demo mode" on the upload form), OR
+      * the ``FMV_ALLOW_SYNTHETIC_TELEMETRY`` env var is truthy.
+
+    This prevents a silent KLV/GPMD/SRT extraction failure from shipping
+    sine-wave Dubai georeference into the analyst's review queue.
     """
     fps_value = fps or 30.0
 
@@ -79,7 +107,17 @@ def extract_telemetry(
             logger.info("FMV telemetry: %d samples from %s for clip %s", len(samples), label, clip_id)
             return _samples_to_rows(samples, clip_id, fps_value, source=label)
 
-    logger.info("FMV telemetry: falling back to fixture for clip %s", clip_id)
+    demo_ok = allow_synthetic if allow_synthetic is not None else _fmv_demo_mode_enabled()
+    if not demo_ok:
+        raise TelemetryMissingError(
+            "No KLV/GPMD/SRT telemetry found for this clip. Re-upload with a "
+            "sidecar SRT file, or enable demo mode (FMV_ALLOW_SYNTHETIC_TELEMETRY=1 "
+            "or the upload-form demo flag) to use the synthetic Dubai fixture."
+        )
+    logger.warning(
+        "FMV telemetry: no real source found; using synthetic Dubai fixture for clip %s (demo mode enabled)",
+        clip_id,
+    )
     return _fixture_rows(clip_id, duration_s, fps_value)
 
 

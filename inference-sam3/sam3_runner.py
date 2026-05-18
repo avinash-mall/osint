@@ -55,6 +55,65 @@ SAM3_BATCHED_TEXT_CHUNK_SIZE = max(1, int(os.getenv("SAM3_BATCHED_TEXT_CHUNK_SIZ
 # window (15 frames) and suppressed entirely if the best-seen track score
 # never exceeds the threshold.
 SAM3_CATEGORY_THR = float(os.getenv("SAM3_CATEGORY_THRESHOLD", "0.40"))
+
+
+def _load_per_class_category_thresholds() -> dict[str, float]:
+    """Per-class overrides of ``SAM3_CATEGORY_THRESHOLD``.
+
+    Format: JSON dict mapping ``label`` → ``threshold``. Lookup is
+    case/whitespace-insensitive via :func:`_canonical_prompt_key`. Classes
+    absent from the map fall back to ``SAM3_CATEGORY_THR``.
+
+    Why: the global 0.40 gate kills rare/small military classes
+    (``self-propelled howitzer``, ``transporter erector launcher``,
+    ``armoured personnel carrier``, …) whose best-chip score on DOTA-v1.0
+    routinely sits at 0.15–0.30. Operators can drop just those prompts'
+    floors without lowering the gate for civilian noise prompts.
+    """
+    raw = (os.getenv("SAM3_CATEGORY_THRESHOLDS_PER_CLASS") or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("SAM3_CATEGORY_THRESHOLDS_PER_CLASS is not valid JSON; ignoring")
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    out: dict[str, float] = {}
+    for key, value in parsed.items():
+        try:
+            out[_canonical_prompt_key(key)] = float(value)
+        except (TypeError, ValueError):
+            continue
+    if out:
+        logger.info("SAM3 per-class category thresholds loaded: %d entries", len(out))
+    return out
+
+
+def _canonical_prompt_key(text: Any) -> str:
+    """Canonicalise a prompt/class label for per-class threshold lookup."""
+    if text is None:
+        return ""
+    s = str(text).strip().lower()
+    s = " ".join(s.split())  # collapse whitespace
+    return s
+
+
+_PER_CLASS_CATEGORY_THR: dict[str, float] = _load_per_class_category_thresholds()
+
+
+def _category_threshold_for(label: Any) -> float:
+    """Return the category-presence threshold for a given prompt label.
+
+    Falls back to the global ``SAM3_CATEGORY_THR`` when no per-class override
+    is configured for the label.
+    """
+    if not _PER_CLASS_CATEGORY_THR:
+        return SAM3_CATEGORY_THR
+    return _PER_CLASS_CATEGORY_THR.get(_canonical_prompt_key(label), SAM3_CATEGORY_THR)
+
+
 # Number of frames the SAM3 multiplex tracker buffers internally before its
 # hotstart unmatched/duplicate suppression activates. Mirror this on the
 # emit-side so the video category gate has at least this many scores to
@@ -536,6 +595,7 @@ def versions() -> dict[str, str]:
         "sam3_batched_text": str(SAM3_BATCHED_TEXT).lower(),
         "sam3_batched_text_chunk_size": str(SAM3_BATCHED_TEXT_CHUNK_SIZE),
         "sam3_category_threshold": f"{SAM3_CATEGORY_THR:.2f}",
+        "sam3_category_threshold_overrides": str(len(_PER_CLASS_CATEGORY_THR)),
         "flash_attn_3": _flash_attn_3_status(),
         "dinov3_sat": os.getenv("DINOV3_SAT_MODEL_ID", "facebook/dinov3-vitl16-pretrain-sat493m"),
         "prithvi_backbone": os.getenv("PRITHVI_BACKBONE_ID", "ibm-nasa-geospatial/Prithvi-EO-2.0-600M-TL"),
@@ -585,18 +645,23 @@ def run_text_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompt
         for label in prompts:
             phrase = PROMPT_TEMPLATE.format(label=label)
             output = processor.set_text_prompt(state=state, prompt=phrase)
-            if not _prompt_passes_category_gate(output):
+            if not _prompt_passes_category_gate(output, label):
                 continue
             candidates.extend(_collect_candidates(output, score_threshold, label))
     return candidates
 
 
-def _prompt_passes_category_gate(output) -> bool:
-    """Category-level presence gate. ``True`` if the prompt's best candidate
-    score is at least ``SAM3_CATEGORY_THR``. Suppresses the entire prompt's
-    detections when the concept is effectively absent from the scene
-    (presence-token probability multiplied with per-mask quality < gate)."""
-    if SAM3_CATEGORY_THR <= 0.0:
+def _prompt_passes_category_gate(output, label: Any = None) -> bool:
+    """Category-level presence gate.
+
+    ``True`` if the prompt's best candidate score is at least the threshold
+    for ``label`` (per-class override if configured, else ``SAM3_CATEGORY_THR``).
+    Suppresses the entire prompt's detections when the concept is effectively
+    absent from the scene (presence-token probability multiplied with per-mask
+    quality < gate).
+    """
+    threshold = _category_threshold_for(label) if label is not None else SAM3_CATEGORY_THR
+    if threshold <= 0.0:
         return True
     scores = _to_list(output.get("scores"))
     if not scores:
@@ -605,7 +670,7 @@ def _prompt_passes_category_gate(output) -> bool:
         max_score = max(float(s) for s in scores)
     except Exception:
         return True
-    return max_score >= SAM3_CATEGORY_THR
+    return max_score >= threshold
 
 
 def _run_text_prompts_batched(
@@ -697,13 +762,14 @@ def _collect_batched_candidates(processed: dict[int, dict[str, Any]], query_labe
         boxes = _to_list(result.get("boxes"))
         scores = _to_list(result.get("scores"))
         # Category-level presence gate: drop the entire prompt if its best
-        # candidate score is below SAM3_CATEGORY_THR. See _prompt_passes_category_gate.
-        if SAM3_CATEGORY_THR > 0.0 and scores:
+        # candidate score is below the per-class (or global) threshold.
+        threshold = _category_threshold_for(label)
+        if threshold > 0.0 and scores:
             try:
                 max_score = max(float(s) for s in scores)
             except Exception:
                 max_score = 1.0
-            if max_score < SAM3_CATEGORY_THR:
+            if max_score < threshold:
                 continue
         for mask, box_xyxy, score in zip(masks, boxes, scores):
             out.append((
@@ -779,8 +845,10 @@ def run_video(bundle, video_path, prompt: str, *, frame_stride, start_frame, end
         # Buffer emissions through the hotstart window so the category
         # presence gate has enough scores to decide. After the window
         # closes we either flush the buffer (gate passes) or drop it
-        # entirely (gate fails) and continue streaming live.
-        gate_active = SAM3_CATEGORY_THR > 0.0
+        # entirely (gate fails) and continue streaming live. Uses the
+        # per-class override for this prompt when one is configured.
+        video_category_threshold = _category_threshold_for(prompt_text)
+        gate_active = video_category_threshold > 0.0
         gate_passed = not gate_active
         gate_buffer: list[str] = []
         gate_max_score = 0.0
@@ -856,7 +924,7 @@ def run_video(bundle, video_path, prompt: str, *, frame_stride, start_frame, end
                     if gate_active and not gate_passed:
                         gate_buffer.append(serialised)
                         if emitted_frames >= SAM3_HOTSTART_DELAY_FRAMES:
-                            if gate_max_score >= SAM3_CATEGORY_THR:
+                            if gate_max_score >= video_category_threshold:
                                 gate_passed = True
                                 for buffered in gate_buffer:
                                     yield buffered
@@ -866,7 +934,7 @@ def run_video(bundle, video_path, prompt: str, *, frame_stride, start_frame, end
                                 # session's emissions entirely and close.
                                 logger.info(
                                     "video category gate dropped prompt %r (max score %.3f < %.2f)",
-                                    prompt_text, gate_max_score, SAM3_CATEGORY_THR,
+                                    prompt_text, gate_max_score, video_category_threshold,
                                 )
                                 return
                     else:
@@ -874,13 +942,13 @@ def run_video(bundle, video_path, prompt: str, *, frame_stride, start_frame, end
             # Stream ended before the hotstart window closed; flush the
             # buffer only if the gate would have passed.
             if gate_active and not gate_passed:
-                if gate_max_score >= SAM3_CATEGORY_THR:
+                if gate_max_score >= video_category_threshold:
                     for buffered in gate_buffer:
                         yield buffered
                 else:
                     logger.info(
                         "video category gate dropped prompt %r (max score %.3f < %.2f, partial window)",
-                        prompt_text, gate_max_score, SAM3_CATEGORY_THR,
+                        prompt_text, gate_max_score, video_category_threshold,
                     )
         except RuntimeError as exc:
             # Multiplex tracker raises `RuntimeError("No points are

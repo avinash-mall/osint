@@ -16,7 +16,7 @@
       "short": "MIL",
       "iconKey": "military",
       "matchers": [
-        "\\btank\\b|main battle tank|armored personnel carrier|infantry fighting vehicle|armored vehicle|military engineering vehicle|engineering vehicle|self-propelled artillery|\\bartillery\\b|rocket launcher|military vehicle|cargo truck|truck w or liquid|military vehicle convoy"
+        "\\btank\\b|main battle tank|armored personnel carrier|infantry fighting vehicle|armored vehicle|military engineering vehicle|engineering vehicle|self-propelled artillery|self-propelled howitzer|\\bartillery\\b|multiple rocket launcher|rocket launcher|military vehicle|cargo truck|fuel tanker truck|fuel bowser|military ambulance|command vehicle|military vehicle convoy|military convoy"
       ],
       "children": [
         {
@@ -125,17 +125,17 @@
             {
               "id": "Fuel_Truck",
               "label": "Fuel Truck",
-              "prompt": "truck w or liquid"
+              "prompt": "fuel tanker truck"
             },
             {
               "id": "Command_Vehicle",
               "label": "Command Vehicle",
-              "prompt": "military vehicle"
+              "prompt": "command vehicle"
             },
             {
               "id": "Ambulance",
               "label": "Ambulance",
-              "prompt": "military vehicle"
+              "prompt": "military ambulance"
             },
             {
               "id": "Convoy",
@@ -434,48 +434,48 @@
       "short": "LOG",
       "iconKey": "logistics",
       "matchers": [
-        "shipping container|shipping container lot|\\bcontainer\\b|\\bdepot\\b|crane truck|locomotive|tank car|flat car|cargo car|train station"
+        "shipping container|shipping container lot|\\bcontainer\\b|\\bdepot\\b|crane truck|locomotive|tank car|flat car|cargo car|train station|large-vehicle|small-vehicle|large vehicle|small vehicle|\\bbus\\b|cargo van|delivery truck|truck park|vehicle park|ammunition pallet|fuel bowser|mobile generator|military field tent|tented camp"
       ],
       "objects": [
         {
           "id": "Supply_Depot",
           "label": "Supply Depot",
-          "prompt": "facility"
+          "prompt": "military supply depot"
         },
         {
           "id": "Ammunition_Depot",
           "label": "Ammunition Depot",
-          "prompt": "facility"
+          "prompt": "ammunition depot"
         },
         {
           "id": "Fuel_Depot",
           "label": "Fuel Depot",
-          "prompt": "storage tank"
+          "prompt": "fuel depot"
         },
         {
           "id": "POL_Depot",
           "label": "POL Depot",
-          "prompt": "storage tank"
+          "prompt": "petroleum oil lubricants depot"
         },
         {
           "id": "Cold_Storage_Facility",
           "label": "Cold Storage Facility",
-          "prompt": "facility"
+          "prompt": "refrigerated storage building"
         },
         {
           "id": "Maintenance_Area",
           "label": "Maintenance Area",
-          "prompt": "vehicle lot"
+          "prompt": "vehicle maintenance yard"
         },
         {
           "id": "Vehicle_Park",
           "label": "Vehicle Park",
-          "prompt": "vehicle lot"
+          "prompt": "military vehicle park"
         },
         {
           "id": "Truck_Park",
           "label": "Truck Park",
-          "prompt": "vehicle lot"
+          "prompt": "military truck park"
         },
         {
           "id": "Container_Yard",
@@ -531,6 +531,31 @@
           "id": "Heavy_Equipment_Trailer",
           "label": "Heavy Equipment Trailer",
           "prompt": "trailer"
+        },
+        {
+          "id": "Ammunition_Pallet",
+          "label": "Ammunition Pallet",
+          "prompt": "ammunition pallet"
+        },
+        {
+          "id": "Fuel_Bowser",
+          "label": "Fuel Bowser",
+          "prompt": "fuel bowser"
+        },
+        {
+          "id": "Field_Tent",
+          "label": "Field Tent",
+          "prompt": "military field tent"
+        },
+        {
+          "id": "Tent_Camp",
+          "label": "Tent Camp",
+          "prompt": "tented camp"
+        },
+        {
+          "id": "Generator_Set",
+          "label": "Generator Set",
+          "prompt": "mobile generator"
         }
       ]
     },

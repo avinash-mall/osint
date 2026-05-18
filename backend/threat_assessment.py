@@ -27,13 +27,65 @@ they can re-implement that as a separate, opt-in policy outside this module.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, asdict
 from typing import Any
 
 from detection_policy import parent_class_for_label
 
 
+logger = logging.getLogger(__name__)
+
 THREAT_LEVELS = {"unrated", "low", "medium", "high", "critical"}
+
+
+def _lookup_threat_rule(
+    det_class: str,
+    category: str,
+    allegiance: str | None,
+) -> dict[str, Any] | None:
+    """Phase 6.25: query the ``threat_rules`` table for a match.
+
+    Match precedence: class+allegiance > class > category+allegiance >
+    category > allegiance-only. Returns the matching row's outcome
+    (``threat_level``, ``threat_confidence``, ``rationale``) or ``None``
+    when no rule matches / the DB is unreachable / the table predates this
+    install.
+
+    The table is intentionally optional — defence operators opt-in by
+    populating it; everyone else stays on the open-vocab "unrated" default.
+    """
+    try:
+        from database import postgis_db
+        cleaned_class = (det_class or "").strip().lower() or None
+        cleaned_cat = (category or "").strip().lower() or None
+        cleaned_alle = (allegiance or "").strip().lower() or None
+        with postgis_db.get_cursor() as cur:
+            # Score each candidate rule by specificity, pick the highest.
+            cur.execute(
+                """
+                SELECT class, category, allegiance, threat_level, threat_confidence, rationale,
+                       (CASE WHEN lower(class) = %s THEN 4 ELSE 0 END
+                        + CASE WHEN lower(category) = %s THEN 2 ELSE 0 END
+                        + CASE WHEN lower(allegiance) = %s THEN 1 ELSE 0 END) AS specificity
+                FROM threat_rules
+                WHERE enabled = TRUE
+                  AND (class IS NULL OR lower(class) = %s)
+                  AND (category IS NULL OR lower(category) = %s)
+                  AND (allegiance IS NULL OR lower(allegiance) = %s)
+                ORDER BY specificity DESC, updated_at DESC
+                LIMIT 1
+                """,
+                (cleaned_class, cleaned_cat, cleaned_alle,
+                 cleaned_class, cleaned_cat, cleaned_alle),
+            )
+            row = cur.fetchone()
+    except Exception as exc:
+        logger.debug("threat_rules lookup unavailable: %s", exc)
+        return None
+    if not row:
+        return None
+    return dict(row) if not isinstance(row, dict) else row
 
 
 # ── Coarse semantic buckets used by category_for_class ─────────────────────
@@ -111,12 +163,42 @@ def assess_detection_threat(
     if recurrence_count and recurrence_count > 1:
         evidence.append(f"recurrence_count={int(recurrence_count)}")
 
+    category = category_for_class(det_class)
+
+    # Phase 6.25: consult the configurable threat_rules table. The default
+    # is still "unrated" (open-vocab), but a defence operator can populate
+    # the table to elevate specific (class, category, allegiance) tuples
+    # without redeploying code.
+    rule = _lookup_threat_rule(det_class, category, allegiance)
+    if rule and rule.get("threat_level") in THREAT_LEVELS:
+        threat_level = str(rule["threat_level"])
+        try:
+            threat_conf = max(0.0, min(1.0, float(rule.get("threat_confidence") or 0.0)))
+        except (TypeError, ValueError):
+            threat_conf = 0.0
+        if rule.get("rationale"):
+            evidence.append(f"threat_rule={str(rule['rationale'])[:120]}")
+        else:
+            rule_keys = ",".join(
+                f"{k}={rule.get(k)}" for k in ("class", "category", "allegiance")
+                if rule.get(k) is not None
+            )
+            evidence.append(f"threat_rule_matched={rule_keys or 'wildcard'}")
+        assessment = ThreatAssessment(
+            threat_level=threat_level,
+            threat_confidence=threat_conf,
+            assessment_status="rule_matched" if threat_level != "unrated" else "unrated",
+            evidence=evidence[:8],
+            category=category,
+        )
+        return asdict(assessment)
+
     assessment = ThreatAssessment(
         threat_level="unrated",
         threat_confidence=0.0,
         assessment_status="unrated",
         evidence=evidence[:8],
-        category=category_for_class(det_class),
+        category=category,
     )
     return asdict(assessment)
 

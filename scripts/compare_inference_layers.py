@@ -1923,13 +1923,104 @@ def _build_parser() -> argparse.ArgumentParser:
             "prompts (otherwise it auto-skips and the config is identical to baseline)."
         ),
     )
+    # Phase 9.47: per-class regression gate. When ``--regression-baseline`` is
+    # passed, the script compares this run's per-class recall against the JSON
+    # blob at that path. If any class regresses by more than --regression-tol
+    # (default 0.05 = 5%) and the class appeared in the baseline, the script
+    # exits non-zero so CI flags accidental quality regressions.
+    parser.add_argument(
+        "--regression-baseline",
+        dest="regression_baseline",
+        default=None,
+        help=(
+            "Optional path to a previous run's JSON output. When provided, the "
+            "script compares per-class recall against the baseline and exits "
+            "non-zero if any class regresses by more than --regression-tol."
+        ),
+    )
+    parser.add_argument(
+        "--regression-tol",
+        dest="regression_tol",
+        type=float,
+        default=0.05,
+        help="Allowable per-class recall drop vs --regression-baseline (default 0.05).",
+    )
     return parser
+
+
+def _check_regression_gate(args: argparse.Namespace) -> int:
+    """Phase 9.47: enforce per-class recall does not regress vs a baseline JSON.
+
+    Reads the just-written ``--json-output`` (or the canonical default), loads
+    ``--regression-baseline``, and compares per-class recall. Returns ``0`` if
+    every class in the baseline either improved or stayed within tolerance;
+    returns ``1`` and prints a diff if anything regressed.
+
+    The check is permissive about which configs exist — we only fail when a
+    config + class present in *both* runs shows a recall drop, so adding new
+    configs or new classes between runs is fine.
+    """
+    baseline_path = args.regression_baseline
+    if not baseline_path:
+        return 0
+    current_path = args.json_output or args.output.replace(".md", ".json")
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+        if not _Path(current_path).exists():
+            print(f"[regression-gate] current results not found at {current_path}; skipping")
+            return 0
+        baseline = _json.loads(_Path(baseline_path).read_text(encoding="utf-8"))
+        current = _json.loads(_Path(current_path).read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"[regression-gate] failed to load JSONs: {exc}")
+        return 0
+
+    def _per_class_recall(blob: dict) -> dict[tuple[str, str], float]:
+        """Flatten to {(config_name, class_label): recall}."""
+        out: dict[tuple[str, str], float] = {}
+        configs = blob.get("configs") or blob.get("results") or []
+        for entry in configs:
+            cfg_name = entry.get("name") or entry.get("config") or "<unknown>"
+            per_class = (entry.get("metrics") or {}).get("per_class") or {}
+            for cls, m in per_class.items():
+                if isinstance(m, dict) and m.get("recall") is not None:
+                    try:
+                        out[(cfg_name, cls)] = float(m["recall"])
+                    except (TypeError, ValueError):
+                        continue
+        return out
+
+    base_map = _per_class_recall(baseline)
+    curr_map = _per_class_recall(current)
+    tol = float(args.regression_tol)
+    regressions: list[str] = []
+    for key, base_recall in base_map.items():
+        cur_recall = curr_map.get(key)
+        if cur_recall is None:
+            continue
+        drop = base_recall - cur_recall
+        if drop > tol:
+            cfg, cls = key
+            regressions.append(
+                f"  - {cfg}/{cls}: {base_recall:.3f} -> {cur_recall:.3f} (Δ -{drop:.3f})"
+            )
+    if regressions:
+        print(f"[regression-gate] FAIL — {len(regressions)} class(es) regressed by more than {tol:.2%}:")
+        for line in regressions:
+            print(line)
+        return 1
+    print(f"[regression-gate] OK — no per-class recall drop > {tol:.2%} vs {baseline_path}")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
-    return run(args)
+    rc = run(args)
+    if rc == 0:
+        rc = _check_regression_gate(args)
+    return rc
 
 
 if __name__ == "__main__":

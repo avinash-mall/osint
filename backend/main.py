@@ -35,7 +35,7 @@ from auth import (
 )
 from ai import AIUnavailable, ai_status, get_ai_response, get_llm_json
 from imagery_metadata import extract_raster_metadata
-from video_metadata import extract_telemetry
+from video_metadata import TelemetryMissingError, extract_telemetry
 from detection_policy import active_detection_policy, detection_decision, parent_class_for_label
 from threat_assessment import (
     assess_detection_threat,
@@ -913,6 +913,10 @@ def upload_fmv_clip(
     prompts: Optional[str] = Form(None),
     prompt_mode: Optional[str] = Form(None),
     model: Optional[str] = Form(None),
+    # Phase 8.41: when no KLV/GPMD/SRT telemetry is present, the upload fails
+    # by default. Tick this on the upload form to fall back to the synthetic
+    # Dubai sine-wave fixture for offline demos.
+    allow_synthetic_telemetry: bool = Form(False),
 ):
     ensure_platform_tables()
     filename = safe_filename(file.filename or "clip.mp4")
@@ -961,13 +965,19 @@ def upload_fmv_clip(
             json.dumps({**metadata, "bytes": size, "upload_id": upload_id}),
         ))
         clip = dict(cursor.fetchone())
-        rows = extract_telemetry(
-            local_path,
-            clip["id"],
-            clip["duration_seconds"],
-            clip["fps"],
-            sidecar_srt=sidecar_path,
-        )
+        try:
+            rows = extract_telemetry(
+                local_path,
+                clip["id"],
+                clip["duration_seconds"],
+                clip["fps"],
+                sidecar_srt=sidecar_path,
+                allow_synthetic=allow_synthetic_telemetry,
+            )
+        except TelemetryMissingError as exc:
+            # Phase 8.41: refuse the upload rather than ship sine-wave Dubai
+            # georeference into the analyst's review queue.
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         cursor.executemany("""
             INSERT INTO fmv_frames (clip_id, frame_index, timestamp_seconds, telemetry, footprint)
             VALUES (%s, %s, %s, %s, ST_GeomFromText(%s, 4326))
@@ -1259,6 +1269,31 @@ def get_detection_classes(
             SELECT class, jsonb_object_agg(allegiance, count) AS allegiance_counts
             FROM allegiance_counts
             GROUP BY class
+        ),
+        -- Phase 7.33: expose the full branch breakdown per class so minority
+        -- branches (e.g. an 'aircraft' class that maps to both
+        -- Civilian_Aviation and Military_Forces) aren't silently hidden by
+        -- the mode() reduction above.
+        branch_counts AS (
+            SELECT class,
+                   coalesce(filtered.metadata->>'branch_id', 'Other') AS branch_id,
+                   coalesce(filtered.metadata->>'icon_key', 'circle_help') AS icon_key,
+                   count(*) AS count
+            FROM filtered
+            GROUP BY class, branch_id, icon_key
+        ),
+        branch_json AS (
+            SELECT class,
+                   jsonb_agg(
+                     jsonb_build_object(
+                       'branch_id', branch_id,
+                       'icon_key', icon_key,
+                       'count', count
+                     )
+                     ORDER BY count DESC
+                   ) AS branch_breakdown
+            FROM branch_counts
+            GROUP BY class
         )
         SELECT c.class,
                c.parent_class,
@@ -1267,25 +1302,44 @@ def get_detection_classes(
                c.avg_confidence,
                c.branch_id,
                c.icon_key,
-               coalesce(a.allegiance_counts, '{}'::jsonb) AS allegiance_counts
+               coalesce(a.allegiance_counts, '{}'::jsonb) AS allegiance_counts,
+               coalesce(b.branch_breakdown, '[]'::jsonb) AS branch_breakdown
         FROM class_counts c
         LEFT JOIN allegiance_json a ON a.class = c.class
+        LEFT JOIN branch_json b ON b.class = c.class
         ORDER BY c.count DESC, c.class ASC
     """
     with postgis_db.get_cursor() as cursor:
         cursor.execute(query, params)
         classes = []
         for index, row in enumerate(cursor.fetchall()):
+            # Phase 6.23: the deterministic ontology is the AUTHORITATIVE
+            # value the analyst sees as the class label/category/threat. The
+            # LLM refinement (when requested) is captured as a separate
+            # `llm_advisory` field so the UI can render it as an "AI
+            # suggestion" pill instead of silently overwriting the model's
+            # raw class with a hallucinated refinement.
             ontology = conservative_detection_ontology(row["class"], confidence=float(row["avg_confidence"] or 0))
             classification_status = "unavailable"
+            llm_advisory = None
             if llm and index < 8:
                 try:
-                    ontology = llm_detection_ontology(
+                    advisory = llm_detection_ontology(
                         row["class"],
                         count=int(row["count"] or 0),
                         avg_confidence=float(row["avg_confidence"] or 0),
                     )
                     classification_status = "ok"
+                    # Surface only the non-authoritative fields. The LLM is
+                    # explicitly NOT trusted for category or threat_level —
+                    # those come from deterministic rules in ontology /
+                    # threat_assessment, which use the raw class.
+                    llm_advisory = {
+                        "label": advisory.get("label"),
+                        "description": advisory.get("description"),
+                        "recommended_filter": advisory.get("recommended_filter"),
+                        "generated_by": advisory.get("generated_by"),
+                    }
                 except AIUnavailable:
                     classification_status = "unavailable"
             classes.append({
@@ -1301,6 +1355,8 @@ def get_detection_classes(
                 "classification_status": classification_status,
                 "branch_id": row["branch_id"] or "Other",
                 "icon_key": row["icon_key"] or "circle_help",
+                "branch_breakdown": row["branch_breakdown"] or [],
+                "llm_advisory": llm_advisory,
             })
         return {"classes": classes, "classification_status": "ok" if llm and any(item["classification_status"] == "ok" for item in classes) else "unavailable" if llm else "heuristic"}
 
@@ -1310,10 +1366,17 @@ def get_detections_geojson(
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
     det_class: Optional[str] = None,
-    limit: int = Query(20000, ge=1, le=50000)
+    limit: int = Query(20000, ge=1, le=50000),
+    cursor: Optional[int] = Query(None, description="Detection id from previous page's next_cursor; returns rows strictly older than this id"),
 ):
-    """Return detections as GeoJSON FeatureCollection."""
-    with postgis_db.get_cursor() as cursor:
+    """Return detections as GeoJSON FeatureCollection.
+
+    Phase 7.32: cursor pagination. Pages are ordered by ``(created_at DESC, id
+    DESC)`` (stable across ties). To page further, pass the returned
+    ``next_cursor`` (which is the smallest ``id`` from the previous page) as
+    ``?cursor=…``. ``next_cursor`` is ``None`` when the last page was reached.
+    """
+    with postgis_db.get_cursor() as db_cursor:
         query = """
             SELECT d.id, d.class, d.confidence, d.pass_id, d.created_at, d.metadata,
                    sp.name AS pass_name, sp.acquisition_time, sp.metadata AS imagery_metadata,
@@ -1336,11 +1399,20 @@ def get_detections_geojson(
         if det_class:
             query += " AND d.class = %s"
             params.append(det_class)
-        query += " ORDER BY d.created_at DESC LIMIT %s"
-        params.append(limit)
-        cursor.execute(query, params)
+        if cursor is not None:
+            # Older-than-cursor; ids are monotonic so "older" = "smaller id".
+            query += " AND d.id < %s"
+            params.append(int(cursor))
+        # Fetch one extra row so we can tell the client whether more remain.
+        query += " ORDER BY d.created_at DESC, d.id DESC LIMIT %s"
+        params.append(limit + 1)
+        db_cursor.execute(query, params)
+        rows = db_cursor.fetchall()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        next_cursor = int(rows[-1]["id"]) if has_more and rows else None
         features = []
-        for row in cursor.fetchall():
+        for row in rows:
             raw_metadata = dict(row["metadata"] or {})
             raw_metadata["confidence"] = row["confidence"]
             metadata = enriched_detection_metadata(row["class"], raw_metadata)
@@ -1353,6 +1425,11 @@ def get_detections_geojson(
                     "label": metadata["ontology"]["label"],
                     "confidence": row["confidence"],
                     "calibrated_confidence": metadata.get("calibrated_confidence", row["confidence"]),
+                    # Phase 7.36: surface the pre-calibration score + the per-
+                    # model temperature so the provenance panel can show the
+                    # full "raw → calibrated" story.
+                    "raw_confidence": metadata.get("raw_confidence"),
+                    "model_temperature": metadata.get("model_temperature"),
                     "original_class": metadata.get("original_class", row["class"]),
                     "parent_class": metadata.get("parent_class", row["class"]),
                     "review_status": metadata.get("review_status", "review_candidate"),
@@ -1362,6 +1439,14 @@ def get_detections_geojson(
                     "taxonomy_version": metadata.get("taxonomy_version"),
                     "chip_id": metadata.get("chip_id"),
                     "coverage_fraction": metadata.get("coverage_fraction"),
+                    # Phase 3.13: chip-sampling transparency — when the
+                    # planner sub-samples a large raster (>MAX_INFERENCE_CHIPS),
+                    # the analyst should see that this AOI is not fully
+                    # covered. These three fields ride alongside every
+                    # detection so the UI can surface the gap.
+                    "planned_chips": metadata.get("planned_chips"),
+                    "source_total_chips": metadata.get("source_total_chips"),
+                    "sampling_enabled": metadata.get("sampling_enabled"),
                     "pass_id": row["pass_id"],
                     "pass_name": row["pass_name"],
                     "acquisition_time": row["acquisition_time"],
@@ -1379,9 +1464,17 @@ def get_detections_geojson(
                     "canonical_label": metadata.get("canonical_label"),
                     "was_unknown": bool(metadata.get("was_unknown")),
                     "ontology_object_id": metadata.get("ontology_object_id"),
+                    "position_uncertainty_m": metadata.get("position_uncertainty_m"),
+                    "position_uncertainty_ellipse": metadata.get("position_uncertainty_ellipse"),
+                    "scale_pass": metadata.get("scale_pass"),
                 },
             })
-        return {"type": "FeatureCollection", "features": features}
+        return {
+            "type": "FeatureCollection",
+            "features": features,
+            "next_cursor": next_cursor,
+            "has_more": has_more,
+        }
 
 
 @app.patch("/api/detections/{detection_id}/tag")
@@ -2153,16 +2246,47 @@ def target_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> flo
 
 
 def target_class_compatibility(det_class: str, target_props: dict) -> tuple[float, str]:
+    """Phase 4.14: return a normalized compatibility score in ``[0.0, 1.0]``.
+
+    Caller multiplies this by the compatibility weight in the linking score.
+    Previously this returned weighted values directly (0.15-0.35) which
+    confused the score balance — callers couldn't easily change the weight.
+    """
     det_text = clean_detection_class(det_class).lower()
     target_text = " ".join(str(target_props.get(key, "")) for key in ("name", "type", "category", "description")).lower()
     if not target_text:
-        return 0.25, "target context sparse"
+        return 0.40, "target context sparse"
     if any(token in target_text for token in det_text.split() if len(token) >= 4):
-        return 0.35, "class/name text overlap"
+        return 1.00, "class/name text overlap"
     det_category = conservative_detection_ontology(det_class).get("category")
     if det_category and det_category in target_text:
-        return 0.3, "category overlap"
-    return 0.15, "generic proximity match"
+        return 0.70, "category overlap"
+    return 0.20, "generic proximity match"
+
+
+def _target_history_anchor(target_id: str) -> float:
+    """Phase 4.14 (history_anchor term).
+
+    Returns ``[0.0, 1.0]`` based on the number of *accepted* prior
+    candidate links for this target. The more often analysts have
+    confirmed this target, the higher the prior on it being correctly
+    matched again. Saturates at 5 accepted links to avoid stale targets
+    dominating; ignores rejected/flagged links.
+    """
+    try:
+        with postgis_db.get_cursor() as cursor:
+            cursor.execute(
+                "SELECT count(*) AS c FROM detection_target_candidates "
+                "WHERE target_id = %s AND status IN ('accepted', 'confirmed')",
+                (target_id,),
+            )
+            row = cursor.fetchone()
+    except Exception:
+        return 0.0
+    if not row:
+        return 0.0
+    accepted = int(row["c"] if isinstance(row, dict) else row[0])
+    return min(1.0, accepted / 5.0)
 
 
 def detection_row_for_candidate(detection_id: int) -> dict:
@@ -2181,10 +2305,28 @@ def detection_row_for_candidate(detection_id: int) -> dict:
         return dict(row)
 
 
-def generate_candidate_links_for_detection(detection_id: int, max_distance_m: float = 1500.0) -> list[dict]:
+def generate_candidate_links_for_detection(
+    detection_id: int,
+    max_distance_m: float = 1500.0,
+    max_candidates_per_detection: int = 5,
+) -> list[dict]:
+    """Phase 4.14/4.15: rebalanced score + top-N truncation.
+
+    Old score: ``0.45·distance + ≤0.35·compat + 0.20·confidence`` — proximity
+    dominated. A 0.1-confidence detection at zero distance beat a
+    0.9-confidence detection at 500 m, generating false target associations.
+
+    New score: ``0.30·distance + 0.30·compat + 0.30·confidence + 0.10·history``
+    where ``history`` boosts targets the analyst has previously confirmed,
+    so re-sightings of known targets rank above spurious one-off matches.
+
+    Phase 4.15: keep only the top ``max_candidates_per_detection`` links per
+    detection (default 5) rather than emitting every target within
+    ``max_distance_m`` — this prevents a crowded AOI from generating
+    hundreds of low-quality links per detection.
+    """
     ensure_platform_tables()
     detection = detection_row_for_candidate(detection_id)
-    candidates = []
     try:
         with db.get_session() as session:
             result = session.run("""
@@ -2197,24 +2339,68 @@ def generate_candidate_links_for_detection(detection_id: int, max_distance_m: fl
     except Exception:
         targets = []
 
+    W_DISTANCE = 0.30
+    W_COMPAT = 0.30
+    W_CONFIDENCE = 0.30
+    W_HISTORY = 0.10
+
+    scored: list[dict] = []
+    detection_conf = max(0.0, min(1.0, float(detection["confidence"] or 0)))
     for target in targets:
-        distance_m = target_distance_m(float(detection["lat"]), float(detection["lon"]), float(target["lat"]), float(target["lon"]))
+        distance_m = target_distance_m(
+            float(detection["lat"]), float(detection["lon"]),
+            float(target["lat"]), float(target["lon"]),
+        )
         if distance_m > max_distance_m:
             continue
-        compatibility, compatibility_reason = target_class_compatibility(detection["class"], target.get("props") or {})
-        distance_score = max(0.0, 1.0 - (distance_m / max_distance_m)) * 0.45
-        confidence_score = max(0.0, min(1.0, float(detection["confidence"] or 0))) * 0.2
-        score = round(distance_score + compatibility + confidence_score, 3)
-        reason = f"{round(distance_m)}m from target; {compatibility_reason}; confidence {float(detection['confidence'] or 0):.2f}"
+        compatibility_norm, compatibility_reason = target_class_compatibility(
+            detection["class"], target.get("props") or {},
+        )
         target_id = target.get("stable_id") or target["element_id"]
+        history_anchor = _target_history_anchor(target_id)
+
+        distance_norm = max(0.0, 1.0 - (distance_m / max_distance_m))
+        score = round(
+            W_DISTANCE * distance_norm
+            + W_COMPAT * compatibility_norm
+            + W_CONFIDENCE * detection_conf
+            + W_HISTORY * history_anchor,
+            3,
+        )
+        reason = (
+            f"{round(distance_m)}m from target; {compatibility_reason}; "
+            f"confidence {detection_conf:.2f}; history {history_anchor:.2f}"
+        )
         evidence = {
             "distance_m": round(distance_m, 2),
             "compatibility_reason": compatibility_reason,
+            "compatibility_score": round(compatibility_norm, 3),
+            "history_anchor": round(history_anchor, 3),
+            "score_weights": {
+                "distance": W_DISTANCE,
+                "compatibility": W_COMPAT,
+                "confidence": W_CONFIDENCE,
+                "history": W_HISTORY,
+            },
             "detection_class": detection["class"],
-            "detection_confidence": float(detection["confidence"] or 0),
+            "detection_confidence": detection_conf,
             "acquisition_time": detection.get("acquisition_time"),
         }
-        with postgis_db.get_cursor(commit=True) as cursor:
+        scored.append({
+            "target_id": target_id,
+            "target_name": target.get("name") or target_id,
+            "score": score,
+            "reason": reason,
+            "evidence": evidence,
+        })
+
+    # Phase 4.15: keep only the top-N highest-scoring candidates per detection.
+    scored.sort(key=lambda item: item["score"], reverse=True)
+    top = scored[:max(1, int(max_candidates_per_detection))]
+
+    candidates = []
+    with postgis_db.get_cursor(commit=True) as cursor:
+        for item in top:
             cursor.execute("""
                 INSERT INTO detection_target_candidates (detection_id, target_id, target_name, score, reason, status, evidence)
                 VALUES (%s, %s, %s, %s, %s, 'pending', %s)
@@ -2225,7 +2411,10 @@ def generate_candidate_links_for_detection(detection_id: int, max_distance_m: fl
                     evidence = EXCLUDED.evidence,
                     updated_at = NOW()
                 RETURNING id, detection_id, target_id, target_name, score, reason, status, evidence, reviewed_by, reviewed_at, created_at, updated_at
-            """, (detection_id, target_id, target.get("name") or target_id, score, reason, json.dumps(evidence, default=str)))
+            """, (
+                detection_id, item["target_id"], item["target_name"],
+                item["score"], item["reason"], json.dumps(item["evidence"], default=str),
+            ))
             candidates.append(dict(cursor.fetchone()))
     publish_event("detections", {"type": "candidate_links_updated", "detection_id": detection_id, "count": len(candidates)})
     return candidates

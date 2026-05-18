@@ -308,6 +308,17 @@ type DetectionClassStat = {
   threatLevel?: string;
   category: DetectionCategoryId;
   source: string;
+  // Phase 7.29: non-authoritative LLM suggestion for this class. The
+  // deterministic label/category/threat above remain the authoritative
+  // values shown to the analyst — this advisory just adds an "AI
+  // suggested" pill alongside, so model hallucination can be inspected
+  // without overriding the model's actual class.
+  llmAdvisory?: {
+    label?: string | null;
+    description?: string | null;
+    recommended_filter?: string | null;
+    generated_by?: string | null;
+  } | null;
 };
 
 function CategoryIcon({
@@ -388,6 +399,18 @@ function MapBoundsUpdater({ onBoundsChange }: { onBoundsChange: (bounds: string)
     handleMoveEnd();
     return () => { map.off('moveend', handleMoveEnd); };
   }, [map, onBoundsChange]);
+  return null;
+}
+
+// Phase 7.35: emits the current map zoom so the parent can decide whether to
+// render position-uncertainty halos (we only show them at zoom >= 14 to avoid
+// drawing thousands of circles when zoomed out).
+function MapZoomTracker({ onZoomChange }: { onZoomChange: (zoom: number) => void }) {
+  const map = useMap();
+  useEffect(() => { onZoomChange(map.getZoom()); }, [map, onZoomChange]);
+  useMapEvents({
+    zoomend() { onZoomChange(map.getZoom()); },
+  });
   return null;
 }
 
@@ -581,8 +604,57 @@ export default function GaiaMap({
   const [selectedImagery, setSelectedImagery] = useState<number | null>(null);
   const [activeBaseLayer, setActiveBaseLayer] = useState<'base' | 'sat' | 'terrain'>('base');
   const [layerOpacities, setLayerOpacities] = useState<{ base: number; sat: number; terrain: number }>({ base: 1, sat: 0.8, terrain: 1 });
-  const [hiddenDetectionLabels, setHiddenDetectionLabels] = useState<string[]>([]);
-  const [hiddenDetectionCategories, setHiddenDetectionCategories] = useState<DetectionCategoryId[]>([]);
+  // Phase 7.29: persist hidden-category state across sessions so the analyst's
+  // earlier filter survives a reload, AND show a banner on the next load so a
+  // category hidden last week doesn't quietly stay hidden forever.
+  const HIDDEN_CATEGORIES_LSK = 'sentinel.geoMap.hiddenDetectionCategories.v1';
+  const HIDDEN_LABELS_LSK = 'sentinel.geoMap.hiddenDetectionLabels.v1';
+  const [hiddenDetectionLabels, setHiddenDetectionLabels] = useState<string[]>(() => {
+    try {
+      const raw = typeof window !== 'undefined' ? window.localStorage.getItem(HIDDEN_LABELS_LSK) : null;
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.filter((v) => typeof v === 'string') : [];
+    } catch { return []; }
+  });
+  const [hiddenDetectionCategories, setHiddenDetectionCategories] = useState<DetectionCategoryId[]>(() => {
+    try {
+      const raw = typeof window !== 'undefined' ? window.localStorage.getItem(HIDDEN_CATEGORIES_LSK) : null;
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed.filter((v) => typeof v === 'string') as DetectionCategoryId[]) : [];
+    } catch { return []; }
+  });
+  // Show a one-shot banner during this session if the previous session left
+  // categories or labels hidden. Dismissed by clicking either chip or the X.
+  const [restoredHiddenNotice, setRestoredHiddenNotice] = useState<{
+    categories: DetectionCategoryId[];
+    labels: string[];
+  } | null>(() => {
+    try {
+      if (typeof window === 'undefined') return null;
+      const rawC = window.localStorage.getItem(HIDDEN_CATEGORIES_LSK);
+      const rawL = window.localStorage.getItem(HIDDEN_LABELS_LSK);
+      const cats = rawC ? JSON.parse(rawC) : [];
+      const labs = rawL ? JSON.parse(rawL) : [];
+      const catList = Array.isArray(cats) ? cats : [];
+      const labList = Array.isArray(labs) ? labs : [];
+      if (catList.length === 0 && labList.length === 0) return null;
+      return { categories: catList as DetectionCategoryId[], labels: labList as string[] };
+    } catch { return null; }
+  });
+  useEffect(() => {
+    try {
+      if (typeof window === 'undefined') return;
+      window.localStorage.setItem(HIDDEN_CATEGORIES_LSK, JSON.stringify(hiddenDetectionCategories));
+    } catch { /* ignore quota errors */ }
+  }, [hiddenDetectionCategories]);
+  useEffect(() => {
+    try {
+      if (typeof window === 'undefined') return;
+      window.localStorage.setItem(HIDDEN_LABELS_LSK, JSON.stringify(hiddenDetectionLabels));
+    } catch { /* ignore quota errors */ }
+  }, [hiddenDetectionLabels]);
   const [detectionClassFilter, setDetectionClassFilter] = useState<string | null>(null);
   const [expandedDetectionGroups, setExpandedDetectionGroups] = useState<string[]>([]);
   const [detectionGroupMode, setDetectionGroupMode] = useState<'CAT' | 'SRC'>('CAT');
@@ -622,6 +694,9 @@ export default function GaiaMap({
     return { start: hourAgo.toISOString(), end: now.toISOString() };
   });
   const [mapBounds, setMapBounds] = useState('');
+  // Phase 7.35: track zoom so we only render position-uncertainty halos when
+  // the analyst is zoomed in tight enough that the halo size is visually useful.
+  const [mapZoom, setMapZoom] = useState(6);
   const [activeLayers, setActiveLayers] = useState({
     satellite: true,
     detections: true,
@@ -735,6 +810,7 @@ export default function GaiaMap({
         maxConfidence: Math.max(Number(existing?.maxConfidence || 0), Number(meta?.max_confidence || 0)),
         color: categoryFor(category, DETECTION_CATEGORIES).color,
         ontology: existing?.ontology || meta?.ontology,
+        llmAdvisory: existing?.llmAdvisory ?? meta?.llm_advisory ?? null,
         threatLevel: existing?.threatLevel || meta?.threat_level,
         category,
         source: detectionClassSource(rawClass),
@@ -777,6 +853,54 @@ export default function GaiaMap({
       return !labels.some((label) => hiddenDetectionLabels.includes(label));
     }),
   }), [detectionsGeoJSON, detectionClassFilter, hiddenDetectionCategories, hiddenDetectionLabels, confidenceThreshold]);
+
+  // Suppression breakdown: count how many detections were dropped by *each*
+  // independent filter, so the analyst can see what the pipeline + UI are
+  // hiding (rather than the silent zero-feedback default).
+  // Counts are per-filter (not stacked) so the analyst can attribute drops
+  // back to a single control.
+  const suppressionCounts = useMemo(() => {
+    const all = detectionsGeoJSON.features || [];
+    let byConfidence = 0;
+    let byCategory = 0;
+    let byLabel = 0;
+    // Phase 3.13: detect whether any of the visible passes were sub-sampled
+    // by the chip planner. We surface this so the analyst knows the AOI
+    // wasn't 100% covered, which materially affects "we didn't find any X"
+    // statements.
+    let sampledPasses = 0;
+    let worstCoverage = 1.0;
+    let sampledPassesSeen = new Set<number>();
+    for (const feature of all) {
+      const rawConf = feature?.properties?.confidence;
+      const conf = (typeof rawConf === 'number' && Number.isFinite(rawConf)) ? rawConf : 1;
+      if (confidenceThreshold > 0 && conf < confidenceThreshold) byConfidence += 1;
+      if (hiddenDetectionCategories.length > 0
+        && hiddenDetectionCategories.includes(branchIdForFeature(feature))) byCategory += 1;
+      if (hiddenDetectionLabels.length > 0) {
+        const labels = detectionClassKeys(feature);
+        if (labels.some((label) => hiddenDetectionLabels.includes(label))) byLabel += 1;
+      }
+      const passId = Number(feature?.properties?.pass_id);
+      const wasSampled = Boolean(feature?.properties?.sampling_enabled);
+      const coverage = Number(feature?.properties?.coverage_fraction);
+      if (wasSampled && Number.isFinite(passId) && !sampledPassesSeen.has(passId)) {
+        sampledPassesSeen.add(passId);
+        sampledPasses += 1;
+      }
+      if (Number.isFinite(coverage) && coverage > 0 && coverage < worstCoverage) {
+        worstCoverage = coverage;
+      }
+    }
+    return {
+      total: all.length,
+      byConfidence,
+      byCategory,
+      byLabel,
+      sampledPasses,
+      worstCoverage,
+    };
+  }, [detectionsGeoJSON, confidenceThreshold, hiddenDetectionCategories, hiddenDetectionLabels]);
 
   // Map+ geometry mode — rewrite each feature's geometry into the requested
   // shape:
@@ -1674,6 +1798,11 @@ export default function GaiaMap({
                         || hiddenDetectionCategories.includes(item.category)
                         || hiddenDetectionLabels.includes(item.rawClass);
                       const solo = detectionClassFilter === item.rawClass;
+                      const advisory = item.llmAdvisory;
+                      const advisoryLabel = advisory?.label && advisory.label !== item.label ? advisory.label : null;
+                      const advisoryTitle = advisory
+                        ? `AI suggestion (non-authoritative): ${advisory.label || ''}${advisory.description ? ` — ${advisory.description}` : ''}\nGenerated by ${advisory.generated_by || 'llm'}. Deterministic ontology remains the canonical class.`
+                        : '';
                       return (
                         <div key={item.rawClass} className="grid grid-cols-[22px_18px_1fr_auto_auto] items-center gap-2 px-3 py-1.5">
                           <button type="button" style={{ color: hidden ? 'var(--ink-2)' : item.color }} onClick={() => toggleDetectionClassVisibility(item.rawClass)}>
@@ -1683,7 +1812,21 @@ export default function GaiaMap({
                             <DetectionSubclassIcon label={item.rawClass} category={item.category} branchById={branchById} className="h-3 w-3" />
                           </span>
                           <button type="button" className="min-w-0 text-left" onClick={() => soloDetectionClass(item.rawClass)}>
-                            <span className={`block truncate text-[11px] ${hidden ? 'text-sentinel-muted' : 'text-slate-200'}`}>{item.label}{solo ? ' / SOLO' : ''}</span>
+                            <span className={`block truncate text-[11px] ${hidden ? 'text-sentinel-muted' : 'text-slate-200'}`}>
+                              {item.label}{solo ? ' / SOLO' : ''}
+                              {/* Phase 7.29: non-authoritative AI suggestion. The
+                                  deterministic label above stays canonical; this
+                                  pill is a separate hint the analyst can inspect
+                                  on hover or use to inform manual relabelling. */}
+                              {advisoryLabel && (
+                                <span
+                                  className="ml-1.5 inline-flex items-center rounded-sm border border-amber-500/60 px-1 py-[1px] font-mono text-[9px] uppercase tracking-wider text-amber-300"
+                                  title={advisoryTitle}
+                                >
+                                  AI · {advisoryLabel}
+                                </span>
+                              )}
+                            </span>
                           </button>
                           <span className={`sentinel-tag ${threatClass(item.threatLevel)}`}>{item.threatLevel || categoryFor(item.category, DETECTION_CATEGORIES).short}</span>
                           <span className="font-mono text-[10px]" style={{ color: hidden ? 'var(--ink-2)' : item.color }}>{item.count}</span>
@@ -1779,6 +1922,7 @@ export default function GaiaMap({
             <ZoomControl position="bottomright" />
             <MapBoundsUpdater onBoundsChange={setMapBounds} />
             <MapCursorTracker onCursorChange={setCursor} />
+            <MapZoomTracker onZoomChange={setMapZoom} />
             <AnalyticsPickHandler
               pickFor={pendingPick}
               onPicked={(lat, lon, pickFor) => {
@@ -1975,6 +2119,38 @@ export default function GaiaMap({
                 </CircleMarker>
               );
             })}
+
+            {/* Phase 7.35: position-uncertainty halos. Render a faint circle at
+                each detection's centroid with radius = position_uncertainty_m
+                when zoomed in tight (z>=14). Skipped when there are too many
+                visible features, since N circles at z>=14 would still cost. */}
+            {activeLayers.detections
+              && mapZoom >= 14
+              && filteredDetectionsGeoJSON.features
+              && filteredDetectionsGeoJSON.features.length > 0
+              && filteredDetectionsGeoJSON.features.length <= 400
+              && filteredDetectionsGeoJSON.features.map((feature: any) => {
+                const center = detectionCenter(feature);
+                const uncertainty = Number(feature?.properties?.position_uncertainty_m);
+                if (!center || !Number.isFinite(uncertainty) || uncertainty <= 0) return null;
+                const props = feature.properties || {};
+                return (
+                  <Circle
+                    key={`uncert-${props.id}-${center[0]}-${center[1]}`}
+                    center={center}
+                    radius={uncertainty}
+                    pathOptions={{
+                      color: '#9ec8ff',
+                      weight: 1,
+                      opacity: 0.35,
+                      fillColor: '#9ec8ff',
+                      fillOpacity: 0.05,
+                      dashArray: '3,3',
+                    }}
+                    interactive={false}
+                  />
+                );
+              })}
 
             {activeLayers.detections && showBbox && geomDisplayedDetectionsGeoJSON.features?.length > 0 && (
               <CanvasGeoJSON
@@ -2347,6 +2523,198 @@ export default function GaiaMap({
               />
             </div>
           )}
+
+          {/* Phase 7.29: one-shot reminder that the previous session left
+              categories or labels hidden. Appears once per page load and
+              disappears as soon as the analyst acts on it. */}
+          {restoredHiddenNotice && (
+            <div
+              role="status"
+              aria-label="Restored hidden filters"
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                gap: 6,
+                marginBottom: 4,
+                padding: '4px 6px',
+                border: '1px solid #d8a14a',
+                borderRadius: 6,
+                background: 'rgba(216, 161, 74, 0.10)',
+              }}
+            >
+              <span className="label-mono" style={{ fontSize: 10, color: '#f0c279' }}>
+                ⚠ Filters from your last session are still hiding:
+              </span>
+              {restoredHiddenNotice.categories.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => { setHiddenDetectionCategories([]); setRestoredHiddenNotice(null); }}
+                  style={{
+                    fontSize: 10,
+                    padding: '2px 6px',
+                    border: '1px solid #d8a14a',
+                    borderRadius: 999,
+                    background: 'var(--bg-0)',
+                    cursor: 'pointer',
+                    color: '#f0c279',
+                  }}
+                >
+                  Show {restoredHiddenNotice.categories.length} hidden categories ✓
+                </button>
+              )}
+              {restoredHiddenNotice.labels.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => { setHiddenDetectionLabels([]); setRestoredHiddenNotice(null); }}
+                  style={{
+                    fontSize: 10,
+                    padding: '2px 6px',
+                    border: '1px solid #d8a14a',
+                    borderRadius: 999,
+                    background: 'var(--bg-0)',
+                    cursor: 'pointer',
+                    color: '#f0c279',
+                  }}
+                >
+                  Show {restoredHiddenNotice.labels.length} hidden labels ✓
+                </button>
+              )}
+              <div style={{ flex: 1 }} />
+              <button
+                type="button"
+                onClick={() => setRestoredHiddenNotice(null)}
+                aria-label="Dismiss"
+                style={{
+                  fontSize: 12,
+                  border: 'none',
+                  background: 'transparent',
+                  color: '#f0c279',
+                  cursor: 'pointer',
+                  padding: '0 4px',
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
+          {/* Suppression transparency: surface what the pipeline + UI are
+              currently hiding from the analyst, so silent filters can't mask
+              true positives without a breadcrumb. Each chip is clickable to
+              clear its filter; the marker-mode + time-window chips are
+              advisory (no-op clicks). */}
+          {(() => {
+            const overflowMarkers = (showBbox || visibleDetectionCount > DETECTION_CENTER_MARKER_LIMIT)
+              && visibleDetectionCount > DETECTION_CENTER_MARKER_LIMIT
+              ? visibleDetectionCount - DETECTION_CENTER_MARKER_LIMIT
+              : 0;
+            const tw = (() => {
+              const start = new Date(timeRange.start).getTime();
+              const end = new Date(timeRange.end).getTime();
+              if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+              const minutes = Math.round((end - start) / 60000);
+              return minutes > 0 ? minutes : null;
+            })();
+            const showSamplingChip = suppressionCounts.sampledPasses > 0
+              && suppressionCounts.worstCoverage < 1.0;
+            const anyHidden = suppressionCounts.byConfidence > 0
+              || suppressionCounts.byCategory > 0
+              || suppressionCounts.byLabel > 0
+              || overflowMarkers > 0
+              || (tw !== null && tw <= 60)
+              || showSamplingChip;
+            if (!anyHidden) return null;
+            const chipStyle: React.CSSProperties = {
+              fontSize: 10,
+              padding: '2px 6px',
+              border: '1px solid var(--line)',
+              borderRadius: 999,
+              background: 'var(--bg-0)',
+              cursor: 'pointer',
+              fontFamily: 'var(--font-mono, monospace)',
+            };
+            return (
+              <div
+                role="status"
+                aria-label="Hidden detection summary"
+                style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  alignItems: 'center',
+                  gap: 6,
+                  marginBottom: 4,
+                  padding: '4px 6px',
+                  border: '1px solid var(--line)',
+                  borderRadius: 6,
+                  background: 'color-mix(in oklab, var(--bg-0) 88%, transparent)',
+                }}
+              >
+                <span className="label-mono" style={{ fontSize: 10, color: 'var(--ink-2)' }}>
+                  Showing {visibleDetectionCount}/{suppressionCounts.total} ·
+                </span>
+                {suppressionCounts.byConfidence > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setConfidenceThreshold(0)}
+                    title={`Click to reset confidence floor (currently ${confidenceThreshold.toFixed(2)})`}
+                    style={chipStyle}
+                  >
+                    -{suppressionCounts.byConfidence} below conf {confidenceThreshold.toFixed(2)} ✕
+                  </button>
+                )}
+                {suppressionCounts.byCategory > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setHiddenDetectionCategories([])}
+                    title="Click to show all hidden categories"
+                    style={chipStyle}
+                  >
+                    -{suppressionCounts.byCategory} hidden by category ({hiddenDetectionCategories.length}) ✕
+                  </button>
+                )}
+                {suppressionCounts.byLabel > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setHiddenDetectionLabels([])}
+                    title="Click to show all hidden labels"
+                    style={chipStyle}
+                  >
+                    -{suppressionCounts.byLabel} hidden by label ({hiddenDetectionLabels.length}) ✕
+                  </button>
+                )}
+                {overflowMarkers > 0 && (
+                  <span
+                    style={{ ...chipStyle, cursor: 'default' }}
+                    title={`Above ${DETECTION_CENTER_MARKER_LIMIT} the map renders dots/bboxes instead of icon markers`}
+                  >
+                    +{overflowMarkers} rendered as dots (over {DETECTION_CENTER_MARKER_LIMIT})
+                  </span>
+                )}
+                {tw !== null && tw <= 60 && (
+                  <span
+                    style={{ ...chipStyle, cursor: 'default' }}
+                    title="Older detections are excluded by the time-window query; expand the timeline range to see more"
+                  >
+                    last {tw}m window — older detections excluded
+                  </span>
+                )}
+                {showSamplingChip && (
+                  <span
+                    style={{
+                      ...chipStyle,
+                      cursor: 'default',
+                      borderColor: '#d8a14a',
+                      color: '#f0c279',
+                    }}
+                    title={`The chip planner sub-sampled ${suppressionCounts.sampledPasses} pass(es) — only ~${Math.round(suppressionCounts.worstCoverage * 100)}% of the raster was scanned for inference. "No detections" in unscanned regions does not mean "no targets". Re-ingest with INFERENCE_SPEED_PROFILE=recall_review or raise MAX_INFERENCE_CHIPS for full coverage.`}
+                  >
+                    ⚠ {suppressionCounts.sampledPasses} sub-sampled pass(es) · coverage {Math.round(suppressionCounts.worstCoverage * 100)}%
+                  </span>
+                )}
+              </div>
+            );
+          })()}
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
             <button

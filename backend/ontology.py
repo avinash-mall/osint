@@ -358,10 +358,21 @@ def normalize(label: Any, layer: str = "") -> NormalizedLabel:
             raw, layer,
         )
         _log_unknown(canon, layer or "")
+    # Phase 6.24: keep semantic richness for unknown-but-novel labels.
+    # Previously parent_class collapsed to "unknown" and canonical_label
+    # echoed the raw input; the UI then rendered every novel detection as
+    # a generic "unknown" pill, hiding the actual SAM3 prompt the model
+    # found. Now parent_class falls back to the cleaned canonical form so
+    # an "armored personnel carrier" detection that doesn't yet exist in
+    # the DB ontology still renders with its meaningful label in the UI.
+    # ``was_unknown`` stays True so the suppression banner / admin
+    # taxonomy queue still flag it for ontology curation.
+    fallback_parent = canon_no_prefix or canon or "unknown"
+    fallback_canonical = (raw or fallback_parent).strip() or fallback_parent
     return NormalizedLabel(
         branch_id=_FALLBACK_BRANCH_ID,
-        parent_class="unknown",
-        canonical_label=raw,
+        parent_class=fallback_parent,
+        canonical_label=fallback_canonical,
         ontology_object_id=None,
         icon_key=_FALLBACK_ICON,
         was_unknown=True,

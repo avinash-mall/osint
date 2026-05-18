@@ -107,14 +107,23 @@ SAM3_LOAD_DINOV3_SAT = _flag("SAM3_LOAD_DINOV3_SAT", _DEFAULT)
 # DINOV3_LVD removed: produces NaN embeddings on small drone-video crops and
 # is 2.5× slower than DINOV3_SAT with no measured quality advantage. See
 # docs/video_tracking_stability.md.
-SAM3_LOAD_PRITHVI    = _flag("SAM3_LOAD_PRITHVI",    _DEFAULT)
+# Phase 8.37: Prithvi default-OFF. The burn-scar head measured chip-level
+# IoU = 0.0000 on HLS Burn Scars test set (see docs/inference_layer_comparison.md)
+# while still costing ~20 ms per chip. Operators with a known-good multispectral
+# AOI can re-enable with SAM3_LOAD_PRITHVI=1.
+SAM3_LOAD_PRITHVI    = _flag("SAM3_LOAD_PRITHVI",    "0")
 SAM3_LOAD_TERRAMIND  = _flag("SAM3_LOAD_TERRAMIND",  _DEFAULT)
 
 # Specialist detectors that complement SAM 3 zero-shot prompts.
 # DEFENCE_YOLO was removed: produced 1297 false positives across 26 DOTA val
 # chips with no true positives (see docs/inference_layer_comparison*).
 SAM3_LOAD_DOTA_OBB        = _flag("SAM3_LOAD_DOTA_OBB",        _DEFAULT)
-SAM3_LOAD_GROUNDING_DINO  = _flag("SAM3_LOAD_GROUNDING_DINO",  _DEFAULT)
+# Phase 8.38: Grounding-DINO default-OFF. Only +0.0144 mAP improvement on
+# DOTA-v1.0 for +241 ms cumulative cost (see docs/inference_layer_comparison.md).
+# The auto-gate in grounding_dino_gate.py keeps it from loading when prompts
+# are already covered by SAM3+DOTA-OBB. Operators wanting open-vocab recall on
+# truly novel labels can re-enable with SAM3_LOAD_GROUNDING_DINO=1.
+SAM3_LOAD_GROUNDING_DINO  = _flag("SAM3_LOAD_GROUNDING_DINO",  "0")
 # YOLOE-26x open-vocabulary segmentation specialist used by the standalone
 # FMV tracker. Bundles both -pf (prompt-free) and -seg (text-prompted)
 # checkpoints — together ~1 GiB, loads on every profile by default.

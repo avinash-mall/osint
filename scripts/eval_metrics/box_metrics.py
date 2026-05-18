@@ -91,6 +91,85 @@ def _compute_ap_11point(tp_flags: list, n_gt: int) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Phase 9.46 — per-prediction TP/FP stream for downstream calibration (ECE)
+# ---------------------------------------------------------------------------
+
+def per_prediction_matches(
+    predictions: list,
+    ground_truth: list,
+    iou_threshold: float = 0.5,
+    normalizer: Optional[Callable] = None,
+    layer: str = "",
+) -> list[dict]:
+    """Return one entry per prediction with whether it matched a GT box.
+
+    Output rows::
+
+        {
+            "label":   str,
+            "score":   float,
+            "is_tp":   bool,
+            "iou":     float,    # best IoU vs any GT (0 if no match)
+        }
+
+    Matching is greedy by score within each label, mirroring the per-class
+    matching in :func:`compute_box_metrics`. Each GT box can be matched at
+    most once; subsequent predictions for the same GT become FPs.
+
+    This sibling of ``compute_box_metrics`` exists for callers that need
+    the *per-prediction* outcome (e.g. expected-calibration-error
+    measurement) rather than the aggregated per-class stats.
+    """
+    norm_preds = []
+    for p in predictions:
+        label = p["label"]
+        if normalizer is not None:
+            label = normalizer(label, layer)
+        norm_preds.append({
+            "label": label,
+            "bbox_xyxy": p["bbox_xyxy"],
+            "score": float(p.get("score", 0.0)),
+            "_orig_index": len(norm_preds),
+        })
+
+    gt_by_label: dict[str, list[list]] = defaultdict(list)
+    for g in ground_truth:
+        gt_by_label[g["label"]].append(g["bbox_xyxy"])
+
+    preds_by_label: dict[str, list[dict]] = defaultdict(list)
+    for p in norm_preds:
+        preds_by_label[p["label"]].append(p)
+    for label in preds_by_label:
+        preds_by_label[label].sort(key=lambda x: x["score"], reverse=True)
+
+    matches_by_index: dict[int, dict] = {}
+    for label, preds in preds_by_label.items():
+        gt_boxes = gt_by_label.get(label, [])
+        matched_gt = [False] * len(gt_boxes)
+        for p in preds:
+            best_iou = 0.0
+            best_idx = -1
+            for j, gt_box in enumerate(gt_boxes):
+                if matched_gt[j]:
+                    continue
+                iou_val = iou(p["bbox_xyxy"], gt_box)
+                if iou_val > best_iou:
+                    best_iou = iou_val
+                    best_idx = j
+            is_tp = best_idx >= 0 and best_iou >= iou_threshold
+            if is_tp:
+                matched_gt[best_idx] = True
+            matches_by_index[p["_orig_index"]] = {
+                "label": label,
+                "score": p["score"],
+                "is_tp": is_tp,
+                "iou": best_iou,
+            }
+
+    return [matches_by_index[i] for i in range(len(norm_preds)) if i in matches_by_index]
+
+
+# ---------------------------------------------------------------------------
 # Main public function
 # ---------------------------------------------------------------------------
 

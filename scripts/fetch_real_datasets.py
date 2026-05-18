@@ -226,13 +226,24 @@ def fetch_sen1floods(max_chips: int = 10) -> None:
 
 
 def main() -> int:
-    parser_args = sys.argv[1:]
-    skip_dota = "--skip-dota" in parser_args
-    skip_hls = "--skip-hls" in parser_args
-    if not skip_dota:
-        fetch_dota(max_chips=30)
-    if not skip_hls:
-        fetch_sen1floods(max_chips=10)
+    import argparse
+    # Phase 9.42: bump default DOTA slice from 30 -> 200 chips so per-class
+    # AP measurements have enough instances to be statistically meaningful
+    # for the 6 sparse classes (military_forces, armored_vehicle, logistics,
+    # civilian, other, etc.). The old 30-chip slice produced flat-zero
+    # recall on those classes because they had < 2 instances per class.
+    parser = argparse.ArgumentParser(description="Fetch real eval datasets for inference QA.")
+    parser.add_argument("--skip-dota", action="store_true")
+    parser.add_argument("--skip-hls", action="store_true")
+    parser.add_argument("--dota-chips", type=int, default=200,
+                        help="DOTA-v1.0 validation chips to fetch (default 200; bumped from 30 in Phase 9.42).")
+    parser.add_argument("--hls-chips", type=int, default=20,
+                        help="Sen1Floods11 chips to fetch (default 20).")
+    args = parser.parse_args()
+    if not args.skip_dota:
+        fetch_dota(max_chips=args.dota_chips)
+    if not args.skip_hls:
+        fetch_sen1floods(max_chips=args.hls_chips)
     print("[fetch_real] Done.")
     return 0
 

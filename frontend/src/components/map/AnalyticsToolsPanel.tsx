@@ -20,9 +20,24 @@ import {
   runRoutes,
   runViewshed,
   type AnalyticsCapabilities,
+  type AnalyticsMode,
   type AnalyticsResponse,
   type LatLon,
 } from '../../services/analytics';
+
+// Phase 7.34: when the backend returns a fixture mode (no DEM, no graph, or
+// fully offline) the geometry returned looks plausible on the map but is NOT
+// real terrain/routing output. Surface this to the analyst as a red banner so
+// they don't act on canned shapes.
+const FALLBACK_MODES = new Set<string>([
+  'fixture_no_dem',
+  'fixture_no_passes',
+  'fixture_no_graph',
+  'offline_fixture',
+]);
+function isFallbackMode(mode: AnalyticsMode | undefined): boolean {
+  return mode != null && FALLBACK_MODES.has(String(mode));
+}
 
 export type AnalyticsKind = 'viewshed' | 'los' | 'routes';
 
@@ -128,6 +143,16 @@ export default function AnalyticsToolsPanel({
     setTools((prev) => ({ ...prev, [kind]: { ...prev[kind], ...patch } }));
   }, []);
 
+  const [lastModeByKind, setLastModeByKind] = useState<Record<AnalyticsKind, AnalyticsMode | undefined>>({
+    viewshed: undefined,
+    los: undefined,
+    routes: undefined,
+  });
+
+  const recordMode = useCallback((kind: AnalyticsKind, res: AnalyticsResponse | null) => {
+    setLastModeByKind((prev) => ({ ...prev, [kind]: res?.result?.mode }));
+  }, []);
+
   const onRun = useCallback(async (kind: AnalyticsKind) => {
     const s = tools[kind];
     updateTool(kind, { busy: true, error: null });
@@ -141,6 +166,7 @@ export default function AnalyticsToolsPanel({
           target_height_m: s.targetHeight,
         });
         onResult('viewshed', res);
+        recordMode('viewshed', res);
       } else if (kind === 'los') {
         if (!s.observer || !s.destination) throw new Error('Pick both observer and target');
         const res = await runLineOfSight({
@@ -150,6 +176,7 @@ export default function AnalyticsToolsPanel({
           target_height_m: s.targetHeight,
         });
         onResult('los', res);
+        recordMode('los', res);
       } else {
         if (!s.observer || !s.destination) throw new Error('Pick both start and end');
         const res = await runRoutes({
@@ -158,19 +185,22 @@ export default function AnalyticsToolsPanel({
           strategy: s.strategy === 'all' ? undefined : s.strategy,
         });
         onResult('routes', res);
+        recordMode('routes', res);
       }
     } catch (e: any) {
       updateTool(kind, { error: e?.message ?? String(e) });
       onResult(kind, null);
+      recordMode(kind, null);
     } finally {
       updateTool(kind, { busy: false });
     }
-  }, [tools, updateTool, onResult]);
+  }, [tools, updateTool, onResult, recordMode]);
 
   const onClear = useCallback((kind: AnalyticsKind) => {
     updateTool(kind, { observer: null, destination: null });
     onResult(kind, null);
-  }, [updateTool, onResult]);
+    recordMode(kind, null);
+  }, [updateTool, onResult, recordMode]);
 
   const vs = tools.viewshed;
   const los = tools.los;
@@ -189,6 +219,7 @@ export default function AnalyticsToolsPanel({
         layerOn={layers.viewshed.on}
         layerDisabled={layers.viewshed.disabled}
         onToggleLayer={() => onToggleLayer('viewshed')}
+        fallbackMode={isFallbackMode(lastModeByKind.viewshed) ? lastModeByKind.viewshed : undefined}
       >
         <FieldPick
           label="Observer"
@@ -227,6 +258,7 @@ export default function AnalyticsToolsPanel({
         layerOn={layers.los.on}
         layerDisabled={layers.los.disabled}
         onToggleLayer={() => onToggleLayer('los')}
+        fallbackMode={isFallbackMode(lastModeByKind.los) ? lastModeByKind.los : undefined}
       >
         <FieldPick
           label="OBS"
@@ -253,6 +285,7 @@ export default function AnalyticsToolsPanel({
         layerOn={layers.routes.on}
         layerDisabled={layers.routes.disabled}
         onToggleLayer={() => onToggleLayer('routes')}
+        fallbackMode={isFallbackMode(lastModeByKind.routes) ? lastModeByKind.routes : undefined}
       >
         <FieldPick
           label="START"
@@ -369,6 +402,7 @@ function ToolCard({
   layerOn,
   layerDisabled,
   onToggleLayer,
+  fallbackMode,
   children,
 }: {
   icon: React.ReactNode;
@@ -381,9 +415,19 @@ function ToolCard({
   layerOn: boolean;
   layerDisabled: boolean;
   onToggleLayer: () => void;
+  fallbackMode?: AnalyticsMode;
   children: React.ReactNode;
 }) {
   const layerActive = layerOn && !layerDisabled;
+  const fallbackReason = (() => {
+    switch (fallbackMode) {
+      case 'fixture_no_dem': return 'NO DEM — showing canned shape';
+      case 'fixture_no_passes': return 'NO IMAGERY PASS — showing canned shape';
+      case 'fixture_no_graph': return 'NO ROUTING GRAPH — showing canned shape';
+      case 'offline_fixture': return 'OFFLINE FIXTURE — not real analysis';
+      default: return null;
+    }
+  })();
   return (
     <div className="border border-sentinel-line-2 bg-sentinel-bg p-2">
       <div className="flex items-center gap-2 pb-1">
@@ -418,6 +462,20 @@ function ToolCard({
           CLEAR
         </button>
       </div>
+      {fallbackReason && (
+        <div
+          role="alert"
+          className="mt-2 font-mono text-[10px] uppercase tracking-wider"
+          style={{
+            border: '1px solid #ff5c5c',
+            color: '#ff8b8b',
+            background: 'rgba(255, 92, 92, 0.08)',
+            padding: '4px 6px',
+          }}
+        >
+          ⚠ {fallbackReason}
+        </div>
+      )}
       {error && (
         <div className="mt-2 font-mono text-[10px] text-sentinel-crit">{error}</div>
       )}

@@ -179,7 +179,10 @@ def test_unknown_label_logged():
     assert r.was_unknown is True
     assert r.branch_id == "Other"
     assert r.icon_key == "circle_help"
-    assert r.parent_class == "unknown"
+    # Phase 6.24: unknown labels keep their canonical form so the UI can still
+    # render a meaningful pill instead of collapsing every novel detection to
+    # "unknown". was_unknown=True still flags it for ontology curation.
+    assert r.parent_class == "zxqkk_unicorn_battalion_3000"
     assert _unknown_count(label) >= 1
 
 

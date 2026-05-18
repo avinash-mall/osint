@@ -204,8 +204,20 @@ def ensure_platform_tables() -> None:
                     priority VARCHAR(50) DEFAULT 'Medium',
                     geom GEOMETRY(POLYGON, 4326),
                     metadata JSONB DEFAULT '{}',
+                    -- Phase 6.26: per-AOI default allegiance for incoming
+                    -- detections. "unknown" preserves current behaviour;
+                    -- analysts working a known-hostile theatre can flip
+                    -- this to "hostile" so new detections start with the
+                    -- right colour/threat default instead of always going
+                    -- through the neutral assumption.
+                    default_allegiance VARCHAR(20) DEFAULT 'unknown',
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                 )
+            """)
+            # Existing installs predate the default_allegiance column; backfill it.
+            cursor.execute("""
+                ALTER TABLE aois
+                ADD COLUMN IF NOT EXISTS default_allegiance VARCHAR(20) DEFAULT 'unknown'
             """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS collection_requirements (
@@ -346,7 +358,10 @@ def ensure_platform_tables() -> None:
                     rationale TEXT,
                     sources JSONB DEFAULT '[]',
                     payload JSONB DEFAULT '{}',
-                    confidence REAL DEFAULT 0.55,
+                    -- Phase 2.9: confidence is NOT NULL with no default so a
+                    -- caller that forgets to score a proposal fails loudly
+                    -- instead of inheriting an arbitrary 0.55 optimism prior.
+                    confidence REAL NOT NULL,
                     risk_level VARCHAR(50) DEFAULT 'low',
                     status VARCHAR(50) DEFAULT 'pending_approval',
                     proposed_by VARCHAR(100) DEFAULT 'llm',
@@ -413,6 +428,28 @@ def ensure_platform_tables() -> None:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_ai_action_status ON ai_action_proposals(status)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_detection_target_candidates_detection ON detection_target_candidates(detection_id, status)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_detection_target_candidates_target ON detection_target_candidates(target_id, status)")
+            # Phase 6.25: configurable threat policy. Rules are matched by
+            # (class, category, allegiance); the most-specific match wins
+            # (class > category > allegiance-only). When no rule matches,
+            # threat stays "unrated" (the open-vocab default).
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS threat_rules (
+                    id SERIAL PRIMARY KEY,
+                    -- Match keys; NULL = wildcard (matches anything).
+                    class VARCHAR(255),
+                    category VARCHAR(80),
+                    allegiance VARCHAR(20),
+                    -- Outcome.
+                    threat_level VARCHAR(20) NOT NULL CHECK (threat_level IN ('low', 'medium', 'high', 'critical', 'unrated')),
+                    threat_confidence REAL NOT NULL DEFAULT 0.8,
+                    rationale TEXT,
+                    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_threat_rules_class ON threat_rules(class) WHERE enabled = TRUE")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_threat_rules_category ON threat_rules(category) WHERE enabled = TRUE")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_ontology_updates_source ON ontology_updates(source_type, source_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_ontology_updates_status ON ontology_updates(status)")
 

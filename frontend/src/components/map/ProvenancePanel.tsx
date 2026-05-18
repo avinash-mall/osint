@@ -66,15 +66,42 @@ export default function ProvenancePanel({ selectedDetection }: { selectedDetecti
         <Kv label="Model version" value={meta.model_version || '—'} mono />
         <Kv label="Original class" value={meta.original_class || p.class || '—'} mono />
         <Kv label="Parent class" value={meta.parent_class || p.parent_class || '—'} mono />
+        {/* Phase 7.36: provenance shows the full calibration story —
+            raw model logit -> temperature-scaled calibrated score -> what
+            NMS / threshold gate / candidate-linking actually consume.
+            Without this, the analyst sees a "confidence" number with no
+            indication of whether it has been re-weighted. */}
         <Kv
           label="Confidence"
           value={
-            meta.calibrated_confidence != null
-              ? `${Math.round(Number(meta.calibrated_confidence) * 100)}% · raw ${Math.round(Number(p.confidence || 0) * 100)}%`
-              : `${Math.round(Number(p.confidence || 0) * 100)}%`
+            meta.calibrated_confidence != null && meta.raw_confidence != null
+              ? `${Math.round(Number(meta.calibrated_confidence) * 100)}% calibrated · ${Math.round(Number(meta.raw_confidence) * 100)}% raw`
+              : meta.calibrated_confidence != null
+                ? `${Math.round(Number(meta.calibrated_confidence) * 100)}% · raw ${Math.round(Number(p.confidence || 0) * 100)}%`
+                : `${Math.round(Number(p.confidence || 0) * 100)}%`
           }
           mono
         />
+        {meta.model_temperature != null && Number(meta.model_temperature) !== 1 && (
+          <Kv
+            label="Calibration T"
+            value={`${Number(meta.model_temperature).toFixed(2)} (${Number(meta.model_temperature) > 1 ? 'softened' : 'sharpened'})`}
+            mono
+          />
+        )}
+        {meta.position_uncertainty_m != null && (
+          <Kv
+            label="Position ±"
+            value={`${Number(meta.position_uncertainty_m).toFixed(1)} m`}
+            mono
+          />
+        )}
+        {meta.scale_pass != null && Number(meta.scale_pass) > 0 && (
+          <Kv label="Scale pass" value={`small-object pass ${meta.scale_pass}`} mono />
+        )}
+        {meta.dedupe_method && (
+          <Kv label="Dedup method" value={String(meta.dedupe_method)} mono />
+        )}
         <Kv label="Threshold profile" value={meta.threshold_profile || '—'} mono />
         <Kv label="Class threshold" value={meta.class_threshold != null ? Number(meta.class_threshold).toFixed(2) : '—'} mono />
       </Panel>

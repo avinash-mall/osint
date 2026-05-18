@@ -29,6 +29,7 @@ from shapely.geometry import Polygon, MultiPolygon
 import numpy as np
 from PIL import Image
 from imagery_metadata import extract_raster_metadata
+from calibration import calibrate_confidence
 from detection_policy import active_detection_policy, detection_decision, parent_class_for_label
 from threat_assessment import (
     assess_detection_threat,
@@ -87,10 +88,62 @@ _INFERENCE_PROFILE_DEFAULTS = INFERENCE_SPEED_PROFILES[INFERENCE_SPEED_PROFILE]
 MAX_INFERENCE_CHIPS = env_int("MAX_INFERENCE_CHIPS", _INFERENCE_PROFILE_DEFAULTS["max_chips"])
 DEFAULT_INFERENCE_CHIP_SIZE = env_int("INFERENCE_CHIP_SIZE", _INFERENCE_PROFILE_DEFAULTS["chip_size"])
 DEFAULT_INFERENCE_OVERLAP = env_int("INFERENCE_CHIP_OVERLAP", _INFERENCE_PROFILE_DEFAULTS["overlap"])
+# Phase 1.3: optional second-scale chip pass at a smaller window so the model
+# gets a higher pixel-per-object budget on small targets (TELs, fuel bowsers,
+# light armour, etc.). When > 0 and != DEFAULT_INFERENCE_CHIP_SIZE,
+# slice_and_infer runs the second pass after the main pass; both passes share
+# the dedupe index so duplicates across scales are suppressed by NMS.
+INFERENCE_SMALL_OBJECT_CHIP_SIZE = env_int("INFERENCE_SMALL_OBJECT_CHIP_SIZE", 0)
+INFERENCE_SMALL_OBJECT_OVERLAP = env_int("INFERENCE_SMALL_OBJECT_OVERLAP", 128)
+INFERENCE_SMALL_OBJECT_MAX_CHIPS = env_int(
+    "INFERENCE_SMALL_OBJECT_MAX_CHIPS", _INFERENCE_PROFILE_DEFAULTS["max_chips"] or 0
+)
 INFERENCE_CHIP_CONCURRENCY = max(1, env_int("INFERENCE_CHIP_CONCURRENCY", _INFERENCE_PROFILE_DEFAULTS["concurrency"]))
 INFERENCE_CHIP_TIMEOUT_S = env_int("INFERENCE_CHIP_TIMEOUT_S", 120)
 INFERENCE_MIN_VALID_CHIP_FRACTION = max(0.0, min(1.0, env_float("INFERENCE_MIN_VALID_CHIP_FRACTION", 0.01)))
 INFERENCE_MIN_VALID_DETECTION_FRACTION = max(0.0, min(1.0, env_float("INFERENCE_MIN_VALID_DETECTION_FRACTION", 0.20)))
+
+
+def _load_per_class_valid_fractions() -> dict[str, float]:
+    """Phase 3.10: per-class minimum-valid-pixel fractions.
+
+    The global 0.20 floor drops legitimate detections where >80% of the bbox
+    sits on cloud/water/nodata pixels — fine for dense ground vehicles, but
+    over-conservative for ships at water edges or aircraft partially obscured
+    by cloud. Operators set per-class overrides via ``PER_CLASS_VALID_FRACTION_OVERRIDES``
+    JSON; unrecognised classes fall back to ``INFERENCE_MIN_VALID_DETECTION_FRACTION``.
+
+    Suggested defaults for an analyst tuning this in production::
+
+        {"ship": 0.05, "naval": 0.05, "aircraft": 0.10,
+         "vehicle": 0.25, "building": 0.30, "infrastructure": 0.30}
+    """
+    raw_env = (os.getenv("PER_CLASS_VALID_FRACTION_OVERRIDES") or "").strip()
+    out: dict[str, float] = {}
+    if raw_env:
+        try:
+            parsed = json.loads(raw_env)
+            if isinstance(parsed, dict):
+                for key, value in parsed.items():
+                    try:
+                        out[str(key).strip().lower()] = max(0.0, min(1.0, float(value)))
+                    except (TypeError, ValueError):
+                        continue
+        except json.JSONDecodeError:
+            logger.warning("PER_CLASS_VALID_FRACTION_OVERRIDES is not valid JSON; ignoring")
+    return out
+
+
+_PER_CLASS_VALID_FRACTION_OVERRIDES: dict[str, float] = _load_per_class_valid_fractions()
+
+
+def _valid_fraction_threshold_for(det_class: str | None) -> float:
+    if not det_class or not _PER_CLASS_VALID_FRACTION_OVERRIDES:
+        return INFERENCE_MIN_VALID_DETECTION_FRACTION
+    return _PER_CLASS_VALID_FRACTION_OVERRIDES.get(
+        str(det_class).strip().lower(),
+        INFERENCE_MIN_VALID_DETECTION_FRACTION,
+    )
 DETECTION_POLICY = active_detection_policy()
 INFERENCE_MAX_PENDING_CHIPS = max(
     1,
@@ -348,7 +401,20 @@ def clip_box_to_valid_mask(
     y1: float,
     x2: float,
     y2: float,
+    min_valid_fraction: float | None = None,
 ) -> tuple[float, float, float, float] | None:
+    """Clip a bbox to its valid-pixel envelope.
+
+    Phase 3.10: ``min_valid_fraction`` is overridable per call so callers
+    (which know the detection's parent_class) can apply a class-specific
+    floor — water-edge ships keep at 0.05, large infrastructure at 0.30.
+    Falls back to the global ``INFERENCE_MIN_VALID_DETECTION_FRACTION``
+    when no override is passed.
+    """
+    threshold = (
+        INFERENCE_MIN_VALID_DETECTION_FRACTION if min_valid_fraction is None
+        else max(0.0, min(1.0, float(min_valid_fraction)))
+    )
     if valid_mask is None:
         return x1, y1, x2, y2
     height, width = valid_mask.shape[:2]
@@ -372,7 +438,7 @@ def clip_box_to_valid_mask(
     if valid_count <= 0:
         return None
     valid_fraction = valid_count / max(1, box_mask.size)
-    if valid_fraction < INFERENCE_MIN_VALID_DETECTION_FRACTION:
+    if valid_fraction < threshold:
         return None
 
     valid_y, valid_x = np.nonzero(box_mask)
@@ -416,11 +482,88 @@ def clamp_float(value: float, low: float, high: float) -> float:
     return max(low, min(high, float(value)))
 
 
+def _load_per_class_iou_thresholds() -> dict[str, float]:
+    """Phase 2.7: per-class NMS IoU floors.
+
+    A single global 0.45 threshold over-suppresses dense small objects (dense
+    truck convoys) and under-suppresses overlapping large structures
+    (hangars, terminals). This map lets the operator set tighter / looser
+    thresholds per parent_class via env (``PER_CLASS_NMS_IOU_OVERRIDES``,
+    JSON dict) or via the DB ``inference_config`` row. Falls back to the
+    global default when no class-specific value exists.
+    """
+    raw_env = (os.getenv("PER_CLASS_NMS_IOU_OVERRIDES") or "").strip()
+    out: dict[str, float] = {}
+    if raw_env:
+        try:
+            parsed = json.loads(raw_env)
+            if isinstance(parsed, dict):
+                for key, value in parsed.items():
+                    try:
+                        out[str(key).strip().lower()] = max(0.0, min(1.0, float(value)))
+                    except (TypeError, ValueError):
+                        continue
+        except json.JSONDecodeError:
+            logger.warning("PER_CLASS_NMS_IOU_OVERRIDES is not valid JSON; ignoring")
+    return out
+
+
+_PER_CLASS_IOU_THRESHOLDS: dict[str, float] = _load_per_class_iou_thresholds()
+
+
+def _load_per_model_trust_weights() -> dict[str, float]:
+    """Phase 2.8: per-model trust weights.
+
+    Multiplies the detection's confidence at NMS-comparison time so a tuned
+    DOTA-OBB output isn't drowned out by an over-confident SAM3 mask score.
+    Env: ``PER_MODEL_TRUST_WEIGHTS`` JSON dict keyed by ``source_layer`` /
+    ``model_version`` substring (case-insensitive). Unrecognised models keep
+    weight 1.0.
+    """
+    raw_env = (os.getenv("PER_MODEL_TRUST_WEIGHTS") or "").strip()
+    out: dict[str, float] = {}
+    if raw_env:
+        try:
+            parsed = json.loads(raw_env)
+            if isinstance(parsed, dict):
+                for key, value in parsed.items():
+                    try:
+                        out[str(key).strip().lower()] = max(0.0, float(value))
+                    except (TypeError, ValueError):
+                        continue
+        except json.JSONDecodeError:
+            logger.warning("PER_MODEL_TRUST_WEIGHTS is not valid JSON; ignoring")
+    return out
+
+
+_PER_MODEL_TRUST_WEIGHTS: dict[str, float] = _load_per_model_trust_weights()
+
+
+def _trust_weight_for(det: dict) -> float:
+    if not _PER_MODEL_TRUST_WEIGHTS:
+        return 1.0
+    for tag in (det.get("source_layer"), det.get("model_version"), det.get("parent_class"), det.get("class")):
+        if not tag:
+            continue
+        key = str(tag).strip().lower()
+        if key in _PER_MODEL_TRUST_WEIGHTS:
+            return _PER_MODEL_TRUST_WEIGHTS[key]
+        # Allow substring match (e.g. "dota_obb" in "dota_obb:v1.2")
+        for src_key, weight in _PER_MODEL_TRUST_WEIGHTS.items():
+            if src_key and src_key in key:
+                return weight
+    return 1.0
+
+
 class _DetectionDedupeIndex:
     """Incremental NMS with the same IoU+bucket algorithm as the old
     deduplicate_detections, but with state that persists across chip
     boundaries — so slice_and_infer can dedupe and store survivors as each
-    chip completes (instead of one giant batch at the very end of inference)."""
+    chip completes (instead of one giant batch at the very end of inference).
+
+    Phase 2.7/2.8: IoU thresholds are now per-class, and the sort key
+    incorporates per-model trust weights so a tuned specialist isn't
+    drowned out by a loud generalist."""
 
     BUCKET_SIZE = 512
 
@@ -430,18 +573,43 @@ class _DetectionDedupeIndex:
         self.raw_seen = 0
         self.kept_count = 0
 
+    def _iou_for_class(self, det_class: str | None, modality: str | None = None) -> float:
+        """Per-class IoU floor. Phase 5.22: SAR detections are point-like and
+        speckle-driven, so a tighter default (0.25 vs 0.45 optical) suppresses
+        the long tail of weak overlapping detections that flood the SAR
+        output. The per-class override map still wins when a class is listed.
+        """
+        if det_class:
+            override = _PER_CLASS_IOU_THRESHOLDS.get(str(det_class).strip().lower())
+            if override is not None:
+                return override
+        if (modality or "").strip().lower() == "sar":
+            try:
+                return float(os.getenv("SAR_NMS_IOU_DEFAULT", "0.25"))
+            except ValueError:
+                return 0.25
+        return self.iou_threshold
+
     def add(self, detections: list) -> list:
         """Run the new batch through NMS against the running index.
 
-        Returns the list of survivors (mutated state). The batch is sorted
-        confidence-DESC so within-batch the highest scorer suppresses its
-        lower-confidence overlapping siblings — matching the prior global
-        dedup behaviour for detections found in the same chip."""
+        Returns the list of survivors (mutated state). The batch is sorted by
+        ``trust_weight * confidence`` so a high-trust specialist suppresses a
+        lower-trust generalist when they overlap — matching the principle
+        WBF will eventually replace this with, while preserving the simple
+        NMS contract for now."""
         if not detections:
             return []
 
+        def _sort_key(item: dict) -> float:
+            try:
+                conf = float(item.get("confidence") or 0.0)
+            except (TypeError, ValueError):
+                conf = 0.0
+            return _trust_weight_for(item) * conf
+
         survivors: list[dict] = []
-        for det in sorted(detections, key=lambda item: item.get("confidence", 0), reverse=True):
+        for det in sorted(detections, key=_sort_key, reverse=True):
             self.raw_seen += 1
             if not det.get("pixel_bbox"):
                 det.setdefault("dedupe_method", "obb_nms")
@@ -453,13 +621,14 @@ class _DetectionDedupeIndex:
             cx = int(((x1 + x2) / 2) // self.BUCKET_SIZE)
             cy = int(((y1 + y2) / 2) // self.BUCKET_SIZE)
             det_class = det.get("parent_class") or det.get("class")
+            iou_for_class = self._iou_for_class(det_class, det.get("modality"))
             suppressed = False
             for dx in (-1, 0, 1):
                 if suppressed:
                     break
                 for dy in (-1, 0, 1):
                     for existing in self.buckets.get((det_class, cx + dx, cy + dy), ()):
-                        if detection_overlap(det, existing) >= self.iou_threshold:
+                        if detection_overlap(det, existing) >= iou_for_class:
                             suppressed = True
                             break
                     if suppressed:
@@ -473,6 +642,93 @@ class _DetectionDedupeIndex:
             self.kept_count += 1
         return survivors
 
+    def reconcile_edge_truncated(self, survivors: list[dict]) -> tuple[list[dict], int]:
+        """Phase 3.12: cross-chip edge reconciliation.
+
+        After every chip has finished and the global NMS has run, some
+        ``edge_truncated`` detections still survive because their per-chip
+        bbox didn't IoU-overlap the matching detection from the adjacent
+        chip — each saw a different half of the object. This second pass
+        scans each edge_truncated survivor against neighbours in the same
+        class within 1 spatial bucket (so cross-chip pairs land in the same
+        comparison window). When a pair is found whose pixel-bbox union
+        forms a meaningful continuation, we keep the higher-confidence
+        survivor as a ``reconciled`` detection with the union bbox and
+        drop the lower-confidence half. The merged detection is flagged
+        ``dedupe_method="edge_reconciled"`` so provenance can show that
+        an edge stitching happened.
+
+        Returns ``(reconciled_survivors, merge_count)``.
+        """
+        if not survivors:
+            return survivors, 0
+        truncated = [det for det in survivors if det.get("edge_truncated")]
+        if len(truncated) < 2:
+            return survivors, 0
+        # Pre-bucket by (class, bucket_cx, bucket_cy) for cheap neighbour lookup.
+        buckets: dict[tuple[str, int, int], list[dict]] = {}
+        for det in truncated:
+            bb = det.get("pixel_bbox") or []
+            if len(bb) < 4:
+                continue
+            x1, y1, x2, y2 = bb[:4]
+            cx = int(((x1 + x2) / 2) // self.BUCKET_SIZE)
+            cy = int(((y1 + y2) / 2) // self.BUCKET_SIZE)
+            det_class = det.get("parent_class") or det.get("class")
+            buckets.setdefault((det_class, cx, cy), []).append(det)
+        suppressed_ids: set[int] = set()
+        merges = 0
+        for det in truncated:
+            if id(det) in suppressed_ids:
+                continue
+            bb = det.get("pixel_bbox") or []
+            if len(bb) < 4:
+                continue
+            x1, y1, x2, y2 = bb[:4]
+            cx = int(((x1 + x2) / 2) // self.BUCKET_SIZE)
+            cy = int(((y1 + y2) / 2) // self.BUCKET_SIZE)
+            det_class = det.get("parent_class") or det.get("class")
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for other in buckets.get((det_class, cx + dx, cy + dy), ()):
+                        if other is det or id(other) in suppressed_ids:
+                            continue
+                        obb = other.get("pixel_bbox") or []
+                        if len(obb) < 4:
+                            continue
+                        ox1, oy1, ox2, oy2 = obb[:4]
+                        # Centroids close OR bboxes adjacent / overlapping.
+                        det_cx = (x1 + x2) / 2
+                        det_cy = (y1 + y2) / 2
+                        other_cx = (ox1 + ox2) / 2
+                        other_cy = (oy1 + oy2) / 2
+                        d = math.hypot(det_cx - other_cx, det_cy - other_cy)
+                        if d > max((x2 - x1), (y2 - y1)) + max((ox2 - ox1), (oy2 - oy1)):
+                            continue  # too far apart
+                        # Pick the higher-confidence detection as the
+                        # survivor; expand its bbox to the union of both.
+                        det_conf = float(det.get("confidence") or 0.0)
+                        other_conf = float(other.get("confidence") or 0.0)
+                        winner, loser = (det, other) if det_conf >= other_conf else (other, det)
+                        winner["pixel_bbox"] = [
+                            min(x1, ox1), min(y1, oy1),
+                            max(x2, ox2), max(y2, oy2),
+                        ]
+                        winner["dedupe_method"] = "edge_reconciled"
+                        winner["edge_truncated"] = False  # union is no longer partial
+                        suppressed_ids.add(id(loser))
+                        merges += 1
+                        break
+                    if id(det) in suppressed_ids:
+                        break
+                if id(det) in suppressed_ids:
+                    break
+        if not suppressed_ids:
+            return survivors, 0
+        reconciled = [det for det in survivors if id(det) not in suppressed_ids]
+        self.kept_count = max(0, self.kept_count - len(suppressed_ids))
+        return reconciled, merges
+
 
 def deduplicate_detections(
     detections: list,
@@ -483,6 +739,157 @@ def deduplicate_detections(
     if not detections:
         return []
     return _DetectionDedupeIndex(iou_threshold=iou_threshold).add(detections)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.6: Weighted Boxes Fusion (Solovyev et al. 2019).
+#
+# Where NMS picks one survivor per overlapping cluster and drops the rest,
+# WBF averages every box in the cluster, weighted by (trust_weight × calibrated
+# confidence), to produce a single fused box whose confidence is the cluster's
+# average rather than the max. This rewards multi-detector agreement instead
+# of letting the loudest single model dominate, and is the recommended
+# post-calibration ensembling step in the modern aerial object-detection
+# literature.
+#
+# Implemented here as a stateful index with the same ``.add(batch) -> list``
+# contract as ``_DetectionDedupeIndex`` so it can be swapped in by env flag
+# (``DEDUPE_METHOD=wbf``). Default remains the existing NMS path; WBF is
+# opt-in until we have the larger evaluation harness from Phase 9 in place
+# to validate it doesn't regress per-class recall.
+# ---------------------------------------------------------------------------
+
+
+class _WeightedBoxFusionIndex:
+    """Stateful WBF clusterer. Same contract as ``_DetectionDedupeIndex``.
+
+    Maintains per-class clusters in spatial buckets. When a new detection
+    overlaps an existing cluster, the cluster's fused bbox is updated to
+    the (weight-weighted) average of every member box, and the new
+    detection is added to the cluster's member list. When no cluster
+    overlaps, a new single-member cluster is started.
+
+    ``.add(batch)`` returns the current set of cluster heads — one per
+    cluster, with bbox = fused average + confidence = (sum of confidences) /
+    expected_models. This is the same return shape as ``_DetectionDedupeIndex``,
+    so callers swap one for the other without further changes.
+    """
+
+    BUCKET_SIZE = 512
+
+    def __init__(
+        self,
+        iou_threshold: float = 0.55,
+        expected_models: int = 2,
+    ) -> None:
+        self.iou_threshold = iou_threshold
+        self.expected_models = max(1, int(expected_models))
+        # bucket → list[cluster]; cluster is a dict with the fused detection
+        # plus a parallel ``_members`` list of contributing weights/boxes.
+        self.buckets: dict[tuple[str, int, int], list[dict]] = {}
+        # Order-preserving list of cluster heads, in insertion order.
+        self.clusters: list[dict] = []
+        self.raw_seen = 0
+        self.kept_count = 0
+
+    def _iou_for_class(self, det_class: str | None) -> float:
+        if det_class:
+            override = _PER_CLASS_IOU_THRESHOLDS.get(str(det_class).strip().lower())
+            if override is not None:
+                return override
+        return self.iou_threshold
+
+    @staticmethod
+    def _bucket_of(bbox: list[float]) -> tuple[int, int]:
+        cx = int(((bbox[0] + bbox[2]) / 2) // _WeightedBoxFusionIndex.BUCKET_SIZE)
+        cy = int(((bbox[1] + bbox[3]) / 2) // _WeightedBoxFusionIndex.BUCKET_SIZE)
+        return cx, cy
+
+    @staticmethod
+    def _weighted_average(members: list[dict]) -> tuple[list[float], float]:
+        """Return (fused_bbox_xyxy, weight_sum) for the cluster's members."""
+        total = sum(m["weight"] for m in members)
+        if total <= 0:
+            return members[0]["bbox"], 0.0
+        fused = [0.0, 0.0, 0.0, 0.0]
+        for m in members:
+            w = m["weight"] / total
+            bb = m["bbox"]
+            for i in range(4):
+                fused[i] += w * bb[i]
+        return fused, total
+
+    def add(self, detections: list) -> list:
+        if not detections:
+            return []
+        for det in sorted(detections, key=lambda d: _trust_weight_for(d) * float(d.get("confidence") or 0.0), reverse=True):
+            self.raw_seen += 1
+            bbox = det.get("pixel_bbox")
+            if not bbox or len(bbox) < 4:
+                # Pass-through for detections without a bbox; treat as its
+                # own cluster so it survives.
+                det.setdefault("dedupe_method", "wbf")
+                cluster = {"head": det, "_members": [], "_class": det.get("parent_class") or det.get("class")}
+                self.clusters.append(cluster)
+                self.kept_count += 1
+                continue
+            try:
+                conf = float(det.get("confidence") or 0.0)
+            except (TypeError, ValueError):
+                conf = 0.0
+            weight = _trust_weight_for(det) * conf
+            det_class = det.get("parent_class") or det.get("class")
+            iou_for_class = self._iou_for_class(det_class)
+            cx, cy = self._bucket_of(bbox)
+            best_cluster: dict | None = None
+            best_iou = 0.0
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for cand in self.buckets.get((det_class, cx + dx, cy + dy), ()):
+                        head = cand["head"]
+                        overlap = detection_overlap(det, head)
+                        if overlap >= iou_for_class and overlap > best_iou:
+                            best_iou = overlap
+                            best_cluster = cand
+            if best_cluster is not None:
+                # Append to existing cluster, recompute fused bbox.
+                best_cluster["_members"].append({"bbox": list(bbox[:4]), "weight": weight, "raw_conf": conf, "source": det.get("source_layer")})
+                fused_bbox, _ = self._weighted_average(best_cluster["_members"])
+                head = best_cluster["head"]
+                head["pixel_bbox"] = fused_bbox
+                # Cluster confidence = mean(member raw_conf) × min(N, expected) / expected
+                # — the second factor rewards multi-detector agreement.
+                n = len(best_cluster["_members"])
+                mean_conf = sum(m["raw_conf"] for m in best_cluster["_members"]) / n
+                agreement_factor = min(n, self.expected_models) / self.expected_models
+                head["confidence"] = max(0.0, min(1.0, mean_conf * (0.5 + 0.5 * agreement_factor)))
+                head["dedupe_method"] = "wbf"
+                head["wbf_member_count"] = n
+                head["wbf_member_sources"] = sorted({
+                    m["source"] or "unknown" for m in best_cluster["_members"]
+                })
+            else:
+                det.setdefault("dedupe_method", "wbf")
+                det["wbf_member_count"] = 1
+                det["wbf_member_sources"] = [det.get("source_layer") or "unknown"]
+                cluster = {
+                    "head": det,
+                    "_class": det_class,
+                    "_members": [{"bbox": list(bbox[:4]), "weight": weight, "raw_conf": conf, "source": det.get("source_layer")}],
+                }
+                self.buckets.setdefault((det_class, cx, cy), []).append(cluster)
+                self.clusters.append(cluster)
+                self.kept_count += 1
+        return [c["head"] for c in self.clusters]
+
+    def reconcile_edge_truncated(self, survivors: list[dict]) -> tuple[list[dict], int]:
+        """No-op for WBF. The fusion step already handles cross-chip
+        contributions to the same object — adding a second pass of
+        edge-truncated reconciliation would double-merge. Returns the
+        input survivor list unchanged + zero merges so the
+        non-streaming caller's contract still works.
+        """
+        return list(survivors), 0
 
 
 def sample_axis_indices(count: int, sample_count: int) -> list[int]:
@@ -732,27 +1139,73 @@ def slice_and_infer(
         transform = src.transform
         crs = src.crs
 
-        dedupe_idx = _DetectionDedupeIndex()
+        # Phase 2.6: opt-in WBF dedup. ``DEDUPE_METHOD=wbf`` swaps the
+        # confidence-greedy NMS for confidence-averaged Weighted Boxes
+        # Fusion so multi-detector agreement boosts the fused score
+        # rather than the loudest single model winning. Default remains
+        # NMS until the larger eval harness validates WBF doesn't
+        # regress per-class recall.
+        if (os.getenv("DEDUPE_METHOD", "nms") or "nms").strip().lower() == "wbf":
+            dedupe_idx: _DetectionDedupeIndex | _WeightedBoxFusionIndex = _WeightedBoxFusionIndex(
+                iou_threshold=float(os.getenv("WBF_IOU_THRESHOLD", "0.55")),
+                expected_models=int(os.getenv("WBF_EXPECTED_MODELS", "2")),
+            )
+        else:
+            dedupe_idx = _DetectionDedupeIndex()
         all_kept: list[dict] = []  # only populated when not streaming
         completed_chip_count = 0
 
-        grid = plan_inference_grid(width, height, chip_size, overlap, max_chips)
-        step = grid["step"]
-        total_windows = grid["planned_total"]
+        # Phase 1.3: build the list of (chip_size, overlap, max_chips) passes.
+        # The first entry is the main pass at the caller's configured size;
+        # an optional second entry runs at INFERENCE_SMALL_OBJECT_CHIP_SIZE so
+        # small-class targets get a higher pixel-per-object budget. Both
+        # passes share the same dedupe_idx, so NMS suppresses cross-scale
+        # duplicates of the same object.
+        chip_passes: list[tuple[int, int, int]] = [(chip_size, overlap, max_chips)]
+        if (
+            INFERENCE_SMALL_OBJECT_CHIP_SIZE > 0
+            and INFERENCE_SMALL_OBJECT_CHIP_SIZE != chip_size
+        ):
+            chip_passes.append((
+                INFERENCE_SMALL_OBJECT_CHIP_SIZE,
+                INFERENCE_SMALL_OBJECT_OVERLAP,
+                INFERENCE_SMALL_OBJECT_MAX_CHIPS,
+            ))
+
+        # Pre-plan every pass so total_windows = sum across passes — keeps the
+        # progress callback's percentage monotonic 0-100% across multi-scale.
+        pass_plans: list[dict] = []
+        for pass_chip_size, pass_overlap, pass_max_chips in chip_passes:
+            g = plan_inference_grid(width, height, pass_chip_size, pass_overlap, pass_max_chips)
+            pass_plans.append({
+                "chip_size": pass_chip_size,
+                "overlap": pass_overlap,
+                "max_chips": pass_max_chips,
+                "grid": g,
+                "step": g["step"],
+                "planned_total": g["planned_total"],
+            })
+        total_windows = sum(p["planned_total"] for p in pass_plans)
         processed_windows = 0
         failed_windows = 0
         last_reported_percent = None
-        coverage_fraction = round(total_windows / max(1, grid["source_total"]), 4)
+
+        # The first pass is the primary one for summary fields; per-pass
+        # breakdown lives under `passes`.
+        main_plan = pass_plans[0]
+        grid = main_plan["grid"]
+        step = main_plan["step"]
+        coverage_fraction = round(total_windows / max(1, sum(p["grid"]["source_total"] for p in pass_plans)), 4)
         inference_summary = {
             "chip_size": chip_size,
             "overlap": overlap,
             "step": step,
             "planned_chips": total_windows,
-            "source_total_chips": grid["source_total"],
+            "source_total_chips": sum(p["grid"]["source_total"] for p in pass_plans),
             "processed_chips": 0,
             "inference_speed_profile": INFERENCE_SPEED_PROFILE,
             "coverage_fraction": coverage_fraction,
-            "sampling_enabled": grid["sampled"],
+            "sampling_enabled": any(p["grid"]["sampled"] for p in pass_plans),
             "max_inference_chips": grid["max_chips"],
             "dedupe_method": "obb_nms",
             "threshold_profile": DETECTION_POLICY["threshold_profile"],
@@ -760,6 +1213,17 @@ def slice_and_infer(
             "model_version": DETECTION_POLICY["model_version"],
             "max_pending_chips": INFERENCE_MAX_PENDING_CHIPS,
             "chip_spool_max_bytes": INFERENCE_CHIP_SPOOL_MAX_BYTES,
+            "multi_scale": len(pass_plans) > 1,
+            "passes": [
+                {
+                    "chip_size": p["chip_size"],
+                    "overlap": p["overlap"],
+                    "planned_chips": p["planned_total"],
+                    "source_total_chips": p["grid"]["source_total"],
+                    "sampling_enabled": p["grid"]["sampled"],
+                }
+                for p in pass_plans
+            ],
         }
 
         if progress_callback:
@@ -842,12 +1306,18 @@ def slice_and_infer(
                 chip_px_w = max(0.0, w * win_width)
                 chip_px_h = max(0.0, h * win_height)
 
+                # Phase 3.10: apply per-class valid-fraction threshold so
+                # water-edge ships aren't dropped at the same 0.20 floor as
+                # ground vehicles. parent_class is derived from the
+                # ontology normalizer in _apply_chip_response.
+                _det_class_for_clip = det.get("parent_class") or det.get("class")
                 local_box = clip_box_to_valid_mask(
                     valid_mask,
                     chip_px_cx - chip_px_w / 2,
                     chip_px_cy - chip_px_h / 2,
                     chip_px_cx + chip_px_w / 2,
                     chip_px_cy + chip_px_h / 2,
+                    min_valid_fraction=_valid_fraction_threshold_for(_det_class_for_clip),
                 )
                 if local_box is None:
                     continue
@@ -890,7 +1360,23 @@ def slice_and_infer(
                 lon1, lat1, lon2, lat2 = min(lons), min(lats), max(lons), max(lats)
 
                 original_class = det.get("original_class") or det.get("class", "unknown")
-                confidence = float(det.get("confidence") or det.get("calibrated_confidence") or 0.0)
+                raw_confidence = float(det.get("confidence") or 0.0)
+                # Phase 2.5: apply per-model temperature scaling so different
+                # detectors' confidence distributions become comparable before
+                # NMS and the per-class threshold gate consume them. T defaults
+                # to 1.0 (identity) when no calibration is configured for this
+                # model — the call is safe and cheap.
+                model_tag = (
+                    det.get("source_layer")
+                    or det.get("model_version")
+                    or DETECTION_POLICY.get("model_version")
+                )
+                confidence = calibrate_confidence(raw_confidence, model_tag)
+                from calibration import temperature_for as _t_for
+                det["raw_confidence"] = raw_confidence
+                det["calibrated_confidence"] = confidence
+                det["model_temperature"] = _t_for(model_tag)
+                det["confidence"] = confidence
                 decision = detection_decision(original_class, confidence, DETECTION_POLICY)
                 policy_review_status = decision["review_status"]
                 # Open-vocab policy: drop only when the operator explicitly raised
@@ -918,6 +1404,45 @@ def slice_and_infer(
                 det["pixel_obb"] = pixel_obb
                 det["geo_bbox"] = [lon1, lat1, lon2, lat2]
                 det["geo_polygon"] = geo_polygon
+                # Phase 3.11: position-uncertainty ellipse — replaces the
+                # Phase 7.35 scalar with semi-major / semi-minor axes in
+                # metres and a bearing in degrees (clockwise from north,
+                # WGS-84 convention). The ellipse is anisotropic when the
+                # raster pixel is non-square or the CRS is geographic
+                # (where 1° lon shrinks with cos(latitude)), which is the
+                # common case for Sentinel-1 / Landsat tiles. The
+                # ``position_uncertainty_m`` scalar is preserved as the
+                # 95%-CEP equivalent (semi-major × 1) so downstream code
+                # that already consumes it keeps working.
+                try:
+                    px_w = abs(float(transform.a))
+                    px_h = abs(float(transform.e))
+                    if crs and crs.is_geographic:
+                        mid_lat_rad = math.radians((lat1 + lat2) / 2.0)
+                        meters_per_deg_lat = 111_320.0
+                        meters_per_deg_lon = 111_320.0 * max(math.cos(mid_lat_rad), 0.01)
+                        sigma_x_m = 2.0 * px_w * meters_per_deg_lon  # easting
+                        sigma_y_m = 2.0 * px_h * meters_per_deg_lat  # northing
+                    else:
+                        sigma_x_m = 2.0 * px_w
+                        sigma_y_m = 2.0 * px_h
+                    # Map (sigma_x, sigma_y) to (semi-major, semi-minor) +
+                    # bearing. With axis-aligned pixel uncertainty the
+                    # bearing is 0° when sigma_y dominates (north-south) or
+                    # 90° when sigma_x dominates (east-west).
+                    semi_major = max(sigma_x_m, sigma_y_m)
+                    semi_minor = min(sigma_x_m, sigma_y_m)
+                    bearing_deg = 0.0 if sigma_y_m >= sigma_x_m else 90.0
+                    det["position_uncertainty_m"] = round(semi_major, 3)
+                    det["position_uncertainty_ellipse"] = {
+                        "semi_major_m": round(semi_major, 3),
+                        "semi_minor_m": round(semi_minor, 3),
+                        "bearing_deg": bearing_deg,
+                        "confidence": 0.95,  # 2-sigma ≈ 95%
+                        "source": "gsd_propagation",
+                    }
+                except Exception:
+                    pass
                 det["chip_id"] = f"{pass_id}:{x}:{y}:{win_width}:{win_height}"
                 det["chip_window"] = [x, y, win_width, win_height]
                 det["chip_valid_fraction"] = ctx.get("valid_fraction")
@@ -1002,65 +1527,106 @@ def slice_and_infer(
         pending_limit = INFERENCE_MAX_PENDING_CHIPS
 
         try:
-            for y_index in grid["y_indices"]:
-                y = y_index * step
-                for x_index in grid["x_indices"]:
-                    x = x_index * step
-                    win_width = min(chip_size, width - x)
-                    win_height = min(chip_size, height - y)
-                    window = Window(x, y, win_width, win_height)
-
-                    valid_mask = valid_data_mask(src, window)
-                    valid_fraction = (
-                        float(np.count_nonzero(valid_mask)) / max(1, valid_mask.size)
-                        if valid_mask is not None
-                        else 1.0
+            for pass_index, plan in enumerate(pass_plans):
+                # Rebind per-pass closure variables. _apply_chip_response,
+                # _report_inference_progress, _consume_one read `grid`,
+                # `chip_size`, `step`, `coverage_fraction`, `total_windows`
+                # by closure, so the rebind here takes effect for them too.
+                chip_size = plan["chip_size"]
+                step = plan["step"]
+                grid = plan["grid"]
+                # `coverage_fraction` is now an across-pass average; keep the
+                # single rebound value for chip metadata. _apply_chip_response
+                # records this on each detection.
+                if pass_index == 0 and progress_callback:
+                    if grid["sampled"]:
+                        msg = f"Large raster detected; sampling {plan['planned_total']} of {grid['source_total']} chips for inference."
+                    else:
+                        msg = f"Prepared {total_windows} raster chips for inference."
+                    progress_callback(
+                        "inference", 56, msg,
+                        {
+                            "planned_chips": total_windows,
+                            "total_chips": total_windows,
+                            "source_total_chips": grid["source_total"],
+                            "processed_chips": 0,
+                            "failed_chips": 0,
+                            "inference_speed_profile": INFERENCE_SPEED_PROFILE,
+                            "max_inference_chips": grid["max_chips"],
+                            "sampling_enabled": inference_summary["sampling_enabled"],
+                            "coverage_fraction": coverage_fraction,
+                            "multi_scale": inference_summary["multi_scale"],
+                        },
                     )
-                    if valid_fraction < INFERENCE_MIN_VALID_CHIP_FRACTION:
-                        continue
-                    chip = src.read(window=window)
-                    if np.all(chip == 0) or (src.nodata is not None and np.all(chip == src.nodata)):
-                        continue
-
-                    chip_file, chip_meta = _emit_chip_payload(
-                        window,
-                        src,
-                        valid_mask=valid_mask,
+                elif pass_index > 0:
+                    logger.info(
+                        "[WORKER] Starting small-object pass %s: chip_size=%s overlap=%s planned_chips=%s",
+                        pass_index, chip_size, plan["overlap"], plan["planned_total"],
                     )
-                    chip_meta_payload = json.dumps({
-                        "pass_id": pass_id,
-                        "window": [x, y, win_width, win_height],
-                        **inference_metadata,
-                        **chip_meta,
-                    })
-                    chip_label = f"pass={pass_id} x={x} y={y}"
 
-                    future = executor.submit(
-                        _post_chip_to_sam3,
-                        session, chip_file, chip_meta_payload, chip_label,
-                    )
-                    del chip
-                    pending[future] = {
-                        "x": x, "y": y, "win_width": win_width, "win_height": win_height,
-                        "valid_mask": valid_mask,
-                        "valid_fraction": round(valid_fraction, 4),
-                    }
+                for y_index in grid["y_indices"]:
+                    y = y_index * step
+                    for x_index in grid["x_indices"]:
+                        x = x_index * step
+                        win_width = min(chip_size, width - x)
+                        win_height = min(chip_size, height - y)
+                        window = Window(x, y, win_width, win_height)
 
-                    while len(pending) >= pending_limit:
-                        done, _ = concurrent.futures.wait(
-                            list(pending.keys()),
-                            return_when=concurrent.futures.FIRST_COMPLETED,
+                        valid_mask = valid_data_mask(src, window)
+                        valid_fraction = (
+                            float(np.count_nonzero(valid_mask)) / max(1, valid_mask.size)
+                            if valid_mask is not None
+                            else 1.0
                         )
-                        for fut in done:
-                            _consume_one(fut)
+                        if valid_fraction < INFERENCE_MIN_VALID_CHIP_FRACTION:
+                            continue
+                        chip = src.read(window=window)
+                        if np.all(chip == 0) or (src.nodata is not None and np.all(chip == src.nodata)):
+                            continue
 
-            while pending:
-                done, _ = concurrent.futures.wait(
-                    list(pending.keys()),
-                    return_when=concurrent.futures.FIRST_COMPLETED,
-                )
-                for fut in done:
-                    _consume_one(fut)
+                        chip_file, chip_meta = _emit_chip_payload(
+                            window,
+                            src,
+                            valid_mask=valid_mask,
+                        )
+                        chip_meta_payload = json.dumps({
+                            "pass_id": pass_id,
+                            "window": [x, y, win_width, win_height],
+                            "scale_pass": pass_index,
+                            **inference_metadata,
+                            **chip_meta,
+                        })
+                        chip_label = f"pass={pass_id} scale={pass_index} x={x} y={y}"
+
+                        future = executor.submit(
+                            _post_chip_to_sam3,
+                            session, chip_file, chip_meta_payload, chip_label,
+                        )
+                        del chip
+                        pending[future] = {
+                            "x": x, "y": y, "win_width": win_width, "win_height": win_height,
+                            "valid_mask": valid_mask,
+                            "valid_fraction": round(valid_fraction, 4),
+                            "scale_pass": pass_index,
+                        }
+
+                        while len(pending) >= pending_limit:
+                            done, _ = concurrent.futures.wait(
+                                list(pending.keys()),
+                                return_when=concurrent.futures.FIRST_COMPLETED,
+                            )
+                            for fut in done:
+                                _consume_one(fut)
+
+                # Drain this pass before starting the next so per-pass detections
+                # are stored before the smaller-scale chips run against them.
+                while pending:
+                    done, _ = concurrent.futures.wait(
+                        list(pending.keys()),
+                        return_when=concurrent.futures.FIRST_COMPLETED,
+                    )
+                    for fut in done:
+                        _consume_one(fut)
         finally:
             executor.shutdown(wait=False, cancel_futures=True)
             session.close()
@@ -1070,8 +1636,222 @@ def slice_and_infer(
     inference_summary["raw_detections"] = dedupe_idx.raw_seen
     inference_summary["deduped_detections"] = dedupe_idx.kept_count
     inference_summary["suppressed_detections"] = max(0, dedupe_idx.raw_seen - dedupe_idx.kept_count)
-    # When streaming, `all_kept` is empty and survivors are already persisted.
+    # Phase 3.12: cross-chip edge reconciliation runs only on the non-streaming
+    # path (where the full survivor list is in memory). Streaming mode pushes
+    # each chip's survivors to ``on_chip_store`` immediately and cannot wait
+    # for a hypothetical complementary detection from a future chip; a
+    # follow-up will add a small buffer of edge_truncated survivors with a
+    # bounded flush window for the streaming case.
+    if not streaming and all_kept:
+        reconciled, merge_count = dedupe_idx.reconcile_edge_truncated(all_kept)
+        all_kept = reconciled
+        inference_summary["edge_reconciled_pairs"] = merge_count
+        inference_summary["deduped_detections"] = dedupe_idx.kept_count
     return {"detections": all_kept, "summary": inference_summary}
+
+
+def run_sar_cfar_for_pass(
+    cog_path: str,
+    pass_id: int,
+    *,
+    threshold_sigma: float = 2.5,
+    guard_px: int = 4,
+    background_px: int = 20,
+    min_pixels: int = 4,
+    on_chip_store=None,
+) -> dict:
+    """Phase 5.20b: run the SAR CFAR detector across a Sentinel-1 (or
+    similar) GRD COG and ingest the resulting ship detections.
+
+    Companion to Phase 5.20's "skip SAM3 on SAR by default" gate — once SAM3
+    is muted, this is what produces detections for SAR rasters. The
+    detector lives in :mod:`backend.sar_cfar` and runs entirely on the CPU
+    worker; no GPU / inference-service round trip needed.
+
+    Reuses :func:`plan_inference_grid` for chip planning + the same
+    pixel→geo transform that ``slice_and_infer`` uses, so the resulting
+    detections share the exact same provenance shape as the SAM3 path
+    (chip_id, chip_window, pixel_bbox, geo_bbox, geo_polygon, sampling_*
+    metadata, …). Stored via ``on_chip_store`` when streaming, or
+    accumulated and stored at the end otherwise.
+
+    Args follow ``detect_ships_cfar`` plus an ``on_chip_store`` callback
+    that matches ``slice_and_infer``'s contract: ``(survivor_dets, chip_index) -> None``.
+    Returns the same shape as ``slice_and_infer``::
+
+        {"detections": [..], "summary": {..}}
+    """
+    from sar_cfar import detect_ships_cfar  # local import: keep worker startup cheap
+
+    streaming = on_chip_store is not None
+    summary: dict = {
+        "method": "sar_cfar",
+        "modality": "sar",
+        "threshold_sigma": threshold_sigma,
+        "guard_px": guard_px,
+        "background_px": background_px,
+        "min_pixels": min_pixels,
+    }
+    all_kept: list[dict] = []
+
+    with rasterio.open(cog_path) as src:
+        width = src.width
+        height = src.height
+        transform = src.transform
+        crs = src.crs
+
+        # Pick VV (band 1) + optional VH (band 2) — Sentinel-1 IW GRD is
+        # always (VV, VH) in that order. Other 2-band SAR formats follow
+        # the same convention. Single-band rasters fall back to VV-only.
+        try:
+            vv = src.read(1).astype(np.float32)
+        except Exception as exc:
+            logger.warning("[CFAR] failed to read band 1 from %s: %s", cog_path, exc)
+            return {"detections": [], "summary": {**summary, "error": str(exc)}}
+        vh: np.ndarray | None = None
+        if src.count >= 2:
+            try:
+                vh = src.read(2).astype(np.float32)
+            except Exception as exc:
+                logger.warning("[CFAR] failed to read band 2: %s", exc)
+                vh = None
+
+        # The CFAR runs on dB-scaled backscatter. Heuristic: if the input
+        # values span > 50 they're already in dB; otherwise treat as linear
+        # amplitude and convert.
+        def _to_db(arr: np.ndarray) -> np.ndarray:
+            if arr.size == 0:
+                return arr
+            span = float(arr.max() - arr.min())
+            if span > 50.0 or arr.min() < -1.0:
+                return arr
+            with np.errstate(divide="ignore", invalid="ignore"):
+                return 10.0 * np.log10(np.maximum(arr, 1e-6))
+        vv = _to_db(vv)
+        if vh is not None:
+            vh = _to_db(vh)
+
+        # Plan a coarse chip grid so very large COGs stay bounded. CFAR is
+        # cheap so the chip size can be much larger than the SAM3 inference
+        # chip — 4096 px gives plenty of context for the background window.
+        chip_size = int(os.getenv("SAR_CFAR_CHIP_SIZE", "4096"))
+        overlap = int(os.getenv("SAR_CFAR_OVERLAP", "256"))
+        grid = plan_inference_grid(width, height, chip_size, overlap, max_chips=0)
+        step = grid["step"]
+        summary["planned_chips"] = grid["planned_total"]
+        summary["source_total_chips"] = grid["source_total"]
+        summary["sampling_enabled"] = grid["sampled"]
+        coverage_fraction = round(grid["planned_total"] / max(1, grid["source_total"]), 4)
+
+        chip_index = 0
+        for y_idx in grid["y_indices"]:
+            y = y_idx * step
+            for x_idx in grid["x_indices"]:
+                x = x_idx * step
+                win_w = min(chip_size, width - x)
+                win_h = min(chip_size, height - y)
+                if win_w <= 2 * background_px + 1 or win_h <= 2 * background_px + 1:
+                    continue  # too small for the CFAR window
+                tile_vv = vv[y : y + win_h, x : x + win_w]
+                tile_vh = vh[y : y + win_h, x : x + win_w] if vh is not None else None
+                try:
+                    cfar_dets = detect_ships_cfar(
+                        tile_vv, tile_vh,
+                        threshold_sigma=threshold_sigma,
+                        guard_px=guard_px,
+                        background_px=background_px,
+                        min_pixels=min_pixels,
+                    )
+                except Exception as exc:
+                    logger.warning("[CFAR] chip x=%s y=%s failed: %s", x, y, exc)
+                    cfar_dets = []
+                if not cfar_dets:
+                    continue
+                chip_index += 1
+
+                survivors: list[dict] = []
+                for det in cfar_dets:
+                    # CFAR pixel_bbox is in tile-local coords; lift to COG-global.
+                    lx1, ly1, lx2, ly2 = det["pixel_bbox"]
+                    abs_px = [
+                        float(x + lx1), float(y + ly1),
+                        float(x + lx2), float(y + ly2),
+                    ]
+                    pixel_obb = [
+                        abs_px[0], abs_px[1],
+                        abs_px[2], abs_px[1],
+                        abs_px[2], abs_px[3],
+                        abs_px[0], abs_px[3],
+                    ]
+                    # Pixel → geo via the COG transform; reproject to WGS84
+                    # when CRS isn't already lat/lon, matching slice_and_infer.
+                    pts = [
+                        (pixel_obb[i], pixel_obb[i + 1])
+                        for i in range(0, 8, 2)
+                    ]
+                    lons, lats = [], []
+                    for px, py in pts:
+                        lon_v, lat_v = transform * (px, py)
+                        lons.append(lon_v)
+                        lats.append(lat_v)
+                    if crs and crs.to_string() != "EPSG:4326":
+                        from rasterio.warp import transform as rasterio_transform
+                        lons, lats = rasterio_transform(crs, "EPSG:4326", lons, lats)
+                    geo_polygon = [c for pt in zip(lons, lats) for c in pt]
+                    lon1, lat1, lon2, lat2 = min(lons), min(lats), max(lons), max(lats)
+
+                    det.update({
+                        "pixel_bbox": abs_px,
+                        "pixel_obb": pixel_obb,
+                        "geo_bbox": [lon1, lat1, lon2, lat2],
+                        "geo_polygon": geo_polygon,
+                        "chip_id": f"{pass_id}:{x}:{y}:{win_w}:{win_h}:cfar",
+                        "chip_window": [x, y, win_w, win_h],
+                        "coverage_fraction": coverage_fraction,
+                        "planned_chips": grid["planned_total"],
+                        "source_total_chips": grid["source_total"],
+                        "sampling_enabled": grid["sampled"],
+                        "dedupe_method": "sar_cfar",
+                        "source_layer": "sar_cfar",
+                        "modality": "sar",
+                        "scale_pass": 0,
+                    })
+                    survivors.append(det)
+
+                if streaming and survivors:
+                    try:
+                        on_chip_store(survivors, chip_index)
+                    except Exception as exc:
+                        logger.exception("[CFAR] on_chip_store failed: %s", exc)
+                elif survivors:
+                    all_kept.extend(survivors)
+
+        summary["processed_chips"] = chip_index
+        summary["coverage_fraction"] = coverage_fraction
+    return {"detections": all_kept, "summary": summary}
+
+
+def _aoi_default_allegiance_at(cursor, lon: float, lat: float) -> str:
+    """Phase 6.26: return the ``default_allegiance`` of the AOI containing
+    ``(lon, lat)`` — first match wins by smallest area (so nested AOIs work).
+    Falls back to ``"unknown"`` when no AOI matches or the column is missing
+    on an old install.
+    """
+    try:
+        cursor.execute(
+            "SELECT default_allegiance FROM aois "
+            "WHERE geom IS NOT NULL AND ST_Intersects(geom, ST_SetSRID(ST_Point(%s, %s), 4326)) "
+            "ORDER BY ST_Area(geom) ASC LIMIT 1",
+            (lon, lat),
+        )
+        row = cursor.fetchone()
+    except Exception:
+        return "unknown"
+    if not row:
+        return "unknown"
+    raw = row[0] if not isinstance(row, dict) else row.get("default_allegiance")
+    value = (str(raw or "unknown")).strip().lower()
+    return value if value in {"friendly", "hostile", "neutral", "unknown"} else "unknown"
 
 
 def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str, dict] = None):
@@ -1104,7 +1884,15 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
             if ont.was_unknown:
                 unknown_count += 1
             ontology = (ontology_by_class or {}).get(det_class) or detection_ontology(det_class)
-            assessment = assess_detection_threat(det_class, confidence=confidence, allegiance=det.get("allegiance", "unknown"))
+            # Phase 6.26: per-AOI default allegiance. When the detection's
+            # centroid falls inside an AOI with a non-"unknown" default, use
+            # that as the starting allegiance instead of the global "unknown".
+            # An explicit per-detection allegiance (set upstream by the
+            # operator or another worker stage) still wins.
+            allegiance = det.get("allegiance") or _aoi_default_allegiance_at(
+                cursor, (lon1 + lon2) / 2.0, (lat1 + lat2) / 2.0,
+            )
+            assessment = assess_detection_threat(det_class, confidence=confidence, allegiance=allegiance)
             ontology = {
                 **ontology,
                 "original_class": original_class,
@@ -1142,6 +1930,11 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
                     "geo_polygon": geo_polygon,
                     "confidence": confidence,
                     "calibrated_confidence": det.get("calibrated_confidence", confidence),
+                    # Phase 2.5: keep the pre-calibration score visible for
+                    # audit. ``calibrated_confidence`` is what NMS and the
+                    # threshold gate use; the analyst sees both in provenance.
+                    "raw_confidence": det.get("raw_confidence"),
+                    "model_temperature": det.get("model_temperature"),
                     "original_class": original_class,
                     "parent_class": parent_class,
                     # Step 3: defence-ontology fields. Step 5 surfaces these
@@ -1167,12 +1960,17 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
                     "source_total_chips": det.get("source_total_chips"),
                     "sampling_enabled": det.get("sampling_enabled"),
                     "dedupe_method": det.get("dedupe_method", "obb_nms"),
+                    # Phase 7.35: surface the per-detection position uncertainty
+                    # (in metres) so the UI can render an uncertainty halo.
+                    "position_uncertainty_m": det.get("position_uncertainty_m"),
+                    "position_uncertainty_ellipse": det.get("position_uncertainty_ellipse"),
+                    "scale_pass": det.get("scale_pass"),
                     "ontology": ontology,
                     "threat_level": assessment["threat_level"],
                     "threat_confidence": assessment["threat_confidence"],
                     "assessment_status": assessment["assessment_status"],
                     "evidence": assessment["evidence"],
-                    "allegiance": det.get("allegiance", "unknown"),
+                    "allegiance": allegiance,
                     "prompt_profile": det.get("prompt_profile"),
                     "prompt_chunk_index": det.get("prompt_chunk_index"),
                     "prompt_total_chunks": det.get("prompt_total_chunks"),
@@ -1238,7 +2036,7 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
                 "threat_confidence": assessment["threat_confidence"],
                 "assessment_status": assessment["assessment_status"],
                 "ontology_category": ontology["category"],
-                "allegiance": det.get("allegiance", "unknown"),
+                "allegiance": allegiance,
                 "lat": (lat1 + lat2) / 2,
                 "lon": (lon1 + lon2) / 2
             })
@@ -2162,6 +2960,39 @@ def process_satellite_imagery(
             inference_metadata["enabled_layers"] = list(layers_to_use)
             logger.info("[WORKER] Forwarding enabled_layers=%s to /detect", layers_to_use)
 
+        # Phase 5.20: SAM3 is optical-pretrained; running it on TerraMind's
+        # SAR pseudo-RGB injects optical-domain priors into a synthetic
+        # 3-channel view of a SAR scene, which generates spurious detections.
+        # By default we skip SAM3 grounding on SAR rasters and rely on the
+        # TerraMind embedding pass only. Operators can opt back in via the
+        # ``SAM3_ALLOW_ON_SAR=1`` env or the upload form's
+        # ``allow_sam3_on_sar=true`` metadata key.
+        sensor_lower = (sensor_type or "").strip().lower()
+        if sensor_lower == "sar":
+            allow_sam3_on_sar = (
+                upload_meta.get("allow_sam3_on_sar") in {True, "true", "1", 1}
+                or (os.getenv("SAM3_ALLOW_ON_SAR", "0") or "0").strip().lower() in {"1", "true", "yes", "on"}
+            )
+            inference_metadata["modality"] = "sar"
+            inference_metadata["sensor_type"] = "sar"
+            if not allow_sam3_on_sar:
+                # Express to the inference service: skip SAM3 image grounding;
+                # rely on the SAR-specific layers (TerraMind embedding + any
+                # future CFAR detector). The inference container interprets
+                # an empty layer list with explicit ``sam3=false`` as
+                # "embedding-only".
+                inference_metadata["skip_sam3_image"] = True
+                logger.info(
+                    "[WORKER] SAR pass %s: SAM3-on-SAR disabled by default; "
+                    "set allow_sam3_on_sar=true or SAM3_ALLOW_ON_SAR=1 to re-enable.",
+                    pass_id,
+                )
+            else:
+                logger.info(
+                    "[WORKER] SAR pass %s: SAM3-on-SAR enabled by operator opt-in.",
+                    pass_id,
+                )
+
         # Streaming detection storage: each chip's surviving detections are
         # written to PostGIS as soon as the chip finishes inference, and a
         # `detections_partial` WS event lets the frontend pick them up. The
@@ -2208,6 +3039,38 @@ def process_satellite_imagery(
             provider_lifecycle.mark_active()
         except Exception as exc:
             logger.warning("[WORKER] provider_lifecycle.mark_active(post-infer) failed: %s", exc)
+
+        # Phase 5.20b: for SAR rasters, run the local CFAR detector after
+        # the SAM3 / TerraMind chip pass. Always-on for SAR — operators who
+        # want CFAR off explicitly can set ``SAR_CFAR_ENABLED=0``. Routes
+        # detections through the same ``_store_chip`` callback so they go
+        # into PostGIS + fire ``detections_partial`` WS events just like
+        # the SAM3 path.
+        if sensor_lower == "sar" and (
+            os.getenv("SAR_CFAR_ENABLED", "1") or "1"
+        ).strip().lower() in {"1", "true", "yes", "on"}:
+            try:
+                report_progress(
+                    self, upload_id, input_path, "inference", 88,
+                    "Running SAR CFAR ship detector.", {"pass_id": pass_id},
+                )
+                cfar_result = run_sar_cfar_for_pass(
+                    cog_path, pass_id,
+                    threshold_sigma=float(os.getenv("SAR_CFAR_THRESHOLD_SIGMA", "2.5")),
+                    guard_px=int(os.getenv("SAR_CFAR_GUARD_PX", "4")),
+                    background_px=int(os.getenv("SAR_CFAR_BACKGROUND_PX", "20")),
+                    min_pixels=int(os.getenv("SAR_CFAR_MIN_PIXELS", "4")),
+                    on_chip_store=_store_chip,
+                )
+                inference_summary["sar_cfar"] = cfar_result.get("summary") or {}
+                logger.info(
+                    "[WORKER] SAR CFAR pass %s: %s",
+                    pass_id, inference_summary["sar_cfar"],
+                )
+            except Exception as exc:
+                logger.exception("[WORKER] SAR CFAR pass failed for pass %s: %s", pass_id, exc)
+                inference_summary["sar_cfar_error"] = str(exc)
+
         stored_count = streaming_total["stored"]
         logger.info("[WORKER] Total detections after dedupe: %s", stored_count)
 

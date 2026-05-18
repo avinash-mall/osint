@@ -64,6 +64,9 @@ export default function IngestConnect() {
   const [sensorType, setSensorType] = useState('Optical');
   const [fmvModel, setFmvModel] = useState<'sam3' | 'yolo26'>('sam3');
   const [fmvPromptMode, setFmvPromptMode] = useState<'pcs' | 'amg'>('pcs');
+  // Phase 8.41: opt-in synthetic Dubai telemetry. Default off — uploads
+  // without real KLV/GPMD/SRT now fail with HTTP 422 unless this is ticked.
+  const [fmvAllowSynthetic, setFmvAllowSynthetic] = useState(false);
   const [selectedDefenceIds, setSelectedDefenceIds] = useState<Set<string>>(new Set());
   const [objectSearch, setObjectSearch] = useState('');
   const [customObjects, setCustomObjects] = useState('');
@@ -285,6 +288,9 @@ export default function IngestConnect() {
         if (sidecarFile) {
           form.append('srt', sidecarFile);
         }
+        if (fmvAllowSynthetic) {
+          form.append('allow_synthetic_telemetry', 'true');
+        }
       }
       const response = await axios.post(endpoint, form, {
         headers: { 'Content-Type': 'multipart/form-data' },
@@ -430,7 +436,7 @@ export default function IngestConnect() {
   const transferOrJobProgress = uploading ? uploadTransferProgress : uploadProgress(activeJob);
 
   return (
-    <div className="ingest-connect w-full flex-1 min-h-0 bg-slate-950 text-slate-200 overflow-auto">
+    <div className="ingest-connect w-full h-full min-h-0 bg-slate-950 text-slate-200 overflow-auto">
       <div className="max-w-4xl mx-auto p-6 flex flex-col gap-5">
         <div className="flex items-center gap-3 border-b border-slate-800 pb-4">
           <UploadCloud className="w-7 h-7 text-blue-400" />
@@ -578,6 +584,24 @@ export default function IngestConnect() {
                 </button>
               </div>
             </div>
+            {/* Phase 8.41: opt-in synthetic Dubai telemetry for clips without
+                KLV / GPMD / SRT. Default OFF so failures fail loud (HTTP 422)
+                instead of silently shipping garbage georeference. */}
+            <label
+              className="flex items-center gap-2 col-span-full text-xs text-slate-300"
+              title="When ticked, clips missing real KLV/GPMD/SRT telemetry fall back to the synthetic Dubai sine-wave fixture for offline demos. Leave OFF in production — the upload will fail with a clear error instead."
+            >
+              <input
+                type="checkbox"
+                checked={fmvAllowSynthetic}
+                onChange={(event) => setFmvAllowSynthetic(event.target.checked)}
+                disabled={uploading}
+                className="accent-amber-500"
+              />
+              <span>
+                Demo mode: allow synthetic Dubai telemetry if no real KLV/GPMD/SRT present
+              </span>
+            </label>
           </div>
         )}
 
