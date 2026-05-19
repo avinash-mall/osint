@@ -325,6 +325,7 @@ export default function FmvPlayer({
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const rafRef = useRef<number | null>(null);
   const dragRef = useRef(false);
+  const playPromiseRef = useRef<Promise<void> | null>(null);
 
   const { categories } = useDetectionCategories();
 
@@ -814,11 +815,29 @@ export default function FmvPlayer({
     [duration],
   );
 
-  const togglePlay = useCallback(() => {
+  const togglePlay = useCallback(async () => {
     const v = videoRef.current;
     if (!v) return;
-    if (v.paused) v.play();
-    else v.pause();
+    if (v.paused) {
+      try {
+        const p = v.play();
+        playPromiseRef.current = p;
+        await p;
+      } catch (err) {
+        // AbortError fires when pause() lands before play() resolves —
+        // benign, ignore. Surface anything else.
+        if ((err as DOMException)?.name !== 'AbortError') {
+          console.error('Video play failed', err);
+        }
+      } finally {
+        playPromiseRef.current = null;
+      }
+    } else {
+      if (playPromiseRef.current) {
+        try { await playPromiseRef.current; } catch { /* already handled above */ }
+      }
+      v.pause();
+    }
   }, []);
 
   useEffect(() => {
