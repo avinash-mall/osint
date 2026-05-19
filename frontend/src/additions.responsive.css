@@ -1,0 +1,294 @@
+/*
+ * additions.responsive.css — container-query layer for the refactored UI.
+ *
+ * Add this file (don't replace index.css). Drop the line:
+ *
+ *   @import './additions.responsive.css';
+ *
+ * at the bottom of frontend/src/index.css, AFTER your existing rules so
+ * these container queries take precedence.
+ *
+ * Why container queries, not media queries:
+ *   - Shell panels (selection, layer panel) are resizable. Their inner
+ *     layout should respond to THEIR width, not the viewport's.
+ *   - Embedded views (e.g. an admin tab inside a 700 px split-pane on a
+ *     2560 px screen) need to react to their actual width — viewport
+ *     media queries fire at the wrong moments.
+ *   - container-name lets us scope tightly so a narrow selection-panel
+ *     doesn't trigger a layout change in a wide admin tab on the same page.
+ */
+
+/* ─── Spacing + scale tokens (centralised) ─────────────────────────── */
+:root {
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 14px;
+  --space-4: 18px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --text-2xs: 10.5px;
+  --text-xs:  11px;
+  --text-sm:  12px;
+  --text-md:  13px;
+  --text-lg:  16px;
+  --text-hero: 32px;
+  --rail-collapsed: 64px;
+  --rail-expanded:  224px;
+}
+
+/* ─── Shell ──────────────────────────────────────────────────────────── */
+
+.shell-grid {
+  grid-template-columns: var(--rail-collapsed) minmax(0, 1fr);
+}
+.shell-aside {
+  width: var(--rail-width);
+}
+.shell-body {
+  grid-template-rows: 52px minmax(0, 1fr) 28px;
+  container-type: inline-size;
+  container-name: shell-body;
+}
+.shell-topbar {
+  height: 52px;
+  container-type: inline-size;
+  container-name: shell-topbar;
+}
+.shell-statusbar {
+  height: 28px;
+  overflow: hidden;
+  container-type: inline-size;
+  container-name: shell-statusbar;
+}
+
+/* Topbar — collapse search-button label, jump kbd, context line on narrow */
+@container shell-topbar (max-width: 720px) {
+  .shell-jump-label { display: none; }
+  .shell-jump .kbd  { display: none; }
+}
+@container shell-topbar (max-width: 540px) {
+  .shell-context-line { display: none; }
+}
+
+/* Status bar — drop imagery-job verbose fields on narrow */
+@container shell-statusbar (max-width: 820px) {
+  .imagery-job-message { display: none; }
+}
+@container shell-statusbar (max-width: 680px) {
+  .imagery-job-stage    { display: none; }
+  .imagery-job-eta      { display: none; }
+}
+@container shell-statusbar (max-width: 480px) {
+  .imagery-job-filename { display: none; }
+}
+
+/* Analyst chip — hide role on narrow, full name on really narrow */
+@container shell-topbar (max-width: 640px) {
+  .analyst-chip-role { display: none; }
+}
+@container shell-topbar (max-width: 420px) {
+  .analyst-chip-name { display: none; }
+}
+
+/* Cursor readout — drop labels on really narrow */
+@container shell-statusbar (max-width: 380px) {
+  .cursor-readout > span:not([style*="tabular-nums"]) { display: none; }
+}
+
+/* ─── Login screen ───────────────────────────────────────────────────── */
+
+.login-layout {
+  display: grid;
+  grid-template-columns: 1.05fr 1fr;
+}
+.login-brand-pane,
+.login-auth-pane {
+  padding: var(--space-6);
+}
+
+/* When the login pane is narrow (embedded in a re-auth modal, or mobile),
+   stack the brand above the form. The threshold is generous because the
+   brand pane has a tall hero headline. */
+@container login (max-width: 880px) {
+  .login-layout {
+    grid-template-columns: 1fr;
+  }
+  .login-brand-pane {
+    min-height: 240px;
+  }
+}
+
+/* ─── ObjectDetailsForm ──────────────────────────────────────────────── */
+
+.object-details-form {
+  /* Establishes container in component code; layout primitives respond here. */
+}
+
+.object-details-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.object-details-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.object-details-seg {
+  flex-wrap: wrap;
+}
+
+.object-details-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.object-details-meta {
+  font-size: var(--text-2xs);
+  color: var(--ink-3);
+}
+
+.object-details-error {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--nato-hostile);
+  padding: 6px 8px;
+  border: 1px solid var(--nato-hostile);
+  border-radius: 4px;
+}
+
+.object-details-delete {
+  background: color-mix(in oklab, var(--nato-hostile) 12%, var(--bg-2));
+  border-color: color-mix(in oklab, var(--nato-hostile) 55%, var(--line));
+  color: var(--nato-hostile);
+}
+
+/* When the details form is narrow, the segmented control wraps to 2 rows
+   and we shrink the threat-badge in the header. */
+@container object-details (max-width: 340px) {
+  .object-details-seg button {
+    min-width: 30%;
+  }
+  .threat-badge {
+    font-size: 9px;
+    padding: 1px 5px;
+  }
+}
+
+/* ─── Map subpanels ──────────────────────────────────────────────────── */
+
+@container layer-panel (max-width: 260px) {
+  .imagery-compare-row { grid-template-columns: 1fr; }
+}
+
+@container selection-panel (max-width: 320px) {
+  /* Selection panel becomes single-column tab labels */
+  .selection-panel nav[role="tablist"] button {
+    font-size: 9.5px;
+    letter-spacing: .04em;
+    padding: 8px 6px;
+  }
+}
+
+@container gaiamap (max-width: 720px) {
+  /* On narrow workspace widths, hide the selection panel (operator can
+     re-open via the collapsed handle). */
+  .selection-panel { display: none; }
+}
+
+/* ─── Change dialog stat grid ────────────────────────────────────────── */
+
+@container change-dialog (max-width: 460px) {
+  .change-dialog-stats {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+@container change-dialog (max-width: 320px) {
+  .change-dialog-stats {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ─── Admin views ────────────────────────────────────────────────────── */
+
+.admin-screen {
+  /* set in component; this just normalises */
+}
+
+@container admin (max-width: 720px) {
+  /* Collapse the admin nav into icon-only on narrow screens */
+  .admin-screen { grid-template-columns: 56px 1fr; }
+  .admin-nav button span:not(.mono) { display: none; }
+  .admin-nav .panel-h .h-title { display: none; }
+}
+
+@container jobs-list (max-width: 540px) {
+  .admin-job-row { grid-template-columns: 1fr; gap: 6px; }
+  .admin-job-actions { justify-content: flex-start; }
+}
+
+@container alerts-list (max-width: 460px) {
+  .admin-alert-card .mono { font-size: 10px; }
+}
+
+@container models-table (max-width: 640px) {
+  .models-tbl thead { display: none; }
+  .models-tbl tr {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  .models-tbl td {
+    padding: 2px 0 !important;
+  }
+  .models-tbl td:nth-child(1) { grid-column: 1 / -1; font-weight: 600; }
+  .models-tbl td:nth-child(2) { grid-column: 1; font-size: var(--text-xs); color: var(--ink-2); }
+  .models-tbl td:nth-child(3),
+  .models-tbl td:nth-child(4),
+  .models-tbl td:nth-child(5) {
+    grid-column: 1;
+    font-size: var(--text-2xs);
+    color: var(--ink-3);
+  }
+  .models-tbl td:nth-child(6) { grid-row: 1 / 6; grid-column: 2; align-self: center; }
+}
+
+/* ─── Generic Panel atom ─────────────────────────────────────────────── */
+
+.container-panel {
+  /* Panels are containers by default; child rules can opt-in by setting
+     container-name in their style block. */
+}
+
+.responsive-panel .panel-title-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+/* Wide-card stat tiles can become 1-col on narrow */
+@container (max-width: 400px) {
+  .panel-title-row {
+    flex-wrap: wrap;
+  }
+}
+
+/* ─── Reduced-motion ─────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .shell-aside,
+  .change-dialog-loading,
+  [class*="transition"] {
+    transition: none !important;
+    animation: none !important;
+  }
+}

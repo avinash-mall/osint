@@ -1,36 +1,25 @@
+﻿// Lightweight type aliases consumed by the new map/ sub-components
+// (MapStage, LayerPanel, SelectionPanel, ChangeDetectionDialog). The
+// monolith owns its own richer internal shapes; these exports are the
+// public contract for incremental extraction.
+export type Detection = any;
+export type Pass = any;
+
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Circle, CircleMarker, GeoJSON, ImageOverlay, MapContainer, Marker, Polyline, Popup, Rectangle, TileLayer, useMap, useMapEvents, ZoomControl } from 'react-leaflet';
 import L from 'leaflet';
 import axios from 'axios';
-import { renderToStaticMarkup } from 'react-dom/server';
-import { forward as mgrsForward } from 'mgrs';
 import {
   Activity,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
-  CircleHelp,
   Crosshair,
-  Eye,
-  EyeOff,
-  GitBranch,
   Layers,
-  Minus,
-  Navigation,
   Pause,
   Play,
-  Plus,
   RefreshCw,
-  Satellite,
-  Search,
-  Send,
-  Shield,
-  Sparkles,
-  Swords,
 } from 'lucide-react';
-import { objectIconComponent } from '../utils/branchIcons';
-import { IconRenderer, iconComponentByKey } from '../utils/iconLibrary';
 import 'leaflet/dist/leaflet.css';
 import { useEventStream } from '../hooks/useEventStream';
 import {
@@ -41,533 +30,37 @@ import {
   detectionClassSource,
   useDetectionCategories,
   type DetectionCategoryId,
-  type DetectionCategoryMap,
 } from '../utils/detectionTaxonomy';
 import type { OntologyBranch } from '../utils/useOntology';
-import ObjectDetailsForm from './ObjectDetailsForm';
-import { useAuth } from '../hooks/useAuth';
-import ReviewPanel from './map/ReviewPanel';
-import SimilarPanel from './map/SimilarPanel';
+import {
+  confidenceValue,
+  detectionCategoryForFeature,
+  detectionClassKeys,
+  detectionLabel,
+  makeDetectionStyle,
+  timestampInRange,
+  trackColorFor,
+  type DetectionClassStat,
+  type DetectionTrack,
+} from './map/_helpers';
+import { makeDetectionIcon } from './map/_icons';
+import LayerPanel from './map/LayerPanel';
+import MapStage, { type MapHandle } from './map/MapStage';
+import SelectionPanel from './map/SelectionPanel';
 import TimeMachineBar from './map/TimeMachineBar';
-import AnalyticsToolsPanel, {
+import { useAuth } from '../hooks/useAuth';
+import {
   type AnalyticsKind,
   type AnalyticsPick,
 } from './map/AnalyticsToolsPanel';
 import type { AnalyticsResponse } from '../services/analytics';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
-const TILE_PROXY_URL = import.meta.env.VITE_TILE_PROXY_URL || '/tiles';
-const CARTO_BASEMAP_URL = '/basemap/{z}/{x}/{y}.png';
-const TERRAIN_BASEMAP_URL = '/terrain/{z}/{x}/{y}.png';
 const DETECTION_CENTER_MARKER_LIMIT = 800;
-const CanvasGeoJSON = GeoJSON as any;
 
-delete (L.Icon.Default.prototype as any)._getIconUrl;
+// Module-level icon factories + detection helpers live in map/_helpers + map/_icons.
 
-const createIcon = (color: string) => new L.Icon({
-  iconUrl: `data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIlMjMzYjgyZjYiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cGF0aCBkPSJNMjEgMTBsLTkgMTVMMyAxMGw5LTl6Ii8+PC9zdmc+`.replace('%233b82f6', encodeURIComponent(color)),
-  iconSize: [20, 20],
-  iconAnchor: [10, 20],
-  popupAnchor: [0, -20],
-});
-
-const blueIcon = createIcon('#4ea1ff');
-const redIcon = createIcon('#ff3b30');
-const emeraldIcon = createIcon('#3dd68c');
-
-function detectionLabel(feature: any) {
-  const props = feature?.properties || {};
-  return String(props.original_class || props.metadata?.original_class || props.class || props.label || 'Unknown');
-}
-
-function detectionClassKeys(feature: any): string[] {
-  const props = feature?.properties || {};
-  return Array.from(new Set([
-    props.original_class,
-    props.metadata?.original_class,
-    props.class,
-    props.parent_class,
-    props.metadata?.parent_class,
-  ].filter(Boolean).map((value) => String(value))));
-}
-
-/**
- * Server-computed branch id is now the source of truth. The frontend no
- * longer regex-classifies — features without a `branch_id` fall to
- * `Other` (consistent with the legend's catch-all bucket).
- */
-function detectionCategoryForFeature(feature: any): DetectionCategoryId {
-  return branchIdForFeature(feature);
-}
-
-function confidenceValue(feature: any) {
-  const confidence = Number(feature?.properties?.confidence);
-  return Number.isFinite(confidence) ? confidence : 0;
-}
-
-function detectionCenter(feature: any): [number, number] | null {
-  const geometry = feature?.geometry;
-  const coordinates = geometry?.coordinates;
-  if (!geometry || !coordinates) return null;
-  if (geometry.type === 'Point' && coordinates.length >= 2) {
-    return [Number(coordinates[1]), Number(coordinates[0])];
-  }
-  const ring = geometry.type === 'Polygon' ? coordinates?.[0] : geometry.type === 'MultiPolygon' ? coordinates?.[0]?.[0] : null;
-  if (!Array.isArray(ring) || ring.length === 0) return null;
-  const points = ring.filter((point: any) => Array.isArray(point) && point.length >= 2);
-  if (points.length === 0) return null;
-  const lon = points.reduce((sum: number, point: any) => sum + Number(point[0]), 0) / points.length;
-  const lat = points.reduce((sum: number, point: any) => sum + Number(point[1]), 0) / points.length;
-  return Number.isFinite(lat) && Number.isFinite(lon) ? [lat, lon] : null;
-}
-
-function detectionBadgePosition(feature: any): [number, number] | null {
-  const geometry = feature?.geometry;
-  const coordinates = geometry?.coordinates;
-  if (!geometry || !coordinates) return null;
-  if (geometry.type === 'Point' && coordinates.length >= 2) {
-    return [Number(coordinates[1]), Number(coordinates[0])];
-  }
-
-  const points: Array<[number, number]> = [];
-  const collectPoints = (items: any) => {
-    if (!Array.isArray(items)) return;
-    if (items.length >= 2 && typeof items[0] === 'number' && typeof items[1] === 'number') {
-      const lon = Number(items[0]);
-      const lat = Number(items[1]);
-      if (Number.isFinite(lat) && Number.isFinite(lon)) points.push([lat, lon]);
-      return;
-    }
-    for (const item of items) collectPoints(item);
-  };
-  collectPoints(coordinates);
-  if (points.length === 0) return null;
-
-  const north = Math.max(...points.map(([lat]) => lat));
-  const west = Math.min(...points.map(([, lon]) => lon));
-  return [north, west];
-}
-
-interface DetectionTrackHistoryPoint {
-  lat: number;
-  lng: number;
-  time: string;
-  detection_id: number;
-  seq_index: number;
-  cost: number;
-}
-
-interface DetectionTrack {
-  id: string;
-  track_uid: string;
-  primary_class: string;
-  category: string;
-  threat_level: string;
-  status: 'tentative' | 'confirmed' | 'coast' | 'lost' | 'pinned';
-  pinned: boolean;
-  obs_count: number;
-  miss_count: number;
-  first_seen: string | null;
-  last_seen: string | null;
-  latest: { lat: number; lon: number; class: string };
-  history: DetectionTrackHistoryPoint[];
-  path_geojson: string | null;
-  last_velocity: { vx_mps?: number; vy_mps?: number };
-  metadata: Record<string, unknown>;
-}
-
-const TRACKER_CATEGORY_TO_CATEGORY_ID: Record<string, DetectionCategoryId> = {
-  maritime: 'Naval_Maritime',
-  ground: 'Transportation_Terrain',
-  air: 'Airfield_Aviation',
-  combat: 'Military_Forces',
-  infrastructure: 'Industrial_Dual_Use',
-  facility: 'Urban_Tactical',
-  energy: 'Industrial_Dual_Use',
-  logistics: 'Logistics',
-  default: 'Other',
-  unknown: 'Other',
-};
-
-function trackColorFor(category: string, categories: DetectionCategoryMap): string {
-  const catId = TRACKER_CATEGORY_TO_CATEGORY_ID[category] ?? 'Other';
-  return categoryFor(catId, categories).color;
-}
-
-function trackDashArray(status: DetectionTrack['status']): string | undefined {
-  if (status === 'confirmed' || status === 'pinned') return undefined;
-  if (status === 'coast') return '4 6';
-  if (status === 'tentative') return '2 8';
-  return undefined;
-}
-
-function relativeTime(iso: string | null): string {
-  if (!iso) return 'never';
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
-}
-
-function timestampInRange(timestamp: string | null | undefined, range: { start: string; end: string }): boolean {
-  if (!timestamp) return false;
-  const time = new Date(timestamp).getTime();
-  const start = new Date(range.start).getTime();
-  const end = new Date(range.end).getTime();
-  return Number.isFinite(time) && Number.isFinite(start) && Number.isFinite(end) && time >= start && time <= end;
-}
-
-function extendBoundsWithCoordinates(bounds: L.LatLngBounds, coordinates: any): void {
-  if (!Array.isArray(coordinates)) return;
-  if (coordinates.length >= 2 && typeof coordinates[0] === 'number' && typeof coordinates[1] === 'number') {
-    const lon = Number(coordinates[0]);
-    const lat = Number(coordinates[1]);
-    if (Number.isFinite(lat) && Number.isFinite(lon)) bounds.extend([lat, lon]);
-    return;
-  }
-  for (const item of coordinates) extendBoundsWithCoordinates(bounds, item);
-}
-
-function geojsonFeatureBounds(geojson: any): L.LatLngBounds | null {
-  const bounds = L.latLngBounds([]);
-  for (const feature of geojson?.features || []) {
-    extendBoundsWithCoordinates(bounds, feature?.geometry?.coordinates);
-  }
-  return bounds.isValid() ? bounds : null;
-}
-
-function featureCentroid(feature: any): [number, number] | null {
-  if (!feature?.geometry) return null;
-  const bounds = L.latLngBounds([]);
-  extendBoundsWithCoordinates(bounds, feature.geometry.coordinates);
-  if (!bounds.isValid()) return null;
-  const center = bounds.getCenter();
-  return [center.lat, center.lng];
-}
-
-function featureLatLonBounds(feature: any): { south: number; west: number; north: number; east: number } | null {
-  if (!feature?.geometry) return null;
-  const bounds = L.latLngBounds([]);
-  extendBoundsWithCoordinates(bounds, feature.geometry.coordinates);
-  if (!bounds.isValid()) return null;
-  return {
-    south: bounds.getSouth(),
-    west: bounds.getWest(),
-    north: bounds.getNorth(),
-    east: bounds.getEast(),
-  };
-}
-
-function threatClass(level?: string) {
-  switch (String(level || '').toLowerCase()) {
-    case 'critical':
-      return 'crit';
-    case 'high':
-      return 'warn';
-    case 'medium':
-      return 'acc';
-    default:
-      return '';
-  }
-}
-
-const HEAVY_OUTLINE_CATEGORIES: ReadonlySet<DetectionCategoryId> = new Set([
-  'Military_Forces',
-  'Air_Defense_EW',
-  'Missile_Strategic',
-  'Battle_Damage',
-  'Industrial_Dual_Use',
-] as DetectionCategoryId[]);
-
-function makeDetectionStyle(categories: DetectionCategoryMap) {
-  return (feature: any) => {
-    const category = detectionCategoryForFeature(feature);
-    const color = categoryFor(category, categories).color;
-    const isHeavy = HEAVY_OUTLINE_CATEGORIES.has(category);
-    return {
-      color,
-      weight: isHeavy ? 1.8 : 1.3,
-      opacity: 0.92,
-      fillColor: color,
-      fillOpacity: confidenceValue(feature) > 0.85 ? 0.14 : 0.05,
-      dashArray: category === 'Military_Forces' ? '2, 3' : '3, 4',
-    };
-  };
-}
-
-type DetectionClassStat = {
-  rawClass: string;
-  parentClass?: string;
-  label: string;
-  count: number;
-  maxConfidence: number;
-  color: string;
-  ontology?: any;
-  threatLevel?: string;
-  category: DetectionCategoryId;
-  source: string;
-  // Phase 7.29: non-authoritative LLM suggestion for this class. The
-  // deterministic label/category/threat above remain the authoritative
-  // values shown to the analyst — this advisory just adds an "AI
-  // suggested" pill alongside, so model hallucination can be inspected
-  // without overriding the model's actual class.
-  llmAdvisory?: {
-    label?: string | null;
-    description?: string | null;
-    recommended_filter?: string | null;
-    generated_by?: string | null;
-  } | null;
-};
-
-function CategoryIcon({
-  category,
-  branchById,
-  className = 'h-3.5 w-3.5',
-}: {
-  category: DetectionCategoryId;
-  branchById: Map<string, OntologyBranch>;
-  className?: string;
-}) {
-  const branch = branchById.get(category);
-  return <IconRenderer iconKey={branch?.icon_key ?? null} className={className} />;
-}
-
-function DetectionSubclassIcon({
-  iconKey,
-  label,
-  category,
-  branchById,
-  className = 'h-3.5 w-3.5',
-}: {
-  iconKey?: string | null;
-  label?: string | null;
-  category: DetectionCategoryId;
-  branchById: Map<string, OntologyBranch>;
-  className?: string;
-}) {
-  const branch = branchById.get(category);
-  const branchIconKey = branch?.icon_key ?? null;
-  // Prefer an explicit iconKey from the feature; fall back to the branch-level
-  // key. If neither resolves, fall through to the legacy regex matcher (kept
-  // available as a last-resort) and finally to CircleHelp via IconRenderer.
-  if (iconKey || branchIconKey) {
-    return <IconRenderer iconKey={iconKey ?? null} fallbackBranchKey={branchIconKey as any} className={className} />;
-  }
-  // Last-resort: regex on the raw label.
-  const Icon = objectIconComponent(label, branchIconKey as any);
-  return <Icon className={className} />;
-}
-
-function makeDetectionIcon(
-  categories: DetectionCategoryMap,
-  branchById: Map<string, OntologyBranch>,
-) {
-  return (feature: any) => {
-    const category = detectionCategoryForFeature(feature);
-    const color = categoryFor(category, categories).color;
-    const props = feature?.properties || {};
-    const branch = branchById.get(category);
-    const branchIconKey = branch?.icon_key ?? null;
-    // 1. Explicit icon_key from backend feature properties (Step 9 preferred path).
-    // 2. Branch-level icon_key fallback.
-    // 3. Legacy regex matcher on the raw class/label.
-    const featureIconKey: string | null = props.icon_key ?? null;
-    const Icon =
-      iconComponentByKey(featureIconKey) ??
-      iconComponentByKey(branchIconKey) ??
-      objectIconComponent(props.original_class || props.class || props.label, branchIconKey as any);
-    const iconMarkup = renderToStaticMarkup(<Icon size={12} strokeWidth={2.2} />);
-    return L.divIcon({
-      className: '',
-      iconSize: [14, 14],
-      iconAnchor: [15, 15],
-      html: `<div class="sentinel-detection-icon" style="color:${color};border-color:${color};box-shadow:0 0 8px ${color}55;">${iconMarkup}</div>`,
-    });
-  };
-}
-
-function MapBoundsUpdater({ onBoundsChange }: { onBoundsChange: (bounds: string) => void }) {
-  const map = useMap();
-  useEffect(() => {
-    const handleMoveEnd = () => {
-      const b = map.getBounds();
-      onBoundsChange(`${b.getWest()},${b.getSouth()},${b.getEast()},${b.getNorth()}`);
-    };
-    map.on('moveend', handleMoveEnd);
-    handleMoveEnd();
-    return () => { map.off('moveend', handleMoveEnd); };
-  }, [map, onBoundsChange]);
-  return null;
-}
-
-// Phase 7.35: emits the current map zoom so the parent can decide whether to
-// render position-uncertainty halos (we only show them at zoom >= 14 to avoid
-// drawing thousands of circles when zoomed out).
-function MapZoomTracker({ onZoomChange }: { onZoomChange: (zoom: number) => void }) {
-  const map = useMap();
-  useEffect(() => { onZoomChange(map.getZoom()); }, [map, onZoomChange]);
-  useMapEvents({
-    zoomend() { onZoomChange(map.getZoom()); },
-  });
-  return null;
-}
-
-function MapCursorTracker({
-  onCursorChange,
-  onLeave,
-}: {
-  onCursorChange: (cursor: { lat: number; lon: number }) => void;
-  onLeave?: () => void;
-}) {
-  useMapEvents({
-    mousemove(event) {
-      onCursorChange({ lat: event.latlng.lat, lon: event.latlng.lng });
-    },
-    mouseout() {
-      onLeave?.();
-    },
-  });
-  return null;
-}
-
-/** Captures map clicks while a pick slot is active and forwards the
- * resolved point to the AnalyticsToolsPanel via `onPicked`. */
-function AnalyticsPickHandler({
-  pickFor,
-  onPicked,
-}: {
-  pickFor: AnalyticsPick | null;
-  onPicked: (lat: number, lon: number, pickFor: AnalyticsPick) => void;
-}) {
-  const map = useMap();
-  useEffect(() => {
-    if (!pickFor) return;
-    const container = map.getContainer();
-    const prev = container.style.cursor;
-    container.style.cursor = 'crosshair';
-    return () => { container.style.cursor = prev; };
-  }, [pickFor, map]);
-  useMapEvents({
-    click(event) {
-      if (!pickFor) return;
-      onPicked(event.latlng.lat, event.latlng.lng, pickFor);
-    },
-  });
-  return null;
-}
-
-/**
- * Drag-to-draw a rectangle on the map and emit it as a Leaflet LatLngBounds.
- * Active only while `enabled` is true; disables map drag while active so the
- * user can box-select without panning, then re-enables it on completion or
- * when the mode is turned off.
- */
-function DrawRectHandler({
-  enabled,
-  onFinish,
-}: {
-  enabled: boolean;
-  onFinish: (bounds: L.LatLngBounds) => void;
-}) {
-  const map = useMap();
-  const [draftStart, setDraftStart] = useState<L.LatLng | null>(null);
-  const [draftEnd, setDraftEnd] = useState<L.LatLng | null>(null);
-
-  useEffect(() => {
-    if (!enabled) return;
-    map.dragging.disable();
-    map.boxZoom.disable();
-    const container = map.getContainer();
-    container.style.cursor = 'crosshair';
-    return () => {
-      map.dragging.enable();
-      map.boxZoom.enable();
-      container.style.cursor = '';
-    };
-  }, [enabled, map]);
-
-  useMapEvents({
-    mousedown(event) {
-      if (!enabled) return;
-      setDraftStart(event.latlng);
-      setDraftEnd(event.latlng);
-    },
-    mousemove(event) {
-      if (!enabled || !draftStart) return;
-      setDraftEnd(event.latlng);
-    },
-    mouseup() {
-      if (!enabled || !draftStart || !draftEnd) {
-        setDraftStart(null);
-        setDraftEnd(null);
-        return;
-      }
-      const bounds = L.latLngBounds(draftStart, draftEnd);
-      setDraftStart(null);
-      setDraftEnd(null);
-      // Reject zero-size rectangles (single click).
-      const minPx = 6;
-      const swPt = map.latLngToContainerPoint(bounds.getSouthWest());
-      const nePt = map.latLngToContainerPoint(bounds.getNorthEast());
-      if (Math.abs(swPt.x - nePt.x) < minPx || Math.abs(swPt.y - nePt.y) < minPx) return;
-      onFinish(bounds);
-    },
-  });
-
-  if (!enabled || !draftStart || !draftEnd) return null;
-  return <Rectangle bounds={L.latLngBounds(draftStart, draftEnd)} pathOptions={{ color: '#ff7a1a', weight: 2, dashArray: '6 4', fillOpacity: 0.18 }} />;
-}
-
-function imageryBounds(imagery: any): L.LatLngBounds | null {
-  if (!imagery?.footprint_geojson) return null;
-  try {
-    const geometry = typeof imagery.footprint_geojson === 'string'
-      ? JSON.parse(imagery.footprint_geojson)
-      : imagery.footprint_geojson;
-    const bounds = L.geoJSON(geometry).getBounds();
-    return bounds.isValid() ? bounds : null;
-  } catch {
-    return null;
-  }
-}
-
-function MapFitToImagery({ imagery }: { imagery: any }) {
-  const map = useMap();
-  useEffect(() => {
-    const bounds = imageryBounds(imagery);
-    if (bounds) {
-      map.fitBounds(bounds.pad(0.15), { animate: true, maxZoom: 13 });
-    }
-  }, [map, imagery?.id]);
-  return null;
-}
-
-function MapFitToDetections({ geojson, filterKey }: { geojson: any; filterKey: string | null }) {
-  const map = useMap();
-  const [lastFittedKey, setLastFittedKey] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!filterKey) {
-      setLastFittedKey(null);
-      return;
-    }
-    if (filterKey === lastFittedKey) return;
-    if (!geojson?.features?.length) return;
-
-    try {
-      const bounds = geojsonFeatureBounds(geojson);
-      if (bounds?.isValid()) {
-        map.fitBounds(bounds.pad(0.25), { animate: true, maxZoom: 15 });
-        setLastFittedKey(filterKey);
-      }
-    } catch {
-      // Ignore invalid geometries; the GeoJSON layer itself will skip what Leaflet cannot draw.
-    }
-  }, [filterKey, geojson, map, lastFittedKey]);
-  return null;
-}
+// Map event handlers + bounds helpers live in map/MapEventHandlers.
 
 type GaiaMapProps = {
   onOpenGraph?: () => void;
@@ -725,6 +218,7 @@ export default function GaiaMap({
   const [timelineOpen, setTimelineOpen] = useState(true);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const autoCollapsedRef = useRef(false);
+  const mapStageRef = useRef<MapHandle>(null);
 
   // Respect the workspace's own container, not the viewport: when this map is
   // mounted inside a narrow shell, begin with the side drawers collapsed so
@@ -746,7 +240,7 @@ export default function GaiaMap({
 
   const selectedImageryData = imagery.find((img) => img.id === selectedImagery);
 
-  // Live ontology categories (sensor-agnostic — the map shows all detections
+  // Live ontology categories (sensor-agnostic â€” the map shows all detections
   // regardless of sensor). Order/colour/short come from the API and update
   // automatically when the backend bumps `version_id`.
   const { order: CATEGORY_ORDER, categories: DETECTION_CATEGORIES, branches: ONTOLOGY_BRANCHES_FLAT } = useDetectionCategories();
@@ -836,7 +330,7 @@ export default function GaiaMap({
       if (detectionClassFilter) {
         // SOLO mode: restrict to features whose own raw class matches.
         // Compare ONLY the leaf class (`original_class` / `class` / `label`),
-        // not parent_class — otherwise a feature with parent_class="building"
+        // not parent_class â€” otherwise a feature with parent_class="building"
         // and class="military_facility" gets erased by the auto-hide of
         // every other class (including "building") that SOLO injects into
         // hiddenDetectionLabels.
@@ -902,11 +396,11 @@ export default function GaiaMap({
     };
   }, [detectionsGeoJSON, confidenceThreshold, hiddenDetectionCategories, hiddenDetectionLabels]);
 
-  // Map+ geometry mode — rewrite each feature's geometry into the requested
+  // Map+ geometry mode â€” rewrite each feature's geometry into the requested
   // shape:
-  //   hbb  → axis-aligned envelope (Polygon) from the original geometry
-  //   obb  → polygon built from metadata.obb when present; falls back to mask
-  //   mask → the raw geometry as ingested (default for SAM3 outputs)
+  //   hbb  â†’ axis-aligned envelope (Polygon) from the original geometry
+  //   obb  â†’ polygon built from metadata.obb when present; falls back to mask
+  //   mask â†’ the raw geometry as ingested (default for SAM3 outputs)
   const geomDisplayedDetectionsGeoJSON = useMemo(() => {
     if (bboxMode === 'mask') return filteredDetectionsGeoJSON;
     const out = { ...filteredDetectionsGeoJSON, features: [] as any[] };
@@ -948,7 +442,7 @@ export default function GaiaMap({
           },
         });
       } else {
-        // OBB — if metadata.obb is a polygon of [lon,lat] pairs, use it; else
+        // OBB â€” if metadata.obb is a polygon of [lon,lat] pairs, use it; else
         // fall back to the mask polygon so the layer never disappears.
         const obb = f?.properties?.metadata?.obb;
         if (Array.isArray(obb) && obb.length >= 3 && Array.isArray(obb[0]) && obb[0].length >= 2) {
@@ -1160,7 +654,7 @@ export default function GaiaMap({
   }, [focusTimeRange, selectedImagery, timeRange]);
 
   const fetchDetectionClasses = useCallback(async () => {
-    // The class legend shows every class present in the timeframe globally —
+    // The class legend shows every class present in the timeframe globally â€”
     // bbox is intentionally NOT applied so the panel stays useful even when
     // the map viewport doesn't yet cover newly-uploaded imagery. Map-rendered
     // features are still bbox-filtered separately by fetchDetectionFeatures().
@@ -1581,292 +1075,53 @@ export default function GaiaMap({
       {/* Full-bleed map column (rendered below, sandwiched between the floating
           left / right panels via z-index).  This is now the workspace canvas. */}
       {leftOpen ? (
-      <section
-        className="sentinel-panel map-float-panel map-left-panel"
-        style={{
-          position: 'absolute',
-          left: 14,
-          top: 14,
-          bottom: 14,
-          zIndex: 500,
-          border: '1px solid var(--line)',
-          borderRadius: 10,
-          background: 'color-mix(in oklab, var(--bg-1) 94%, transparent)',
-          backdropFilter: 'blur(8px)',
-          boxShadow: '0 8px 30px rgba(0,0,0,.35)',
-          display: 'flex',
-          flexDirection: 'column',
-          minHeight: 0,
+      <LayerPanel
+        onRefresh={fetchDetections}
+        onCollapse={() => setLeftOpen(false)}
+        activeBaseLayer={activeBaseLayer}
+        setActiveBaseLayer={setActiveBaseLayer}
+        layerOpacities={layerOpacities}
+        setLayerOpacities={setLayerOpacities}
+        overlaysOpen={overlaysOpen}
+        setOverlaysOpen={setOverlaysOpen}
+        activeLayers={activeLayers}
+        setActiveLayers={setActiveLayers}
+        showBbox={showBbox}
+        setShowBbox={setShowBbox}
+        imagery={imagery}
+        visibleDetectionCount={visibleDetectionCount}
+        tracksCount={data.tracks.length}
+        staticCount={data.static.length}
+        analyticsCounts={{
+          viewshed: analyticsResults.viewshed?.result?.features?.length ?? 0,
+          viewshedAvailable: !!analyticsResults.viewshed,
+          los: analyticsResults.los?.result?.features?.length ?? 0,
+          losAvailable: !!analyticsResults.los,
+          routes: analyticsResults.routes?.result?.features?.length ?? 0,
+          routesAvailable: !!analyticsResults.routes,
         }}
-      >
-        <div className="sentinel-panel-header">
-          <Layers className="h-4 w-4" />
-          <span>Operating picture</span>
-          <button type="button" onClick={fetchDetections} className="sentinel-icon-btn ml-auto h-6 w-6" title="Refresh">
-            <RefreshCw className="h-3.5 w-3.5" />
-          </button>
-          <button type="button" onClick={() => setLeftOpen(false)} className="sentinel-icon-btn h-6 w-6" title="Collapse panel">
-            <ChevronLeft className="h-3.5 w-3.5" />
-          </button>
-        </div>
-
-        <div className="sentinel-scroll">
-          <div className="border-b border-sentinel-line p-2">
-            <div className="grid grid-cols-3 border border-sentinel-line-2">
-              {(['base', 'sat', 'terrain'] as const).map((key) => {
-                const isActive = activeBaseLayer === key;
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => setActiveBaseLayer(key)}
-                    className={`h-7 font-mono text-[10px] uppercase tracking-widest ${isActive ? 'bg-sentinel-panel-2 text-slate-100' : 'text-sentinel-muted'}`}
-                  >
-                    {key}
-                  </button>
-                );
-              })}
-            </div>
-            <div className="mt-2 flex items-center gap-2">
-              <span className="sentinel-label">OPACITY</span>
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.05"
-                value={layerOpacities[activeBaseLayer]}
-                onChange={(event) => {
-                  const next = parseFloat(event.target.value);
-                  setLayerOpacities((prev) => ({ ...prev, [activeBaseLayer]: next }));
-                }}
-                className="flex-1"
-              />
-              <span className="font-mono text-[10px] text-sentinel-muted w-8 text-right">
-                {Math.round(layerOpacities[activeBaseLayer] * 100)}%
-              </span>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 border-b border-sentinel-line bg-sentinel-panel-2 px-3 py-2">
-            <button
-              type="button"
-              onClick={() => setOverlaysOpen((v) => !v)}
-              className="text-sentinel-muted hover:text-slate-200"
-              title={overlaysOpen ? 'Collapse overlays' : 'Expand overlays'}
-            >
-              {overlaysOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-            </button>
-            <span className="sentinel-label flex-1">Overlays</span>
-            <button type="button" onClick={() => setShowBbox((value) => !value)} className={`sentinel-btn h-6 ${showBbox ? 'primary' : ''}`}>
-              BBOX
-            </button>
-          </div>
-
-          {overlaysOpen && [
-            { key: 'satellite', label: 'Satellite Imagery', metric: imagery.length, color: 'text-sentinel-info', available: true },
-            { key: 'detections', label: 'AI Detections', metric: visibleDetectionCount, color: 'text-sentinel-accent', available: true },
-            { key: 'tracks', label: 'Active Tracks', metric: data.tracks.length, color: 'text-sentinel-info', available: true },
-            { key: 'static', label: 'Static Features', metric: data.static.length, color: 'text-sentinel-crit', available: true },
-            { key: 'grid', label: 'Tactical Grid', metric: 'WGS84', color: 'text-sentinel-muted', available: true },
-            {
-              key: 'viewshed',
-              label: 'Viewshed',
-              metric: analyticsResults.viewshed?.result?.features?.length ?? 0,
-              color: 'text-sentinel-accent',
-              available: !!analyticsResults.viewshed,
-            },
-            {
-              key: 'los',
-              label: 'Line of Sight',
-              metric: analyticsResults.los?.result?.features?.length ?? 0,
-              color: 'text-sentinel-accent',
-              available: !!analyticsResults.los,
-            },
-            {
-              key: 'routes',
-              label: 'Routes',
-              metric: analyticsResults.routes?.result?.features?.length ?? 0,
-              color: 'text-sentinel-accent',
-              available: !!analyticsResults.routes,
-            },
-          ].map((layer) => {
-            const active = activeLayers[layer.key as keyof typeof activeLayers];
-            const disabled = layer.available === false;
-            return (
-              <button
-                key={layer.key}
-                type="button"
-                disabled={disabled}
-                onClick={() => setActiveLayers((prev) => ({ ...prev, [layer.key]: !active }))}
-                className={`sentinel-row w-full grid-cols-[22px_1fr_auto] text-left ${disabled ? 'opacity-40 cursor-not-allowed' : ''}`}
-                title={disabled ? 'Run the tool first to enable this layer' : ''}
-              >
-                <span className={active && !disabled ? layer.color : 'text-sentinel-muted'}>{active && !disabled ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}</span>
-                <span className="truncate text-xs text-slate-200">{layer.label}</span>
-                <span className="font-mono text-[10px] text-sentinel-muted">{layer.metric}</span>
-              </button>
-            );
-          })}
-
-
-          <div className="border-b border-sentinel-line bg-sentinel-panel-2 px-3 py-2">
-            <div className="flex items-center gap-2">
-              <span className="sentinel-label flex-1">Detection Classes / {visibleDetectionCount}</span>
-              <div className="grid grid-cols-2 border border-sentinel-line-2">
-                {(['CAT', 'SRC'] as const).map((mode) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    onClick={() => setDetectionGroupMode(mode)}
-                    className={`h-6 px-2 font-mono text-[10px] ${detectionGroupMode === mode ? 'bg-sentinel-panel text-slate-100' : 'text-sentinel-muted'}`}
-                  >
-                    {mode}
-                  </button>
-                ))}
-              </div>
-              <button
-                type="button"
-                className="sentinel-btn h-6"
-                onClick={showAllDetectionClasses}
-              >
-                ALL
-              </button>
-              <button
-                type="button"
-                className="sentinel-btn h-6"
-                onClick={hideAllDetectionClasses}
-              >
-                NONE
-              </button>
-              <button type="button" className="sentinel-btn h-6" onClick={invertDetectionClasses}>
-                INV
-              </button>
-            </div>
-            <div className="mt-2 flex h-8 items-center gap-2 border border-sentinel-line-2 bg-sentinel-bg px-2">
-              <Search className="h-3.5 w-3.5 text-sentinel-muted" />
-              <input
-                value={detectionLabelSearch}
-                onChange={(event) => setDetectionLabelSearch(event.target.value)}
-                placeholder="search classes"
-                className="min-w-0 flex-1 bg-transparent text-xs text-slate-200 outline-none placeholder:text-sentinel-muted"
-              />
-            </div>
-          </div>
-
-          {detectionGroups.length === 0 && (
-            <div className="p-4 text-xs text-sentinel-muted">No detections in current view.</div>
-          )}
-
-          {detectionGroups.map((group) => {
-            const expanded = expandedDetectionGroups.includes(group.id);
-            const category = group.id as DetectionCategoryId;
-            const groupHidden = detectionGroupMode === 'CAT'
-              ? hiddenDetectionCategories.includes(category)
-              : group.classes.every((item) => hiddenDetectionLabels.includes(item.rawClass));
-            const groupColor = groupHidden ? 'var(--ink-2)' : group.color;
-            return (
-              <div key={group.id} className="border-b border-sentinel-line">
-                <div className="grid grid-cols-[22px_22px_1fr_auto_auto] items-center gap-2 px-3 py-2">
-                  <button type="button" className="text-sentinel-muted" onClick={() => toggleDetectionGroupExpanded(group.id)}>
-                    {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-                  </button>
-                  <button type="button" style={{ color: groupColor }} onClick={() => toggleDetectionGroupVisibility(group)}>
-                    {groupHidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                  </button>
-                  <button
-                    type="button"
-                    className="min-w-0 text-left"
-                    onClick={() => toggleDetectionGroupExpanded(group.id)}
-                  >
-                    <span className="flex min-w-0 items-center gap-2">
-                      {detectionGroupMode === 'CAT' && <span style={{ color: groupColor }}><CategoryIcon category={category} branchById={branchById} /></span>}
-                      <span className={`truncate text-xs ${groupHidden ? 'text-sentinel-muted' : 'text-slate-200'}`}>{group.label}</span>
-                    </span>
-                  </button>
-                  <span className="font-mono text-[10px] text-sentinel-muted">{group.classes.length}</span>
-                  <span className="font-mono text-[10px]" style={{ color: groupColor }}>{group.count}</span>
-                </div>
-                <div className="px-3 pb-2">
-                  <div className="h-1.5 bg-sentinel-bg">
-                    <div className="h-full" style={{ width: `${Math.max(3, (group.count / maxDetectionLabelCount) * 100)}%`, backgroundColor: group.color }} />
-                  </div>
-                </div>
-                {expanded && (
-                  <div className="border-t border-sentinel-line bg-sentinel-bg/70">
-                    {group.classes.map((item) => {
-                      const hidden = Boolean(detectionClassFilter && detectionClassFilter !== item.rawClass)
-                        || hiddenDetectionCategories.includes(item.category)
-                        || hiddenDetectionLabels.includes(item.rawClass);
-                      const solo = detectionClassFilter === item.rawClass;
-                      const advisory = item.llmAdvisory;
-                      const advisoryLabel = advisory?.label && advisory.label !== item.label ? advisory.label : null;
-                      const advisoryTitle = advisory
-                        ? `AI suggestion (non-authoritative): ${advisory.label || ''}${advisory.description ? ` — ${advisory.description}` : ''}\nGenerated by ${advisory.generated_by || 'llm'}. Deterministic ontology remains the canonical class.`
-                        : '';
-                      return (
-                        <div key={item.rawClass} className="grid grid-cols-[22px_18px_1fr_auto_auto] items-center gap-2 px-3 py-1.5">
-                          <button type="button" style={{ color: hidden ? 'var(--ink-2)' : item.color }} onClick={() => toggleDetectionClassVisibility(item.rawClass)}>
-                            {hidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                          </button>
-                          <span style={{ color: hidden ? 'var(--ink-2)' : item.color }}>
-                            <DetectionSubclassIcon label={item.rawClass} category={item.category} branchById={branchById} className="h-3 w-3" />
-                          </span>
-                          <button type="button" className="min-w-0 text-left" onClick={() => soloDetectionClass(item.rawClass)}>
-                            <span className={`block truncate text-[11px] ${hidden ? 'text-sentinel-muted' : 'text-slate-200'}`}>
-                              {item.label}{solo ? ' / SOLO' : ''}
-                              {/* Phase 7.29: non-authoritative AI suggestion. The
-                                  deterministic label above stays canonical; this
-                                  pill is a separate hint the analyst can inspect
-                                  on hover or use to inform manual relabelling. */}
-                              {advisoryLabel && (
-                                <span
-                                  className="ml-1.5 inline-flex items-center rounded-sm border border-amber-500/60 px-1 py-[1px] font-mono text-[9px] uppercase tracking-wider text-amber-300"
-                                  title={advisoryTitle}
-                                >
-                                  AI · {advisoryLabel}
-                                </span>
-                              )}
-                            </span>
-                          </button>
-                          <span className={`sentinel-tag ${threatClass(item.threatLevel)}`}>{item.threatLevel || categoryFor(item.category, DETECTION_CATEGORIES).short}</span>
-                          <span className="font-mono text-[10px]" style={{ color: hidden ? 'var(--ink-2)' : item.color }}>{item.count}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-
-          {imagery.length > 0 && (
-            <>
-              <div className="sentinel-panel-header border-t border-sentinel-line">
-                <Satellite className="h-4 w-4" />
-                <span>Imagery</span>
-              </div>
-              {imagery.slice(0, 10).map((img) => (
-                <button
-                  key={img.id}
-                  type="button"
-                  onClick={() => {
-                    const next = selectedImagery === img.id ? null : img.id;
-                    setSelectedImagery(next);
-                    if (next !== null) setActiveBaseLayer('sat');
-                  }}
-                  className={`sentinel-row w-full grid-cols-[1fr_auto] text-left ${selectedImagery === img.id ? 'selected' : ''}`}
-                >
-                  <span className="min-w-0">
-                    <span className="block truncate text-xs text-slate-200">{img.name}</span>
-                    <span className="block truncate font-mono text-[10px] text-sentinel-muted">{img.sensor_type} / {img.cloud_cover ?? 0}% cloud</span>
-                  </span>
-                  <span className="sentinel-tag info">SAT</span>
-                </button>
-              ))}
-            </>
-          )}
-        </div>
-      </section>
+        detectionGroups={detectionGroups}
+        detectionGroupMode={detectionGroupMode}
+        setDetectionGroupMode={setDetectionGroupMode}
+        detectionLabelSearch={detectionLabelSearch}
+        setDetectionLabelSearch={setDetectionLabelSearch}
+        expandedDetectionGroups={expandedDetectionGroups}
+        hiddenDetectionCategories={hiddenDetectionCategories}
+        hiddenDetectionLabels={hiddenDetectionLabels}
+        detectionClassFilter={detectionClassFilter}
+        maxDetectionLabelCount={maxDetectionLabelCount}
+        branchById={branchById}
+        categories={DETECTION_CATEGORIES}
+        showAllDetectionClasses={showAllDetectionClasses}
+        hideAllDetectionClasses={hideAllDetectionClasses}
+        invertDetectionClasses={invertDetectionClasses}
+        toggleDetectionGroupExpanded={toggleDetectionGroupExpanded}
+        toggleDetectionGroupVisibility={toggleDetectionGroupVisibility}
+        toggleDetectionClassVisibility={toggleDetectionClassVisibility}
+        soloDetectionClass={soloDetectionClass}
+        selectedImagery={selectedImagery}
+        setSelectedImagery={setSelectedImagery}
+      />
       ) : (
         <button
           type="button"
@@ -1908,562 +1163,56 @@ export default function GaiaMap({
         </button>
       )}
 
-      <section
-        className="relative flex min-h-0 min-w-0 flex-col bg-sentinel-bg"
-        style={{ position: 'absolute', inset: 0 }}
-      >
-        <div className="relative min-h-0 flex-1">
-          <MapContainer
-            center={[25.0, 55.0]}
-            zoom={6}
-            style={{ height: '100%', width: '100%', background: '#122231' }}
-            zoomControl={false}
-          >
-            <ZoomControl position="bottomright" />
-            <MapBoundsUpdater onBoundsChange={setMapBounds} />
-            <MapCursorTracker onCursorChange={setCursor} />
-            <MapZoomTracker onZoomChange={setMapZoom} />
-            <AnalyticsPickHandler
-              pickFor={pendingPick}
-              onPicked={(lat, lon, pickFor) => {
-                setLastMapClick({ lat, lon, pickFor });
-              }}
-            />
-            <DrawRectHandler
-              enabled={drawMode}
-              onFinish={async (bounds) => {
-                const cls = window.prompt(
-                  'Object class for this manual detection (e.g. tank, frigate, building):',
-                  'unknown',
-                )?.trim();
-                if (cls === undefined) {
-                  setDrawMode(false);
-                  return;
-                }
-                await createManualDetection(bounds, { object_class: cls || 'unknown' });
-                setDrawMode(false);
-              }}
-            />
-            <MapFitToImagery imagery={selectedImageryData} />
-            <MapFitToDetections geojson={filteredDetectionsGeoJSON} filterKey={detectionClassFilter} />
-
-            {activeBaseLayer === 'base' && (
-              <TileLayer
-                key="base-carto"
-                url={CARTO_BASEMAP_URL}
-                subdomains="abcd"
-                maxZoom={20}
-                maxNativeZoom={10}
-                opacity={layerOpacities.base}
-                attribution="&copy; OpenStreetMap &copy; CARTO"
-              />
-            )}
-            {activeBaseLayer === 'terrain' && (
-              <TileLayer
-                key="base-terrain"
-                url={TERRAIN_BASEMAP_URL}
-                maxZoom={20}
-                maxNativeZoom={10}
-                opacity={layerOpacities.terrain}
-                attribution="&copy; OpenStreetMap &copy; OpenTopoMap (CC-BY-SA)"
-              />
-            )}
-
-            <ImageOverlay url="/world_map.svg" bounds={[[-85, -180], [85, 180]]} opacity={0.32} />
-
-            {/* Prithvi overlays — hatched fills coloured per kind */}
-            {(['flood', 'burn', 'crops'] as const).map((kind) => {
-              if (!prithviOverlays[kind]) return null;
-              const data = prithviGeojson[kind];
-              if (!data || !data.features || data.features.length === 0) return null;
-              const color =
-                kind === 'flood' ? '#4ea1ff'
-                : kind === 'burn' ? '#c46a30'
-                : '#3dd68c';
-              return (
-                <GeoJSON
-                  key={`prithvi-${kind}`}
-                  data={data as any}
-                  style={() => ({
-                    color,
-                    weight: 1.2,
-                    opacity: 0.85,
-                    fillColor: color,
-                    fillOpacity: 0.22,
-                    dashArray: '4 3',
-                  })}
-                />
-              );
-            })}
-
-            {activeLayers.grid && (
-              <GeoJSON
-                data={basemapGeoJSON}
-                style={() => ({
-                  color: '#c4e6ff',
-                  weight: 1.75,
-                  opacity: 1,
-                  fillColor: '#33556e',
-                  fillOpacity: 0.56,
-                  dashArray: '4 3',
-                })}
-                onEachFeature={(feature, layer) => {
-                  const props = feature?.properties || {};
-                  const name = props.admin || props.name || props.iso_a3;
-                  if (name) layer.bindTooltip(String(name), { sticky: true, direction: 'top', opacity: 0.92 });
-                }}
-              />
-            )}
-
-            {activeBaseLayer === 'sat' && activeLayers.satellite && selectedImageryData && (
-              <TileLayer
-                key={`sat-${selectedImageryData.id}`}
-                url={`${TILE_PROXY_URL}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(selectedImageryData.file_path)}`}
-                opacity={layerOpacities.sat}
-                maxZoom={22}
-              />
-            )}
-
-            {activeLayers.static && data.static.map((loc: any) => {
-              const isLaunchPoint = loc.label === 'LaunchPoint';
-              const radius = loc.properties.threatRadius || 0;
-              return (
-                <div key={loc.id}>
-                  {isLaunchPoint && radius > 0 && (
-                    <Circle
-                      center={[loc.properties.latitude, loc.properties.longitude]}
-                      radius={radius}
-                      pathOptions={{ color: '#ff3b30', fillColor: '#ff3b30', fillOpacity: 0.08, weight: 1, dashArray: '5, 5' }}
-                    />
-                  )}
-                  <Marker position={[loc.properties.latitude, loc.properties.longitude]} icon={isLaunchPoint ? redIcon : emeraldIcon}>
-                    <Popup className="sentinel-popup">
-                      <div className="border border-sentinel-line bg-sentinel-panel p-2 text-slate-200">
-                        <div className="mb-2 border-b border-sentinel-line pb-1 text-xs font-bold uppercase tracking-wider">{loc.properties.name}</div>
-                        <div className="font-mono text-[11px] text-sentinel-muted">
-                          LAT {loc.properties.latitude.toFixed(4)}<br />
-                          LON {loc.properties.longitude.toFixed(4)}
-                        </div>
-                      </div>
-                    </Popup>
-                  </Marker>
-                </div>
-              );
-            })}
-
-            {activeLayers.detections && showDetectionCenterMarkers && filteredDetectionsGeoJSON.features?.map((feature: any) => {
-              const badgePosition = detectionBadgePosition(feature);
-              if (!badgePosition) return null;
-              const category = detectionCategoryForFeature(feature);
-              const categoryMeta = categoryFor(category, DETECTION_CATEGORIES);
-              const props = feature.properties || {};
-              return (
-                <Marker
-                  key={`det-marker-${props.id || props.class}-${badgePosition[0]}-${badgePosition[1]}`}
-                  position={badgePosition}
-                  icon={detectionIcon(feature)}
-                  eventHandlers={{ click: () => setSelectedDetection(feature) }}
-                >
-                  <Popup className="sentinel-popup">
-                    <div className="border border-sentinel-line bg-sentinel-panel p-2 text-slate-200">
-                      <div className="mb-2 flex items-center gap-2 border-b border-sentinel-line pb-1 text-xs font-bold uppercase tracking-wider">
-                        <span style={{ color: categoryMeta.color }}><DetectionSubclassIcon iconKey={props.icon_key ?? null} label={props.original_class || props.class || props.label} category={category} branchById={branchById} /></span>
-                        <span>{props.label || detectionClassLabel(props.class)}</span>
-                      </div>
-                      <div className="font-mono text-[11px] text-sentinel-muted">
-                        CAT <span style={{ color: categoryMeta.color }}>{categoryMeta.label}</span><br />
-                        PARENT {props.parent_class || props.class || 'unknown'}<br />
-                        ORIG {props.original_class || props.metadata?.original_class || props.class || 'unknown'}<br />
-                        CONF {Math.round(Number(props.confidence || 0) * 100)}%
-                      </div>
-                    </div>
-                  </Popup>
-                </Marker>
-              );
-            })}
-
-            {activeLayers.detections && !showDetectionCenterMarkers && !showBbox && filteredDetectionsGeoJSON.features?.map((feature: any) => {
-              const center = detectionCenter(feature);
-              if (!center) return null;
-              const category = detectionCategoryForFeature(feature);
-              const categoryMeta = categoryFor(category, DETECTION_CATEGORIES);
-              const props = feature.properties || {};
-              return (
-                <CircleMarker
-                  key={`det-dot-${props.id || props.class}-${center[0]}-${center[1]}`}
-                  center={center}
-                  renderer={detectionCanvasRenderer}
-                  radius={3}
-                  pathOptions={{
-                    color: categoryMeta.color,
-                    fillColor: categoryMeta.color,
-                    fillOpacity: 0.8,
-                    weight: 1,
-                  }}
-                  eventHandlers={{ click: () => setSelectedDetection(feature) }}
-                >
-                  <Popup className="sentinel-popup">
-                    <div className="border border-sentinel-line bg-sentinel-panel p-2 text-slate-200">
-                      <div className="mb-2 flex items-center gap-2 border-b border-sentinel-line pb-1 text-xs font-bold uppercase tracking-wider">
-                        <span style={{ color: categoryMeta.color }}><DetectionSubclassIcon iconKey={props.icon_key ?? null} label={props.original_class || props.class || props.label} category={category} branchById={branchById} /></span>
-                        <span>{props.label || detectionClassLabel(props.class)}</span>
-                      </div>
-                      <div className="font-mono text-[11px] text-sentinel-muted">
-                        CAT <span style={{ color: categoryMeta.color }}>{categoryMeta.label}</span><br />
-                        PARENT {props.parent_class || props.class || 'unknown'}<br />
-                        ORIG {props.original_class || props.metadata?.original_class || props.class || 'unknown'}<br />
-                        CONF {Math.round(Number(props.confidence || 0) * 100)}%
-                      </div>
-                    </div>
-                  </Popup>
-                </CircleMarker>
-              );
-            })}
-
-            {/* Phase 7.35: position-uncertainty halos. Render a faint circle at
-                each detection's centroid with radius = position_uncertainty_m
-                when zoomed in tight (z>=14). Skipped when there are too many
-                visible features, since N circles at z>=14 would still cost. */}
-            {activeLayers.detections
-              && mapZoom >= 14
-              && filteredDetectionsGeoJSON.features
-              && filteredDetectionsGeoJSON.features.length > 0
-              && filteredDetectionsGeoJSON.features.length <= 400
-              && filteredDetectionsGeoJSON.features.map((feature: any) => {
-                const center = detectionCenter(feature);
-                const uncertainty = Number(feature?.properties?.position_uncertainty_m);
-                if (!center || !Number.isFinite(uncertainty) || uncertainty <= 0) return null;
-                const props = feature.properties || {};
-                return (
-                  <Circle
-                    key={`uncert-${props.id}-${center[0]}-${center[1]}`}
-                    center={center}
-                    radius={uncertainty}
-                    pathOptions={{
-                      color: '#9ec8ff',
-                      weight: 1,
-                      opacity: 0.35,
-                      fillColor: '#9ec8ff',
-                      fillOpacity: 0.05,
-                      dashArray: '3,3',
-                    }}
-                    interactive={false}
-                  />
-                );
-              })}
-
-            {activeLayers.detections && showBbox && geomDisplayedDetectionsGeoJSON.features?.length > 0 && (
-              <CanvasGeoJSON
-                key={`detections-${detectionsLayerVersion}-${detectionClassFilter || 'all'}-${hiddenDetectionCategories.join('|')}-${hiddenDetectionLabels.join('|')}-${geomDisplayedDetectionsGeoJSON.features.length}-${bboxMode}`}
-                data={geomDisplayedDetectionsGeoJSON}
-                renderer={detectionCanvasRenderer}
-                pointToLayer={(feature: any, latlng: L.LatLng) => L.circleMarker(latlng, {
-                  ...getDetectionStyle(feature),
-                  radius: 4,
-                  fillOpacity: 0.8,
-                })}
-                style={getDetectionStyle}
-                onEachFeature={onEachDetection}
-              />
-            )}
-
-            {activeLayers.tracks && data.tracks.map((track: any) => {
-              const positions: [number, number][] = track.history.map((h: any) => [h.lat, h.lng]);
-              const latest = track.latest;
-              return (
-                <div key={track.id}>
-                  <Polyline positions={positions} pathOptions={{ color: '#4ea1ff', weight: 2, opacity: 0.55, dashArray: '4, 6' }} />
-                  {latest && (
-                    <Marker position={[latest.latitude, latest.longitude]} icon={blueIcon}>
-                      <Popup className="sentinel-popup">
-                        <div className="border border-sentinel-line bg-sentinel-panel p-2 text-slate-200">
-                          <div className="mb-2 border-b border-sentinel-line pb-1 text-xs font-bold uppercase tracking-wider">{track.properties.callsign || track.asset_id}</div>
-                          <div className="font-mono text-[11px] text-sentinel-muted">
-                            TYPE {track.label}<br />
-                            SPEED {track.properties.speed?.toFixed(1)} kts
-                          </div>
-                        </div>
-                      </Popup>
-                    </Marker>
-                  )}
-                </div>
-              );
-            })}
-
-            {activeLayers.detectionTracks && detectionTracks
-              .filter((track) => track.status !== 'lost' && track.history.length >= 2)
-              .map((track) => {
-                const color = trackColor(track.category);
-                const dashArray = trackDashArray(track.status);
-                const positions: [number, number][] = track.history.map((h) => [h.lat, h.lng]);
-                const isSelected = selectedDetectionTrack?.track_uid === track.track_uid;
-                return (
-                  <div key={track.track_uid}>
-                    {track.status === 'confirmed' && track.threat_level === 'critical' && (
-                      <Polyline
-                        positions={positions}
-                        pathOptions={{ color, weight: 6, opacity: 0.18 }}
-                      />
-                    )}
-                    {track.pinned && (
-                      <Polyline
-                        positions={positions}
-                        pathOptions={{ color: '#ffffff', weight: isSelected ? 6 : 4, opacity: 0.25 }}
-                      />
-                    )}
-                    <Polyline
-                      positions={positions}
-                      pathOptions={{
-                        color,
-                        weight: isSelected ? 3 : 2,
-                        opacity: isSelected ? 1 : 0.75,
-                        dashArray,
-                      }}
-                      eventHandlers={{ click: () => setSelectedDetectionTrack(track) }}
-                    />
-                    {track.history.map((h, i) => (
-                      <CircleMarker
-                        key={`${track.track_uid}-${i}`}
-                        center={[h.lat, h.lng]}
-                        radius={2}
-                        pathOptions={{
-                          color,
-                          fillColor: color,
-                          fillOpacity: 0.3 + 0.7 * (i / Math.max(1, track.history.length - 1)),
-                          opacity: 0,
-                          weight: 0,
-                        }}
-                      />
-                    ))}
-                    {track.latest && (
-                      <Marker
-                        position={[track.latest.lat, track.latest.lon]}
-                        icon={createIcon(color)}
-                        eventHandlers={{ click: () => setSelectedDetectionTrack(track) }}
-                      >
-                        <Popup className="sentinel-popup">
-                          <div className="border border-sentinel-line bg-sentinel-panel p-2 text-slate-200">
-                            <div className="mb-2 border-b border-sentinel-line pb-1 text-xs font-bold uppercase tracking-wider">
-                              DT-{track.track_uid.slice(-6)} {track.pinned ? '· PINNED' : ''}
-                            </div>
-                            <div className="font-mono text-[11px] text-sentinel-muted">
-                              CLASS {track.primary_class}<br />
-                              STATUS {track.status.toUpperCase()}<br />
-                              OBS {track.obs_count} · {relativeTime(track.last_seen)}
-                            </div>
-                          </div>
-                        </Popup>
-                      </Marker>
-                    )}
-                  </div>
-                );
-              })}
-
-            {activeLayers.viewshed && analyticsResults.viewshed?.result && (
-              <GeoJSON
-                key={`viewshed-${analyticsResults.viewshed.job.id}`}
-                data={analyticsResults.viewshed.result as any}
-                style={() => ({
-                  color: '#5ee0a0',
-                  weight: 1.5,
-                  opacity: 0.9,
-                  fillColor: '#5ee0a0',
-                  fillOpacity: 0.22,
-                })}
-                onEachFeature={(_feature, layer) => {
-                  const mode = (analyticsResults.viewshed?.result as any)?.mode;
-                  const tip = mode === 'dem'
-                    ? `Viewshed · DEM · job ${analyticsResults.viewshed?.job.id}`
-                    : `Viewshed · demo fixture · job ${analyticsResults.viewshed?.job.id}`;
-                  layer.bindTooltip(tip, { sticky: true, opacity: 0.92 });
-                }}
-              />
-            )}
-
-            {activeLayers.los && analyticsResults.los?.result && (
-              <GeoJSON
-                key={`los-${analyticsResults.los.job.id}`}
-                data={analyticsResults.los.result as any}
-                style={(feature) => {
-                  const visible = !!feature?.properties?.visible;
-                  const role = feature?.properties?.role;
-                  if (role === 'obstruction') {
-                    return { color: '#ff5577', weight: 0, fillColor: '#ff5577', fillOpacity: 0.7 };
-                  }
-                  return {
-                    color: visible ? '#5ee0a0' : '#ff5577',
-                    weight: 3,
-                    opacity: 0.95,
-                    dashArray: visible ? undefined : '6 4',
-                  };
-                }}
-                onEachFeature={(feature, layer) => {
-                  const p = feature?.properties || {};
-                  const tip = p.role === 'obstruction'
-                    ? `Obstructions · ${p.count} pts`
-                    : `LOS · ${p.visible ? 'visible' : 'blocked'} · clearance ${Number(p.clearance_m || 0).toFixed(1)} m`;
-                  layer.bindTooltip(tip, { sticky: true, opacity: 0.92 });
-                }}
-              />
-            )}
-
-            {activeLayers.routes && analyticsResults.routes?.result && (
-              <GeoJSON
-                key={`routes-${analyticsResults.routes.job.id}`}
-                data={analyticsResults.routes.result as any}
-                style={(feature) => {
-                  const palette = ['#5fc4ff', '#ffb14a', '#c87aff'];
-                  const idx = Math.max(0, ((feature?.properties?.option || 1) - 1) % palette.length);
-                  return {
-                    color: palette[idx],
-                    weight: 4,
-                    opacity: 0.9,
-                  };
-                }}
-                onEachFeature={(feature, layer) => {
-                  const p = feature?.properties || {};
-                  const km = (Number(p.length_m || 0) / 1000).toFixed(1);
-                  const min = Number(p.duration_minutes || 0).toFixed(0);
-                  layer.bindTooltip(
-                    `Route ${p.option} · ${p.label || p.risk || p.strategy} · ${km} km · ${min} min`,
-                    { sticky: true, opacity: 0.92 },
-                  );
-                }}
-              />
-            )}
-          </MapContainer>
-
-          <div className="pointer-events-none absolute inset-0">
-            <div className="sentinel-grid" />
-            <div className="absolute left-2 top-2 font-mono text-[10px] tracking-wider text-sentinel-muted">WGS84 / MERCATOR / LIVE COP</div>
-            <div className="absolute right-2 top-2 font-mono text-[10px] tracking-wider text-sentinel-muted">AOR / CURRENT VIEW</div>
-            <div className="absolute left-1/2 top-8 -translate-x-1/2 border border-sentinel-line-2 bg-sentinel-panel px-3 py-1 font-mono text-[11px]">
-              <span className="text-sentinel-accent">{visibleDetectionCount}</span>
-              <span className="text-sentinel-muted"> / {detectionsGeoJSON.features?.length || 0} detections / last {timelineWindowMinutes}m</span>
-              {visibleDetectionCount > 0 && <span className="text-sentinel-muted"> / hover labels</span>}
-            </div>
-            <div className="absolute left-3 bottom-4 border border-sentinel-line-2 bg-sentinel-panel px-3 py-2 font-mono text-[11px]">
-              <div className="sentinel-label">cursor</div>
-              <div>LAT {cursor.lat.toFixed(3).padStart(8, ' ')} deg</div>
-              <div>LON {cursor.lon.toFixed(3).padStart(8, ' ')} deg</div>
-              <div className="mt-1 text-sentinel-muted">MGRS <span className="text-slate-200">AUTO</span></div>
-            </div>
-            <div className="absolute right-3 bottom-4 border border-sentinel-line-2 bg-sentinel-panel px-3 py-2 font-mono text-[11px]">
-              <div className="sentinel-label">scale</div>
-              <div className="flex items-center gap-2">
-                <span className="h-px w-20 bg-slate-200" />
-                <span>500 km</span>
-              </div>
-            </div>
-            <div className="absolute right-3 top-10 flex flex-col border border-sentinel-line-2 bg-sentinel-panel">
-              <button type="button" className="pointer-events-auto grid h-7 w-7 place-items-center border-b border-sentinel-line text-sentinel-muted"><Plus className="h-3.5 w-3.5" /></button>
-              <button type="button" className="pointer-events-auto grid h-7 w-7 place-items-center border-b border-sentinel-line text-sentinel-muted"><Minus className="h-3.5 w-3.5" /></button>
-              <button type="button" className="pointer-events-auto grid h-7 w-7 place-items-center text-sentinel-muted"><Crosshair className="h-3.5 w-3.5" /></button>
-            </div>
-
-            {/* Map+ top-center toolbar — geometry mode, Prithvi overlays, draw mode */}
-            <div className="absolute left-1/2 top-3 z-[500] -translate-x-1/2 pointer-events-auto flex flex-col items-center gap-2">
-              <div
-                className="flex items-center gap-1 border border-sentinel-line-2 bg-sentinel-panel/95 px-2 py-1 font-mono text-[10px] uppercase tracking-widest text-slate-300 rounded-full"
-                role="group"
-                aria-label="Detection geometry mode"
-              >
-                <span className="px-2 text-[10px] text-sentinel-muted">GEOM</span>
-                {(['hbb', 'obb', 'mask'] as const).map((k) => (
-                  <button
-                    key={k}
-                    type="button"
-                    onClick={() => setBboxMode(k)}
-                    title={
-                      k === 'hbb'
-                        ? 'Axis-aligned bounding box'
-                        : k === 'obb'
-                          ? 'Oriented bounding box (from SAM3 metadata)'
-                          : 'Mask polygon (raw geometry)'
-                    }
-                    className={`px-3 py-1 rounded-full transition ${
-                      bboxMode === k
-                        ? 'bg-sentinel-accent text-slate-900 font-bold'
-                        : 'text-slate-300 hover:text-white'
-                    }`}
-                  >
-                    {k.toUpperCase()}
-                  </button>
-                ))}
-                <span className="mx-1 h-4 w-px bg-sentinel-line-2" />
-                <span className="px-1 text-[10px] text-sentinel-muted">PRITHVI</span>
-                {(['flood', 'burn', 'crops'] as const).map((k) => {
-                  const on = prithviOverlays[k];
-                  return (
-                    <button
-                      key={k}
-                      type="button"
-                      onClick={() => setPrithviOverlays((cur) => ({ ...cur, [k]: !cur[k] }))}
-                      title={`Toggle Prithvi ${k} overlay`}
-                      className={`px-3 py-1 rounded-full transition ${
-                        on
-                          ? 'bg-sentinel-accent/20 text-sentinel-accent'
-                          : 'text-slate-400 hover:text-white'
-                      }`}
-                    >
-                      {k}
-                    </button>
-                  );
-                })}
-                <span className="mx-1 h-4 w-px bg-sentinel-line-2" />
-                <button
-                  type="button"
-                  onClick={() => setActiveLayers((cur) => ({ ...cur, tracks: !cur.tracks }))}
-                  title="Toggle asset tracks"
-                  className={`px-3 py-1 rounded-full transition ${
-                    activeLayers.tracks
-                      ? 'bg-sentinel-accent/20 text-sentinel-accent'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  tracks
-                </button>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setDrawMode((v) => !v)}
-                title={drawMode ? 'Cancel drawing' : 'Draw a manual box over an object'}
-                className={`flex items-center gap-2 border px-3 py-1.5 font-mono text-[11px] uppercase tracking-widest transition ${
-                  drawMode
-                    ? 'border-sentinel-accent bg-sentinel-accent/15 text-sentinel-accent'
-                    : 'border-sentinel-line-2 bg-sentinel-panel text-sentinel-text hover:border-sentinel-accent/60'
-                }`}
-              >
-                <Crosshair className="h-3.5 w-3.5" />
-                {drawMode ? 'Cancel draw' : 'Draw object'}
-              </button>
-              {drawError && (
-                <div className="mt-1 border border-red-500 bg-red-500/10 px-2 py-1 font-mono text-[10px] text-red-300">
-                  {drawError}
-                </div>
-              )}
-            </div>
-
-            {drawMode && (
-              <div className="absolute left-1/2 top-16 z-[500] -translate-x-1/2 pointer-events-none border border-sentinel-accent bg-sentinel-panel/80 px-3 py-1.5 font-mono text-[10.5px] uppercase tracking-widest text-sentinel-accent">
-                Drag on the map to box an object, then label it
-              </div>
-            )}
-          </div>
-
-          {isLoading && (
-            <div className="absolute left-1/2 top-1/2 z-[500] -translate-x-1/2 -translate-y-1/2 border border-sentinel-line bg-sentinel-panel px-4 py-2 text-xs text-slate-300">
-              <div className="flex items-center gap-2">
-                <span className="h-2 w-2 animate-pulse rounded-full bg-sentinel-accent" />
-                Loading detections
-              </div>
-            </div>
-          )}
-
-        </div>
-
-      </section>
+      <MapStage
+        ref={mapStageRef}
+        activeBaseLayer={activeBaseLayer}
+        layerOpacities={layerOpacities}
+        selectedImageryData={selectedImageryData}
+        filteredDetectionsGeoJSON={filteredDetectionsGeoJSON}
+        geomDisplayedDetectionsGeoJSON={geomDisplayedDetectionsGeoJSON}
+        detectionsGeoJSON={detectionsGeoJSON}
+        detectionClassFilter={detectionClassFilter}
+        detectionsLayerVersion={detectionsLayerVersion}
+        hiddenDetectionCategories={hiddenDetectionCategories}
+        hiddenDetectionLabels={hiddenDetectionLabels}
+        showBbox={showBbox}
+        bboxMode={bboxMode}
+        setBboxMode={setBboxMode}
+        showDetectionCenterMarkers={showDetectionCenterMarkers}
+        detectionIcon={detectionIcon}
+        getDetectionStyle={getDetectionStyle}
+        onEachDetection={onEachDetection}
+        detectionCanvasRenderer={detectionCanvasRenderer}
+        setSelectedDetection={setSelectedDetection}
+        activeLayers={activeLayers}
+        setActiveLayers={setActiveLayers}
+        data={data}
+        detectionTracks={detectionTracks}
+        selectedDetectionTrack={selectedDetectionTrack}
+        setSelectedDetectionTrack={setSelectedDetectionTrack}
+        trackColor={trackColor}
+        prithviOverlays={prithviOverlays}
+        setPrithviOverlays={setPrithviOverlays}
+        prithviGeojson={prithviGeojson}
+        analyticsResults={analyticsResults}
+        pendingPick={pendingPick}
+        setLastMapClick={setLastMapClick}
+        basemapGeoJSON={basemapGeoJSON}
+        setMapBounds={setMapBounds}
+        setMapZoom={setMapZoom}
+        setCursor={setCursor}
+        cursor={cursor}
+        mapZoom={mapZoom}
+        drawMode={drawMode}
+        setDrawMode={setDrawMode}
+        drawError={drawError}
+        createManualDetection={createManualDetection}
+        visibleDetectionCount={visibleDetectionCount}
+        timelineWindowMinutes={timelineWindowMinutes}
+        isLoading={isLoading}
+        categories={DETECTION_CATEGORIES}
+        branchById={branchById}
+      />
 
       {/* Floating event-timeline panel, anchored to the bottom and inset
           past the left/right floating panels when they're open so it
@@ -2544,7 +1293,7 @@ export default function GaiaMap({
               }}
             >
               <span className="label-mono" style={{ fontSize: 10, color: '#f0c279' }}>
-                ⚠ Filters from your last session are still hiding:
+                âš  Filters from your last session are still hiding:
               </span>
               {restoredHiddenNotice.categories.length > 0 && (
                 <button
@@ -2560,7 +1309,7 @@ export default function GaiaMap({
                     color: '#f0c279',
                   }}
                 >
-                  Show {restoredHiddenNotice.categories.length} hidden categories ✓
+                  Show {restoredHiddenNotice.categories.length} hidden categories âœ“
                 </button>
               )}
               {restoredHiddenNotice.labels.length > 0 && (
@@ -2577,7 +1326,7 @@ export default function GaiaMap({
                     color: '#f0c279',
                   }}
                 >
-                  Show {restoredHiddenNotice.labels.length} hidden labels ✓
+                  Show {restoredHiddenNotice.labels.length} hidden labels âœ“
                 </button>
               )}
               <div style={{ flex: 1 }} />
@@ -2594,7 +1343,7 @@ export default function GaiaMap({
                   padding: '0 4px',
                 }}
               >
-                ✕
+                âœ•
               </button>
             </div>
           )}
@@ -2651,7 +1400,7 @@ export default function GaiaMap({
                 }}
               >
                 <span className="label-mono" style={{ fontSize: 10, color: 'var(--ink-2)' }}>
-                  Showing {visibleDetectionCount}/{suppressionCounts.total} ·
+                  Showing {visibleDetectionCount}/{suppressionCounts.total} Â·
                 </span>
                 {suppressionCounts.byConfidence > 0 && (
                   <button
@@ -2660,7 +1409,7 @@ export default function GaiaMap({
                     title={`Click to reset confidence floor (currently ${confidenceThreshold.toFixed(2)})`}
                     style={chipStyle}
                   >
-                    -{suppressionCounts.byConfidence} below conf {confidenceThreshold.toFixed(2)} ✕
+                    -{suppressionCounts.byConfidence} below conf {confidenceThreshold.toFixed(2)} âœ•
                   </button>
                 )}
                 {suppressionCounts.byCategory > 0 && (
@@ -2670,7 +1419,7 @@ export default function GaiaMap({
                     title="Click to show all hidden categories"
                     style={chipStyle}
                   >
-                    -{suppressionCounts.byCategory} hidden by category ({hiddenDetectionCategories.length}) ✕
+                    -{suppressionCounts.byCategory} hidden by category ({hiddenDetectionCategories.length}) âœ•
                   </button>
                 )}
                 {suppressionCounts.byLabel > 0 && (
@@ -2680,7 +1429,7 @@ export default function GaiaMap({
                     title="Click to show all hidden labels"
                     style={chipStyle}
                   >
-                    -{suppressionCounts.byLabel} hidden by label ({hiddenDetectionLabels.length}) ✕
+                    -{suppressionCounts.byLabel} hidden by label ({hiddenDetectionLabels.length}) âœ•
                   </button>
                 )}
                 {overflowMarkers > 0 && (
@@ -2696,7 +1445,7 @@ export default function GaiaMap({
                     style={{ ...chipStyle, cursor: 'default' }}
                     title="Older detections are excluded by the time-window query; expand the timeline range to see more"
                   >
-                    last {tw}m window — older detections excluded
+                    last {tw}m window â€” older detections excluded
                   </span>
                 )}
                 {showSamplingChip && (
@@ -2707,9 +1456,9 @@ export default function GaiaMap({
                       borderColor: '#d8a14a',
                       color: '#f0c279',
                     }}
-                    title={`The chip planner sub-sampled ${suppressionCounts.sampledPasses} pass(es) — only ~${Math.round(suppressionCounts.worstCoverage * 100)}% of the raster was scanned for inference. "No detections" in unscanned regions does not mean "no targets". Re-ingest with INFERENCE_SPEED_PROFILE=recall_review or raise MAX_INFERENCE_CHIPS for full coverage.`}
+                    title={`The chip planner sub-sampled ${suppressionCounts.sampledPasses} pass(es) â€” only ~${Math.round(suppressionCounts.worstCoverage * 100)}% of the raster was scanned for inference. "No detections" in unscanned regions does not mean "no targets". Re-ingest with INFERENCE_SPEED_PROFILE=recall_review or raise MAX_INFERENCE_CHIPS for full coverage.`}
                   >
-                    ⚠ {suppressionCounts.sampledPasses} sub-sampled pass(es) · coverage {Math.round(suppressionCounts.worstCoverage * 100)}%
+                    âš  {suppressionCounts.sampledPasses} sub-sampled pass(es) Â· coverage {Math.round(suppressionCounts.worstCoverage * 100)}%
                   </span>
                 )}
               </div>
@@ -2733,7 +1482,7 @@ export default function GaiaMap({
             >
               <RefreshCw size={12} />
             </button>
-            <span className="label-mono">Event timeline · last {timelineWindowMinutes}m</span>
+            <span className="label-mono">Event timeline Â· last {timelineWindowMinutes}m</span>
             <div className="seg" style={{ marginLeft: 8 }}>
               {[15, 30, 60].map((minutes) => (
                 <button
@@ -2751,7 +1500,7 @@ export default function GaiaMap({
               {new Date(timeRange.start).toLocaleTimeString()} / {new Date(timeRange.end).toLocaleTimeString()}
             </span>
             <span className="mono" style={{ fontSize: 10, color: 'var(--ink-3)' }}>
-              · {visibleDetectionCount} in window
+              Â· {visibleDetectionCount} in window
             </span>
           </div>
           <div
@@ -2824,379 +1573,44 @@ export default function GaiaMap({
       )}
 
       {rightOpen ? (
-      <section
-        className="sentinel-panel map-float-panel map-right-panel"
-        style={{
-          position: 'absolute',
-          right: 14,
-          top: 14,
-          bottom: 14,
-          zIndex: 500,
-          border: '1px solid var(--line)',
-          borderRadius: 10,
-          background: 'color-mix(in oklab, var(--bg-1) 94%, transparent)',
-          backdropFilter: 'blur(8px)',
-          boxShadow: '0 8px 30px rgba(0,0,0,.35)',
-          display: 'flex',
-          flexDirection: 'column',
-          minHeight: 0,
+      <SelectionPanel
+        rightTab={rightTab}
+        setRightTab={setRightTab}
+        selectionTab={selectionTab}
+        setSelectionTab={setSelectionTab}
+        onClose={() => setRightOpen(false)}
+        selectedDetection={selectedDetection}
+        setSelectedDetection={setSelectedDetection}
+        detectionTracks={detectionTracks}
+        selectedImageryData={selectedImageryData}
+        detectionsGeoJSON={detectionsGeoJSON}
+        candidateLinks={candidateLinks}
+        pendingPick={pendingPick}
+        setPendingPick={setPendingPick}
+        lastMapClick={lastMapClick}
+        setLastMapClick={setLastMapClick}
+        activeLayers={activeLayers}
+        setActiveLayers={setActiveLayers}
+        analyticsResults={analyticsResults}
+        setAnalyticsResults={setAnalyticsResults}
+        data={data}
+        isActionBusy={isActionBusy}
+        actionStatus={actionStatus}
+        categories={DETECTION_CATEGORIES}
+        branchById={branchById}
+        userRole={user?.role}
+        onOpenFmv={onOpenFmv}
+        actions={{
+          tagDetection,
+          deleteDetection,
+          fetchDetections,
+          addToLinkGraph,
+          cueCollection,
+          pinTrack,
+          approveCandidate,
+          rejectCandidate,
         }}
-      >
-        {(() => {
-          const rightHeader =
-            rightTab === 'analytics' ? { Icon: Sparkles,    label: 'Analytics',     tag: 'ANALYTICS' } :
-            rightTab === 'similar'   ? { Icon: Crosshair,   label: 'Similar',       tag: 'NEAREST'   } :
-            rightTab === 'tracks'    ? { Icon: Navigation,  label: 'Active Tracks', tag: 'TRACKS'    } :
-                                       { Icon: Crosshair,   label: selectedDetection ? `DET-${selectedDetection.properties?.id}` : 'Selection', tag: 'DETAIL' };
-          const HeaderIcon = rightHeader.Icon;
-          const allegianceLabel = String(selectedDetection?.properties?.allegiance || '').toLowerCase();
-          const allegianceTagClass =
-            allegianceLabel === 'hostile' ? 'crit' :
-            allegianceLabel === 'friendly' ? 'ok' :
-            allegianceLabel === 'neutral' ? 'info' :
-            'acc';
-          return (
-            <div className="sentinel-panel-header">
-              <HeaderIcon className="h-4 w-4" />
-              <span>{rightHeader.label}</span>
-              {rightTab === 'details' && selectedDetection ? (
-                <span className={`sentinel-tag ${allegianceTagClass} ml-auto uppercase`}>{selectedDetection.properties?.allegiance || 'unknown'}</span>
-              ) : (
-                <span className="sentinel-tag acc ml-auto">{rightHeader.tag}</span>
-              )}
-              <button type="button" onClick={() => setRightOpen(false)} className="sentinel-icon-btn h-6 w-6" title="Collapse panel">
-                <ChevronRight className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          );
-        })()}
-        <div className="flex border-b border-sentinel-line bg-sentinel-panel-2">
-          {([
-            ['details', 'Details'],
-            ['analytics', 'Analytics'],
-            ['similar', 'Similar'],
-            ['tracks', 'Active Tracks'],
-          ] as const).map(([k, label]) => {
-            const isActive = rightTab === k;
-            return (
-              <button
-                key={k}
-                type="button"
-                onClick={() => setRightTab(k)}
-                className={`flex-1 h-[34px] font-mono text-[10.5px] uppercase tracking-[.08em] flex items-center justify-center gap-1.5 border-r border-sentinel-line last:border-r-0 ${
-                  isActive ? 'bg-sentinel-panel text-slate-100' : 'text-sentinel-muted'
-                }`}
-                style={{ borderBottom: isActive ? '2px solid var(--accent, #ff7a1a)' : '2px solid transparent' }}
-              >
-                {label}
-              </button>
-            );
-          })}
-        </div>
-        <div className="sentinel-scroll">
-          {rightTab === 'details' && (selectedDetection ? (() => {
-            const props = selectedDetection.properties || {};
-            const category = detectionCategoryForFeature(selectedDetection);
-            const categoryMeta = categoryFor(category, DETECTION_CATEGORIES);
-            const confidencePct = Math.round(Number(props.confidence || 0) * 100);
-            const centroid = featureCentroid(selectedDetection);
-            const llBounds = featureLatLonBounds(selectedDetection);
-            const mgrsString = centroid
-              ? (() => { try { return mgrsForward([centroid[1], centroid[0]], 5); } catch { return null; } })()
-              : null;
-            const trackForDetection = detectionTracks.find((t) => {
-              const ids = (t.metadata as any)?.detection_ids;
-              return Array.isArray(ids) && ids.includes(Number(props.id));
-            });
-            const vx = trackForDetection?.last_velocity?.vx_mps;
-            const vy = trackForDetection?.last_velocity?.vy_mps;
-            const motion = (typeof vx === 'number' && typeof vy === 'number')
-              ? (() => {
-                  const speedMs = Math.sqrt(vx * vx + vy * vy);
-                  const speedKmh = speedMs * 3.6;
-                  let bearing = (Math.atan2(vx, vy) * 180) / Math.PI;
-                  if (bearing < 0) bearing += 360;
-                  return `${speedKmh.toFixed(1)} km/h · bearing ${String(Math.round(bearing)).padStart(3, '0')}°`;
-                })()
-              : null;
-            const captureSource = selectedImageryData?.name
-              ? `${selectedImageryData.name}${selectedImageryData.sensor_type ? ` / ${selectedImageryData.sensor_type}` : ''}`
-              : props.metadata?.source_cog || 'n/a';
-            const captureTime = props.metadata?.acquisition_time || selectedImageryData?.acquisition_time;
-            const resolution = props.metadata?.resolution_m ?? selectedImageryData?.resolution_m;
-            return (
-              <>
-                <div className="border-b border-sentinel-line p-3">
-                  <div className="font-mono text-[10px] text-sentinel-muted">DET-{props.id} / {props.parent_class || props.class}</div>
-                  <div className="mt-1 flex items-center gap-2">
-                    <span style={{ color: categoryMeta.color }}><CategoryIcon category={category} branchById={branchById} /></span>
-                    <div className="text-lg font-semibold uppercase tracking-wide text-slate-100">
-                      {props.label || detectionClassLabel(props.class)}
-                    </div>
-                  </div>
-                  <div className="mt-3 flex items-center gap-2">
-                    <div className="h-1 flex-1 bg-sentinel-bg">
-                      <div className="h-full" style={{ width: `${confidencePct}%`, background: 'var(--accent, #ff7a1a)' }} />
-                    </div>
-                    <span className="font-mono text-[10px] text-sentinel-muted">{confidencePct}% CONF</span>
-                  </div>
-                </div>
-
-                <div className="border-b border-sentinel-line p-3">
-                  <div className="flex items-center gap-2 pb-2">
-                    <span className="inline-flex h-4 w-4 items-center justify-center bg-sentinel-line-2 font-mono text-[9px] text-slate-200">B</span>
-                    <span className="sentinel-label">Capture</span>
-                  </div>
-                  <div className="grid grid-cols-[92px_1fr] gap-y-1 font-mono text-[10.5px]">
-                    <span className="text-sentinel-muted">SOURCE</span><span className="truncate">{captureSource}</span>
-                    <span className="text-sentinel-muted">CAPTURE</span><span className="truncate">{captureTime ? new Date(captureTime).toISOString().replace(/\.\d+/, '') : 'n/a'}</span>
-                    <span className="text-sentinel-muted">RESOLUTION</span><span>{resolution ? `${Number(resolution).toFixed(2)} m / px` : 'n/a'}</span>
-                    <span className="text-sentinel-muted">BBOX</span>
-                    <span className="truncate">
-                      {llBounds
-                        ? `${llBounds.south.toFixed(4)},${llBounds.west.toFixed(4)} → ${llBounds.north.toFixed(4)},${llBounds.east.toFixed(4)}`
-                        : 'n/a'}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="border-b border-sentinel-line p-3">
-                  <div className="flex items-center gap-2 pb-2">
-                    <span className="inline-flex h-4 w-4 items-center justify-center bg-sentinel-line-2 font-mono text-[9px] text-slate-200">C</span>
-                    <span className="sentinel-label">Geolocation</span>
-                  </div>
-                  <div className="grid grid-cols-[92px_1fr] gap-y-1 font-mono text-[10.5px]">
-                    <span className="text-sentinel-muted">WGS84</span>
-                    <span>{centroid ? `${centroid[0].toFixed(4)}° N, ${centroid[1].toFixed(4)}° E` : 'n/a'}</span>
-                    <span className="text-sentinel-muted">MGRS</span><span>{mgrsString || 'n/a'}</span>
-                    <span className="text-sentinel-muted">MOTION</span><span>{motion || 'static'}</span>
-                  </div>
-                </div>
-
-                <div className="border-b border-sentinel-line p-3">
-                  <div className="flex items-center gap-2 pb-2">
-                    <span className="inline-flex h-4 w-4 items-center justify-center bg-sentinel-line-2 font-mono text-[9px] text-slate-200">D</span>
-                    <span className="sentinel-label">Taxonomy</span>
-                  </div>
-                  <div className="grid grid-cols-[92px_1fr] gap-y-1 font-mono text-[10.5px]">
-                    <span className="text-sentinel-muted">CLASS</span><span className="truncate">{props.class || 'n/a'}</span>
-                    <span className="text-sentinel-muted">VERSION</span><span>{props.metadata?.taxonomy_version || 'n/a'}</span>
-                    <span className="text-sentinel-muted">MODEL</span><span>{props.metadata?.model_version || 'n/a'}</span>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2 border-b border-sentinel-line p-3">
-                  <button
-                    type="button"
-                    disabled={!props.fmv_clip_id || !onOpenFmv}
-                    onClick={() => props.fmv_clip_id && onOpenFmv && onOpenFmv(Number(props.fmv_clip_id))}
-                    className="sentinel-btn justify-center disabled:opacity-40"
-                  >
-                    OPEN IN FMV →
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isActionBusy}
-                    onClick={addToLinkGraph}
-                    className="sentinel-btn justify-center disabled:opacity-40"
-                  >
-                    OPEN IN GRAPH →
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2 border-b border-sentinel-line p-3">
-                  <button type="button" disabled={isActionBusy} onClick={() => tagDetection(props.id, 'friendly')} className="sentinel-btn justify-center disabled:opacity-40"><Shield className="h-3.5 w-3.5" /> Friendly</button>
-                  <button type="button" disabled={isActionBusy} onClick={() => tagDetection(props.id, 'hostile')} className="sentinel-btn justify-center disabled:opacity-40"><Swords className="h-3.5 w-3.5" /> Hostile</button>
-                  <button type="button" disabled={isActionBusy} onClick={() => tagDetection(props.id, 'neutral')} className="sentinel-btn justify-center disabled:opacity-40"><CircleHelp className="h-3.5 w-3.5" /> Neutral</button>
-                  <button type="button" disabled={isActionBusy} onClick={() => tagDetection(props.id, 'unknown')} className="sentinel-btn justify-center disabled:opacity-40">Clear</button>
-                </div>
-
-                <div className="flex border-b border-sentinel-line">
-                  {(['edit', 'review'] as const).map((k) => (
-                    <button
-                      key={k}
-                      type="button"
-                      onClick={() => setSelectionTab(k)}
-                      className={`flex-1 px-2 py-2 font-mono text-[10.5px] uppercase tracking-widest transition border-b-2 ${
-                        selectionTab === k
-                          ? 'border-sentinel-accent text-sentinel-accent bg-sentinel-panel-2'
-                          : 'border-transparent text-sentinel-muted hover:text-slate-200'
-                      }`}
-                    >
-                      {k}
-                    </button>
-                  ))}
-                </div>
-
-                {selectionTab === 'edit' && (
-                  <ObjectDetailsForm
-                    key={`map-det-${props.id}`}
-                    source="map"
-                    detectionId={Number(props.id)}
-                    defaultClass={props.class}
-                    title={props.label || detectionClassLabel(props.class)}
-                    initial={{
-                      designation: props.metadata?.designation,
-                      military_classification: props.metadata?.military_classification,
-                      threat_level: props.threat_level,
-                      affiliation: props.allegiance,
-                    }}
-                    canDelete={
-                      (props.source || props.metadata?.source) === 'operator'
-                      || user?.role === 'admin'
-                    }
-                    onDeleted={() => deleteDetection(Number(props.id))}
-                    onSaved={() => fetchDetections()}
-                    onViewInFmv={
-                      props.fmv_clip_id && onOpenFmv
-                        ? () => onOpenFmv(Number(props.fmv_clip_id))
-                        : undefined
-                    }
-                  />
-                )}
-                {selectionTab === 'review' && (
-                  <ReviewPanel
-                    selectedDetection={selectedDetection}
-                    onReviewed={() => fetchDetections()}
-                    onJump={(id) => {
-                      const feat = detectionsGeoJSON?.features?.find(
-                        (f: any) => Number(f.properties?.id) === id,
-                      );
-                      if (feat) setSelectedDetection(feat);
-                    }}
-                  />
-                )}
-
-                <div className="border-b border-sentinel-line p-3">
-                  <div className="mb-2 flex items-center gap-2">
-                    <span className="sentinel-label flex-1">Candidate Links</span>
-                    <span className="sentinel-tag">{candidateLinks.length}</span>
-                  </div>
-                  {candidateLinks.length === 0 && (
-                    <div className="text-[11px] text-sentinel-muted">No candidate target links. Use Add To Link Graph to generate review candidates.</div>
-                  )}
-                  <div className="space-y-2">
-                    {candidateLinks.slice(0, 4).map((candidate) => (
-                      <div key={candidate.id} className="border border-sentinel-line bg-sentinel-bg p-2">
-                        <div className="flex items-center gap-2">
-                          <span className="min-w-0 flex-1 truncate text-xs text-slate-200">{candidate.target_name || candidate.target_id}</span>
-                          <span className={`sentinel-tag ${candidate.status === 'approved' ? 'ok' : candidate.status === 'rejected' ? 'crit' : 'warn'}`}>{candidate.status}</span>
-                        </div>
-                        <div className="mt-1 font-mono text-[10px] text-sentinel-muted">{Math.round(Number(candidate.score || 0) * 100)} score / {candidate.reason}</div>
-                        {candidate.status === 'pending' && (
-                          <div className="mt-2 grid grid-cols-2 gap-2">
-                            <button type="button" disabled={isActionBusy} onClick={() => approveCandidate(candidate.id)} className="sentinel-btn justify-center disabled:opacity-40">Approve</button>
-                            <button type="button" disabled={isActionBusy} onClick={() => rejectCandidate(candidate.id)} className="sentinel-btn justify-center disabled:opacity-40">Reject</button>
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="sentinel-panel-header">
-                  <Activity className="h-4 w-4" />
-                  <span>Actions</span>
-                </div>
-                <div className="space-y-2 p-3">
-                  <button
-                    type="button"
-                    disabled={isActionBusy || !selectedDetection}
-                    onClick={cueCollection}
-                    className="sentinel-btn primary w-full justify-center disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    <Send className="h-3.5 w-3.5" /> Cue Collection
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isActionBusy || !selectedDetection}
-                    onClick={addToLinkGraph}
-                    className="sentinel-btn w-full justify-center disabled:cursor-not-allowed disabled:opacity-40"
-                  >
-                    <GitBranch className="h-3.5 w-3.5" /> Add To Link Graph
-                  </button>
-                  <div className="min-h-8 border border-sentinel-line bg-sentinel-bg px-2 py-1 font-mono text-[10px] text-sentinel-muted">
-                    {actionStatus || 'Detection action ready.'}
-                  </div>
-                </div>
-              </>
-            );
-          })() : (
-            <div className="border-b border-sentinel-line p-3 text-xs text-sentinel-muted">Select a detection polygon to inspect classification details.</div>
-          ))}
-
-          {rightTab === 'analytics' && (
-            <AnalyticsToolsPanel
-              pendingPick={pendingPick}
-              onRequestPick={setPendingPick}
-              lastMapClick={lastMapClick}
-              layers={{
-                viewshed: { on: !!activeLayers.viewshed, disabled: !analyticsResults.viewshed },
-                los: { on: !!activeLayers.los, disabled: !analyticsResults.los },
-                routes: { on: !!activeLayers.routes, disabled: !analyticsResults.routes },
-              }}
-              onToggleLayer={(kind) =>
-                setActiveLayers((prev) => ({ ...prev, [kind]: !prev[kind] }))
-              }
-              onResult={(kind, response) => {
-                setAnalyticsResults((prev) => ({ ...prev, [kind]: response }));
-                if (response) setActiveLayers((prev) => ({ ...prev, [kind]: true }));
-                setLastMapClick(null);
-              }}
-            />
-          )}
-
-          {rightTab === 'similar' && (
-            selectedDetection ? (
-              <SimilarPanel
-                selectedDetection={selectedDetection}
-                onSelect={(id) => {
-                  const feat = detectionsGeoJSON?.features?.find(
-                    (f: any) => Number(f.properties?.id) === id,
-                  );
-                  if (feat) setSelectedDetection(feat);
-                }}
-              />
-            ) : (
-              <div className="border-b border-sentinel-line p-3 text-xs text-sentinel-muted">Select a detection polygon to inspect similar objects.</div>
-            )
-          )}
-
-          {rightTab === 'tracks' && (
-            <>
-              <div className="sentinel-panel-header">
-                <Navigation className="h-4 w-4" />
-                <span>Active Tracks</span>
-                <span className="sentinel-tag info ml-auto">{data.tracks.length}</span>
-              </div>
-              <div className="border-b border-sentinel-line p-3">
-                <button
-                  type="button"
-                  disabled={isActionBusy || !selectedDetection}
-                  onClick={() => selectedDetection && pinTrack(selectedDetection.properties.id)}
-                  className="sentinel-btn w-full justify-center disabled:cursor-not-allowed disabled:opacity-40"
-                  title={selectedDetection ? 'Force-create a track from the selected detection' : 'Select a detection first'}
-                >
-                  <Crosshair className="h-3.5 w-3.5" /> Track Object
-                </button>
-              </div>
-              {data.tracks.length === 0 ? (
-                <div className="border-b border-sentinel-line p-3 text-[11px] text-sentinel-muted">No active tracks.</div>
-              ) : (
-                data.tracks.map((track: any) => (
-                  <div key={track.id} className="sentinel-row grid-cols-[1fr_auto]">
-                    <span className="min-w-0">
-                      <span className="block truncate text-xs text-slate-200">{track.properties?.callsign || track.asset_id || track.id}</span>
-                      <span className="block truncate font-mono text-[10px] text-sentinel-muted">{track.label}</span>
-                    </span>
-                    <span className="sentinel-tag info">LIVE</span>
-                  </div>
-                ))
-              )}
-            </>
-          )}
-        </div>
-      </section>
+      />
       ) : (
         <button
           type="button"
@@ -3232,7 +1646,7 @@ export default function GaiaMap({
               color: 'var(--ink-1)',
             }}
           >
-            Selection {selectedDetection ? `· DET-${selectedDetection.properties?.id}` : ''}
+            Selection {selectedDetection ? `Â· DET-${selectedDetection.properties?.id}` : ''}
           </span>
           <ChevronLeft size={11} style={{ color: 'var(--ink-3)' }} />
         </button>

@@ -1,16 +1,45 @@
-"""Satellite-imagery catalog routes + basemap countries fallback."""
+"""Satellite-imagery catalog routes + basemap countries fallback + change endpoint."""
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 
+from change_detection import compute_change
 from database import postgis_db
 from geometry import parse_bbox
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+class ChangeRequest(BaseModel):
+    before_pass_id: int
+    after_pass_id: int
+
+
+@router.post("/api/imagery/change")
+def post_imagery_change(body: ChangeRequest):
+    """Raster-diff change detection between two satellite passes.
+
+    Returns a GeoJSON FeatureCollection of changed regions plus a summary
+    block (bounds, threshold, peak_diff, changed_pixels). ``404`` when the
+    two passes share no spatial overlap or either pass is missing.
+    """
+    if body.before_pass_id == body.after_pass_id:
+        raise HTTPException(status_code=400, detail="before/after passes must differ")
+    try:
+        result = compute_change(body.before_pass_id, body.after_pass_id)
+    except Exception as exc:  # rasterio I/O / projection failures
+        logger.exception("change_detection failed for %s vs %s", body.before_pass_id, body.after_pass_id)
+        raise HTTPException(status_code=503, detail=f"change detection unavailable: {exc}")
+    if result is None:
+        raise HTTPException(status_code=404, detail="no spatial overlap between passes")
+    return result
 
 
 @router.get("/api/imagery")

@@ -1,11 +1,19 @@
 /**
  * LoginScreen — Sentinel · GEOINT Workstation sign-in.
  *
- * Ported from the design's LoginSplit prototype:
- *   /tmp/sentinel-design/test1/project/components/login-screen.jsx → LoginSplit
- *
  * Two-pane layout: brand half (graticule + telemetry strip) on the left,
  * credential form on the right. Wired to POST /api/auth/login via useAuth.
+ *
+ * Changes vs previous revision:
+ *   1. LDAP-hint moved ABOVE the Sign in button so first-time admins see it
+ *      before they attempt their first failed login. Old position required
+ *      a successful sign-in to ever appear visually relevant.
+ *   2. Form sets aria-busy while authenticating; status messages use
+ *      aria-live for screen-reader users.
+ *   3. .login-layout becomes a CSS container (see index.css) and the
+ *      two-pane → stacked breakpoint is driven by @container, not @media,
+ *      so embedding the login screen in a smaller widget (e.g. a re-auth
+ *      modal) collapses to one column based on its own width.
  */
 
 import { useState } from 'react';
@@ -25,7 +33,7 @@ export default function LoginScreen() {
     try {
       await login(username.trim(), password);
     } catch {
-      // error surfaces via useAuth().error
+      // surfaces via useAuth().error
     } finally {
       setBusy(false);
     }
@@ -35,18 +43,18 @@ export default function LoginScreen() {
     <div
       className="login-screen"
       style={{
-        height: '100%',
-        width: '100%',
-        display: 'flex',
-        flexDirection: 'column',
-        background: 'var(--bg-0)',
-        color: 'var(--ink-0)',
+        height: '100%', width: '100%',
+        display: 'flex', flexDirection: 'column',
+        background: 'var(--bg-0)', color: 'var(--ink-0)',
         fontFamily: 'var(--font-sans)',
       }}
     >
       <ClassifiedBar />
 
-      <div className="login-layout" style={{ flex: 1 }}>
+      <div
+        className="login-layout"
+        style={{ flex: 1, containerType: 'inline-size', containerName: 'login' }}
+      >
         {/* ===== Brand pane ===== */}
         <div
           className="login-brand-pane"
@@ -75,18 +83,14 @@ export default function LoginScreen() {
             style={{
               position: 'relative',
               marginTop: 'auto',
-              display: 'flex',
-              flexDirection: 'column',
+              display: 'flex', flexDirection: 'column',
               gap: 18,
             }}
           >
             <h1
               style={{
-                margin: 0,
-                fontSize: 'var(--text-hero)',
-                lineHeight: 1.05,
-                fontWeight: 500,
-                letterSpacing: '-0.01em',
+                margin: 0, fontSize: 'var(--text-hero)', lineHeight: 1.05,
+                fontWeight: 500, letterSpacing: '-0.01em',
                 maxInlineSize: '35rem',
               }}
             >
@@ -96,10 +100,8 @@ export default function LoginScreen() {
             </h1>
             <p
               style={{
-                margin: 0,
-                color: 'var(--ink-1)',
-                fontSize: 'var(--text-md)',
-                lineHeight: 1.55,
+                margin: 0, color: 'var(--ink-1)',
+                fontSize: 'var(--text-md)', lineHeight: 1.55,
                 maxInlineSize: '32.5rem',
               }}
             >
@@ -115,12 +117,11 @@ export default function LoginScreen() {
         <form
           className="login-auth-pane"
           onSubmit={onSubmit}
+          aria-busy={busy}
           style={{
             background: 'var(--bg-1)',
-            display: 'flex',
-            flexDirection: 'column',
-            justifyContent: 'center',
-            gap: 24,
+            display: 'flex', flexDirection: 'column',
+            justifyContent: 'center', gap: 24,
           }}
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -134,12 +135,11 @@ export default function LoginScreen() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             <Field label="OPERATOR ID">
               <Input
-                icon={<User size={14} style={{ color: 'var(--ink-2)' }} />}
+                icon={<User size={14} style={{ color: 'var(--ink-2)' }} aria-hidden/>}
                 value={username}
-                onChange={(v) => setUsername(v)}
+                onChange={setUsername}
                 placeholder="lastname.firstname"
-                autoComplete="username"
-                autoFocus
+                autoComplete="username" autoFocus
                 disabled={busy}
                 name="username"
               />
@@ -147,9 +147,9 @@ export default function LoginScreen() {
 
             <Field label="PASSPHRASE">
               <Input
-                icon={<Lock size={14} style={{ color: 'var(--ink-2)' }} />}
+                icon={<Lock size={14} style={{ color: 'var(--ink-2)' }} aria-hidden/>}
                 value={password}
-                onChange={(v) => setPassword(v)}
+                onChange={setPassword}
                 placeholder="••••••••••••"
                 type="password"
                 autoComplete="current-password"
@@ -158,24 +158,42 @@ export default function LoginScreen() {
               />
             </Field>
 
+            {/* LDAP hint — visible BEFORE first sign-in attempt now */}
+            <div
+              className="login-ldap-hint"
+              style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                color: 'var(--ink-2)',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 10.5, letterSpacing: '.06em',
+                padding: '8px 12px',
+                background: 'var(--bg-2)',
+                border: '1px solid var(--line)',
+                borderRadius: 6,
+              }}
+            >
+              <Building size={11} aria-hidden/>
+              <span>
+                LDAP enabled? Configure it under <b style={{ color: 'var(--ink-1)' }}>Admin · Auth</b> after
+                signing in as the env admin.
+              </span>
+            </div>
+
             {error && (
               <div
+                role="alert"
+                aria-live="polite"
                 style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
+                  display: 'flex', alignItems: 'center', gap: 8,
                   padding: '8px 12px',
                   background: 'color-mix(in oklab, var(--nato-hostile) 12%, var(--bg-2))',
                   border: '1px solid var(--nato-hostile)',
                   color: 'var(--nato-hostile)',
                   fontFamily: 'var(--font-mono)',
-                  fontSize: 11.5,
-                  letterSpacing: '.02em',
+                  fontSize: 11.5, letterSpacing: '.02em',
                 }}
-                role="alert"
-                aria-live="polite"
               >
-                <Shield size={13} />
+                <Shield size={13} aria-hidden/>
                 {error}
               </div>
             )}
@@ -184,47 +202,27 @@ export default function LoginScreen() {
               type="submit"
               disabled={busy || !username.trim() || !password}
               className="btn primary"
+              aria-disabled={busy || !username.trim() || !password}
               style={{
-                height: 42,
-                fontSize: 13,
+                height: 42, fontSize: 13,
                 opacity: busy || !username.trim() || !password ? 0.6 : 1,
                 cursor: busy ? 'wait' : 'pointer',
               }}
             >
-              <Key size={14} />
-              {busy ? 'Authenticating…' : 'Sign in'}
+              <Key size={14} aria-hidden/>
+              <span aria-live="polite">{busy ? 'Authenticating…' : 'Sign in'}</span>
               <span style={{ flex: 1 }} />
               <span className="kbd" style={{ marginLeft: 0 }}>↵</span>
             </button>
-
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                color: 'var(--ink-3)',
-                fontFamily: 'var(--font-mono)',
-                fontSize: 10.5,
-                letterSpacing: '.06em',
-                paddingTop: 6,
-              }}
-            >
-              <Building size={11} />
-              <span>
-                LDAP enabled? Configure it under <b style={{ color: 'var(--ink-1)' }}>Admin · Auth</b> after signing in as the env admin.
-              </span>
-            </div>
           </div>
 
           <div
             style={{
-              display: 'flex',
-              alignItems: 'center',
+              display: 'flex', alignItems: 'center',
               justifyContent: 'space-between',
               paddingTop: 18,
               borderTop: '1px solid var(--line)',
-              color: 'var(--ink-2)',
-              fontSize: 11,
+              color: 'var(--ink-2)', fontSize: 11,
             }}
           >
             <span className="mono">BUILD · sentinel/main</span>
@@ -239,17 +237,14 @@ export default function LoginScreen() {
 function ClassifiedBar() {
   return (
     <div
+      role="banner"
       style={{
         height: 22,
         background: 'var(--nato-unknown)',
         color: '#0b0d10',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
         fontFamily: 'var(--font-mono)',
-        fontSize: 10.5,
-        letterSpacing: '.18em',
-        fontWeight: 700,
+        fontSize: 10.5, letterSpacing: '.18em', fontWeight: 700,
       }}
     >
       UNCLASSIFIED // FOR OFFICIAL USE ONLY
@@ -261,19 +256,15 @@ function BrandMark() {
   return (
     <div
       style={{
-        width: 44,
-        height: 44,
-        display: 'grid',
-        placeItems: 'center',
+        width: 44, height: 44,
+        display: 'grid', placeItems: 'center',
         background: 'color-mix(in oklab, var(--accent) 18%, var(--bg-2))',
         border: '1px solid color-mix(in oklab, var(--accent) 60%, transparent)',
-        color: 'var(--accent)',
-        borderRadius: 8,
-        fontWeight: 700,
-        fontFamily: 'var(--font-mono)',
-        fontSize: 18,
+        color: 'var(--accent)', borderRadius: 8,
+        fontWeight: 700, fontFamily: 'var(--font-mono)', fontSize: 18,
         flexShrink: 0,
       }}
+      aria-hidden
     >
       S
     </div>
@@ -282,11 +273,9 @@ function BrandMark() {
 
 function GraticuleBG() {
   return (
-    <svg
-      width="100%"
-      height="100%"
-      preserveAspectRatio="none"
+    <svg width="100%" height="100%" preserveAspectRatio="none"
       style={{ position: 'absolute', inset: 0, opacity: 0.55, pointerEvents: 'none' }}
+      aria-hidden
     >
       <defs>
         <pattern id="login-grid-lg" width="80" height="80" patternUnits="userSpaceOnUse">
@@ -316,13 +305,8 @@ function GraticuleBG() {
           { x: 720, y: 220, r: 2.8 },
         ].map((p, i) => (
           <g key={i}>
-            <circle
-              cx={p.x}
-              cy={p.y}
-              r={p.r * 4}
-              fill="color-mix(in oklab, var(--accent) 40%, transparent)"
-              opacity=".25"
-            />
+            <circle cx={p.x} cy={p.y} r={p.r * 4}
+              fill="color-mix(in oklab, var(--accent) 40%, transparent)" opacity=".25" />
             <circle cx={p.x} cy={p.y} r={p.r} fill="var(--accent)" />
           </g>
         ))}
@@ -346,15 +330,13 @@ function TelemetryStrip() {
         { l: 'AUTH', v: 'LOCAL · READY' },
         { l: 'POSTGIS', v: 'CONNECTED' },
         { l: 'NEO4J', v: 'CONNECTED' },
-      ].map((s, i) => (
+      ].map((s, i, arr) => (
         <div
           key={i}
           style={{
             padding: '14px 16px',
-            borderRight: i < 3 ? '1px solid var(--line)' : '0',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 4,
+            borderRight: i < arr.length - 1 ? '1px solid var(--line)' : '0',
+            display: 'flex', flexDirection: 'column', gap: 4,
           }}
         >
           <span className="label-mono">{s.l}</span>
@@ -392,17 +374,11 @@ type InputProps = {
 
 function Input({ value, onChange, placeholder, icon, type, disabled, autoFocus, autoComplete, name }: InputProps) {
   return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-        height: 38,
-        padding: '0 10px',
-        background: 'var(--bg-0)',
-        border: '1px solid var(--line-2)',
-      }}
-    >
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 8,
+      height: 38, padding: '0 10px',
+      background: 'var(--bg-0)', border: '1px solid var(--line-2)',
+    }}>
       {icon}
       <input
         type={type || 'text'}
@@ -414,13 +390,9 @@ function Input({ value, onChange, placeholder, icon, type, disabled, autoFocus, 
         autoComplete={autoComplete}
         name={name}
         style={{
-          flex: 1,
-          border: 0,
-          outline: 'none',
-          background: 'transparent',
-          color: 'var(--ink-0)',
-          fontFamily: 'inherit',
-          fontSize: 13,
+          flex: 1, border: 0, outline: 'none',
+          background: 'transparent', color: 'var(--ink-0)',
+          fontFamily: 'inherit', fontSize: 13,
         }}
       />
     </div>

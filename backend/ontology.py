@@ -405,6 +405,53 @@ def all_prompts() -> list[str]:
     return default_prompts(None)
 
 
+# ─── Branch / object row helpers (hoisted from main.py) ───────────────────
+
+def _branch_row_to_dict(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "parent_id": row.get("parent_id"),
+        "label": row.get("label"),
+        "color": row.get("color"),
+        "short": row.get("short"),
+        "icon_key": row.get("icon_key"),
+        "matchers": row.get("matchers") or [],
+        "sensors": row.get("sensors") or [],
+        "order_index": int(row.get("order_index") or 0),
+    }
+
+
+def _object_row_to_dict(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "branch_id": row.get("branch_id"),
+        "label": row.get("label"),
+        "prompt": row.get("prompt"),
+        "sensors": row.get("sensors") or [],
+        "min_gsd_meters": (float(row["min_gsd_meters"]) if row.get("min_gsd_meters") is not None else None),
+        "icon_key": row.get("icon_key"),
+        "order_index": int(row.get("order_index") or 0),
+    }
+
+
+def _filter_object_by_sensor(obj: dict, sensor: Any) -> bool:
+    if not sensor:
+        return True
+    sensors = obj.get("sensors") or []
+    if not isinstance(sensors, list):
+        return False
+    return str(sensor).lower() in {str(s).lower() for s in sensors if s}
+
+
+def _filter_branch_by_sensor(branch: dict, sensor: Any) -> bool:
+    if not sensor:
+        return True
+    sensors = branch.get("sensors") or []
+    if not isinstance(sensors, list) or not sensors:
+        return True  # sensor-agnostic branch
+    return str(sensor).lower() in {str(s).lower() for s in sensors if s}
+
+
 def get_version() -> int:
     """Return the current ``ontology_version.version_id`` (0 if missing)."""
     v = _read_db_version()
@@ -468,3 +515,9 @@ def bump_version(summary: str | None = None, changes: dict | None = None, by: st
     invalidate_cache()
     logger.info("ontology: version bumped to %d", new_id)
     return new_id
+
+
+# ─── Aliases for callers that prefer the prefixed name ────────────────────
+ontology_bump_version = bump_version
+ontology_default_prompts = default_prompts
+ontology_get_version = get_version

@@ -28,6 +28,8 @@ they can re-implement that as a separate, opt-in policy outside this module.
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from dataclasses import dataclass, asdict
 from typing import Any
 
@@ -38,10 +40,45 @@ logger = logging.getLogger(__name__)
 
 THREAT_LEVELS = {"unrated", "low", "medium", "high", "critical"}
 
+# ── Thread-safe TTL cache for threat-rule lookups ───────────────────────────
+# A single worker pass can run thousands of lookups; a per-row DB round-trip
+# is wasteful when the rule table changes on the order of minutes. Cache hits
+# expire after _TTL_SECONDS and on-demand via clear_threat_rule_cache().
+_TTL_SECONDS = 60.0
+_cache_lock = threading.Lock()
+_cache: dict[tuple[str | None, str | None, str | None], tuple[float, dict[str, Any] | None]] = {}
+
+
+def clear_threat_rule_cache() -> None:
+    """Invalidate the in-process threat-rule cache (call after rule edits)."""
+    with _cache_lock:
+        _cache.clear()
+
 
 def _lookup_threat_rule(
     det_class: str,
     category: str,
+    allegiance: str | None,
+) -> dict[str, Any] | None:
+    key = (
+        (det_class or "").strip().lower() or None,
+        (category or "").strip().lower() or None,
+        (allegiance or "").strip().lower() or None,
+    )
+    now = time.monotonic()
+    with _cache_lock:
+        hit = _cache.get(key)
+        if hit and (now - hit[0]) < _TTL_SECONDS:
+            return hit[1]
+    result = _lookup_threat_rule_uncached(*key)
+    with _cache_lock:
+        _cache[key] = (now, result)
+    return result
+
+
+def _lookup_threat_rule_uncached(
+    det_class: str | None,
+    category: str | None,
     allegiance: str | None,
 ) -> dict[str, Any] | None:
     """Phase 6.25: query the ``threat_rules`` table for a match.
@@ -54,12 +91,14 @@ def _lookup_threat_rule(
 
     The table is intentionally optional — defence operators opt-in by
     populating it; everyone else stays on the open-vocab "unrated" default.
+
+    Inputs are already lower-cased / None-normalised by the caching wrapper.
     """
+    cleaned_class = det_class
+    cleaned_cat = category
+    cleaned_alle = allegiance
     try:
         from database import postgis_db
-        cleaned_class = (det_class or "").strip().lower() or None
-        cleaned_cat = (category or "").strip().lower() or None
-        cleaned_alle = (allegiance or "").strip().lower() or None
         with postgis_db.get_cursor() as cur:
             # Score each candidate rule by specificity, pick the highest.
             cur.execute(
