@@ -1132,6 +1132,7 @@ def run_video(bundle, video_path, prompt: str, *, frame_stride, start_frame, end
                         "class": prompt_text,
                         "original_class": prompt_text,
                         "parent_class": "track",
+                        "source_layer": "sam3",
                         "score": score,
                     }
                     if mask is not None and bbox_xyxy_norm is not None:
@@ -1423,6 +1424,7 @@ def run_video_yoloe(
                     "class": cls,
                     "original_class": cls,
                     "parent_class": "yoloe_track",
+                    "source_layer": "yoloe",
                     "score": score,
                     "bbox_xyxy_norm": bbox_xyxy_norm,
                     "obb": obb["points"],

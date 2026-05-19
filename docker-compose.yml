@@ -309,6 +309,13 @@ services:
       # DINOv3 (also gated). Pass an empty string when SAM3_WEIGHTS_SOURCE=mirror
       # AND SAM3_LOAD_DINOV3_*=0 to run fully un-tokened.
       HF_TOKEN: ${HF_TOKEN:-}
+      # Phase 1: raster I/O tuning — keep settings consistent with worker
+      # so chip decode hits the same GDAL block cache + vsicurl behaviour.
+      GDAL_CACHEMAX: ${GDAL_CACHEMAX:-1024}
+      GDAL_DISABLE_READDIR_ON_OPEN: ${GDAL_DISABLE_READDIR_ON_OPEN:-EMPTY_DIR}
+      VSI_CACHE: ${VSI_CACHE:-TRUE}
+      VSI_CACHE_SIZE: ${VSI_CACHE_SIZE:-5000000}
+      GTIFF_VIRTUAL_MEM_IO: ${GTIFF_VIRTUAL_MEM_IO:-YES}
     volumes:
       - ./inference-sam3:/app
       - ./backend/detection_policy.py:/app/detection_policy.py:ro
@@ -366,7 +373,23 @@ services:
       - INFERENCE_CHIP_OVERLAP=${INFERENCE_CHIP_OVERLAP:-252}
       - MAX_INFERENCE_CHIPS=${MAX_INFERENCE_CHIPS:-256}
       - INFERENCE_CHIP_CONCURRENCY=${INFERENCE_CHIP_CONCURRENCY:-1}
+      - INFERENCE_MAX_PENDING_CHIPS=${INFERENCE_MAX_PENDING_CHIPS:-}
       - INFERENCE_CHIP_TIMEOUT_S=${INFERENCE_CHIP_TIMEOUT_S:-600}
+      # Phase 1: raster I/O tuning. Same block lives on inference-sam3 so
+      # both processes share GDAL cache + vsicurl settings.
+      - GDAL_CACHEMAX=${GDAL_CACHEMAX:-1024}
+      - GDAL_DISABLE_READDIR_ON_OPEN=${GDAL_DISABLE_READDIR_ON_OPEN:-EMPTY_DIR}
+      - GDAL_HTTP_MERGE_CONSECUTIVE_RANGES=${GDAL_HTTP_MERGE_CONSECUTIVE_RANGES:-YES}
+      - GDAL_HTTP_MULTIPLEX=${GDAL_HTTP_MULTIPLEX:-YES}
+      - GDAL_HTTP_VERSION=${GDAL_HTTP_VERSION:-2}
+      - VSI_CACHE=${VSI_CACHE:-TRUE}
+      - VSI_CACHE_SIZE=${VSI_CACHE_SIZE:-5000000}
+      - CPL_VSIL_CURL_CACHE_SIZE=${CPL_VSIL_CURL_CACHE_SIZE:-200000000}
+      - CPL_VSIL_CURL_ALLOWED_EXTENSIONS=${CPL_VSIL_CURL_ALLOWED_EXTENSIONS:-.tif,.tiff,.jp2}
+      - GTIFF_VIRTUAL_MEM_IO=${GTIFF_VIRTUAL_MEM_IO:-YES}
+      - COG_COMPRESS=${COG_COMPRESS:-ZSTD}
+      - COG_BLOCKSIZE=${COG_BLOCKSIZE:-512}
+      - COG_PREDICTOR=${COG_PREDICTOR:-2}
     depends_on:
       neo4j:
         condition: service_healthy

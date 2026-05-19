@@ -49,7 +49,6 @@ import provider_lifecycle
 import ontology as ontology_module
 from ontology import (
     bump_version as ontology_bump_version,
-    default_prompts as ontology_default_prompts,
     get_version as ontology_get_version,
     invalidate_cache as ontology_invalidate_cache,
 )
@@ -904,11 +903,9 @@ def list_tracks(limit: int = 200):
 # Default open-vocabulary prompt set for drone aerial FMV. SAM3's text-prompted
 # tracker takes these and reports a track per matching object across frames.
 # Override by passing a comma-separated `prompts` form field on upload.
-# Hardcoded fallback used only when both the explicit upload prompt list AND
-# the admin-managed ontology default-prompts list are empty (e.g. on a fresh
-# install before any ontology row has been seeded). Normal operation pulls
-# from `ontology_default_prompts()`, the same source `/api/ontology/default-prompts`
-# and the image-detection path resolve through.
+# Precision-first fallback used when the upload does not provide prompts.
+# Keeping this small avoids launching one tracking session per ontology object
+# across every FMV window.
 FMV_FALLBACK_PROMPTS = ["vehicle", "person", "building"]
 
 
@@ -999,11 +996,9 @@ def upload_fmv_clip(
     # Queue SAM3 video tracking. Detections stream back into fmv_detections
     # asynchronously; the frontend subscribes to fmv:{clip_id} and refetches
     # when the worker publishes `fmv_detections_complete`.
-    # Prompt resolution: explicit upload field -> admin-managed ontology
-    # defaults (same source the image-detection path uses) -> hardcoded
-    # fallback. `ontology_default_prompts(None)` returns ALL prompts in the
-    # admin tree (across all sensors); admin edits to /admin propagate live
-    # since the tree is cache-invalidated on every `/api/ontology/update`.
+    # Prompt resolution: explicit upload field -> small precision-first FMV
+    # defaults. The previous ontology-wide fallback fanned out every admin
+    # prompt across every window, which was slow and noisy for analyst review.
     mode = (prompt_mode or "pcs").strip().lower()
     if mode not in {"pcs", "amg"}:
         raise HTTPException(status_code=400, detail=f"prompt_mode must be 'pcs' or 'amg', got {prompt_mode!r}")
@@ -1025,11 +1020,7 @@ def upload_fmv_clip(
         if explicit_prompts:
             prompt_list = explicit_prompts
         else:
-            try:
-                prompt_list = ontology_default_prompts(None) or list(FMV_FALLBACK_PROMPTS)
-            except Exception as exc:
-                logger.warning("ontology_default_prompts failed for FMV upload: %s", exc)
-                prompt_list = list(FMV_FALLBACK_PROMPTS)
+            prompt_list = list(FMV_FALLBACK_PROMPTS)
     # Map (model, mode) → the worker's prompt_mode token. YOLO 26 collapses
     # both AMG and PCS onto a single "yoloe" worker mode; the empty vs
     # non-empty prompt_list selects -pf vs -seg in the inference service.

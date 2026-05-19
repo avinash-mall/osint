@@ -1,0 +1,56 @@
+# `backend/schemas.py` — Pydantic Request/Response Models
+
+**Path:** [backend/schemas.py](../../backend/schemas.py)
+**Lines:** ~293
+**Depends on:** `pydantic`
+
+## Purpose
+
+Every router request body and most response shapes. Extracted from `main.py` so routers can import shapes without dragging the entire app into their namespace.
+
+## Why this module
+
+- **Avoid circular imports.** Routers need shapes; the shapes don't need routers. One-way dependency.
+- **No business logic.** Schemas validate; the route handler does the work.
+- **No DB types.** Schemas describe the HTTP boundary, not the rows. PostGIS rowtypes are local to the helper that reads them.
+
+## Key shapes (alphabetical, with line refs)
+
+| Class | Line | Used by |
+|---|---|---|
+| `AuthTestRequest` | [#L34](../../backend/schemas.py#L34) | [auth-router.md](../backend-routers/auth-router.md) |
+| `AIActionProposalRequest`, `AIAnalysisRequest` | | [ai-router.md](../backend-routers/ai-router.md) |
+| `AnalyticsRequest` | | [analytics-router.md](../backend-routers/analytics-router.md), [ai-router.md](../backend-routers/ai-router.md) |
+| `CandidateLinkDecision` | [#L82](../../backend/schemas.py#L82) | candidate-target approve/reject |
+| `ConfidenceConfig` | | [inference-router.md](../backend-routers/inference-router.md) |
+| `DetectionQuery` | [#L48](../../backend/schemas.py#L48) | `GET /api/detections` |
+| `DetectionTagUpdate` | [#L44](../../backend/schemas.py#L44) | tag PATCH |
+| `GraphActionRequest` | | [graph-router.md](../backend-routers/graph-router.md) |
+| `IngestRequest`, `IngestUrlRequest` | | [ingest-router.md](../backend-routers/ingest-router.md) |
+| `LoginRequest` | [#L29](../../backend/schemas.py#L29) | login |
+| `ManualDetectionBody` | [#L65](../../backend/schemas.py#L65) | operator-drawn detection |
+| `ObjectDetailsBody` | [#L55](../../backend/schemas.py#L55) | details PUT |
+| `OntologyBranchIn`, `OntologyBranchPatch` | [#L111](../../backend/schemas.py#L111) | branch CRUD |
+| `OntologyObjectIn`, `OntologyObjectPatch` | [#L134](../../backend/schemas.py#L134) | object CRUD |
+| `OntologyUpdateRequest` | [#L104](../../backend/schemas.py#L104) | LLM bulk edit |
+| `PinRequest` | [#L91](../../backend/schemas.py#L91) | track pin/unpin |
+| `ReprocessRequest` | [#L95](../../backend/schemas.py#L95) | track reprocess |
+| `ReviewUpdate` | [#L77](../../backend/schemas.py#L77) | review PATCH |
+| `TrainingJobCreate` | | [models-training-router.md](../backend-routers/models-training-router.md) |
+
+The above is not exhaustive — the file holds ~25 shapes total. Use `grep -n "^class " backend/schemas.py` for the live list.
+
+## Convention
+
+When adding a new endpoint:
+
+1. Define the body shape here.
+2. Import it in the router: `from schemas import MyNewBody`.
+3. Use it as the type of the route's `body: MyNewBody = Body(...)` parameter.
+
+Don't define shapes in the router file — keeps router files navigable.
+
+## Cross-references
+
+- [backend/main-app-entrypoint.md](main-app-entrypoint.md)
+- [conventions/adding-a-new-router.md](../conventions/adding-a-new-router.md)

@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import numpy as np
+
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 import fusion
 
@@ -72,3 +79,17 @@ def test_mask_aware_nms_soft_downweights_instead_of_dropping():
     confs = sorted([k["confidence"] for k in kept])
     assert confs[1] == 0.9
     assert confs[0] < 0.8  # down-weighted by (1 - iou)
+
+
+def test_mask_aware_nms_preserves_trusted_cross_layer_duplicate():
+    mask = np.zeros((16, 16), dtype=bool)
+    mask[3:10, 3:10] = True
+    sam3 = fusion.candidate_to_detection(mask, [3, 3, 10, 10], 0.65, "vehicle", image_size=(16, 16), modality="rgb")
+    dota = fusion.candidate_to_detection(mask, [3, 3, 10, 10], 0.9, "large vehicle", image_size=(16, 16), modality="rgb")
+    sam3["source_layer"] = "sam3"
+    dota["source_layer"] = "dota_obb"
+
+    out = fusion.mask_aware_nms([sam3, dota], iou=0.5, agnostic=True)
+
+    assert len(out) == 1
+    assert out[0]["source_layer"] == "dota_obb"

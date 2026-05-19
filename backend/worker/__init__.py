@@ -38,6 +38,7 @@ from worker_legacy import (  # noqa: F401  — explicit names for IDE completion
 # Underscore-prefixed test fixtures + helper classes the test suite imports
 # directly via `from worker import _DetectionDedupeIndex`.
 from worker_legacy import (  # noqa: F401
+    _calibration_tag_for_detection,
     _DetectionDedupeIndex,
     _WeightedBoxFusionIndex,
 )

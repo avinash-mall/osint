@@ -1,0 +1,151 @@
+path|tags|summary
+architecture/system-overview.md|arch|nginx:3000 sole entry; routes /api,/ws,/tiles,/maps,/basemap,/fmv to internal services
+architecture/data-flow-imagery.md|arch,imagery|COG translate -> chip 1008x1008 -> /detect -> georef -> PostGIS persistence
+architecture/data-flow-fmv.md|arch,fmv|HLS transcode -> KLV/SRT telemetry -> /detect_video NDJSON -> fmv_detections
+architecture/component-boundaries.md|arch|process/file boundaries between backend, worker, inference-sam3, frontend
+architecture/service-topology.md|arch,deployment|docker-compose service graph, internal DNS, exposed ports
+backend/main-app-entrypoint.md|backend,fastapi|main.py mounts routers, lifespan migrations, session middleware, FMV prompt fallback
+backend/api-routes-reference.md|backend,router|complete route table grouped by tag (auth, graph, detections, fmv, ontology, analytics, ai)
+backend/auth-and-sessions.md|backend,auth|itsdangerous signed cookies, env-bootstrap admin, optional LDAP via auth_config row
+backend/database-connections.md|backend|Neo4j + PostGIS dual stack with pool, advisory locks, docker DNS fallback
+backend/ontology-system.md|backend,ontology|DB-canonical branches/objects/prompts, normalize() with read-through cache
+backend/tracker-fmv.md|backend,fmv,tracker|Hungarian assignment, V_MAX state gates, 14-day age cap, 3-miss timeout
+backend/detection-policy.md|backend|precision open-vocab policy: default floor, DB/env overrides, parent_class fallback
+backend/detection-helpers.md|backend|shared detection/FMV detail validators + object_details upsert
+backend/platform-schema-migrations.md|backend|idempotent CREATE TABLE IF NOT EXISTS for feed/event/observation tables
+backend/pydantic-schemas.md|backend|all request/response models extracted from main.py to avoid circular imports
+backend/candidate-linking.md|backend|pure scorer: 30% spatial + 30% compat + 30% confidence + 10% history
+backend/change-detection-raster.md|backend,imagery|two-pass COG diff, polygonize, CHANGE_DET_MAX_PIXELS bound
+backend/calibration-temperature.md|backend|single-parameter temperature scaling for SAM3/DOTA/GDINO scores
+backend/ai-llm-integration.md|backend|OpenAI-compatible client with read-only Cypher fallback for safety
+backend/events-and-timeline.md|backend|Redis pubsub + timeline_events/observations rows with domain normalize
+backend/feed-collectors.md|backend|polling HTTP collectors for JSON/GeoJSON feeds; normalized event shape
+backend/files-and-uploads.md|backend|safe filename + media-type to Celery task routing
+backend/fmv-helpers-hls.md|backend,fmv|ffmpeg stream-copy HLS transcode, ffprobe metadata
+backend/geometry-iou.md|backend|bbox parse, xyxy/cxcywh IoU, point extraction
+backend/imagery-metadata-hashing.md|backend,imagery|SHA256 + NITF IDATIM + SAR keys extraction
+backend/provider-lifecycle.md|backend|polls inference-sam3 /health for startup gating
+backend/reports-and-collections.md|backend|target-package and collection-requirement persistence
+backend/routing-graph-osmnx.md|backend|NetworkX routing on osmnx pickle, terrain+threat metadata
+backend/sar-cfar-detector.md|backend,imagery|CA-CFAR ship detection on Sentinel-1 dB raster, CPU-only
+backend/size-estimation-obb.md|backend|UTM-local OBB -> length/width/area/bearing with uncertainty
+backend/terrain-viewshed-los.md|backend|DEM ray-cast with k=0.13 atmospheric refraction
+backend/threat-assessment.md|backend|open-vocab neutral binning into category buckets
+backend/video-metadata-klv.md|backend,fmv|MISB ST 0601 KLV + MP4 GPMD + SRT sidecar parsers
+backend/worker-legacy-monolith.md|backend,celery|3648-line worker_legacy.py: task definitions, chip planner, NDJSON consumer
+backend/worker-package-facade.md|backend,celery|worker/__init__.py namespace re-exports preserving Celery task names
+backend-routers/ai-router.md|router|/api/ai/* — LLM analyze/extract/link/propose-actions
+backend-routers/analytics-router.md|router|/api/analytics/* — change/viewshed/los/routes with fixture fallbacks
+backend-routers/auth-router.md|router,auth|/api/auth/* + /api/admin/auth/* — login, LDAP CRUD, test-connection
+backend-routers/detections-router.md|router|/api/detections/* — filters, similar, queue, candidate-links, review
+backend-routers/fmv-router.md|router,fmv|/api/fmv/clips, klv, detections, similar
+backend-routers/graph-router.md|router|/api/graph + /api/graph/neighborhood Neo4j read
+backend-routers/health-router.md|router|/api/health liveness, dependency check
+backend-routers/imagery-router.md|router,imagery|/api/imagery passes, tiles, bands
+backend-routers/inference-router.md|router|/api/inference/load,unload,health,dashboard,confidence-overrides
+backend-routers/ingest-router.md|router|/api/ingest/upload, url, ingest, uploads, jobs
+backend-routers/models-training-router.md|router|/api/models, /api/training, dataset registration, promotion
+backend-routers/ontology-router.md|router,ontology|/api/ontology branches/objects/prompts/profiles/unknown-labels/version-history
+backend-routers/websocket-router.md|router|/ws Redis-bridged push channel
+inference/service-overview.md|inference,sam3|FastAPI service bundling SAM3+SAM3.1+YOLOE+DINOv3+Prithvi+TerraMind+DOTA+GDINO
+inference/main-app-entrypoint.md|inference,sam3|/detect precision prompt defaults, source_layer/debug_counts, /detect_video, /load, /health
+inference/sam3-runner-internals.md|inference,sam3|build_image_bundle, run_text_prompts, run_box_prompts pipelines
+inference/sam3-pcs-multiplex-video.md|inference,sam3,fmv|SAM3.1 multiplex one-prompt-per-session video tracker
+inference/sam3-perf-profiling.md|inference,sam3|stage_timer CUDA-sync per-stage latency accumulator
+inference/fusion-and-nms.md|inference|mask-aware fusion across SAM3/DOTA/GDINO/YOLOE detections
+inference/grounding-dino-detector.md|inference|IDEA-Research grounding-dino-{tiny,base} text-to-box
+inference/grounding-dino-gate.md|inference|server-side gate that skips GDINO on common-vocab prompts
+inference/yoloe-tracker.md|inference,fmv|YOLOE-26x-seg(-pf) prompt-free + text-promptable, replaces SAM3 AMG
+inference/dota-obb-specialist.md|inference|Ultralytics YOLO11n-obb fixed 18-class DOTA-v1 oriented-box detector
+inference/dinov3-embeddings.md|inference|DINOv3 ViT-L SAT-493M re-ID embedding head
+inference/prithvi-multispectral.md|inference,imagery|Prithvi-EO-2.0 flood/burn/multi-temporal-crop heads
+inference/terramind-sar-synthesis.md|inference,imagery|TerraMind v1 S1->S2 synthetic optical RGB for SAR
+inference/multispectral-bands.md|inference,imagery|HLS-6 band decoder: Blue/Green/Red/Narrow-NIR/SWIR-1/SWIR-2
+inference/sar-bands.md|inference,imagery|Sentinel-1 GRD VV/VH dB clip and linear stretch
+inference/profile-pool-lifecycle.md|inference|imagery/fmv/all profiles with per-GPU replication
+inference/model-manifest.md|inference|MODEL_MANIFEST.json: HF repos, revisions, gating, file lists
+frontend/app-and-routing.md|frontend|App.tsx mounts five workspaces under AuthProvider
+frontend/shell-and-chrome.md|frontend|icon rail 64->224 px, command palette, status bar
+frontend/auth-hook.md|frontend,auth|useAuth.ts cookie-backed session with boot /api/auth/me probe
+frontend/event-stream-hook.md|frontend|useEventStream.ts WebSocket subscription to /ws topics
+frontend/workspace-geoint-gaiamap.md|frontend|GaiaMap.tsx common operating picture with leaflet layers
+frontend/workspace-fmv-player.md|frontend,fmv|FmvPlayer.tsx HLS + KLV-synced map + per-frame overlays
+frontend/workspace-link-graph.md|frontend|GraphExplorer.tsx force-directed Neo4j entity/link network
+frontend/workspace-admin.md|frontend|AdminScreen.tsx ten-tab consolidated operator tooling
+frontend/workspace-ingest.md|frontend|IngestConnect.tsx sensor-aware upload + feed lifecycle
+frontend/map-stage-and-layers.md|frontend|MapStage.tsx + LayerPanel.tsx category toggles and provenance
+frontend/map-selection-panel.md|frontend|SelectionPanel.tsx four-tab right rail (Details/Analytics/Similar/Actions)
+frontend/map-review-similar-provenance.md|frontend|ReviewPanel + SimilarPanel + ProvenancePanel
+frontend/map-analytics-tools.md|frontend|AnalyticsToolsPanel.tsx viewshed/LOS/route/POL workflows
+frontend/map-time-machine.md|frontend|TimeMachineBar.tsx temporal slider for multi-pass imagery
+frontend/map-change-detection-dialog.md|frontend,imagery|ChangeDetectionDialog.tsx before/after pass selector
+frontend/ontology-admin-ui.md|frontend,ontology|OntologyAdmin.tsx branch/object/prompt CRUD with version bumps
+frontend/object-details-form.md|frontend|ObjectDetailsForm.tsx shared metadata editor
+frontend/admin-health-dashboard.md|frontend|HealthDashboardView.tsx per-GPU KPIs, replicas, active requests
+frontend/admin-conf-overrides.md|frontend|ConfOverrideView.tsx per-class confidence override matrix
+frontend/admin-prompt-profiles.md|frontend|PromptProfilesView.tsx named profile CRUD
+frontend/admin-models-and-processing.md|frontend|ModelsView + ProcessingView training-job queue and promotion
+frontend/admin-alerts-and-versions.md|frontend|AlertsView + TaxonomyVersionView
+frontend/admin-auth-ldap.md|frontend,auth|AdminAuthTab.tsx LDAP config form with test harnesses
+frontend/utils-ontology-and-icons.md|frontend,ontology|branchIcons, detectionTaxonomy, iconLibrary, useOntology
+frontend/services-analytics.md|frontend|services/analytics.ts job submission types
+deployment/docker-compose-services.md|deployment|service-by-service docker-compose.yml reference
+deployment/nginx-gateway-and-tile-cache.md|deployment|nginx conf: routes, 24h tile cache, HLS streaming
+deployment/offline-airgap-deployment.md|deployment|build-once / load-and-go runbook, no DNS at runtime
+deployment/gpu-profile-detection.md|deployment,gpu|configure_host.py picks CUDA/PyTorch/arch-list per GPU
+deployment/environment-variables-reference.md|deployment|every variable .env.example exposes, grouped by subsystem
+deployment/volume-mounts-and-paths.md|deployment|/data/imagery, /data/fmv, /data/datasets, /data/dem, /data/routing
+operations/celery-queues-and-tasks.md|operations,celery|imagery + default queues, task name table, retry policy
+operations/celery-beat-schedule.md|operations,celery|worker_beat scheduler, periodic feed polling, observation cleanup
+operations/websocket-event-channels.md|operations|topic list: ingest_progress, fmv_detections_complete, ontology_updated
+operations/imagery-ingest-pipeline.md|operations,imagery|six-step pipeline from raw raster to detections on map
+operations/fmv-ingest-pipeline.md|operations,fmv|clip upload -> HLS -> telemetry -> /detect_video -> persistence
+operations/ontology-edit-workflow.md|operations,ontology|admin UI flow, version cursor, prompt cache 30s + SIGHUP
+operations/unknown-label-triage.md|operations,ontology|LLM-emitted labels into ontology_unknown_labels, assign workflow
+operations/candidate-link-approval.md|operations|detection->target candidates, deterministic scorer, operator approve/reject
+operations/change-detection-runbook.md|operations,imagery|how to launch a two-pass change detection from the UI or API
+operations/health-monitoring.md|operations|Health Dashboard, /api/health, replica chips, alert escalation
+operations/auth-and-ldap-setup.md|operations,auth|env-bootstrap admin, Admin->Auth LDAP form, test bind workflows
+operations/llm-ava-configuration.md|operations|OPENAI_API_BASE pointing at vLLM/Ollama, graceful degradation
+decisions/why-sam3-as-foundation.md|decision,sam3|open-vocabulary segmentation across RGB/MSI/SAR with native API
+decisions/why-open-vocabulary.md|decision|no closed taxonomy: explicit/precision/ontology labels are first-class
+decisions/why-precision-first-inference-defaults.md|decision|bounded prompt defaults, source-layer provenance, specialist gates, and nonzero policy floor
+decisions/why-yoloe-replaced-amg.md|decision,fmv|AMG required GDINO labeling pass; YOLOE-26x-seg(-pf) emits labels directly
+decisions/why-grounding-dino-auto-gated.md|decision|forcing GDINO drops mAP via NMS suppression of DOTA detections
+decisions/why-dinov3-sat-only.md|decision|DINOv3 ViT-L SAT-493M keeps re-ID quality without DINOv3_LVD NaNs
+decisions/why-postgis-and-neo4j-coexist.md|decision|PostGIS for spatial detections; Neo4j for entity/link graph
+decisions/why-worker-legacy-monolith-kept.md|decision,celery|3500 tested lines preserved; thin facade package avoids breakage
+decisions/why-sar-confidence-cap.md|decision,imagery|SAR detections via TerraMind synthetic proxy capped at 0.85
+decisions/why-category-presence-gate.md|decision,sam3|SegEarth-OV-3-style 0.40 filter suppresses absent concepts
+decisions/removed-defence-yolo.md|decision|DEFENCE_YOLO emitted 1297 FPs / 0 TPs on DOTA val
+decisions/removed-dinov3-lvd.md|decision|DINOV3_LVD emitted NaN embeddings on drone-video crops
+decisions/removed-sam3-amg.md|decision,fmv|SAM3 AMG path removed in favor of YOLOE
+decisions/disable-addmm-cuda-lt.md|decision,gpu|routes nn.Linear off cuBLAS-Lt to dodge A100/cu130 corruption bug
+testing/backend-unit-tests.md|testing,backend|pytest layout, fixtures, ontology/auth/size/object_details/precision-policy coverage
+testing/inference-unit-tests.md|testing,inference|fusion/oom-recovery/prompt defaults/source-layer gates/sam3-perf/box prompts
+testing/playwright-frontend.md|testing,frontend|playwright.config.ts, visual testing workflow
+testing/benchmark-harness.md|testing,benchmark|compare_inference_layers + restart, fetch_eval_datasets gating
+testing/fixtures-and-test-data.md|testing|tests/fixtures + sample/ contents and how to regenerate
+benchmarks/inference-layer-comparison.md|benchmark|7-layer image stack mAP/latency on DOTA-v1.0 val (30 chips)
+benchmarks/embedding-stability.md|benchmark|DINOv3-SAT augmentation re-ID top-1 100% on stills
+benchmarks/video-tracking-stability.md|benchmark,fmv|DINOv3-SAT SEP +0.22 vs LVD on 1440p drone video
+benchmarks/sar-cfar-evaluation.md|benchmark,imagery|CA-CFAR ship detection P/R on synthetic and real GRD
+benchmarks/calibration-ece.md|benchmark|expected calibration error per detector pre/post temperature scaling
+benchmarks/sam3-perf-phases.md|benchmark,sam3|phaseA/A3/BC profiling progression in bench/sam3_*.json
+scripts/configure-host-gpu.md|scripts,gpu|reads nvidia-smi, writes SENTINEL GENERATED block to .env
+scripts/build-offline-basemap.md|scripts,deployment|Carto Dark z=0..10 pre-fetch into assets/static/basemap
+scripts/build-offline-terrain.md|scripts,deployment|OpenTopoMap z=0..10 terrain tiles for analytics overlays
+scripts/fetch-eval-datasets.md|scripts,benchmark|DOTA-v1.0 + Sen1Floods11 from HF with idempotent gating
+scripts/compare-inference-layers.md|scripts,benchmark|main benchmark CLI: layer configs, repeats, restart-cmd
+scripts/eval-runners.md|scripts,benchmark|eval_candidate_links + eval_sar_cfar + measure_calibration_ece
+scripts/benchmark-scripts.md|scripts,benchmark|bench_fmv + benchmark_inference + benchmark_sam3_inference
+scripts/backend-scripts-train-and-seed.md|scripts|backend/scripts: train, seed_ontology, refmv, backfill_detection_branch
+conventions/coding-style.md|conventions|file size limits, no premature abstraction, no spurious comments
+conventions/documentation-workflow.md|conventions|mandatory read-before/update-after loop for every agent session
+conventions/naming-and-paths.md|conventions|module/router/component naming, /api prefix, /data volume layout
+conventions/error-handling.md|conventions|HTTP 400 vs 503, fixture fallbacks, trust internal calls
+conventions/adding-a-new-detection-model.md|conventions,inference|MODEL_MANIFEST entry, runner module, /detect dispatch, profile listing
+conventions/adding-a-new-ontology-object.md|conventions,ontology|seed JSON path, DB-canonical edit, version bump, prompt cache
+conventions/adding-a-new-celery-task.md|conventions,celery|@celery_app.task(name=) preserved name; legacy vs package placement
+conventions/adding-a-new-router.md|conventions,backend|mount in main.py, /api prefix, session middleware coverage
+conventions/adding-a-new-admin-tab.md|conventions,frontend|AdminScreen tab registry + admin/*View.tsx pattern

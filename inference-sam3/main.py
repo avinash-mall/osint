@@ -42,6 +42,33 @@ import yoloe
 cv2.setNumThreads(0)
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
+
+def _setdefault_gdal_env() -> None:
+    """Apply tuned GDAL defaults before any rasterio.open() runs.
+
+    Mirrors backend/worker_legacy._setdefault_gdal_env so both processes
+    use the same block-cache / vsicurl / mmap settings — keeps the
+    chip-decode path consistent with the chip-emit path. Operators
+    override via .env / docker-compose.
+    """
+    defaults = {
+        "GDAL_CACHEMAX": "1024",
+        "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
+        "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": "YES",
+        "GDAL_HTTP_MULTIPLEX": "YES",
+        "GDAL_HTTP_VERSION": "2",
+        "VSI_CACHE": "TRUE",
+        "VSI_CACHE_SIZE": "5000000",
+        "CPL_VSIL_CURL_CACHE_SIZE": "200000000",
+        "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif,.tiff,.jp2",
+        "GTIFF_VIRTUAL_MEM_IO": "YES",
+    }
+    for key, value in defaults.items():
+        os.environ.setdefault(key, value)
+
+
+_setdefault_gdal_env()
+
 # TF32 matmul defaults per GPU profile (sm_80 and above: enabled; sm_75: off).
 # `scripts/gpu_profiles.GpuBuildProfile.enable_tf32` -> .env via
 # `scripts/configure_host.py` -> here. Operators can force it via env.
@@ -337,33 +364,75 @@ def get_ontology_optical_labels() -> frozenset[str]:
     return frozenset(p.strip().lower() for p in prompts if p and p.strip())
 
 
+_PRECISION_DEFAULT_PROMPTS: dict[str, tuple[str, ...]] = {
+    "optical": ("vehicle", "ship", "aircraft", "building"),
+    "multispectral": ("vehicle", "ship", "aircraft", "building"),
+    "sar": ("ship", "vehicle"),
+}
+
+
+def _dedupe_prompt_list(values: list[Any]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in values:
+        s = " ".join(str(raw).strip().lower().split())
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
+def _precision_default_prompts(sensor: str) -> list[str]:
+    """Small bounded defaults for the precision-first analyst workflow.
+
+    Operators that need the historical broad ontology fan-out can set
+    ``SAM3_DEFAULT_PROMPT_SOURCE=ontology``. Per-sensor precision defaults can
+    be overridden with ``SAM3_PRECISION_DEFAULT_PROMPTS`` as JSON:
+    ``{"optical": ["vehicle", "ship"]}``.
+    """
+    raw = (os.getenv("SAM3_PRECISION_DEFAULT_PROMPTS") or "").strip()
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                values = parsed.get(sensor) or parsed.get("default")
+                if isinstance(values, list):
+                    prompts = _dedupe_prompt_list(values)
+                    if prompts:
+                        return prompts
+        except json.JSONDecodeError:
+            logger.warning("SAM3_PRECISION_DEFAULT_PROMPTS is not valid JSON; using built-in defaults")
+    return list(_PRECISION_DEFAULT_PROMPTS.get(sensor, _PRECISION_DEFAULT_PROMPTS["optical"]))
+
+
 def resolve_prompts(meta: dict[str, Any] | None) -> list[str]:
     """Resolve the SAM3 prompt list for a request.
 
     Order of resolution:
       1. Explicit ``meta['text_prompts']`` (deduped + lowercased + stripped).
-      2. Backend ontology defaults for the sensor mapped from ``meta['modality']``.
+      2. Precision-first bounded defaults for the sensor mapped from
+         ``meta['modality']``.
 
     Raises:
-        ValueError: when neither source produces any prompts (e.g. caller
-            passed an empty list and the backend returned nothing).
+        ValueError: when the caller explicitly supplied an empty prompt list.
         OntologyBackendUnavailable: when the backend HTTP call fails and no
-            explicit text_prompts were given. Callers should map to HTTP 503.
+            explicit text_prompts were given and legacy ontology defaults are
+            explicitly enabled. Callers should map to HTTP 503.
     """
     meta = meta or {}
     explicit = meta.get("text_prompts")
-    if isinstance(explicit, list) and explicit:
-        seen: set[str] = set()
-        out: list[str] = []
-        for raw in explicit:
-            s = " ".join(str(raw).strip().lower().split())
-            if s and s not in seen:
-                seen.add(s)
-                out.append(s)
+    if isinstance(explicit, list):
+        out = _dedupe_prompt_list(explicit)
         if out:
             return out
+        raise ValueError("text_prompts was provided but empty; provide at least one prompt or use prompt_boxes")
 
     sensor = _modality_to_sensor(str(meta.get("modality") or "rgb"))
+    if (os.getenv("SAM3_DEFAULT_PROMPT_SOURCE", "precision") or "precision").strip().lower() not in {
+        "ontology", "backend",
+    }:
+        return _precision_default_prompts(sensor)[: _prompt_limit(meta, str(meta.get("modality") or "rgb"))]
+
     try:
         prompts = _fetch_default_prompts(sensor)
     except Exception as exc:
@@ -372,19 +441,32 @@ def resolve_prompts(meta: dict[str, Any] | None) -> list[str]:
             f"(sensor={sensor}): {exc}"
         ) from exc
 
-    seen2: set[str] = set()
-    out2: list[str] = []
-    for raw in prompts:
-        s = " ".join(str(raw).strip().lower().split())
-        if s and s not in seen2:
-            seen2.add(s)
-            out2.append(s)
+    out2 = _dedupe_prompt_list(prompts)
     if not out2:
         raise ValueError(
             f"No labels available for SAM3 (sensor={sensor}): backend returned "
             f"no prompts and no text_prompts were supplied"
         )
-    return out2
+    return out2[: _prompt_limit(meta, str(meta.get("modality") or "rgb"))]
+
+
+_DOTA_RELEVANT_TERMS = frozenset({
+    "aircraft", "airplane", "airport", "plane", "fixed wing", "fixed-wing",
+    "helicopter", "helipad", "ship", "vessel", "warship", "boat", "harbor",
+    "harbour", "vehicle", "truck", "car", "tank", "armored", "armoured",
+    "apc", "ifv", "bridge", "storage tank", "container crane", "crane",
+    "roundabout", "tennis court", "basketball court", "baseball diamond",
+    "soccer ball field", "swimming pool", "ground track field",
+})
+
+
+def _prompts_relevant_to_dota(prompts: list[str]) -> bool:
+    haystack = " ".join(str(p).lower() for p in prompts)
+    return any(term in haystack for term in _DOTA_RELEVANT_TERMS)
+
+
+def _tag_candidates(layer: str, candidates: list[tuple[Any, Any, Any, Any]]) -> list[tuple[str, tuple[Any, Any, Any, Any]]]:
+    return [(layer, candidate) for candidate in candidates]
 
 
 @app.on_event("startup")
@@ -828,10 +910,16 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
         prompt_count = 0
         prompts: list[str] = []
         sam3_timings: dict[str, float] = {}
+        layer_candidates: list[tuple[str, tuple[Any, Any, Any, Any]]] = []
+        candidates_by_layer: dict[str, int] = {}
         if isinstance(prompt_boxes, list) and prompt_boxes:
             prompt_count = len(prompt_boxes)
             with _track("sam3_image"):
-                candidates = await run_in_threadpool(sam3_runner.run_box_prompts, bundle, chip3, prompt_boxes, SAM3_BOX_THR)
+                sam3_candidates = await run_in_threadpool(
+                    sam3_runner.run_box_prompts, bundle, chip3, prompt_boxes, SAM3_BOX_THR,
+                )
+            layer_candidates.extend(_tag_candidates("sam3", sam3_candidates))
+            candidates_by_layer["sam3"] = len(sam3_candidates)
         else:
             try:
                 prompts = resolve_prompts(meta)
@@ -841,9 +929,11 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             prompt_count = len(prompts)
             with _track("sam3_image"):
-                candidates = await run_in_threadpool(
+                sam3_candidates = await run_in_threadpool(
                     sam3_runner.run_text_prompts, bundle, chip3, prompts, SAM3_TEXT_THR, sam3_timings,
                 )
+            layer_candidates.extend(_tag_candidates("sam3", sam3_candidates))
+            candidates_by_layer["sam3"] = len(sam3_candidates)
         # Promote SAM3 sub-stage timings into the request log dict with a
         # sam3_ prefix so the existing sam3_detect_timing log line surfaces
         # them automatically.
@@ -857,40 +947,52 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
         # an open-vocab text-to-box detector that takes the same prompt list
         # we sent to SAM 3. fusion.mask_aware_nms dedupes overlapping
         # detections across SAM 3 + specialists.
-        if bundle.get("dota_obb") and _layer_active("dota_obb"):
+        force_dota = bool(meta.get("force_dota_obb", False))
+        dota_allowed = (
+            force_dota
+            or (not isinstance(prompt_boxes, list) and _prompts_relevant_to_dota(prompts))
+        )
+        if bundle.get("dota_obb") and (force_dota or _layer_active("dota_obb")) and dota_allowed:
             with _track("dota_obb"):
-                candidates.extend(
-                    await run_in_threadpool(dota_obb.run, bundle["dota_obb"], chip3, dota_obb.DOTA_OBB_THRESHOLD)
+                dota_candidates = await run_in_threadpool(
+                    dota_obb.run, bundle["dota_obb"], chip3, dota_obb.DOTA_OBB_THRESHOLD,
                 )
+            layer_candidates.extend(_tag_candidates("dota_obb", dota_candidates))
+            candidates_by_layer["dota_obb"] = len(dota_candidates)
+        else:
+            candidates_by_layer.setdefault("dota_obb", 0)
         # GROUNDING_DINO: auto-gated unless prompts include uncommon classes.
         # The gate skips GROUNDING_DINO (~115 ms) when SAM3's pretrained vocab
         # already covers every prompt — see grounding_dino_gate.py for the
         # common-vocab definition (576 ground_v1 + 18 DOTA + geo terms).
         # `force_grounding_dino: true` in metadata bypasses the gate.
         gd_force = bool(meta.get("force_grounding_dino", False))
+        gd_explicit = "grounding_dino" in _enabled
         gd_should_run, gd_gated_reason = grounding_dino_gate.should_run_grounding_dino(
             prompts, force=gd_force,
         )
         if (
             bundle.get("grounding_dino")
             and prompts
-            and _layer_active("grounding_dino")
+            and (gd_force or _layer_active("grounding_dino"))
             and gd_should_run
+            and (gd_force or gd_explicit)
         ):
             with _track("grounding_dino"):
-                candidates.extend(
-                    await run_in_threadpool(
-                        grounding_dino.run,
-                        bundle["grounding_dino"],
-                        chip3,
-                        prompts,
-                        grounding_dino.GROUNDING_DINO_THR,
-                    )
+                gd_candidates = await run_in_threadpool(
+                    grounding_dino.run,
+                    bundle["grounding_dino"],
+                    chip3,
+                    prompts,
+                    grounding_dino.GROUNDING_DINO_THR,
                 )
+            layer_candidates.extend(_tag_candidates("grounding_dino", gd_candidates))
+            candidates_by_layer["grounding_dino"] = len(gd_candidates)
         elif _layer_active("grounding_dino") and gd_gated_reason:
             logger.debug(
                 "grounding_dino auto-gated: reason=%s n_prompts=%d", gd_gated_reason, len(prompts),
             )
+        candidates_by_layer.setdefault("grounding_dino", 0)
         t0 = mark("specialists", t0)
 
         overlays: dict[str, np.ndarray] = {}
@@ -905,7 +1007,7 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
         detections = []
         embedding_ms = 0.0
         dinov3_calls = 0
-        for mask, bbox_xyxy, score, label in candidates:
+        for source_layer, (mask, bbox_xyxy, score, label) in layer_candidates:
             det = fusion.candidate_to_detection(
                 mask,
                 bbox_xyxy,
@@ -915,6 +1017,7 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
                 modality=modality,
                 valid_mask=valid_mask,
             )
+            det["source_layer"] = source_layer
             if meta.get("geo"):
                 det["geo"] = {**meta["geo"], "obb_map_crs": None, "obb_map_geojson": None}
             # DINOV3_SAT is the only embedding backend. DINOV3_LVD was removed
@@ -946,9 +1049,11 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
         t0 = mark("postprocess", t0)
         _nms_agnostic = os.getenv("SAM3_NMS_AGNOSTIC", "1").strip().lower() in {"1", "true", "yes", "on"}
         _nms_soft = os.getenv("SAM3_NMS_SOFT", "0").strip().lower() in {"1", "true", "yes", "on"}
+        pre_nms_count = len(detections)
         detections = fusion.mask_aware_nms(
             detections, iou=0.50, agnostic=_nms_agnostic, soft=_nms_soft,
         )
+        suppressed_by_nms = max(0, pre_nms_count - len(detections))
         mark("nms", t0)
         if _peak_dev is not None:
             try:
@@ -963,16 +1068,23 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
             "sam3_detect_timing modality=%s prompts=%s candidates=%s detections=%s queue_depth=%s timings_ms=%s",
             modality,
             prompt_count,
-            len(candidates),
+            len(layer_candidates),
             len(detections),
             queue_depth,
             timings,
         )
+        debug_counts = {
+            "prompt_count": prompt_count,
+            "candidates_by_layer": candidates_by_layer,
+            "suppressed_by_policy": 0,
+            "suppressed_by_nms": suppressed_by_nms,
+        }
 
         return {
             "status": "success",
             "modality": modality,
             "detections": detections,
+            "debug_counts": debug_counts,
             "model_version": MODEL_VERSION,
             "model_versions": sam3_runner.versions(),
             "timings_ms": timings,

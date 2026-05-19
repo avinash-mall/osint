@@ -1,10 +1,9 @@
 """Open-vocabulary detection policy.
 
-This module replaces the previous defense-only taxonomy with an open-vocabulary
-policy: every label a model emits is accepted as a first-class object class.
-There is **no per-class confidence threshold, no enabled/disabled distinction,
-and no distractor suppression** — the only filter is the optional
-``GLOBAL_CONFIDENCE_FLOOR`` env var (default ``0.0``: accept everything).
+This module keeps open-vocabulary labels, but the default profile is now
+precision-first for analyst review: every label can still be represented, while
+a nonzero ``GLOBAL_CONFIDENCE_FLOOR`` suppresses low-confidence noise before it
+reaches the map. Operators can lower the floor or add per-class overrides.
 
 The public surface (function names + return-shapes) is unchanged so existing
 callers in ``backend/worker.py``, ``backend/main.py``, ``backend/tracker.py``
@@ -16,10 +15,9 @@ What changed conceptually:
 * ``parent_class_for_label`` returns a broad-but-open category (aircraft,
   vessel, vehicle, building, …, **or the normalized label itself** when no
   cluster matches). Nothing is collapsed to ``"unknown"`` any more.
-* ``detection_decision`` always returns ``class_enabled=True`` and a
-  ``review_status`` of either ``"high_confidence"`` (≥ ``HIGH_CONFIDENCE_THRESHOLD``)
-  or ``"review_candidate"`` — never ``"below_class_threshold"`` /
-  ``"disabled_distractor"`` unless the operator explicitly raises the floor.
+* ``detection_decision`` always returns ``class_enabled=True``. Low-confidence
+  rows are marked ``"below_class_threshold"`` when they fall below the active
+  global/per-class floor.
 """
 
 from __future__ import annotations
@@ -165,9 +163,9 @@ def _load_db_overrides() -> tuple[dict[str, float], float | None, float | None]:
 @lru_cache(maxsize=1)
 def active_detection_policy() -> dict[str, Any]:
     """Open-vocab policy: DB-backed overrides win, env values are the fallback."""
-    profile_name = os.getenv("DETECTION_THRESHOLD_PROFILE", "open").strip() or "open"
-    global_floor = float(os.getenv("GLOBAL_CONFIDENCE_FLOOR", "0.0"))
-    high_threshold = float(os.getenv("HIGH_CONFIDENCE_THRESHOLD", "0.5"))
+    profile_name = os.getenv("DETECTION_THRESHOLD_PROFILE", "defence_precision").strip() or "defence_precision"
+    global_floor = float(os.getenv("GLOBAL_CONFIDENCE_FLOOR", "0.35"))
+    high_threshold = float(os.getenv("HIGH_CONFIDENCE_THRESHOLD", "0.65"))
     env_overrides = _load_json_thresholds("PER_CLASS_CONFIDENCE_OVERRIDES")
     db_overrides, db_global, db_high = _load_db_overrides()
     merged = {**env_overrides, **db_overrides}  # DB wins on collisions

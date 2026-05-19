@@ -1,0 +1,38 @@
+# AI Router (`/api/ai/*`, `/api/actions/*`)
+
+**Path:** [backend/routers/ai.py](../../backend/routers/ai.py)
+**Lines:** ~320
+**Depends on:** [backend/ai.py](../../backend/ai.py), [backend/events.py](../../backend/events.py), [backend/platform_schema.py](../../backend/platform_schema.py), [backend/schemas.py](../../backend/schemas.py)
+
+## Purpose
+
+Routes that touch an LLM (Ava). Everything here returns a graceful "LLM unavailable" error when `OPENAI_API_BASE` is unset — the rest of the app still works without it.
+
+## Endpoints
+
+| Method | Path | Source | Body / params |
+|---|---|---|---|
+| `POST` | `/api/ai/analyze` | [ai.py#L27](../../backend/routers/ai.py#L27) | `AIAnalysisRequest` — free-text analyst question over selected detections/area |
+| `POST` | `/api/ai/extract` | [ai.py#L54](../../backend/routers/ai.py#L54) | LLM extracts structured entities from raw text |
+| `POST` | `/api/ai/link` | [ai.py#L127](../../backend/routers/ai.py#L127) | LLM-ranked candidate-target link suggestions for a detection |
+| `POST` | `/api/ai/propose-actions` | [ai.py#L195](../../backend/routers/ai.py#L195) | `AIActionProposalRequest` — LLM suggests next-step analyst actions |
+| `GET` | `/api/actions/proposals` | [ai.py#L222](../../backend/routers/ai.py#L222) | List proposal queue |
+| `POST` | `/api/actions/proposals/{id}/approve` | [ai.py#L243](../../backend/routers/ai.py#L243) | Operator approves a proposal |
+| `POST` | `/api/actions/proposals/{id}/execute` | [ai.py#L263](../../backend/routers/ai.py#L263) | Runs an approved proposal |
+
+## Why this design
+
+- LLM is **optional infrastructure**, not core path. Each endpoint catches `AIUnavailable` from [backend/ai.py](../../backend/ai.py) and returns a 503 with a stable error shape, so the frontend can show "LLM offline" without crashing.
+- AI suggestions go through an **approve-then-execute** workflow rather than auto-applying. See [operations/llm-ava-configuration.md](../operations/llm-ava-configuration.md).
+- LLM JSON responses use [`get_llm_json`](../../backend/ai.py) which is unit-tested in [backend/tests/test_ai_json_parsing.py](../../backend/tests/test_ai_json_parsing.py) — it handles fenced/strict/prose-wrapped JSON.
+
+## Failure modes
+
+- `OPENAI_API_BASE` unset → all routes return `{detail: "LLM unavailable"}` 503.
+- Malformed LLM JSON → `get_llm_json` retries with a strict-mode prompt before raising.
+
+## Cross-references
+
+- [backend/ai-llm-integration.md](../backend/ai-llm-integration.md) — the underlying client
+- [operations/llm-ava-configuration.md](../operations/llm-ava-configuration.md)
+- [backend/pydantic-schemas.md](../backend/pydantic-schemas.md)

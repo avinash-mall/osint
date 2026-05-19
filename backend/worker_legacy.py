@@ -42,10 +42,50 @@ from threat_assessment import (
 )
 from ontology import normalize as ontology_normalize
 import provider_lifecycle
+from chip_prep_profiler import stage_timer as _chip_stage_timer, record as _chip_record
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 INFERENCE_SAM3_URL = os.getenv("INFERENCE_SAM3_URL", "http://inference-sam3:8001")
 IMAGERY_PATH = os.getenv("IMAGERY_PATH", "/data/imagery")
+
+
+def _setdefault_gdal_env() -> None:
+    """Apply tuned GDAL defaults before any rasterio.open() runs.
+
+    `setdefault` so operators can override via .env / docker-compose. Effects:
+    * `GDAL_CACHEMAX` — larger block cache so adjacent windowed reads hit
+      the cache instead of re-decompressing.
+    * `GDAL_DISABLE_READDIR_ON_OPEN` — skip sidecar lookups (no .aux.xml,
+      .ovr probing) when we know we only want the raster itself.
+    * `GDAL_HTTP_MERGE_CONSECUTIVE_RANGES` + `GDAL_HTTP_MULTIPLEX` +
+      `GDAL_HTTP_VERSION=2` — coalesce + HTTP/2-multiplex range GETs for
+      remote COGs (vsicurl path).
+    * `VSI_CACHE` / `VSI_CACHE_SIZE` / `CPL_VSIL_CURL_CACHE_SIZE` — per-file
+      and global LRU cache for vsicurl reads.
+    * `CPL_VSIL_CURL_ALLOWED_EXTENSIONS` — restrict speculative HEADs.
+    * `GTIFF_VIRTUAL_MEM_IO` — mmap path for uncompressed local TIFFs;
+      silently no-ops on compressed inputs.
+
+    GPU env (`SAM3_*`, `CUDA_VISIBLE_DEVICES`, etc.) is owned by
+    scripts/configure_host.py; none of those are touched here.
+    """
+    defaults = {
+        "GDAL_CACHEMAX": "1024",  # MB; explicit unit avoided pre-GDAL-3.11
+        "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
+        "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": "YES",
+        "GDAL_HTTP_MULTIPLEX": "YES",
+        "GDAL_HTTP_VERSION": "2",
+        "VSI_CACHE": "TRUE",
+        "VSI_CACHE_SIZE": "5000000",
+        "CPL_VSIL_CURL_CACHE_SIZE": "200000000",
+        "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": ".tif,.tiff,.jp2",
+        "GTIFF_VIRTUAL_MEM_IO": "YES",
+    }
+    for key, value in defaults.items():
+        os.environ.setdefault(key, value)
+
+
+_setdefault_gdal_env()
 
 
 def env_int(name: str, default: int) -> int:
@@ -101,7 +141,22 @@ INFERENCE_SMALL_OBJECT_OVERLAP = env_int("INFERENCE_SMALL_OBJECT_OVERLAP", 128)
 INFERENCE_SMALL_OBJECT_MAX_CHIPS = env_int(
     "INFERENCE_SMALL_OBJECT_MAX_CHIPS", _INFERENCE_PROFILE_DEFAULTS["max_chips"] or 0
 )
-INFERENCE_CHIP_CONCURRENCY = max(1, env_int("INFERENCE_CHIP_CONCURRENCY", _INFERENCE_PROFILE_DEFAULTS["concurrency"]))
+def _default_chip_concurrency() -> int:
+    """Pick a sensible default chip-POST concurrency.
+
+    Per-profile baseline (recall=2, fast=1) was set when the producer
+    serialised one chip read at a time. With Phase 3's reader pool the
+    poster pool can absorb more in-flight chips before saturating the
+    inference service, so we bump the lower bound to ``min(8, cpu_count)``
+    while still respecting an explicit profile override greater than that
+    bound. Operators set ``INFERENCE_CHIP_CONCURRENCY`` to pin a value.
+    """
+    profile_value = int(_INFERENCE_PROFILE_DEFAULTS["concurrency"])
+    floor = min(8, max(1, (os.cpu_count() or 1)))
+    return max(profile_value, floor)
+
+
+INFERENCE_CHIP_CONCURRENCY = max(1, env_int("INFERENCE_CHIP_CONCURRENCY", _default_chip_concurrency()))
 INFERENCE_CHIP_TIMEOUT_S = env_int("INFERENCE_CHIP_TIMEOUT_S", 120)
 INFERENCE_MIN_VALID_CHIP_FRACTION = max(0.0, min(1.0, env_float("INFERENCE_MIN_VALID_CHIP_FRACTION", 0.01)))
 INFERENCE_MIN_VALID_DETECTION_FRACTION = max(0.0, min(1.0, env_float("INFERENCE_MIN_VALID_DETECTION_FRACTION", 0.20)))
@@ -150,8 +205,19 @@ def _valid_fraction_threshold_for(det_class: str | None) -> float:
 DETECTION_POLICY = active_detection_policy()
 INFERENCE_MAX_PENDING_CHIPS = max(
     1,
-    env_int("INFERENCE_MAX_PENDING_CHIPS", INFERENCE_CHIP_CONCURRENCY * 2),
+    env_int("INFERENCE_MAX_PENDING_CHIPS", INFERENCE_CHIP_CONCURRENCY * 4),
 )
+
+
+def _csv_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    values = tuple(item.strip() for item in raw.split(",") if item.strip())
+    return values or default
+
+
+FMV_DEFAULT_PROMPTS = _csv_env("FMV_DEFAULT_PROMPTS", ("vehicle", "person", "building"))
 INFERENCE_CHIP_SPOOL_MAX_BYTES = max(
     64 * 1024,
     env_int("INFERENCE_CHIP_SPOOL_MAX_BYTES", 4 * 1024 * 1024),
@@ -277,8 +343,20 @@ def report_progress(task, upload_id: str, file_path: str, stage: str, progress: 
     publish_event("ops", {"type": "imagery_progress", **payload})
 
 
+COG_COMPRESS = (os.getenv("COG_COMPRESS") or "ZSTD").strip().upper()
+COG_BLOCKSIZE = env_int("COG_BLOCKSIZE", 512)
+COG_PREDICTOR = env_int("COG_PREDICTOR", 2)  # 2 = horizontal differencing; helps DEFLATE/ZSTD on imagery
+
+
 def ensure_cog(input_path: str, output_path: str) -> str:
-    """Convert any raster to Cloud Optimized GeoTIFF."""
+    """Convert any raster to Cloud Optimized GeoTIFF.
+
+    Compression defaults to ZSTD (faster read/write than DEFLATE at similar
+    ratio per the LERC/ZSTD benchmarks in gpxz.io and kokoalberti.com).
+    Operators override via ``COG_COMPRESS`` (e.g. ``DEFLATE``, ``LERC_ZSTD``,
+    ``LZW``, ``NONE``). ``COG_BLOCKSIZE`` exposes the COG tile width — 512
+    matches the default chip-corner alignment used downstream.
+    """
     if input_path.endswith(".nc") or input_path.endswith(".netcdf"):
         # Handle NetCDF via rioxarray
         try:
@@ -290,7 +368,7 @@ def ensure_cog(input_path: str, output_path: str) -> str:
             # If band dimension > 1 and we want RGB or single band
             if "band" in ds.dims and ds.sizes.get("band", 0) > 1:
                 ds = ds.isel(band=0)
-            ds.rio.to_raster(output_path, driver="COG", compress="DEFLATE")
+            ds.rio.to_raster(output_path, driver="COG", compress=COG_COMPRESS)
             return output_path
         except Exception as e:
             raise RuntimeError(f"NetCDF conversion failed: {e}")
@@ -301,11 +379,18 @@ def ensure_cog(input_path: str, output_path: str) -> str:
             input_path,
             output_path,
             "-of", "COG",
-            "-co", "COMPRESS=DEFLATE",
+            "-co", f"COMPRESS={COG_COMPRESS}",
+            "-co", f"BLOCKSIZE={COG_BLOCKSIZE}",
             "-co", "OVERVIEWS=AUTO",
+            "-co", "OVERVIEW_RESAMPLING=AVERAGE",
             "-co", "BIGTIFF=IF_SAFER",
             "-co", "NUM_THREADS=ALL_CPUS",
         ]
+        # PREDICTOR is only honored by DEFLATE/LZW/ZSTD families; harmless
+        # to pass even when COMPRESS=NONE — GDAL just ignores it. Skip for
+        # LERC since LERC has its own MAX_Z_ERROR semantics.
+        if not COG_COMPRESS.startswith("LERC") and COG_COMPRESS != "NONE":
+            cmd.extend(["-co", f"PREDICTOR={COG_PREDICTOR}"])
         subprocess.run(cmd, check=True)
         return output_path
 
@@ -556,6 +641,11 @@ def _trust_weight_for(det: dict) -> float:
             if src_key and src_key in key:
                 return weight
     return 1.0
+
+
+def _calibration_tag_for_detection(det: dict) -> str:
+    """Use detector provenance for calibration, not the broad model bundle id."""
+    return str(det.get("source_layer") or "")
 
 
 class _DetectionDedupeIndex:
@@ -1004,13 +1094,15 @@ def _post_chip_to_sam3(
 
 def _png_file(rgb: np.ndarray):
     chip_file = tempfile.SpooledTemporaryFile(max_size=INFERENCE_CHIP_SPOOL_MAX_BYTES)
-    Image.fromarray(rgb, mode="RGB").save(chip_file, format="PNG")
+    with _chip_stage_timer("encode_png"):
+        Image.fromarray(rgb, mode="RGB").save(chip_file, format="PNG")
     chip_file.seek(0)
     return chip_file
 
 
 def _geotiff_window_file(src: rasterio.io.DatasetReader, window: Window, indexes: list[int]):
-    data = src.read(indexes=indexes, window=window).astype("float32", copy=False)
+    with _chip_stage_timer("encode_geotiff_read"):
+        data = src.read(indexes=indexes, window=window).astype("float32", copy=False)
     transform = src.window_transform(window)
     profile = {
         "driver": "GTiff",
@@ -1021,17 +1113,18 @@ def _geotiff_window_file(src: rasterio.io.DatasetReader, window: Window, indexes
         "transform": transform,
         "crs": src.crs,
     }
-    with MemoryFile() as memfile:
-        with memfile.open(**profile) as dst:
-            dst.write(data)
-            descriptions = src.descriptions or ()
-            for out_index, src_index in enumerate(indexes, start=1):
-                if src_index - 1 < len(descriptions) and descriptions[src_index - 1]:
-                    dst.set_band_description(out_index, descriptions[src_index - 1])
-        payload = memfile.read()
-    chip_file = tempfile.SpooledTemporaryFile(max_size=INFERENCE_CHIP_SPOOL_MAX_BYTES)
-    chip_file.write(payload)
-    chip_file.seek(0)
+    with _chip_stage_timer("encode_geotiff_write"):
+        with MemoryFile() as memfile:
+            with memfile.open(**profile) as dst:
+                dst.write(data)
+                descriptions = src.descriptions or ()
+                for out_index, src_index in enumerate(indexes, start=1):
+                    if src_index - 1 < len(descriptions) and descriptions[src_index - 1]:
+                        dst.set_band_description(out_index, descriptions[src_index - 1])
+            payload = memfile.read()
+        chip_file = tempfile.SpooledTemporaryFile(max_size=INFERENCE_CHIP_SPOOL_MAX_BYTES)
+        chip_file.write(payload)
+        chip_file.seek(0)
     return chip_file
 
 
@@ -1225,6 +1318,9 @@ def slice_and_infer(
             "threshold_profile": DETECTION_POLICY["threshold_profile"],
             "taxonomy_version": DETECTION_POLICY["taxonomy_version"],
             "model_version": DETECTION_POLICY["model_version"],
+            "candidates_by_layer": {},
+            "suppressed_by_policy": 0,
+            "suppressed_by_nms": 0,
             "max_pending_chips": INFERENCE_MAX_PENDING_CHIPS,
             "chip_spool_max_bytes": INFERENCE_CHIP_SPOOL_MAX_BYTES,
             "multi_scale": len(pass_plans) > 1,
@@ -1288,6 +1384,19 @@ def slice_and_infer(
             x = ctx["x"]; y = ctx["y"]
             win_width = ctx["win_width"]; win_height = ctx["win_height"]
             valid_mask = ctx.get("valid_mask")
+            debug_counts = inference_response.get("debug_counts") or {}
+            for layer, count in (debug_counts.get("candidates_by_layer") or {}).items():
+                try:
+                    inference_summary["candidates_by_layer"][str(layer)] = (
+                        int(inference_summary["candidates_by_layer"].get(str(layer), 0))
+                        + int(count)
+                    )
+                except (TypeError, ValueError):
+                    continue
+            try:
+                inference_summary["suppressed_by_nms"] += int(debug_counts.get("suppressed_by_nms") or 0)
+            except (TypeError, ValueError):
+                pass
             chip_detections = []
             chip_results: list[dict] = []
             for det in inference_response.get("detections", []):
@@ -1380,11 +1489,7 @@ def slice_and_infer(
                 # NMS and the per-class threshold gate consume them. T defaults
                 # to 1.0 (identity) when no calibration is configured for this
                 # model — the call is safe and cheap.
-                model_tag = (
-                    det.get("source_layer")
-                    or det.get("model_version")
-                    or DETECTION_POLICY.get("model_version")
-                )
+                model_tag = _calibration_tag_for_detection(det)
                 confidence = calibrate_confidence(raw_confidence, model_tag)
                 from calibration import temperature_for as _t_for
                 det["raw_confidence"] = raw_confidence
@@ -1397,6 +1502,7 @@ def slice_and_infer(
                 # GLOBAL_CONFIDENCE_FLOOR / PER_CLASS_CONFIDENCE_OVERRIDES above
                 # this detection's confidence. Otherwise everything passes through.
                 if decision["review_status"] == "below_class_threshold":
+                    inference_summary["suppressed_by_policy"] += 1
                     continue
 
                 # Preserve the original SAM3 prompt as the canonical class. The
@@ -1530,6 +1636,14 @@ def slice_and_infer(
                 )
                 _report_inference_progress()
                 return
+            if chip_started is not None:
+                # `post_roundtrip` measures wall time from `executor.submit` to a
+                # consumed result — covers HTTP transport + server decode +
+                # server forward pass + JSON serialize-back. Recorded once per
+                # successful future and elided when profiling is off.
+                _chip_record(
+                    "post_roundtrip", (time.perf_counter() - chip_started) * 1000.0
+                )
             if not response:
                 failed_windows += 1
                 processed_windows += 1
@@ -1539,8 +1653,10 @@ def slice_and_infer(
                 )
                 _report_inference_progress()
                 return
-            chip_dets = _apply_chip_response(ctx, response)
-            kept = dedupe_idx.add(chip_dets)
+            with _chip_stage_timer("apply_response"):
+                chip_dets = _apply_chip_response(ctx, response)
+            with _chip_stage_timer("dedupe"):
+                kept = dedupe_idx.add(chip_dets)
             processed_windows += 1
             completed_chip_count += 1
             if streaming and not defer_streaming_store:
@@ -1627,7 +1743,8 @@ def slice_and_infer(
                         win_height = min(chip_size, height - y)
                         window = Window(x, y, win_width, win_height)
 
-                        valid_mask = valid_data_mask(src, window)
+                        with _chip_stage_timer("valid_mask"):
+                            valid_mask = valid_data_mask(src, window)
                         valid_fraction = (
                             float(np.count_nonzero(valid_mask)) / max(1, valid_mask.size)
                             if valid_mask is not None
@@ -1635,15 +1752,17 @@ def slice_and_infer(
                         )
                         if valid_fraction < INFERENCE_MIN_VALID_CHIP_FRACTION:
                             continue
-                        chip = src.read(window=window)
+                        with _chip_stage_timer("read_probe"):
+                            chip = src.read(window=window)
                         if np.all(chip == 0) or (src.nodata is not None and np.all(chip == src.nodata)):
                             continue
 
-                        chip_file, chip_meta = _emit_chip_payload(
-                            window,
-                            src,
-                            valid_mask=valid_mask,
-                        )
+                        with _chip_stage_timer("encode"):
+                            chip_file, chip_meta = _emit_chip_payload(
+                                window,
+                                src,
+                                valid_mask=valid_mask,
+                            )
                         chip_meta_payload = json.dumps({
                             "pass_id": pass_id,
                             "window": [x, y, win_width, win_height],
@@ -1653,10 +1772,11 @@ def slice_and_infer(
                         })
                         chip_label = f"pass={pass_id} scale={pass_index} x={x} y={y}"
 
-                        future = executor.submit(
-                            _post_chip_to_sam3,
-                            session, chip_file, chip_meta_payload, chip_label,
-                        )
+                        with _chip_stage_timer("submit"):
+                            future = executor.submit(
+                                _post_chip_to_sam3,
+                                session, chip_file, chip_meta_payload, chip_label,
+                            )
                         del chip
                         pending[future] = {
                             "x": x, "y": y, "win_width": win_width, "win_height": win_height,
@@ -2506,6 +2626,7 @@ def _insert_detection_rows(cur, clip_id: int, source_fps: float, window_idx: int
             "prompt_text": prompt_text,
             "window_index": window_idx,
             "provider": "sam3",
+            "source_layer": entry.get("source_layer"),
         })
         conf = float(entry.get("score") or 0.0)
         cur.execute(
@@ -2568,7 +2689,7 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
     else:
         prompts = list(text_prompts or [])
         if not prompts:
-            prompts = ["object"]
+            prompts = list(FMV_DEFAULT_PROMPTS)
 
     _update_clip_tracking(
         clip_id,
