@@ -1,0 +1,27 @@
+{
+  "iters": 10,
+  "warmup": 2,
+  "latency_ms": {
+    "p50": 4537.552061956376,
+    "p95": 6525.013023987412,
+    "p99": 6525.013023987412,
+    "mean": 4733.260518300813,
+    "stdev": 597.4015791521149
+  },
+  "throughput_img_per_s": 0.21126949793775693,
+  "detection_count": {
+    "mean": 0.0,
+    "min": 0,
+    "max": 0
+  },
+  "memory": {
+    "detail": "Not Found"
+  },
+  "chip_path": "/tmp/sample_chip.png",
+  "prompts": [
+    "ship",
+    "plane",
+    "vehicle",
+    "building"
+  ]
+}

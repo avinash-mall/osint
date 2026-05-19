@@ -207,7 +207,12 @@ export default function LayerPanel({
                 <button
                   key={key}
                   type="button"
-                  onClick={() => setActiveBaseLayer(key)}
+                  onClick={() => {
+                    if (key === 'sat' && selectedImagery === null && imagery.length > 0) {
+                      setSelectedImagery(imagery[0].id);
+                    }
+                    setActiveBaseLayer(key);
+                  }}
                   className={`h-7 font-mono text-[10px] uppercase tracking-widest ${isActive ? 'bg-sentinel-panel-2 text-slate-100' : 'text-sentinel-muted'}`}
                 >
                   {key}

@@ -59,6 +59,19 @@ if os.getenv("SAM3_ENABLE_TF32", "1").strip().lower() in {"1", "true", "yes", "o
     except Exception as _tf32_exc:
         logging.getLogger("inference-sam3").warning("Could not enable TF32: %s", _tf32_exc)
 
+# cuDNN benchmark per GPU profile. Picks the fastest conv kernel per input
+# shape. Helpful when chip sizes are stable (1008x1008 or 640x640 — both
+# fixed by env vars). Disabled on Turing because the cu126 stack re-searches
+# on every new shape and hurts short bursts.
+if os.getenv("SAM3_CUDNN_BENCHMARK", "0").strip().lower() in {"1", "true", "yes", "on"}:
+    try:
+        import torch as _cudnn_torch
+        if _cudnn_torch.cuda.is_available():
+            _cudnn_torch.backends.cudnn.benchmark = True
+            logging.getLogger("inference-sam3").info("cudnn.benchmark enabled")
+    except Exception as _cudnn_exc:
+        logging.getLogger("inference-sam3").warning("Could not enable cudnn.benchmark: %s", _cudnn_exc)
+
 # Silence known upstream deprecation chatter that floods logs at startup. The
 # source libraries can't be changed from here; the warnings are non-actionable
 # and bury the actually-useful "session started/ended" messages.
@@ -649,6 +662,55 @@ def health() -> dict[str, Any]:
     }
 
 
+@app.get("/health/memory")
+def memory_health() -> dict[str, Any]:
+    """Per-device GPU memory snapshot. Used by benchmark_detect.py.
+
+    Returns allocated, reserved, and peak (since last reset) for every
+    visible CUDA device. ``fragmentation_bytes = reserved - allocated``
+    is the canonical signal for caching-allocator pressure.
+    """
+    try:
+        import torch
+    except ImportError:
+        return {"cuda": False, "devices": []}
+    if not torch.cuda.is_available():
+        return {"cuda": False, "devices": []}
+    devices = []
+    for idx in range(torch.cuda.device_count()):
+        allocated = torch.cuda.memory_allocated(idx)
+        reserved = torch.cuda.memory_reserved(idx)
+        peak_allocated = torch.cuda.max_memory_allocated(idx)
+        peak_reserved = torch.cuda.max_memory_reserved(idx)
+        total = torch.cuda.get_device_properties(idx).total_memory
+        devices.append({
+            "index": idx,
+            "name": torch.cuda.get_device_name(idx),
+            "allocated_bytes": int(allocated),
+            "reserved_bytes": int(reserved),
+            "peak_allocated_bytes": int(peak_allocated),
+            "peak_reserved_bytes": int(peak_reserved),
+            "total_bytes": int(total),
+            "fragmentation_bytes": int(reserved - allocated),
+            "free_bytes": int(total - reserved),
+        })
+    return {"cuda": True, "devices": devices}
+
+
+@app.post("/health/memory/reset")
+def memory_reset() -> dict[str, Any]:
+    """Reset per-device peak counters; called by benchmark harness before timing."""
+    try:
+        import torch
+    except ImportError:
+        return {"cuda": False, "reset": False}
+    if not torch.cuda.is_available():
+        return {"cuda": False, "reset": False}
+    for idx in range(torch.cuda.device_count()):
+        torch.cuda.reset_peak_memory_stats(idx)
+    return {"cuda": True, "reset": True}
+
+
 @app.post("/load")
 def load_profile(profile: str = Query(...)) -> dict[str, Any]:
     """Load a named model profile, unloading any other profile first.
@@ -692,6 +754,18 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
     started = time.perf_counter()
     timings: dict[str, float] = {}
     queue_depth = _enter_request()
+
+    # Per-request peak VRAM tracking. Reset peaks now so timings["peak_vram_mib"]
+    # below reflects only this request's allocations, not whatever the worker
+    # accumulated across prior chips. Two PyTorch calls — negligible cost.
+    _peak_dev: int | None = None
+    try:
+        import torch as _torch_peak
+        if _torch_peak.cuda.is_available():
+            _peak_dev = _torch_peak.cuda.current_device()
+            _torch_peak.cuda.reset_peak_memory_stats(_peak_dev)
+    except Exception:
+        _peak_dev = None
 
     def mark(name: str, since: float) -> float:
         now = time.perf_counter()
@@ -753,6 +827,7 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
         prompt_boxes = meta.get("prompt_boxes")
         prompt_count = 0
         prompts: list[str] = []
+        sam3_timings: dict[str, float] = {}
         if isinstance(prompt_boxes, list) and prompt_boxes:
             prompt_count = len(prompt_boxes)
             with _track("sam3_image"):
@@ -766,7 +841,14 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             prompt_count = len(prompts)
             with _track("sam3_image"):
-                candidates = await run_in_threadpool(sam3_runner.run_text_prompts, bundle, chip3, prompts, SAM3_TEXT_THR)
+                candidates = await run_in_threadpool(
+                    sam3_runner.run_text_prompts, bundle, chip3, prompts, SAM3_TEXT_THR, sam3_timings,
+                )
+        # Promote SAM3 sub-stage timings into the request log dict with a
+        # sam3_ prefix so the existing sam3_detect_timing log line surfaces
+        # them automatically.
+        for _k, _v in sam3_timings.items():
+            timings[f"sam3_{_k}"] = _v
         t0 = mark("sam3_inference", t0)
 
         # Specialist detectors run alongside SAM 3 and feed into the same fusion
@@ -862,8 +944,20 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
             _record_metric("dinov3_sat", embedding_ms)
         timings["embedding"] = round(embedding_ms, 3)
         t0 = mark("postprocess", t0)
-        detections = fusion.mask_aware_nms(detections, iou=0.50)
+        _nms_agnostic = os.getenv("SAM3_NMS_AGNOSTIC", "1").strip().lower() in {"1", "true", "yes", "on"}
+        _nms_soft = os.getenv("SAM3_NMS_SOFT", "0").strip().lower() in {"1", "true", "yes", "on"}
+        detections = fusion.mask_aware_nms(
+            detections, iou=0.50, agnostic=_nms_agnostic, soft=_nms_soft,
+        )
         mark("nms", t0)
+        if _peak_dev is not None:
+            try:
+                import torch as _torch_peak2
+                timings["peak_vram_mib"] = round(
+                    _torch_peak2.cuda.max_memory_allocated(_peak_dev) / (1024 * 1024), 1
+                )
+            except Exception:
+                pass
         timings["total"] = round((time.perf_counter() - started) * 1000, 3)
         logger.info(
             "sam3_detect_timing modality=%s prompts=%s candidates=%s detections=%s queue_depth=%s timings_ms=%s",

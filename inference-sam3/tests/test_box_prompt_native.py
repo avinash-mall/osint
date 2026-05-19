@@ -98,12 +98,16 @@ def test_run_text_prompts_single_prompt_uses_native_processor(monkeypatch):
 def test_run_text_prompts_multi_prompt_uses_batched_path(monkeypatch):
     calls = []
 
-    def fake_batched(bundle, image, prompts, score_threshold):
+    def fake_batched(bundle, image, prompts, score_threshold, timings=None):
         calls.append((prompts, score_threshold))
         return [("mask", "box", 0.9, prompts[1])]
 
     monkeypatch.setattr(sam3_runner, "_run_text_prompts_batched", fake_batched)
     monkeypatch.setattr(sam3_runner, "SAM3_BATCHED_TEXT", True)
+    # Force the chunked-batched fallback by reporting the cached patch as
+    # unavailable. In a real container with /opt/sam3 installed this is
+    # True; here in the dev venv it's already False, but be explicit.
+    monkeypatch.setattr(sam3_runner, "_cached_batched_supported", lambda _b: False)
     out = sam3_runner.run_text_prompts(
         _make_bundle(object()),
         np.zeros((8, 8, 3), dtype=np.uint8),
@@ -118,13 +122,14 @@ def test_run_text_prompts_multi_prompt_uses_batched_path(monkeypatch):
 def test_run_text_prompts_chunks_batched_path(monkeypatch):
     calls = []
 
-    def fake_batched(bundle, image, prompts, score_threshold):
+    def fake_batched(bundle, image, prompts, score_threshold, timings=None):
         calls.append(list(prompts))
         return []
 
     monkeypatch.setattr(sam3_runner, "_run_text_prompts_batched", fake_batched)
     monkeypatch.setattr(sam3_runner, "SAM3_BATCHED_TEXT", True)
     monkeypatch.setattr(sam3_runner, "SAM3_BATCHED_TEXT_CHUNK_SIZE", 2)
+    monkeypatch.setattr(sam3_runner, "_cached_batched_supported", lambda _b: False)
 
     sam3_runner.run_text_prompts(
         _make_bundle(object()),

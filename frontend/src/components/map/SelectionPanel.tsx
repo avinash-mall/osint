@@ -263,6 +263,21 @@ export default function SelectionPanel(props: Props) {
             : detProps.metadata?.source_cog || 'n/a';
           const captureTime = detProps.metadata?.acquisition_time || selectedImageryData?.acquisition_time;
           const resolution = detProps.metadata?.resolution_m ?? selectedImageryData?.resolution_m;
+          const sizeEstimate = detProps.metadata?.size_estimate as
+            | {
+                length_m: number;
+                width_m: number;
+                area_m2: number;
+                orientation_deg: number;
+                uncertainty?: { length_m?: number; width_m?: number; area_m2?: number };
+              }
+            | undefined;
+          const fmtLen = (m: number) => (m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`);
+          const fmtArea = (m2: number) => {
+            if (m2 >= 1_000_000) return `${(m2 / 1_000_000).toFixed(2)} km²`;
+            if (m2 >= 10_000) return `${(m2 / 10_000).toFixed(2)} ha`;
+            return `${Math.round(m2).toLocaleString()} m²`;
+          };
           return (
             <>
               <div className="border-b border-sentinel-line p-3">
@@ -312,9 +327,31 @@ export default function SelectionPanel(props: Props) {
                 </div>
               </div>
 
+              {sizeEstimate && (
+                <div className="border-b border-sentinel-line p-3">
+                  <div className="flex items-center gap-2 pb-2">
+                    <span className="inline-flex h-4 w-4 items-center justify-center bg-sentinel-line-2 font-mono text-[9px] text-slate-200">D</span>
+                    <span className="sentinel-label">Dimensions</span>
+                  </div>
+                  <div className="grid grid-cols-[92px_1fr] gap-y-1 font-mono text-[10.5px]">
+                    <span className="text-sentinel-muted">L × W</span>
+                    <span>
+                      {fmtLen(sizeEstimate.length_m)} × {fmtLen(sizeEstimate.width_m)}
+                      {sizeEstimate.uncertainty?.length_m != null && (
+                        <span className="text-sentinel-muted"> (±{Math.max(1, Math.round(sizeEstimate.uncertainty.length_m))} m)</span>
+                      )}
+                    </span>
+                    <span className="text-sentinel-muted">AREA</span>
+                    <span>{fmtArea(sizeEstimate.area_m2)}</span>
+                    <span className="text-sentinel-muted">BEARING</span>
+                    <span>{String(Math.round(sizeEstimate.orientation_deg)).padStart(3, '0')}°</span>
+                  </div>
+                </div>
+              )}
+
               <div className="border-b border-sentinel-line p-3">
                 <div className="flex items-center gap-2 pb-2">
-                  <span className="inline-flex h-4 w-4 items-center justify-center bg-sentinel-line-2 font-mono text-[9px] text-slate-200">D</span>
+                  <span className="inline-flex h-4 w-4 items-center justify-center bg-sentinel-line-2 font-mono text-[9px] text-slate-200">E</span>
                   <span className="sentinel-label">Taxonomy</span>
                 </div>
                 <div className="grid grid-cols-[92px_1fr] gap-y-1 font-mono text-[10.5px]">

@@ -33,6 +33,44 @@ class GpuBuildProfile:
     # --- Precision & compilation ---
     # TF32 matmul: supported sm_80 and above (Ampere/Ada/Hopper/Blackwell).
     enable_tf32: bool = True
+    # --- YOLO specialist optimizations ---
+    # model.fuse() folds Conv+BN (5-15% latency drop). Safe on all CUDA archs;
+    # left on by default and overridden off only where the cu126/torch 2.7
+    # stack has known fuse regressions.
+    yolo_fuse: bool = True
+    # model.half() runs YOLO specialists in fp16. Requires tensor cores
+    # (sm_70+); Turing keeps fp32 because its fp16 throughput vs fp32 is
+    # marginal for the small specialist models we run.
+    yolo_half: bool = True
+    # channels_last memory format — 8-35% conv speedup on Volta/Ampere+.
+    yolo_channels_last: bool = True
+    # cudnn.benchmark = True picks the fastest conv kernel per input shape.
+    # Safe when YOLOE_IMGSZ / DOTA_OBB_IMGSZ are fixed (env vars, defaults
+    # 640 / 1024). Disabled on Turing because the cu126 stack re-benchmarks
+    # on every shape change, which dominates for short request bursts.
+    cudnn_benchmark: bool = True
+
+    # --- SAM3 precision & attention backend ---
+    # Native bf16 weights for SAM3 image model. Default OFF: while
+    # mlx-community/sam3-bf16 demonstrates feasibility, the upstream
+    # `_get_dummy_prompt` + geometry-encoder paths in /opt/sam3 keep
+    # fp32 buffers that fail bf16 nn.Linear forward without patching
+    # every site. Autocast already gives ~bf16 activations with zero
+    # extra patching, so the marginal speedup isn't worth it on this
+    # release. Re-enable per-profile + add the corresponding input
+    # casts in patches.sam3_cached_forward if reactivated.
+    sam3_native_bf16: bool = False
+    # SDPA backend preference: "flash" prefers FLASH_ATTENTION when
+    # available, then EFFICIENT_ATTENTION; "efficient" pins
+    # EFFICIENT_ATTENTION only; "auto" lets PyTorch choose.
+    sam3_sdpa_backend: str = "auto"
+    # DETR-decoder top-K pruning over SAM3's 200 object queries. Computed
+    # as sigmoid(pred_logits) * sigmoid(presence_logits). 0 disables.
+    sam3_decoder_topk: int = 0
+    # torch.compile the SAM3 vision encoder (Hiera/ViT). Requires the
+    # patches.sam3_cached_forward to be installed since compile breaks the
+    # selective-AC wrapper. First call pays ~30-60 s warmup.
+    sam3_compile_vision_encoder: bool = False
     # torch.compile() of the image model: datacenter cards only; consumer
     # Blackwell/Ada leave this off because branchy paths trip the compiler.
     compile_image: bool = False
@@ -164,6 +202,23 @@ class GpuBuildProfile:
             # (the new variable applies to all allocators, not just CUDA).
             # Keep both for backward compat across the 2.7→2.10 transition.
             "PYTORCH_ALLOC_CONF": self.pytorch_cuda_alloc_conf,
+            # YOLO optimization knobs (consumed by inference_utils +
+            # yoloe / dota_obb / grounding_dino loaders).
+            "SAM3_YOLO_FUSE": "1" if self.yolo_fuse else "0",
+            "SAM3_YOLO_HALF": "1" if self.yolo_half else "0",
+            "SAM3_YOLO_CHANNELS_LAST": "1" if self.yolo_channels_last else "0",
+            "SAM3_CUDNN_BENCHMARK": "1" if self.cudnn_benchmark else "0",
+            # Cross-tile NMS dedup defaults. agnostic=1 collapses cases where
+            # SAM3 and DOTA-OBB label the same object differently; soft=0
+            # keeps the dropped-detection behaviour. Operators flip
+            # SAM3_NMS_SOFT=1 for crowded scenes (ports, parking lots).
+            "SAM3_NMS_AGNOSTIC": "1",
+            "SAM3_NMS_SOFT": "0",
+            # SAM3 precision + attention backend (consumed by sam3_runner).
+            "SAM3_NATIVE_BF16": "1" if self.sam3_native_bf16 else "0",
+            "SAM3_SDPA_BACKEND": self.sam3_sdpa_backend,
+            "SAM3_DECODER_TOPK": str(self.sam3_decoder_topk),
+            "SAM3_COMPILE_VISION_ENCODER": "1" if self.sam3_compile_vision_encoder else "0",
             # Backend chip pipeline
             "INFERENCE_SPEED_PROFILE": self.inference_speed_profile,
             "INFERENCE_CHIP_CONCURRENCY": str(self.inference_chip_concurrency),
@@ -193,6 +248,27 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         ubuntu_version="22.04",
         # sm_75 has no native TF32 tensor cores; smaller 16 GiB working set.
         enable_tf32=False,
+        # Turing keeps fuse() (helps even without tensor cores) but skips
+        # half/channels_last/cudnn_benchmark — fp16 throughput vs fp32 on
+        # sm_75 is marginal for the specialist models, and cu126 + torch 2.7
+        # re-benchmarks on every input-shape change which dominates short
+        # request bursts.
+        yolo_fuse=True,
+        yolo_half=False,
+        yolo_channels_last=False,
+        cudnn_benchmark=False,
+        # Turing (T4 16 GiB, 2080 Ti 11 GiB) — fp16 tensor cores but bf16
+        # throughput is poor on sm_75, so keep SAM3 in fp32+autocast.
+        # FA2/FA3 don't run here either; pin SDPA to EFFICIENT_ATTENTION
+        # so PyTorch doesn't fall back to the MATH kernel. Decoder top-K
+        # at 32 is a free postproc-side filter (the patched
+        # forward_grounding just zeroes sub-K logits before postproc) —
+        # safe to enable. torch.compile is off because cu126 + torch 2.7
+        # + sm_75 hasn't been validated and Turing rarely needs it.
+        sam3_native_bf16=False,
+        sam3_sdpa_backend="efficient",
+        sam3_decoder_topk=32,
+        sam3_compile_vision_encoder=False,
         compile_image=False,
         compile_video=False,
         fmv_track_height=360,
@@ -259,6 +335,17 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_preload_profile="",
         inference_speed_profile="fast_review",
         inference_chip_concurrency=1,
+        # Consumer Ampere (RTX 30xx, 8-24 GiB). bf16 hw accelerated;
+        # PyTorch ships FA2 wheels for sm_80/86 → sdpa=flash actually
+        # picks FA2 (real win). Decoder top-K=32 conservative for the
+        # 8 GiB cards in the profile; bumps to 48 on 24 GiB cards via
+        # .env override are safe. compile_vision_encoder off: cu130 +
+        # SAM3's selective-AC + dynamo conflict is the same one
+        # documented on the ampere_sm80_86_datacenter profile below.
+        sam3_native_bf16=False,
+        sam3_sdpa_backend="flash",
+        sam3_decoder_topk=32,
+        sam3_compile_vision_encoder=False,
         # in one video session, so a smaller grid (16² = 256 prompts) and
         # less frequent reseed (every 12 frames) cuts wall-clock ~5× vs
         # Phase 1 defaults without measurable recall loss on FMV fixtures.
@@ -323,6 +410,19 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         # Full-coverage chip sweep + parallel chip threads.
         inference_speed_profile="recall_review",
         inference_chip_concurrency=2,
+        # Datacenter Ampere (A100 40/80GB, A40, A30, A10, RTX A6000).
+        # 24-80 GiB HBM, full memory bandwidth. sdpa=flash → FA2 on sm_80.
+        # Decoder top-K=64 widens the candidate set vs consumer (32) since
+        # datacenter chips can be cluttered (port photos, parking lots).
+        # compile_vision_encoder stays OFF: the cu130 + sm_80 FX/dynamo
+        # bug documented above on compile_image=False applies identically
+        # here (selective-AC + activation_ckpt_wrapper trips dynamo
+        # boundary inside the vitdet trunk). Flip True when upstream PyTorch
+        # ships the make_fx fix.
+        sam3_native_bf16=False,
+        sam3_sdpa_backend="flash",
+        sam3_decoder_topk=64,
+        sam3_compile_vision_encoder=False,
         # 32² grid (1024 prompts/seed) and every-4-frames reseed cheap.
         # so density matters more than per-frame frequency.
     ),
@@ -360,6 +460,17 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_preload_profile="",
         inference_speed_profile="fast_review",
         inference_chip_concurrency=1,
+        # Ada (sm_89, cu126) covers RTX 4060 8 GiB through L40s 48 GiB
+        # plus the RTX 6000 Ada 48 GiB workstation cards. sdpa=flash uses
+        # FA2 (sm_89 supported). Decoder top-K=32 is the conservative
+        # floor for 8 GiB cards; .env can bump to 48 or 64 on 24+ GiB
+        # cards safely. compile_vision_encoder is OFF: the cu126 stack +
+        # torch 2.7 has not been validated for SAM3 compile, and the
+        # Ada-side fix for the make_fx/dynamo issue hasn't been backported.
+        sam3_native_bf16=False,
+        sam3_sdpa_backend="flash",
+        sam3_decoder_topk=32,
+        sam3_compile_vision_encoder=False,
         # Ada (RTX 4090 / L40) is sm_89 with 24-48 GiB. Phase 2 hybrid path:
         # 16² grid + reseed-every-12 matches consumer Blackwell wall-clock
         # while leaving headroom for parallel chip+video sessions.
@@ -395,8 +506,11 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_load_dota_obb=True,
         sam3_load_grounding_dino=True,
         sam3_embed_detections=True,
-        # Larger batch fits in 80 GiB HBM; reduces total prompt round-trips.
-        sam3_batched_text_chunk_size=16,
+        # Batched text chunk = 32 on H100/H200: each chunk's decoder
+        # activations are ~6-7 GiB at chunk=32 (200 queries × 1008² masks
+        # in bf16), trivial against 80-141 GiB HBM3. Doubling chunk size
+        # halves the number of Python-level decoder dispatches.
+        sam3_batched_text_chunk_size=32,
         sam3_preload_models=True,
         # H100/H200 carry 80 GiB+ HBM3 — keep the "all" superset resident
         # so requests of either kind serve immediately. `_ensure_profile`
@@ -404,6 +518,15 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_preload_profile="all",
         inference_speed_profile="recall_review",
         inference_chip_concurrency=2,
+        # Hopper (sm_90): the only profile where every SAM3 perf knob is
+        # ON. FA3 wheels run natively, compile_vision_encoder is the most
+        # stable target (FX/dynamo + selective-AC fix landed for sm_90+
+        # in torch 2.10), and 80-141 GiB HBM3 supports the widest
+        # decoder top-K window.
+        sam3_native_bf16=False,
+        sam3_sdpa_backend="flash",
+        sam3_decoder_topk=64,
+        sam3_compile_vision_encoder=True,
         # remains within ~2 s on Hopper.
     ),
     "blackwell_sm100": GpuBuildProfile(
@@ -434,7 +557,10 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_load_dota_obb=True,
         sam3_load_grounding_dino=True,
         sam3_embed_detections=True,
-        sam3_batched_text_chunk_size=16,
+        # Datacenter Blackwell chunk=32 mirrors Hopper. HBM3e at 192 GiB
+        # (B200) makes decoder-output VRAM essentially free; doubling
+        # chunk halves dispatch overhead.
+        sam3_batched_text_chunk_size=32,
         sam3_preload_models=True,
         # B100/B200 datacenter Blackwell — 80-192 GiB HBM3e. Preload the
         # full superset like Hopper / Ampere datacenter so profile switches
@@ -442,6 +568,14 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_preload_profile="all",
         inference_speed_profile="recall_review",
         inference_chip_concurrency=2,
+        # Datacenter Blackwell (B100/B200) — mirrors Hopper for SAM3 perf
+        # knobs. sm_100 + cu130 has FA3 native, the make_fx/dynamo bug
+        # hasn't reproduced (compile_image=True above), so the vision
+        # encoder compile is the safest of any consumer profile.
+        sam3_native_bf16=False,
+        sam3_sdpa_backend="flash",
+        sam3_decoder_topk=64,
+        sam3_compile_vision_encoder=True,
         # B100/B200 datacenter Blackwell mirrors Hopper (Phase 2: 32²/4f).
     ),
     "blackwell_sm120": GpuBuildProfile(
@@ -485,6 +619,21 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_preload_profile="",
         inference_speed_profile="fast_review",
         inference_chip_concurrency=1,
+        # Consumer Blackwell (RTX 5060/5070/5080/5090, 8-32 GiB).
+        # On sm_120 today FA3 wheels are dead (Hopper-only) and FA4 is
+        # pending; sdpa=flash lets PyTorch try FLASH first then fall
+        # through to EFFICIENT_ATTENTION (today's actual path). Decoder
+        # top-K=32 is right for the 8-16 GiB floor of this profile;
+        # operators on RTX 5090 (32 GiB) can bump to 48 via .env. The
+        # cached-encoder Phase A3 patch is the dominant win on this
+        # profile (~4720 → ~3000 ms p50 measured on RTX 5070 Ti).
+        # torch.compile of vision encoder is OFF — sm_120 compile path
+        # via cu130 is unproven; revisit when nightly PyTorch wheels
+        # ship validated sm_120 SDPA-Flash kernels.
+        sam3_native_bf16=False,
+        sam3_sdpa_backend="flash",
+        sam3_decoder_topk=32,
+        sam3_compile_vision_encoder=False,
         # Phase 2 hybrid path: grid 16 + reseed-every-12 takes ~30 s per 48-frame
         # window on the RTX 5070 Ti (measured) — ~5× faster than Phase 1.
     ),

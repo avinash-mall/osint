@@ -1,0 +1,44 @@
+{
+  "iters": 5,
+  "warmup": 2,
+  "latency_ms": {
+    "p50": 2930.3498790832236,
+    "p95": 2977.101623895578,
+    "p99": 2977.101623895578,
+    "mean": 2940.7378629781306,
+    "stdev": 28.384953605652925
+  },
+  "throughput_img_per_s": 0.3400468553195475,
+  "detection_count": {
+    "mean": 0.0,
+    "min": 0,
+    "max": 0
+  },
+  "memory": {
+    "cuda": true,
+    "devices": [
+      {
+        "index": 0,
+        "name": "NVIDIA GeForce RTX 5070 Ti",
+        "allocated_bytes": 5016528896,
+        "reserved_bytes": 10355736576,
+        "peak_allocated_bytes": 9271371264,
+        "peak_reserved_bytes": 10355736576,
+        "total_bytes": 16608133120,
+        "fragmentation_bytes": 5339207680,
+        "free_bytes": 6252396544
+      }
+    ]
+  },
+  "chip_path": "/tmp/sample_chip.png",
+  "prompts": [
+    "ship",
+    "plane",
+    "vehicle",
+    "building",
+    "helicopter",
+    "ground vehicle",
+    "large vehicle",
+    "small vehicle"
+  ]
+}

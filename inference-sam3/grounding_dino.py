@@ -96,7 +96,9 @@ def run(
     label_list = list(prompts)
     text_query = ". ".join(label_list) + "."
 
-    try:
+    from inference_utils import safe_predict, cuda_cleanup, memory_guard
+
+    def _do_forward():
         inputs = processor(
             images=pil,
             text=text_query,
@@ -106,17 +108,27 @@ def run(
         # default `.to(device)` only walks the top-level dict and can leave
         # nested ints/longs on CPU, triggering "tensors on different devices"
         # at forward time.
-        inputs = {k: (v.to(device) if hasattr(v, "to") else v) for k, v in inputs.items()}
+        inputs_dev = {k: (v.to(device) if hasattr(v, "to") else v) for k, v in inputs.items()}
         with torch.inference_mode():
-            outputs = model(**inputs)
-        results = processor.post_process_grounded_object_detection(
+            outputs = model(**inputs_dev)
+        return processor.post_process_grounded_object_detection(
             outputs,
-            input_ids=inputs.get("input_ids"),
+            input_ids=inputs_dev.get("input_ids"),
             threshold=score_threshold,
             text_threshold=GROUNDING_DINO_TEXT_THR,
             target_sizes=[(height, width)],
             text_labels=[label_list],
         )
+
+    try:
+        with memory_guard("grounding_dino"):
+            results = safe_predict(
+                _do_forward,
+                on_oom=cuda_cleanup,
+                max_retries=1,
+                fallback=lambda: [],
+                name="grounding_dino.run",
+            )
     except Exception as exc:
         print(f"[grounding_dino] inference failed: {exc}")
         return []

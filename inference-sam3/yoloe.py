@@ -25,6 +25,13 @@ YOLOE_THRESHOLD = float(os.getenv("YOLOE_THRESHOLD", "0.25"))
 YOLOE_IOU = float(os.getenv("YOLOE_IOU", "0.50"))
 YOLOE_IMGSZ = int(os.getenv("YOLOE_IMGSZ", "640"))
 
+# GPU optimization flags emitted by scripts/gpu_profiles.py:runtime_env.
+# Defaults match the safest behaviour (fp32, no layout change) so an
+# unset env doesn't surprise developer machines.
+YOLOE_FUSE = os.getenv("SAM3_YOLO_FUSE", "1").strip().lower() in {"1", "true", "yes", "on"}
+YOLOE_HALF = os.getenv("SAM3_YOLO_HALF", "0").strip().lower() in {"1", "true", "yes", "on"}
+YOLOE_CHANNELS_LAST = os.getenv("SAM3_YOLO_CHANNELS_LAST", "0").strip().lower() in {"1", "true", "yes", "on"}
+
 # Where the Dockerfile bakes the MobileCLIP2-B TorchScript text encoder that
 # ultralytics' YOLOE pulls in text-prompt mode. Default matches the path used
 # by the bake step in Dockerfile.gpu — see MODEL_MANIFEST.json.
@@ -90,6 +97,8 @@ def load(device: str) -> dict[str, Any]:
 
     _patch_mobileclip_asset_path()
 
+    from inference_utils import apply_yolo_optimizations
+
     try:
         pf = YOLOE(YOLOE_PF_MODEL_ID)
         if device and device != "cpu":
@@ -97,6 +106,12 @@ def load(device: str) -> dict[str, Any]:
                 pf.to(device)
             except Exception:
                 pass
+            apply_yolo_optimizations(
+                pf,
+                half=YOLOE_HALF,
+                fuse=YOLOE_FUSE,
+                channels_last=YOLOE_CHANNELS_LAST,
+            )
         bundle["pf"] = pf
     except Exception as exc:
         print(f"[yoloe] failed to load {YOLOE_PF_MODEL_ID}: {exc}")
@@ -109,6 +124,12 @@ def load(device: str) -> dict[str, Any]:
                 seg.to(device)
             except Exception:
                 pass
+            apply_yolo_optimizations(
+                seg,
+                half=YOLOE_HALF,
+                fuse=YOLOE_FUSE,
+                channels_last=YOLOE_CHANNELS_LAST,
+            )
         bundle["seg"] = seg
     except Exception as exc:
         print(f"[yoloe] failed to load {YOLOE_SEG_MODEL_ID}: {exc}")
@@ -155,14 +176,26 @@ def run(
             print(f"[yoloe] set_classes failed: {exc}")
             return []
 
-    try:
-        results = model.predict(
+    from inference_utils import safe_predict, cuda_cleanup
+
+    def _do_predict():
+        return model.predict(
             source=image_rgb_uint8,
             imgsz=YOLOE_IMGSZ,
             conf=score_threshold,
             iou=YOLOE_IOU,
             verbose=False,
             device=bundle.get("device"),
+            half=YOLOE_HALF,
+        )
+
+    try:
+        results = safe_predict(
+            _do_predict,
+            on_oom=cuda_cleanup,
+            max_retries=1,
+            fallback=lambda: [],
+            name="yoloe.predict",
         )
     except Exception as exc:
         print(f"[yoloe] inference failed: {exc}")

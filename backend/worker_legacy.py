@@ -11,6 +11,7 @@ import threading
 import concurrent.futures
 import tempfile
 import base64
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -31,6 +32,7 @@ from PIL import Image
 from imagery_metadata import extract_raster_metadata
 from calibration import calibrate_confidence
 from detection_policy import active_detection_policy, detection_decision, parent_class_for_label
+from size_estimation import estimate_size
 from candidate_linking import rank_candidate_links
 from threat_assessment import (
     assess_detection_threat,
@@ -1453,6 +1455,15 @@ def slice_and_infer(
                         "confidence": 0.95,  # 2-sigma ≈ 95%
                         "source": "gsd_propagation",
                     }
+                    size = estimate_size(
+                        geo_polygon=geo_polygon,
+                        crs="EPSG:4326",
+                        pixel_width_m=sigma_x_m / 2.0,
+                        pixel_height_m=sigma_y_m / 2.0,
+                        mask_area_px=int(det.get("area") or 0),
+                    )
+                    if size is not None:
+                        det["size_estimate"] = size
                 except Exception:
                     pass
                 det["chip_id"] = f"{pass_id}:{x}:{y}:{win_width}:{win_height}"
@@ -1494,9 +1505,20 @@ def slice_and_infer(
                     },
                 )
 
+        # Rolling-window latency tracker for memory-aware concurrency back-off.
+        # When p95 / p50 > 3.0 the inference service is saturated (one slow
+        # chip drags the tail); halve the effective limit to slow new submits.
+        # Restore when p95 / p50 < 1.5. Bounded by INFERENCE_CHIP_CONCURRENCY *
+        # 2 (the original pending cap) so we never push past the configured
+        # ceiling — only below it.
+        _chip_latencies_ms: deque[float] = deque(maxlen=20)
+        _effective_pending_limit = INFERENCE_MAX_PENDING_CHIPS
+
         def _consume_one(fut: concurrent.futures.Future) -> None:
             nonlocal processed_windows, failed_windows, completed_chip_count
+            nonlocal _effective_pending_limit
             ctx = pending.pop(fut)
+            chip_started = ctx.get("started")
             try:
                 response = fut.result()
             except Exception as exc:
@@ -1532,10 +1554,31 @@ def slice_and_infer(
                         )
             else:
                 all_kept.extend(kept)
+            if chip_started is not None:
+                _chip_latencies_ms.append((time.perf_counter() - chip_started) * 1000)
+                if len(_chip_latencies_ms) == _chip_latencies_ms.maxlen:
+                    sorted_lat = sorted(_chip_latencies_ms)
+                    p50 = sorted_lat[len(sorted_lat) // 2]
+                    p95 = sorted_lat[int(len(sorted_lat) * 0.95)]
+                    ceiling = INFERENCE_MAX_PENDING_CHIPS
+                    new_limit = _effective_pending_limit
+                    if p50 > 0 and p95 > 3.0 * p50 and _effective_pending_limit > 1:
+                        new_limit = max(1, _effective_pending_limit // 2)
+                    elif p50 > 0 and p95 < 1.5 * p50 and _effective_pending_limit < ceiling:
+                        new_limit = min(ceiling, _effective_pending_limit + 1)
+                    if new_limit != _effective_pending_limit:
+                        logger.info(
+                            "[WORKER] chip pending limit %s -> %s (p50=%.0fms p95=%.0fms)",
+                            _effective_pending_limit, new_limit, p50, p95,
+                        )
+                        _effective_pending_limit = new_limit
             _report_inference_progress()
 
         # Cap in-flight chips and spool oversized PNGs to disk so large rasters
         # cannot accumulate unbounded encoded chip buffers in memory.
+        # The runtime back-off in _consume_one may lower this temporarily; we
+        # read `_effective_pending_limit` rather than this constant in the
+        # dispatch gate.
         pending_limit = INFERENCE_MAX_PENDING_CHIPS
 
         try:
@@ -1620,9 +1663,10 @@ def slice_and_infer(
                             "valid_mask": valid_mask,
                             "valid_fraction": round(valid_fraction, 4),
                             "scale_pass": pass_index,
+                            "started": time.perf_counter(),
                         }
 
-                        while len(pending) >= pending_limit:
+                        while len(pending) >= _effective_pending_limit:
                             done, _ = concurrent.futures.wait(
                                 list(pending.keys()),
                                 return_when=concurrent.futures.FIRST_COMPLETED,
@@ -1836,6 +1880,28 @@ def run_sar_cfar_for_pass(
                         "modality": "sar",
                         "scale_pass": 0,
                     })
+                    try:
+                        px_w = abs(float(transform.a))
+                        px_h = abs(float(transform.e))
+                        if crs and crs.is_geographic:
+                            mid_lat_rad = math.radians((lat1 + lat2) / 2.0)
+                            pixel_width_m = px_w * 111_320.0 * max(math.cos(mid_lat_rad), 0.01)
+                            pixel_height_m = px_h * 111_320.0
+                        else:
+                            pixel_width_m = px_w
+                            pixel_height_m = px_h
+                        bbox_area_px = int(max(0.0, abs_px[2] - abs_px[0]) * max(0.0, abs_px[3] - abs_px[1]))
+                        size = estimate_size(
+                            geo_polygon=geo_polygon,
+                            crs="EPSG:4326",
+                            pixel_width_m=pixel_width_m,
+                            pixel_height_m=pixel_height_m,
+                            mask_area_px=bbox_area_px,
+                        )
+                        if size is not None:
+                            det["size_estimate"] = size
+                    except Exception:
+                        pass
                     survivors.append(det)
 
                 survivors = dedupe_idx.add(survivors)
@@ -1991,6 +2057,7 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
                     # (in metres) so the UI can render an uncertainty halo.
                     "position_uncertainty_m": det.get("position_uncertainty_m"),
                     "position_uncertainty_ellipse": det.get("position_uncertainty_ellipse"),
+                    "size_estimate": det.get("size_estimate"),
                     "scale_pass": det.get("scale_pass"),
                     "ontology": ontology,
                     "threat_level": assessment["threat_level"],

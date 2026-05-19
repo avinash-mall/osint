@@ -36,3 +36,39 @@ def test_mask_aware_nms_keeps_highest_same_class():
 
     assert len(kept) == 1
     assert kept[0]["confidence"] == 0.9
+
+
+def test_mask_aware_nms_agnostic_drops_cross_class_duplicate():
+    """Two overlapping detections with *different* class labels: default NMS
+    keeps both (per-class), agnostic=True suppresses the lower-conf one.
+    Models a SAM3+DOTA-OBB cross-tile collision where the same object got
+    two different labels.
+    """
+    mask = np.zeros((16, 16), dtype=bool)
+    mask[3:10, 3:10] = True
+    ship = fusion.candidate_to_detection(mask, [3, 3, 10, 10], 0.9, "ship", image_size=(16, 16), modality="rgb")
+    boat = fusion.candidate_to_detection(mask, [3, 3, 10, 10], 0.7, "boat", image_size=(16, 16), modality="rgb")
+
+    # Default behaviour preserved: both classes kept.
+    assert len(fusion.mask_aware_nms([ship, boat], iou=0.5)) == 2
+
+    # Agnostic dedup: only the higher-confidence detection survives.
+    out = fusion.mask_aware_nms([ship, boat], iou=0.5, agnostic=True)
+    assert len(out) == 1
+    assert out[0]["confidence"] == 0.9
+
+
+def test_mask_aware_nms_soft_downweights_instead_of_dropping():
+    """Soft-NMS keeps both overlapping detections but rescales the lower one."""
+    mask = np.zeros((16, 16), dtype=bool)
+    mask[3:10, 3:10] = True
+    a = fusion.candidate_to_detection(mask, [3, 3, 10, 10], 0.9, "ship", image_size=(16, 16), modality="rgb")
+    b = fusion.candidate_to_detection(mask, [3, 3, 10, 10], 0.8, "ship", image_size=(16, 16), modality="rgb")
+
+    kept = fusion.mask_aware_nms([a, b], iou=0.5, soft=True)
+    # Soft-NMS doesn't drop b; it down-weights it. Both still appear in `keep`
+    # because the loop's `suppressed[j]=True` branch is skipped for soft mode.
+    assert len(kept) == 2
+    confs = sorted([k["confidence"] for k in kept])
+    assert confs[1] == 0.9
+    assert confs[0] < 0.8  # down-weighted by (1 - iou)

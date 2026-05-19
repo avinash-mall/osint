@@ -191,6 +191,23 @@ services:
       # (defaults below are safe fallbacks; the .env block overrides on
       # any machine where configure_host.py has run).
       SAM3_ENABLE_TF32: ${SAM3_ENABLE_TF32:-1}
+      # YOLO specialist optimization knobs (yoloe, dota_obb, grounding_dino).
+      # Defaults are conservative; values per GPU profile come from
+      # scripts/gpu_profiles.GpuBuildProfile.runtime_env via configure_host.
+      SAM3_YOLO_FUSE: ${SAM3_YOLO_FUSE:-1}
+      SAM3_YOLO_HALF: ${SAM3_YOLO_HALF:-0}
+      SAM3_YOLO_CHANNELS_LAST: ${SAM3_YOLO_CHANNELS_LAST:-0}
+      SAM3_CUDNN_BENCHMARK: ${SAM3_CUDNN_BENCHMARK:-0}
+      # Cross-tile NMS dedup options consumed by fusion.mask_aware_nms.
+      SAM3_NMS_AGNOSTIC: ${SAM3_NMS_AGNOSTIC:-1}
+      SAM3_NMS_SOFT: ${SAM3_NMS_SOFT:-0}
+      # SAM3 precision + attention backend (sam3_runner + cached patch).
+      # Defaults are conservative; per-GPU values come from
+      # scripts/gpu_profiles.GpuBuildProfile.runtime_env via configure_host.
+      SAM3_NATIVE_BF16: ${SAM3_NATIVE_BF16:-0}
+      SAM3_SDPA_BACKEND: ${SAM3_SDPA_BACKEND:-auto}
+      SAM3_DECODER_TOPK: ${SAM3_DECODER_TOPK:-0}
+      SAM3_COMPILE_VISION_ENCODER: ${SAM3_COMPILE_VISION_ENCODER:-0}
       SAM3_GPU_VRAM_GIB: ${SAM3_GPU_VRAM_GIB:-}
       SAM3_MULTIPLEX_MIN_VRAM_MIB: ${SAM3_MULTIPLEX_MIN_VRAM_MIB:-20480}
       FMV_TRACK_HEIGHT: ${FMV_TRACK_HEIGHT:-540}

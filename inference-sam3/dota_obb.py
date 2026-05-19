@@ -24,6 +24,12 @@ DOTA_OBB_THRESHOLD = float(os.getenv("DOTA_OBB_THRESHOLD", "0.30"))
 DOTA_OBB_IOU = float(os.getenv("DOTA_OBB_IOU", "0.50"))
 DOTA_OBB_IMGSZ = int(os.getenv("DOTA_OBB_IMGSZ", "1024"))
 
+# GPU optimization flags (same env vars as YOLOE — set once per process by
+# scripts/gpu_profiles.py:runtime_env).
+DOTA_OBB_FUSE = os.getenv("SAM3_YOLO_FUSE", "1").strip().lower() in {"1", "true", "yes", "on"}
+DOTA_OBB_HALF = os.getenv("SAM3_YOLO_HALF", "0").strip().lower() in {"1", "true", "yes", "on"}
+DOTA_OBB_CHANNELS_LAST = os.getenv("SAM3_YOLO_CHANNELS_LAST", "0").strip().lower() in {"1", "true", "yes", "on"}
+
 
 def load(device: str) -> dict[str, Any]:
     """Load the YOLO-OBB model. Ultralytics auto-downloads weights to its cache."""
@@ -32,14 +38,21 @@ def load(device: str) -> dict[str, Any]:
     except ImportError as exc:
         print(f"[dota_obb] ultralytics not installed: {exc}")
         return {"model": None, "device": device, "model_id": DOTA_OBB_MODEL_ID, "error": str(exc)}
+    from inference_utils import apply_yolo_optimizations
+
     try:
         model = YOLO(DOTA_OBB_MODEL_ID)
-        # Move to GPU if available; ultralytics handles device strings
         if device and device != "cpu":
             try:
                 model.to(device)
             except Exception:
                 pass
+            apply_yolo_optimizations(
+                model,
+                half=DOTA_OBB_HALF,
+                fuse=DOTA_OBB_FUSE,
+                channels_last=DOTA_OBB_CHANNELS_LAST,
+            )
         return {"model": model, "device": device, "model_id": DOTA_OBB_MODEL_ID}
     except Exception as exc:
         print(f"[dota_obb] failed to load {DOTA_OBB_MODEL_ID}: {exc}")
@@ -56,14 +69,26 @@ def run(
         return []
     model = bundle["model"]
     height, width = image_rgb_uint8.shape[:2]
-    try:
-        results = model.predict(
+    from inference_utils import safe_predict, cuda_cleanup
+
+    def _do_predict():
+        return model.predict(
             source=image_rgb_uint8,
             imgsz=DOTA_OBB_IMGSZ,
             conf=score_threshold,
             iou=DOTA_OBB_IOU,
             verbose=False,
             device=bundle.get("device"),
+            half=DOTA_OBB_HALF,
+        )
+
+    try:
+        results = safe_predict(
+            _do_predict,
+            on_oom=cuda_cleanup,
+            max_retries=1,
+            fallback=lambda: [],
+            name="dota_obb.predict",
         )
     except Exception as exc:
         print(f"[dota_obb] inference failed: {exc}")

@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import {
   forwardRef,
+  useEffect,
   useImperativeHandle,
   useMemo,
   useRef,
@@ -26,7 +27,6 @@ import {
   Circle,
   CircleMarker,
   GeoJSON,
-  ImageOverlay,
   MapContainer,
   Marker,
   Polyline,
@@ -47,6 +47,7 @@ import {
   detectionCategoryForFeature,
   detectionCenter,
   relativeTime,
+  sizeAwareRadius,
   trackDashArray,
   type DetectionTrack,
 } from './_helpers';
@@ -199,6 +200,20 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
 
   const mapInstance = useRef<L.Map | null>(null);
 
+  // The SAT base layer is rendered as an overlay on top of BASE/TERRAIN; this
+  // ref records the last cartographic base the user picked so we can keep it
+  // visible underneath when activeBaseLayer === 'sat'.
+  const lastNonSatBaseRef = useRef<'base' | 'terrain'>(
+    activeBaseLayer === 'terrain' ? 'terrain' : 'base',
+  );
+  useEffect(() => {
+    if (activeBaseLayer === 'base' || activeBaseLayer === 'terrain') {
+      lastNonSatBaseRef.current = activeBaseLayer;
+    }
+  }, [activeBaseLayer]);
+  const effectiveBase: 'base' | 'terrain' =
+    activeBaseLayer === 'sat' ? lastNonSatBaseRef.current : activeBaseLayer;
+
   useImperativeHandle(ref, () => ({
     getMap: () => mapInstance.current,
     panToDetection: (feature: any) => {
@@ -269,7 +284,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
           <MapFitToImagery imagery={selectedImageryData} />
           <MapFitToDetections geojson={filteredDetectionsGeoJSON} filterKey={detectionClassFilter} />
 
-          {activeBaseLayer === 'base' && (
+          {effectiveBase === 'base' && (
             <TileLayer
               key="base-carto"
               url={CARTO_BASEMAP_URL}
@@ -280,7 +295,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
               attribution="&copy; OpenStreetMap &copy; CARTO"
             />
           )}
-          {activeBaseLayer === 'terrain' && (
+          {effectiveBase === 'terrain' && (
             <TileLayer
               key="base-terrain"
               url={TERRAIN_BASEMAP_URL}
@@ -290,8 +305,6 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
               attribution="&copy; OpenStreetMap &copy; OpenTopoMap (CC-BY-SA)"
             />
           )}
-
-          <ImageOverlay url="/world_map.svg" bounds={[[-85, -180], [85, 180]]} opacity={0.32} />
 
           {/* Prithvi overlays — hatched fills coloured per kind */}
           {(['flood', 'burn', 'crops'] as const).map((kind) => {
@@ -480,7 +493,11 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
               data={geomDisplayedDetectionsGeoJSON}
               renderer={detectionCanvasRenderer}
               pointToLayer={(feature: any, latlng: L.LatLng) =>
-                L.circleMarker(latlng, { ...getDetectionStyle(feature), radius: 4, fillOpacity: 0.8 })
+                L.circleMarker(latlng, {
+                  ...getDetectionStyle(feature),
+                  radius: sizeAwareRadius(feature?.properties?.metadata?.size_estimate?.area_m2),
+                  fillOpacity: 0.8,
+                })
               }
               style={getDetectionStyle}
               onEachFeature={onEachDetection}

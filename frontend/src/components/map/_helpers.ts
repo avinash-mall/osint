@@ -249,6 +249,19 @@ export const HEAVY_OUTLINE_CATEGORIES: ReadonlySet<DetectionCategoryId> = new Se
   'Industrial_Dual_Use',
 ] as DetectionCategoryId[]);
 
+/**
+ * Map an estimated footprint area (m²) to a point-marker radius (px).
+ * Log10 scale so a 1 m² vehicle, a 10 000 m² building, and a 1 km² stadium
+ * are all visually distinguishable at low zoom. Returns 4 (current default)
+ * when the estimate is absent or not finite.
+ */
+export function sizeAwareRadius(areaM2: unknown): number {
+  const area = Number(areaM2);
+  if (!Number.isFinite(area) || area <= 0) return 4;
+  const radius = 3 + Math.log10(area) * 2;
+  return Math.max(3, Math.min(14, radius));
+}
+
 export function makeDetectionStyle(categories: DetectionCategoryMap) {
   return (feature: any) => {
     const category = detectionCategoryForFeature(feature);

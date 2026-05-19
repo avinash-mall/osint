@@ -117,7 +117,24 @@ def overlay_labels(mask_bool, overlays, *, threshold) -> list[str]:
     return labels
 
 
-def mask_aware_nms(detections: list[dict[str, Any]], iou: float = 0.50) -> list[dict[str, Any]]:
+def mask_aware_nms(
+    detections: list[dict[str, Any]],
+    iou: float = 0.50,
+    *,
+    agnostic: bool = False,
+    soft: bool = False,
+) -> list[dict[str, Any]]:
+    """Mask-aware NMS with optional class-agnostic and Soft-NMS modes.
+
+    ``agnostic``: when True, suppress overlapping detections regardless of
+    their ``class`` field — useful at the cross-tile stitch step where SAM3
+    and a specialist detector often label the same object differently.
+
+    ``soft``: when True, linearly decay overlapping detections' confidence
+    by ``(1 - mask_iou)`` instead of dropping them outright. Raises recall
+    in dense scenes (parking lots, ports) at the cost of more low-conf
+    candidates downstream.
+    """
     if not detections:
         return []
     ranked = sorted(detections, key=lambda d: float(d.get("confidence") or 0.0), reverse=True)
@@ -132,7 +149,9 @@ def mask_aware_nms(detections: list[dict[str, Any]], iou: float = 0.50) -> list[
         keep.append(det)
         candidates: list[int] = []
         for j in range(i + 1, len(ranked)):
-            if suppressed[j] or det.get("class") != ranked[j].get("class"):
+            if suppressed[j]:
+                continue
+            if not agnostic and det.get("class") != ranked[j].get("class"):
                 continue
             if _can_reach_mask_iou(boxes[i], boxes[j], float(areas[i]), float(areas[j]), iou):
                 candidates.append(j)
@@ -140,7 +159,13 @@ def mask_aware_nms(detections: list[dict[str, Any]], iou: float = 0.50) -> list[
             continue
         mask_ious = coco_mask.iou([rles[i]], [rles[j] for j in candidates], [0] * len(candidates))[0]
         for j, mask_iou in zip(candidates, mask_ious):
-            if float(mask_iou) >= iou:
+            miou = float(mask_iou)
+            if miou < iou:
+                continue
+            if soft:
+                # Linear Soft-NMS: keep the detection but down-weight it.
+                ranked[j]["confidence"] = float(ranked[j].get("confidence") or 0.0) * (1.0 - miou)
+            else:
                 suppressed[j] = True
     return keep
 

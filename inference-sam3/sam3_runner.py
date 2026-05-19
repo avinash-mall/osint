@@ -43,6 +43,8 @@ SAM3_COMPILE_VIDEO = os.getenv("SAM3_COMPILE_VIDEO", _default_compile_video()).s
 SAM3_WARM_UP_VIDEO = os.getenv("SAM3_WARM_UP_VIDEO", "1").strip().lower() in {"1", "true", "yes", "on"}
 SAM3_BATCHED_TEXT = os.getenv("SAM3_BATCHED_TEXT", "1").strip().lower() in {"1", "true", "yes", "on"}
 SAM3_BATCHED_TEXT_CHUNK_SIZE = max(1, int(os.getenv("SAM3_BATCHED_TEXT_CHUNK_SIZE", "8")))
+SAM3_NATIVE_BF16 = os.getenv("SAM3_NATIVE_BF16", "0").strip().lower() in {"1", "true", "yes", "on"}
+SAM3_SDPA_BACKEND = os.getenv("SAM3_SDPA_BACKEND", "auto").strip().lower()
 # Category-level presence gate (SegEarth-OV-3 idea): drop the entire prompt if
 # its best candidate is below this threshold. SAM 3 internally multiplies
 # per-mask scores by the presence-token probability before thresholding, so
@@ -247,7 +249,41 @@ def _build_image_impl(device: str) -> dict[str, Any]:
         checkpoint_path=checkpoint_path,
         load_from_HF=load_from_hf,
     ).to(device).eval()
+    if SAM3_NATIVE_BF16 and device.startswith("cuda"):
+        # Cast vision + text encoders + decoder to bf16. The legacy fp32-
+        # text-encoder pin was only needed because Flash-Attention dislikes
+        # fp32; we're on SDPA so this is safe. mlx-community/sam3-bf16 ships
+        # a fully-bf16 SAM3 checkpoint as precedent for quality.
+        import torch as _torch_bf16
+        try:
+            model = model.to(_torch_bf16.bfloat16)
+            logger.info("SAM3 image model cast to native bfloat16")
+        except Exception as exc:
+            logger.warning("SAM3 native bf16 cast failed (%s); staying fp32", exc)
+    _install_sam3_perf_patches()
     return {"model": model, "processor": Sam3Processor(model, device=device)}
+
+
+def _install_sam3_perf_patches() -> None:
+    """Install runtime patches that enable the cached-encoder fast path.
+
+    Idempotent. Safe across replica builds. Failures are logged and ignored
+    so the service starts even if upstream changed the patched class.
+    """
+    try:
+        from patches.sam3_cached_forward import install as _install
+        _install()
+    except Exception as exc:
+        logger.warning("sam3_cached_forward patch failed to install: %s", exc)
+
+
+def _cached_batched_supported(bundle: dict[str, Any]) -> bool:
+    """True iff the Sam3Image cached-forward monkey-patch is live."""
+    try:
+        from patches.sam3_cached_forward import is_installed
+        return bool(is_installed())
+    except Exception:
+        return False
 
 
 def _resolve_mirror_checkpoint() -> str:
@@ -368,13 +404,33 @@ def build_video(device: str):
             # the `/unload` kill-and-respawn pattern in
             # main.py (`os._exit(1)` under `restart: unless-stopped`).
             exc_text = str(exc)
-            cuda_poisoned = isinstance(exc, RuntimeError) and (
+            is_oom = isinstance(exc, RuntimeError) and (
+                "CUDA out of memory" in exc_text
+                or "out of memory" in exc_text.lower()
+            )
+            cuda_poisoned = isinstance(exc, RuntimeError) and not is_oom and (
                 "CUBLAS_STATUS" in exc_text
                 or "CUDA error" in exc_text
-                or "CUDA out of memory" in exc_text
                 or "cuDNN error" in exc_text
             )
-            if cuda_poisoned:
+            if is_oom:
+                # OOM during multiplex warmup is recoverable: the cuBLAS
+                # handle is still valid, just out of VRAM headroom. Clear
+                # caches and fall through to the non-multiplex predictor,
+                # which has a smaller activation footprint and routinely
+                # fits where multiplex does not. Avoids the spurious
+                # process restart that previously happened whenever a
+                # /detect ran during multiplex warmup.
+                try:
+                    from inference_utils import cuda_cleanup
+                    cuda_cleanup()
+                except Exception:
+                    pass
+                logger.warning(
+                    "SAM3 multiplex video predictor hit OOM (%s); falling back to non-multiplex base predictor",
+                    exc,
+                )
+            elif cuda_poisoned:
                 logger.error(
                     "SAM3 multiplex video predictor crashed CUDA context (%s); "
                     "process state is unrecoverable, exiting so docker-compose "
@@ -382,10 +438,11 @@ def build_video(device: str):
                     exc,
                 )
                 os._exit(1)
-            logger.warning(
-                "SAM3 multiplex video predictor failed to load (%s); falling back to non-multiplex base predictor",
-                exc,
-            )
+            else:
+                logger.warning(
+                    "SAM3 multiplex video predictor failed to load (%s); falling back to non-multiplex base predictor",
+                    exc,
+                )
     with _device_context(device):
         predictor = build_sam3_video_predictor()
     predictor._sentinel_device = device
@@ -609,19 +666,56 @@ def versions() -> dict[str, str]:
 
 def _autocast_ctx(device: str):
     import torch
+    from contextlib import nullcontext
 
+    if SAM3_NATIVE_BF16 and device.startswith("cuda"):
+        # Weights + activations are already bf16; autocast would only add
+        # cast ops that re-promote then re-demote tensors at op boundaries.
+        return nullcontext()
     if device.startswith("cuda"):
         return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
     return torch.autocast(device_type="cpu", enabled=False)
 
 
-def run_text_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompts: Iterable[str], score_threshold: float):
+def _sdpa_ctx():
+    """SDPA backend context for SAM3 forward calls.
+
+    "flash" prefers FLASH_ATTENTION (PyTorch picks the fastest available
+    accelerated kernel; falls through to EFFICIENT_ATTENTION on sm_120
+    until FA4 lands), "efficient" pins EFFICIENT_ATTENTION only, "auto"
+    leaves the backend choice to PyTorch.
+    """
+    from contextlib import nullcontext
+    if SAM3_SDPA_BACKEND == "flash":
+        from sam3_perf import pin_sdpa_backend
+        return pin_sdpa_backend(prefer_flash=True)
+    if SAM3_SDPA_BACKEND == "efficient":
+        from sam3_perf import pin_sdpa_backend
+        return pin_sdpa_backend(prefer_flash=False)
+    return nullcontext()
+
+
+def run_text_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompts: Iterable[str], score_threshold: float, timings: dict[str, float] | None = None):
     """Native facebookresearch/sam3 API.
 
     ``processor.set_image`` returns an inference state that caches vision
     features; ``set_text_prompt`` reuses the state for each prompt.
+
+    Optional ``timings`` dict is populated with per-stage ms keys when
+    provided (encode_image, decode_loop / decode_batched, etc.).
     """
+    from sam3_perf import stage_timer
+
+    if timings is None:
+        timings = {}
     prompts = list(prompts)
+    # Dispatch — see _run_text_prompts_cached_batched docstring for rationale.
+    # When the cached-encoder batched path is available (post-A3 patch), it
+    # collapses N×encoder runs to 1 while keeping the per-chunk decoder batch.
+    if SAM3_BATCHED_TEXT and len(prompts) > 1 and _cached_batched_supported(bundle):
+        return _run_text_prompts_cached_batched(
+            bundle, image_rgb_uint8, prompts, score_threshold, timings=timings,
+        )
     if SAM3_BATCHED_TEXT and len(prompts) > 1:
         candidates: list[tuple[np.ndarray, list[float], float, str]] = []
         for offset in range(0, len(prompts), SAM3_BATCHED_TEXT_CHUNK_SIZE):
@@ -631,6 +725,7 @@ def run_text_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompt
                     image_rgb_uint8,
                     prompts[offset:offset + SAM3_BATCHED_TEXT_CHUNK_SIZE],
                     score_threshold,
+                    timings=timings,
                 )
             )
         return candidates
@@ -640,14 +735,16 @@ def run_text_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompt
     pil_image = Image.fromarray(image_rgb_uint8)
     candidates: list[tuple[np.ndarray, list[float], float, str]] = []
 
-    with bundle["lock"], _inference_mode(), _autocast_ctx(device):
-        state = processor.set_image(pil_image)
-        for label in prompts:
-            phrase = PROMPT_TEMPLATE.format(label=label)
-            output = processor.set_text_prompt(state=state, prompt=phrase)
-            if not _prompt_passes_category_gate(output, label):
-                continue
-            candidates.extend(_collect_candidates(output, score_threshold, label))
+    with bundle["lock"], _inference_mode(), _autocast_ctx(device), _sdpa_ctx():
+        with stage_timer(timings, "encode_image"):
+            state = processor.set_image(pil_image)
+        with stage_timer(timings, "decode_loop"):
+            for label in prompts:
+                phrase = PROMPT_TEMPLATE.format(label=label)
+                output = processor.set_text_prompt(state=state, prompt=phrase)
+                if not _prompt_passes_category_gate(output, label):
+                    continue
+                candidates.extend(_collect_candidates(output, score_threshold, label))
     return candidates
 
 
@@ -678,6 +775,7 @@ def _run_text_prompts_batched(
     image_rgb_uint8: np.ndarray,
     prompts: list[str],
     score_threshold: float,
+    timings: dict[str, float] | None = None,
 ):
     """Run the upstream SAM3 batched image API for multiple text queries.
 
@@ -685,6 +783,10 @@ def _run_text_prompts_batched(
     facebookresearch/sam3: build one datapoint containing many text queries,
     collate it, move it to the target device, then call the image model once.
     """
+    from sam3_perf import stage_timer
+
+    if timings is None:
+        timings = {}
     import torch
     from sam3.eval.postprocessors import PostProcessImage
     from sam3.model.utils.misc import copy_data_to_device
@@ -737,6 +839,8 @@ def _run_text_prompts_batched(
     datapoint = transform(datapoint)
     batch = collate([datapoint], dict_key="sam3")["sam3"]
     batch = copy_data_to_device(batch, torch.device(device), non_blocking=device.startswith("cuda"))
+    if SAM3_NATIVE_BF16 and device.startswith("cuda"):
+        batch.img_batch = batch.img_batch.to(torch.bfloat16)
     postprocessor = PostProcessImage(
         max_dets_per_img=-1,
         iou_type="segm",
@@ -748,10 +852,147 @@ def _run_text_prompts_batched(
         always_interpolate_masks_on_gpu=device.startswith("cuda"),
     )
 
-    with bundle["lock"], _inference_mode(), _autocast_ctx(device):
-        output = bundle["sam3_image"]["model"](batch)
-        processed = postprocessor.process_results(output, batch.find_metadatas)
+    with bundle["lock"], _inference_mode(), _autocast_ctx(device), _sdpa_ctx():
+        with stage_timer(timings, "batched_forward"):
+            output = bundle["sam3_image"]["model"](batch)
+        with stage_timer(timings, "batched_postproc"):
+            processed = postprocessor.process_results(output, batch.find_metadatas)
     return _collect_batched_candidates(processed, query_labels)
+
+
+def _run_text_prompts_cached_batched(
+    bundle: dict[str, Any],
+    image_rgb_uint8: np.ndarray,
+    prompts: list[str],
+    score_threshold: float,
+    timings: dict[str, float] | None = None,
+):
+    """Cached-encoder variant of `_run_text_prompts_batched`.
+
+    Runs the SAM3 vision encoder ONCE for the whole image, then iterates the
+    text prompts in chunks (size SAM3_BATCHED_TEXT_CHUNK_SIZE) doing only
+    text-encode + DETR-decode + mask-postproc per chunk. The encoder savings
+    dominate when many ontology-resolved prompts hit one chip (typical
+    worker request: ~146 prompts → 18 chunks → was 18× encoder, now 1×).
+
+    Requires the runtime patch in patches.sam3_cached_forward (idempotent).
+    Caller is responsible for checking `_cached_batched_supported(bundle)`.
+    """
+    from sam3_perf import stage_timer
+    if timings is None:
+        timings = {}
+
+    import torch
+    from sam3.eval.postprocessors import PostProcessImage
+    from sam3.model.utils.misc import copy_data_to_device
+    from sam3.train.data.collator import collate_fn_api as collate
+    from sam3.train.data.sam3_image_dataset import (
+        Datapoint,
+        FindQueryLoaded,
+        Image as SAMImage,
+        InferenceMetadata,
+    )
+    from sam3.train.transforms.basic_for_api import (
+        ComposeAPI,
+        NormalizeAPI,
+        RandomResizeAPI,
+        ToTensorAPI,
+    )
+
+    device = bundle.get("device", "cpu")
+    pil_image = Image.fromarray(image_rgb_uint8)
+    width, height = pil_image.size
+
+    transform = ComposeAPI(
+        transforms=[
+            RandomResizeAPI(sizes=1008, max_size=1008, square=True, consistent_transform=False),
+            ToTensorAPI(),
+            NormalizeAPI(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+        ]
+    )
+
+    candidates: list[tuple[np.ndarray, list[float], float, str]] = []
+    chunk_size = max(1, SAM3_BATCHED_TEXT_CHUNK_SIZE)
+
+    with bundle["lock"], _inference_mode(), _autocast_ctx(device), _sdpa_ctx():
+        # ---- Encode the image ONCE for the whole request ----
+        # We bypass the collator/Datapoint path here because the SAM3 collator
+        # requires at least one find_query, but at seed time we have zero —
+        # we only need the image tensor on device. The first chunk's
+        # Datapoint below will go through the normal collator with its
+        # queries; we just splice the cached backbone_out onto it.
+        with stage_timer(timings, "encode_image"):
+            from torchvision import tv_tensors
+            import torchvision.transforms.v2 as v2_transforms
+            tv_image = tv_tensors.Image(np.array(pil_image).transpose(2, 0, 1))
+            seed_tensor = v2_transforms.functional.resize(tv_image, [1008, 1008])
+            seed_tensor = (seed_tensor.float() / 255.0 - 0.5) / 0.5
+            seed_tensor = seed_tensor.unsqueeze(0).to(device, non_blocking=device.startswith("cuda"))
+            if SAM3_NATIVE_BF16 and device.startswith("cuda"):
+                seed_tensor = seed_tensor.to(torch.bfloat16)
+            model = bundle["sam3_image"]["model"]
+            cached_backbone_out: dict[str, Any] = {}
+            cached_backbone_out.update(model.backbone.forward_image(seed_tensor))
+            cached_img_batch = seed_tensor
+
+        # ---- Iterate chunks: build a tiny batch (no image work), reuse cache ----
+        for offset in range(0, len(prompts), chunk_size):
+            chunk = prompts[offset:offset + chunk_size]
+            query_labels: dict[int, str] = {}
+            chunk_dp = Datapoint(
+                find_queries=[],
+                images=[SAMImage(data=pil_image, objects=[], size=[height, width])],
+            )
+            for label in chunk:
+                qid = next(_QUERY_IDS)
+                phrase = PROMPT_TEMPLATE.format(label=label)
+                chunk_dp.find_queries.append(
+                    FindQueryLoaded(
+                        query_text=phrase,
+                        image_id=0,
+                        object_ids_output=[],
+                        is_exhaustive=True,
+                        query_processing_order=0,
+                        inference_metadata=InferenceMetadata(
+                            coco_image_id=qid,
+                            original_image_id=qid,
+                            original_category_id=1,
+                            original_size=(height, width),
+                            object_id=0,
+                            frame_index=0,
+                        ),
+                    )
+                )
+                query_labels[qid] = label
+            chunk_dp = transform(chunk_dp)
+            chunk_batch = collate([chunk_dp], dict_key="sam3")["sam3"]
+            chunk_batch = copy_data_to_device(
+                chunk_batch, torch.device(device),
+                non_blocking=device.startswith("cuda"),
+            )
+            # Carry cached image features onto this batch — Sam3Image.forward
+            # patched in patches.sam3_cached_forward picks this up and skips
+            # the vision encoder.
+            chunk_batch.img_batch = cached_img_batch
+            chunk_batch._cached_backbone_out = cached_backbone_out
+
+            postprocessor = PostProcessImage(
+                max_dets_per_img=-1,
+                iou_type="segm",
+                use_original_sizes_box=True,
+                use_original_sizes_mask=True,
+                convert_mask_to_rle=False,
+                detection_threshold=score_threshold,
+                to_cpu=True,
+                always_interpolate_masks_on_gpu=device.startswith("cuda"),
+            )
+            with stage_timer(timings, "batched_forward"):
+                output = model(chunk_batch)
+            with stage_timer(timings, "batched_postproc"):
+                processed = postprocessor.process_results(output, chunk_batch.find_metadatas)
+            candidates.extend(_collect_batched_candidates(processed, query_labels))
+
+    return candidates
 
 
 def _collect_batched_candidates(processed: dict[int, dict[str, Any]], query_labels: dict[int, str]):
@@ -795,7 +1036,7 @@ def run_box_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompt_
     pil_image = Image.fromarray(image_rgb_uint8)
     candidates: list[tuple[np.ndarray, list[float], float, str]] = []
 
-    with bundle["lock"], _inference_mode(), _autocast_ctx(device):
+    with bundle["lock"], _inference_mode(), _autocast_ctx(device), _sdpa_ctx():
         state = processor.set_image(pil_image)
         for entry in prompt_boxes:
             cxcywh = _entry_to_norm_cxcywh(entry)
