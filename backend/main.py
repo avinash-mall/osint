@@ -1,7 +1,7 @@
 import asyncio
+import base64
 import json
 import logging
-import math
 import os
 import re
 import shutil
@@ -37,10 +37,10 @@ from ai import AIUnavailable, ai_status, get_ai_response, get_llm_json
 from imagery_metadata import extract_raster_metadata
 from video_metadata import TelemetryMissingError, extract_telemetry
 from detection_policy import active_detection_policy, detection_decision, parent_class_for_label
+from candidate_linking import rank_candidate_links
 from threat_assessment import (
     assess_detection_threat,
     category_for_class,
-    clean_detection_class,
     conservative_detection_ontology,
     detection_ontology,
 )
@@ -152,7 +152,6 @@ from platform_schema import (
 from fmv_helpers import (
     fmv_public_url,
     probe_video,
-    telemetry_rows_for_clip,
     transcode_hls,
 )
 
@@ -1360,6 +1359,20 @@ def get_detection_classes(
             })
         return {"classes": classes, "classification_status": "ok" if llm and any(item["classification_status"] == "ok" for item in classes) else "unavailable" if llm else "heuristic"}
 
+def _encode_detection_cursor(created_at: datetime, detection_id: int) -> str:
+    raw_cursor = json.dumps(
+        [created_at.isoformat(), int(detection_id)],
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(raw_cursor).decode("ascii").rstrip("=")
+
+
+def _decode_detection_cursor(cursor: str) -> tuple[str, int]:
+    raw = base64.urlsafe_b64decode(cursor.encode("ascii") + b"===")
+    cursor_created_at, cursor_id = json.loads(raw.decode("utf-8"))
+    return str(cursor_created_at), int(cursor_id)
+
+
 @app.get("/api/detections/geojson")
 def get_detections_geojson(
     bbox: Optional[str] = Query(None, description="min_lon,min_lat,max_lon,max_lat"),
@@ -1367,14 +1380,13 @@ def get_detections_geojson(
     end_time: Optional[str] = None,
     det_class: Optional[str] = None,
     limit: int = Query(20000, ge=1, le=50000),
-    cursor: Optional[int] = Query(None, description="Detection id from previous page's next_cursor; returns rows strictly older than this id"),
+    cursor: Optional[str] = Query(None, description="Opaque cursor from the previous page's next_cursor"),
 ):
     """Return detections as GeoJSON FeatureCollection.
 
     Phase 7.32: cursor pagination. Pages are ordered by ``(created_at DESC, id
-    DESC)`` (stable across ties). To page further, pass the returned
-    ``next_cursor`` (which is the smallest ``id`` from the previous page) as
-    ``?cursor=…``. ``next_cursor`` is ``None`` when the last page was reached.
+    DESC)`` and the cursor encodes both values so ids inserted out-of-order do
+    not create gaps.
     """
     with postgis_db.get_cursor() as db_cursor:
         query = """
@@ -1400,9 +1412,12 @@ def get_detections_geojson(
             query += " AND d.class = %s"
             params.append(det_class)
         if cursor is not None:
-            # Older-than-cursor; ids are monotonic so "older" = "smaller id".
-            query += " AND d.id < %s"
-            params.append(int(cursor))
+            try:
+                cursor_created_at, cursor_id = _decode_detection_cursor(cursor)
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail="invalid detection cursor") from exc
+            query += " AND (d.created_at, d.id) < (%s, %s)"
+            params.extend([cursor_created_at, int(cursor_id)])
         # Fetch one extra row so we can tell the client whether more remain.
         query += " ORDER BY d.created_at DESC, d.id DESC LIMIT %s"
         params.append(limit + 1)
@@ -1410,7 +1425,9 @@ def get_detections_geojson(
         rows = db_cursor.fetchall()
         has_more = len(rows) > limit
         rows = rows[:limit]
-        next_cursor = int(rows[-1]["id"]) if has_more and rows else None
+        next_cursor = None
+        if has_more and rows:
+            next_cursor = _encode_detection_cursor(rows[-1]["created_at"], rows[-1]["id"])
         features = []
         for row in rows:
             raw_metadata = dict(row["metadata"] or {})
@@ -2235,35 +2252,6 @@ def get_prithvi_overlays(
     ]
     return {"type": "FeatureCollection", "kind": norm, "count": len(features), "features": features}
 
-
-def target_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    radius = 6_371_000
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    d_phi = math.radians(lat2 - lat1)
-    d_lambda = math.radians(lon2 - lon1)
-    a = math.sin(d_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
-    return radius * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-
-def target_class_compatibility(det_class: str, target_props: dict) -> tuple[float, str]:
-    """Phase 4.14: return a normalized compatibility score in ``[0.0, 1.0]``.
-
-    Caller multiplies this by the compatibility weight in the linking score.
-    Previously this returned weighted values directly (0.15-0.35) which
-    confused the score balance — callers couldn't easily change the weight.
-    """
-    det_text = clean_detection_class(det_class).lower()
-    target_text = " ".join(str(target_props.get(key, "")) for key in ("name", "type", "category", "description")).lower()
-    if not target_text:
-        return 0.40, "target context sparse"
-    if any(token in target_text for token in det_text.split() if len(token) >= 4):
-        return 1.00, "class/name text overlap"
-    det_category = conservative_detection_ontology(det_class).get("category")
-    if det_category and det_category in target_text:
-        return 0.70, "category overlap"
-    return 0.20, "generic proximity match"
-
-
 def _target_history_anchor(target_id: str) -> float:
     """Phase 4.14 (history_anchor term).
 
@@ -2339,68 +2327,27 @@ def generate_candidate_links_for_detection(
     except Exception:
         targets = []
 
-    W_DISTANCE = 0.30
-    W_COMPAT = 0.30
-    W_CONFIDENCE = 0.30
-    W_HISTORY = 0.10
-
-    scored: list[dict] = []
-    detection_conf = max(0.0, min(1.0, float(detection["confidence"] or 0)))
-    for target in targets:
-        distance_m = target_distance_m(
-            float(detection["lat"]), float(detection["lon"]),
-            float(target["lat"]), float(target["lon"]),
-        )
-        if distance_m > max_distance_m:
-            continue
-        compatibility_norm, compatibility_reason = target_class_compatibility(
-            detection["class"], target.get("props") or {},
-        )
-        target_id = target.get("stable_id") or target["element_id"]
-        history_anchor = _target_history_anchor(target_id)
-
-        distance_norm = max(0.0, 1.0 - (distance_m / max_distance_m))
-        score = round(
-            W_DISTANCE * distance_norm
-            + W_COMPAT * compatibility_norm
-            + W_CONFIDENCE * detection_conf
-            + W_HISTORY * history_anchor,
-            3,
-        )
-        reason = (
-            f"{round(distance_m)}m from target; {compatibility_reason}; "
-            f"confidence {detection_conf:.2f}; history {history_anchor:.2f}"
-        )
-        evidence = {
-            "distance_m": round(distance_m, 2),
-            "compatibility_reason": compatibility_reason,
-            "compatibility_score": round(compatibility_norm, 3),
-            "history_anchor": round(history_anchor, 3),
-            "score_weights": {
-                "distance": W_DISTANCE,
-                "compatibility": W_COMPAT,
-                "confidence": W_CONFIDENCE,
-                "history": W_HISTORY,
-            },
-            "detection_class": detection["class"],
-            "detection_confidence": detection_conf,
-            "acquisition_time": detection.get("acquisition_time"),
-        }
-        scored.append({
-            "target_id": target_id,
-            "target_name": target.get("name") or target_id,
-            "score": score,
-            "reason": reason,
-            "evidence": evidence,
-        })
-
-    # Phase 4.15: keep only the top-N highest-scoring candidates per detection.
-    scored.sort(key=lambda item: item["score"], reverse=True)
-    top = scored[:max(1, int(max_candidates_per_detection))]
+    top = rank_candidate_links(
+        detection,
+        targets,
+        max_distance_m=max_distance_m,
+        max_candidates_per_detection=max_candidates_per_detection,
+        history_lookup=_target_history_anchor,
+    )
 
     candidates = []
     with postgis_db.get_cursor(commit=True) as cursor:
         for item in top:
+            evidence = {
+                "distance_m": round(item["distance_m"], 2),
+                "compatibility_reason": item["compatibility_reason"],
+                "compatibility_score": round(item["compatibility_score"], 3),
+                "history_anchor": round(item["history_anchor"], 3),
+                "score_weights": item["score_weights"],
+                "detection_class": detection["class"],
+                "detection_confidence": item["detection_confidence"],
+                "acquisition_time": detection.get("acquisition_time"),
+            }
             cursor.execute("""
                 INSERT INTO detection_target_candidates (detection_id, target_id, target_name, score, reason, status, evidence)
                 VALUES (%s, %s, %s, %s, %s, 'pending', %s)
@@ -2413,7 +2360,7 @@ def generate_candidate_links_for_detection(
                 RETURNING id, detection_id, target_id, target_name, score, reason, status, evidence, reviewed_by, reviewed_at, created_at, updated_at
             """, (
                 detection_id, item["target_id"], item["target_name"],
-                item["score"], item["reason"], json.dumps(item["evidence"], default=str),
+                item["score"], item["reason"], json.dumps(evidence, default=str),
             ))
             candidates.append(dict(cursor.fetchone()))
     publish_event("detections", {"type": "candidate_links_updated", "detection_id": detection_id, "count": len(candidates)})
@@ -2573,6 +2520,9 @@ def upload_imagery(
     # optional — when absent the worker falls back to per-sensor defaults.
     modality: Optional[str] = Form(None),
     enabled_layers: Optional[str] = Form(None),
+    # Keep the generic ingest route aligned with /api/fmv/clips: fabricated
+    # telemetry is allowed only when the caller deliberately requests demo mode.
+    allow_synthetic_telemetry: bool = Form(False),
 ):
     ensure_platform_tables()
     filename = safe_filename(file.filename or "upload.tif")
@@ -2719,6 +2669,16 @@ def upload_imagery(
                 json.dumps({**metadata, "bytes": size, "upload_id": upload_id}),
             ))
             clip = dict(cursor.fetchone())
+            try:
+                rows = extract_telemetry(
+                    clip_path,
+                    clip["id"],
+                    clip["duration_seconds"],
+                    clip["fps"],
+                    allow_synthetic=allow_synthetic_telemetry,
+                )
+            except TelemetryMissingError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
             cursor.executemany("""
                 INSERT INTO fmv_frames (clip_id, frame_index, timestamp_seconds, telemetry, footprint)
                 VALUES (%s, %s, %s, %s, ST_GeomFromText(%s, 4326))
@@ -2726,7 +2686,7 @@ def upload_imagery(
                     timestamp_seconds = EXCLUDED.timestamp_seconds,
                     telemetry = EXCLUDED.telemetry,
                     footprint = EXCLUDED.footprint
-            """, telemetry_rows_for_clip(clip["id"], clip["duration_seconds"], clip["fps"]))
+            """, rows)
         clip["stream_url"] = fmv_public_url(clip.get("hls_path"), clip["file_path"])
         status = "ready"
         prompt_list = [item.strip() for item in (text_prompts or "").split(",") if item.strip()]

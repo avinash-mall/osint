@@ -35,8 +35,3 @@ def _wait_for_health(deadline: float) -> None:
 def ensure_running() -> None:
     """Wait for the Compose-managed SAM3 service to answer /health."""
     _wait_for_health(time.time() + START_TIMEOUT_S)
-
-
-def mark_active() -> None:
-    """Compatibility hook retained for callers that mark inference activity."""
-    return None

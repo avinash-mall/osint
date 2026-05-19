@@ -1,7 +1,7 @@
 """Telemetry extraction from FMV (Full Motion Video) containers.
 
-Supports three real sources in priority order, with a synthetic fixture
-fallback so the rest of the pipeline never sees empty rows:
+Supports three real sources in priority order, with an explicitly opted-in
+synthetic fixture path for demos:
 
 1. MISB ST 0601 KLV  -- demuxed from MPEG-2 TS / MP4 `data` streams via
    ffmpeg, parsed with `klvdata`.

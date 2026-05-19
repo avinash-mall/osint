@@ -1,4 +1,4 @@
-"""FMV (full-motion video) helpers: HLS transcode, ffprobe, telemetry stubs.
+"""FMV (full-motion video) helpers: HLS transcode and ffprobe.
 
 Used by the FMV ingest router. Side effects (ffmpeg subprocesses) are kept in
 this module to keep the router lean.
@@ -7,14 +7,11 @@ this module to keep the router lean.
 from __future__ import annotations
 
 import json
-import math
 import os
 import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional
-
-from geometry import make_square_feature
 
 
 def fmv_public_url(hls_path: Optional[str], file_path: str) -> str:
@@ -89,35 +86,3 @@ def transcode_hls(input_path: Path, clip_dir: Path) -> Optional[Path]:
     except Exception:
         shutil.copy2(input_path, clip_dir / input_path.name)
         return None
-
-
-def telemetry_rows_for_clip(clip_id: int, duration: float, fps: Optional[float]) -> list[tuple]:
-    """Synthesise placeholder MISB-0601 rows when an uploaded clip has no KLV.
-
-    The real telemetry extractor is in :mod:`video_metadata`; this function is
-    only used as a fixture for clips that lack a sidecar SRT and do not embed
-    any 0601 KLV stream. Returns rows formatted for the ``fmv_frames`` insert.
-    """
-    frame_step = max(1, int((fps or 30) * 2))
-    total_frames = max(8, int((duration or 16) * (fps or 30)))
-    rows = []
-    base_lat, base_lon = 25.078, 55.179
-    for frame in range(0, total_frames, frame_step):
-        t = frame / (fps or 30)
-        lat = base_lat + math.sin(t / 20) * 0.006
-        lon = base_lon + math.cos(t / 18) * 0.006
-        footprint = make_square_feature(lon, lat, 0.006, {"clip_id": clip_id, "frame": frame})["geometry"]["coordinates"][0]
-        footprint_wkt = "POLYGON((" + ", ".join(f"{x} {y}" for x, y in footprint) + "))"
-        telemetry = {
-            "source": "misb-klv" if duration else "fixture",
-            "timestamp_seconds": round(t, 3),
-            "platform_heading": round((t * 7) % 360, 2),
-            "sensor_azimuth": round((t * 13) % 360, 2),
-            "sensor_elevation": -23.6,
-            "platform_latitude": lat + 0.015,
-            "platform_longitude": lon - 0.012,
-            "frame_center_latitude": lat,
-            "frame_center_longitude": lon,
-        }
-        rows.append((clip_id, frame, t, json.dumps(telemetry), footprint_wkt))
-    return rows

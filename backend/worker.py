@@ -31,6 +31,7 @@ from PIL import Image
 from imagery_metadata import extract_raster_metadata
 from calibration import calibrate_confidence
 from detection_policy import active_detection_policy, detection_decision, parent_class_for_label
+from candidate_linking import rank_candidate_links
 from threat_assessment import (
     assess_detection_threat,
     clean_detection_class,
@@ -769,10 +770,10 @@ class _WeightedBoxFusionIndex:
     detection is added to the cluster's member list. When no cluster
     overlaps, a new single-member cluster is started.
 
-    ``.add(batch)`` returns the current set of cluster heads — one per
-    cluster, with bbox = fused average + confidence = (sum of confidences) /
-    expected_models. This is the same return shape as ``_DetectionDedupeIndex``,
-    so callers swap one for the other without further changes.
+    ``.add(batch)`` returns only newly created or changed cluster heads. That
+    makes the streaming path safe: callers do not re-store every historical
+    cluster after each chip. ``heads()`` exposes the final full set when a
+    deferred flush is needed.
     """
 
     BUCKET_SIZE = 512
@@ -822,6 +823,7 @@ class _WeightedBoxFusionIndex:
     def add(self, detections: list) -> list:
         if not detections:
             return []
+        changed_heads: list[dict] = []
         for det in sorted(detections, key=lambda d: _trust_weight_for(d) * float(d.get("confidence") or 0.0), reverse=True):
             self.raw_seen += 1
             bbox = det.get("pixel_bbox")
@@ -832,6 +834,7 @@ class _WeightedBoxFusionIndex:
                 cluster = {"head": det, "_members": [], "_class": det.get("parent_class") or det.get("class")}
                 self.clusters.append(cluster)
                 self.kept_count += 1
+                changed_heads.append(det)
                 continue
             try:
                 conf = float(det.get("confidence") or 0.0)
@@ -868,6 +871,7 @@ class _WeightedBoxFusionIndex:
                 head["wbf_member_sources"] = sorted({
                     m["source"] or "unknown" for m in best_cluster["_members"]
                 })
+                changed_heads.append(head)
             else:
                 det.setdefault("dedupe_method", "wbf")
                 det["wbf_member_count"] = 1
@@ -880,6 +884,10 @@ class _WeightedBoxFusionIndex:
                 self.buckets.setdefault((det_class, cx, cy), []).append(cluster)
                 self.clusters.append(cluster)
                 self.kept_count += 1
+                changed_heads.append(det)
+        return changed_heads
+
+    def heads(self) -> list[dict]:
         return [c["head"] for c in self.clusters]
 
     def reconcile_edge_truncated(self, survivors: list[dict]) -> tuple[list[dict], int]:
@@ -1152,6 +1160,10 @@ def slice_and_infer(
             )
         else:
             dedupe_idx = _DetectionDedupeIndex()
+        # A fused head can continue changing when later chips arrive. Persisting
+        # every intermediate WBF head in streaming mode creates duplicate DB
+        # rows and stores stale geometry, so WBF is flushed once at the end.
+        defer_streaming_store = streaming and isinstance(dedupe_idx, _WeightedBoxFusionIndex)
         all_kept: list[dict] = []  # only populated when not streaming
         completed_chip_count = 0
 
@@ -1207,7 +1219,7 @@ def slice_and_infer(
             "coverage_fraction": coverage_fraction,
             "sampling_enabled": any(p["grid"]["sampled"] for p in pass_plans),
             "max_inference_chips": grid["max_chips"],
-            "dedupe_method": "obb_nms",
+            "dedupe_method": "wbf" if isinstance(dedupe_idx, _WeightedBoxFusionIndex) else "obb_nms",
             "threshold_profile": DETECTION_POLICY["threshold_profile"],
             "taxonomy_version": DETECTION_POLICY["taxonomy_version"],
             "model_version": DETECTION_POLICY["model_version"],
@@ -1509,7 +1521,7 @@ def slice_and_infer(
             kept = dedupe_idx.add(chip_dets)
             processed_windows += 1
             completed_chip_count += 1
-            if streaming:
+            if streaming and not defer_streaming_store:
                 if kept:
                     try:
                         on_chip_store(kept, completed_chip_count)
@@ -1647,6 +1659,11 @@ def slice_and_infer(
         all_kept = reconciled
         inference_summary["edge_reconciled_pairs"] = merge_count
         inference_summary["deduped_detections"] = dedupe_idx.kept_count
+    elif defer_streaming_store:
+        final_heads = dedupe_idx.heads()
+        if final_heads:
+            on_chip_store(final_heads, completed_chip_count)
+        all_kept = []
     return {"detections": all_kept, "summary": inference_summary}
 
 
@@ -1693,6 +1710,9 @@ def run_sar_cfar_for_pass(
         "min_pixels": min_pixels,
     }
     all_kept: list[dict] = []
+    dedupe_idx = _DetectionDedupeIndex(
+        iou_threshold=float(os.getenv("SAR_NMS_IOU_DEFAULT", "0.25"))
+    )
 
     with rasterio.open(cog_path) as src:
         width = src.width
@@ -1818,6 +1838,7 @@ def run_sar_cfar_for_pass(
                     })
                     survivors.append(det)
 
+                survivors = dedupe_idx.add(survivors)
                 if streaming and survivors:
                     try:
                         on_chip_store(survivors, chip_index)
@@ -1828,6 +1849,9 @@ def run_sar_cfar_for_pass(
 
         summary["processed_chips"] = chip_index
         summary["coverage_fraction"] = coverage_fraction
+        summary["raw_detections"] = dedupe_idx.raw_seen
+        summary["deduped_detections"] = dedupe_idx.kept_count
+        summary["suppressed_detections"] = max(0, dedupe_idx.raw_seen - dedupe_idx.kept_count)
     return {"detections": all_kept, "summary": summary}
 
 
@@ -1960,6 +1984,9 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
                     "source_total_chips": det.get("source_total_chips"),
                     "sampling_enabled": det.get("sampling_enabled"),
                     "dedupe_method": det.get("dedupe_method", "obb_nms"),
+                    "source_layer": det.get("source_layer"),
+                    "wbf_member_count": det.get("wbf_member_count"),
+                    "wbf_member_sources": det.get("wbf_member_sources"),
                     # Phase 7.35: surface the per-detection position uncertainty
                     # (in metres) so the UI can render an uncertainty halo.
                     "position_uncertainty_m": det.get("position_uncertainty_m"),
@@ -2620,7 +2647,6 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
 
         inserted = state["inserted"]
 
-        provider_lifecycle.mark_active()
         _update_clip_tracking(
             clip_id,
             tracking_status="complete",
@@ -2658,27 +2684,24 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
         session.close()
 
 
-def target_distance_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    radius = 6_371_000
-    phi1, phi2 = np.radians(lat1), np.radians(lat2)
-    d_phi = np.radians(lat2 - lat1)
-    d_lambda = np.radians(lon2 - lon1)
-    a = np.sin(d_phi / 2) ** 2 + np.cos(phi1) * np.cos(phi2) * np.sin(d_lambda / 2) ** 2
-    return float(radius * 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a)))
+def _target_history_anchor(cursor, target_id: str) -> float:
+    cursor.execute(
+        "SELECT count(*) AS c FROM detection_target_candidates "
+        "WHERE target_id = %s AND status IN ('accepted', 'confirmed')",
+        (target_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return 0.0
+    accepted = int(row["c"] if isinstance(row, dict) else row[0])
+    return min(1.0, accepted / 5.0)
 
 
-def target_class_compatibility(det_class: str, target_props: dict) -> tuple[float, str]:
-    det_text = clean_detection_class(det_class).lower()
-    target_text = " ".join(str(target_props.get(key, "")) for key in ("name", "type", "category", "description")).lower()
-    if any(token in target_text for token in det_text.split() if len(token) >= 4):
-        return 0.35, "class/name text overlap"
-    category = conservative_detection_ontology(det_class).get("category")
-    if category and category in target_text:
-        return 0.3, "category overlap"
-    return 0.15, "generic proximity match"
-
-
-def generate_candidate_links_for_pass(pass_id: int, distance_threshold_meters: float = 1500.0) -> int:
+def generate_candidate_links_for_pass(
+    pass_id: int,
+    distance_threshold_meters: float = 1500.0,
+    max_candidates_per_detection: int = 5,
+) -> int:
     with postgis_db.get_cursor() as cursor:
         cursor.execute("""
             SELECT d.id, d.class, d.confidence, ST_X(d.centroid) AS lon, ST_Y(d.centroid) AS lat
@@ -2706,20 +2729,23 @@ def generate_candidate_links_for_pass(pass_id: int, distance_threshold_meters: f
     created = 0
     with postgis_db.get_cursor(commit=True) as cursor:
         for det in rows:
-            for target in targets:
-                distance_m = target_distance_m(float(det["lat"]), float(det["lon"]), float(target["lat"]), float(target["lon"]))
-                if distance_m > distance_threshold_meters:
-                    continue
-                compatibility, compatibility_reason = target_class_compatibility(det["class"], target.get("props") or {})
-                distance_score = max(0.0, 1.0 - (distance_m / distance_threshold_meters)) * 0.45
-                confidence_score = max(0.0, min(1.0, float(det["confidence"] or 0))) * 0.2
-                score = round(distance_score + compatibility + confidence_score, 3)
-                target_id = target.get("stable_id") or target["element_id"]
+            ranked = rank_candidate_links(
+                dict(det),
+                targets,
+                max_distance_m=distance_threshold_meters,
+                max_candidates_per_detection=max_candidates_per_detection,
+                history_lookup=lambda target_id: _target_history_anchor(cursor, target_id),
+            )
+            for item in ranked:
+                target_id = item["target_id"]
                 evidence = {
-                    "distance_m": round(distance_m, 2),
-                    "compatibility_reason": compatibility_reason,
+                    "distance_m": round(item["distance_m"], 2),
+                    "compatibility_reason": item["compatibility_reason"],
+                    "compatibility_score": round(item["compatibility_score"], 3),
+                    "history_anchor": round(item["history_anchor"], 3),
+                    "score_weights": item["score_weights"],
                     "detection_class": det["class"],
-                    "detection_confidence": float(det["confidence"] or 0),
+                    "detection_confidence": item["detection_confidence"],
                 }
                 cursor.execute("""
                     INSERT INTO detection_target_candidates (detection_id, target_id, target_name, score, reason, status, evidence)
@@ -2734,9 +2760,9 @@ def generate_candidate_links_for_pass(pass_id: int, distance_threshold_meters: f
                 """, (
                     det["id"],
                     target_id,
-                    target.get("name") or target_id,
-                    score,
-                    f"{round(distance_m)}m from target; {compatibility_reason}; confidence {float(det['confidence'] or 0):.2f}",
+                    item["target_name"],
+                    item["score"],
+                    item["reason"],
                     json.dumps(evidence, default=str),
                 ))
                 if cursor.fetchone():
@@ -2793,7 +2819,6 @@ def process_satellite_imagery(
                 upload_meta = {}
         try:
             provider_lifecycle.ensure_running()
-            provider_lifecycle.mark_active()
         except Exception as exc:
             logger.warning("[WORKER] provider_lifecycle.ensure_running failed: %s", exc)
         report_progress(self, upload_id, input_path, "metadata", 8, "Reading raster metadata and computing file hash.")
@@ -3035,11 +3060,6 @@ def process_satellite_imagery(
             on_chip_store=_store_chip,
         )
         inference_summary = inference_result["summary"]
-        try:
-            provider_lifecycle.mark_active()
-        except Exception as exc:
-            logger.warning("[WORKER] provider_lifecycle.mark_active(post-infer) failed: %s", exc)
-
         # Phase 5.20b: for SAR rasters, run the local CFAR detector after
         # the SAM3 / TerraMind chip pass. Always-on for SAR — operators who
         # want CFAR off explicitly can set ``SAR_CFAR_ENABLED=0``. Routes

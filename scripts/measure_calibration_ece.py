@@ -240,9 +240,6 @@ def _iter_eval_slice(slice_name: str, max_chips: int):
     if slice_name == "sen1floods":
         from scripts.eval_datasets.sen1floods import iter_sen1floods
         return iter_sen1floods()
-    if slice_name == "xview":
-        from scripts.eval_datasets.xview import iter_xview
-        return iter_xview()
     raise SystemExit(f"unknown slice: {slice_name}")
 
 

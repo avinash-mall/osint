@@ -4,7 +4,7 @@ const API_URL = (import.meta as any).env?.VITE_API_URL || '';
 
 export type LatLon = { latitude: number; longitude: number };
 
-export type AnalyticsMode = 'dem' | 'graph' | 'fixture_no_dem' | 'fixture_no_graph' | 'offline_fixture' | string;
+export type AnalyticsMode = 'dem' | 'graph' | 'fixture_no_dem' | 'fixture_no_passes' | 'fixture_no_graph' | string;
 
 export type AnalyticsJob = {
   id: number | string;
@@ -23,6 +23,7 @@ export type AnalyticsResponse = {
 export type AnalyticsCapabilities = {
   dem: boolean;
   routing_graph: boolean;
+  demo_fixtures?: boolean;
 };
 
 export async function getCapabilities(): Promise<AnalyticsCapabilities> {

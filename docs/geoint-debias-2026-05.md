@@ -17,14 +17,22 @@ normalisation, threat assessment, candidate linking, tracker), and the
 analyst-facing UI (silent filters, marker-mode switch, time-window default).
 
 The refactor was **inference-time only** — no model weights were touched —
-and ran across nine progressively-scoped sessions. **43 of the 47 items
-shipped as code** (the remaining 4 are off-platform: signed dataset
-agreements + live-stack calibration runs).
+and ran across nine progressively-scoped sessions. This document is now the
+applied contract, not an aspirational plan: unsupported gated loaders were
+removed, default fabricated outputs were retired, and offline validation was
+made runnable without PostGIS.
 
-The work added **~2,566 lines across 20 modified files and 9 new files**,
-re-shipped frontend production builds cleanly on every session, and kept
-the existing inference-sam3 and `box_metrics` test suites green
-throughout.
+### Applied / verified matrix (2026-05-18)
+
+| Area | Applied state | Verification |
+|---|---|---|
+| Candidate linking | One pure scorer shared by API, worker, eval | `eval_candidate_links.py` top-1 = 1.000 |
+| Tracking | Persisted sigma, motion state, embedding anchor | pure unit coverage + additive migration columns |
+| Dedupe | WBF changed-head streaming; SAR CFAR global overlap dedupe | pure unit coverage |
+| Pagination | Opaque `(created_at, id)` cursor | pure cursor round-trip unit coverage |
+| Synthetic defaults | FMV and analytics fail honestly unless demo-opted-in | behavior encoded in backend routes |
+| Offline eval | Seed-backed normalization; DB tests marked integration | dry-run comparison/ECE run without PostGIS |
+| Dataset surface | unsupported gated-loader skeletons removed | repo search + loader list audit |
 
 ### Headline outcomes
 
@@ -39,8 +47,8 @@ throughout.
 3. **Analyst transparency**: a single permanent suppression-status
    banner shows exactly what every silent filter is hiding (confidence
    floor, hidden categories, hidden labels, marker-overflow, time-window,
-   sub-sampled passes). Plus restored-session reminders, analytics-
-   fallback red banners, position-uncertainty halos, LLM-advisory pills,
+   sub-sampled passes). Plus restored-session reminders, honest analytics
+   unavailable states, position-uncertainty halos, LLM-advisory pills,
    and a full provenance breadcrumb (raw → calibrated → fused).
 4. **SAR de-fanged**: SAM3-on-SAR off by default (optical-domain
    pretrained model on synthetic pseudo-RGB was a documented
@@ -53,8 +61,8 @@ throughout.
    elevate (class, category, allegiance) tuples without redeploying.
 7. **Evaluation harness**: ECE measurement, candidate-link top-K
    evaluation, per-class regression gate in `compare_inference_layers`,
-   bumped DOTA slice (30 → 200 chips), and skeleton loaders for xView /
-   FAIR1M / RarePlanes / Sentinel-1.
+   seed-backed offline label normalisation, and supported loaders for DOTA,
+   HLS Burn Scars, Sen1Floods, SAR fixtures, and Sentinel-1.
 
 ---
 
@@ -92,7 +100,7 @@ Backend post-processing ──────────────────�
 Frontend analyst UI ───────────────────────────────────────────┐
   • SuppressionStatus banner          (Phase 7.27/28/30/31)    │
   • Per-class restored-session        (Phase 7.29)             │
-  • Analytics fallback banners        (Phase 7.34)             │
+  • Analytics unavailable states       (Phase 7.34)             │
   • Position-uncertainty halo         (Phase 3.11, 7.35)       │
   • Provenance panel                  (Phase 7.36)             │
   • Class-list LLM advisory pill      (Phase 7.29 frontend)    │
@@ -248,9 +256,10 @@ cluster, weighted by `trust_weight × calibrated_confidence`, producing
 a fused box whose confidence reflects multi-detector agreement instead
 of the loudest single model.
 
-`_WeightedBoxFusionIndex` has the same `.add(batch) → list` contract as
-`_DetectionDedupeIndex`, so it swaps in via env. Cluster heads carry
-`wbf_member_count` + `wbf_member_sources` for the provenance panel.
+`_WeightedBoxFusionIndex.add(batch)` returns only newly created or changed
+fused heads in streaming mode, so a later chip cannot cause every historical
+cluster to be stored again. A final `heads()` flush persists the settled set.
+Cluster heads carry `wbf_member_count` + `wbf_member_sources` for provenance.
 Confidence formula: `mean(member raw_conf) × (0.5 + 0.5 × min(N, expected) / expected)` —
 a single-member cluster keeps its raw confidence; full-agreement
 clusters get the full mean.
@@ -368,7 +377,7 @@ the gap explicitly.
 ### Phase 4 — Candidate linking + tracker rebalance
 
 #### Phase 4.14 — Rebalanced candidate-link score
-*File:* `backend/main.py`
+*Files:* `backend/candidate_linking.py`, `backend/main.py`, `backend/worker.py`, `scripts/eval_candidate_links.py`
 
 Old score: `0.45·distance + ≤0.35·compat + 0.20·confidence`. Distance
 dominated — a 0.1-confidence detection at zero distance beat a
@@ -382,7 +391,7 @@ at 5). Evidence JSON records the weights so the analyst can see *why*
 a link scored what it did.
 
 #### Phase 4.15 — Top-N candidate truncation
-*File:* `backend/main.py`
+*Files:* `backend/candidate_linking.py`, `backend/main.py`, `backend/worker.py`
 
 Old behaviour emitted every target within 1500 m. Crowded AOIs
 generated hundreds of low-quality links per detection, flooding the
@@ -393,9 +402,11 @@ sorts DESC, keeps the top-5 (configurable via
 #### Phase 4.16 — Kalman-style track state
 *File:* `backend/tracker.py`
 
-The existing constant-velocity predictor had no uncertainty; r_gate
-was a fixed `V_MAX × dt × 1.25` regardless of how confident the track
-was. `KALMAN_PROCESS_NOISE` is now per-(category, state) with σ_a
+The existing constant-velocity predictor had no persisted uncertainty; `r_gate`
+was a fixed `V_MAX × dt × 1.25` regardless of how confident the track was.
+Tracks now persist `position_sigma_m`, `velocity_sigma_mps`, `motion_state`,
+and `embedding_anchor`; detections load uncertainty/embeddings from metadata,
+and assignments update those fields. `KALMAN_PROCESS_NOISE` is now per-(category, state) with σ_a
 values (airborne aircraft 10, ground highway 3, infrastructure 0).
 `_predicted_position_sigma_m` propagates as
 `σ_x² + (σ_v·dt)² + (½σ_a·dt²)²`. `_kalman_update_sigma` is the 1-D
@@ -440,7 +451,7 @@ graceful fallback to identity when either side lacks an embedding.
 
 **Tunable:**
 ```
-TRACKER_EMBEDDING_WEIGHT=0.4    # 0.0 disables; legacy behaviour
+TRACKER_EMBEDDING_WEIGHT=0.4    # default; set 0.0 to disable
 ```
 
 #### Phase 4.19 — Configurable tracker cost weights
@@ -488,9 +499,10 @@ Z-score).
 
 `run_sar_cfar_for_pass` in `worker.py` plans a 4096-px chip grid,
 reads VV (band 1) + optional VH (band 2), auto-detects dB-vs-linear
-scaling, runs CFAR per chip, lifts pixel coords to COG-global, runs
-the same pixel→geo transform that `slice_and_infer` uses, and streams
-survivors through the existing `_store_chip` callback. Invoked
+scaling, runs CFAR per chip, lifts pixel coords to COG-global, applies a
+SAR-aware global dedupe index across overlapping chips, runs the same
+pixel→geo transform that `slice_and_infer` uses, and streams survivors through
+the existing `_store_chip` callback. Invoked
 immediately after `slice_and_infer` for SAR rasters when
 `SAR_CFAR_ENABLED=1` (default).
 
@@ -536,7 +548,8 @@ analyst (and future detectors) make the right call.
 
 SAR detections are point-like and speckle-driven, so a tighter default
 NMS IoU (0.25 vs 0.45 optical) suppresses the long false-positive tail
-without needing per-class overrides everywhere.
+without needing per-class overrides everywhere. CFAR now uses that index
+globally across overlapping chips, so chip overlap no longer duplicates ships.
 
 ---
 
@@ -640,10 +653,10 @@ when the LLM's suggestion differs from the deterministic label.
 *File:* `backend/main.py`
 
 Old behaviour: hard limit 20,000 detections ordered `created_at DESC`;
-older detections silently truncated. New behaviour: `?cursor=<id>` +
-`limit` with `(created_at DESC, id DESC)` ordering for stable paging,
-fetches `limit+1` to detect more rows, response gains
-`next_cursor` + `has_more`. Backward-compatible (no cursor → first page).
+older detections silently truncated. New behaviour: `?cursor=<opaque-token>`
+encodes `(created_at, id)` and pages by `(created_at DESC, id DESC)`, so tied
+timestamps and non-monotonic IDs do not skip rows. It fetches `limit+1` to
+detect more rows and returns `next_cursor: string | null` plus `has_more`.
 
 #### Phase 7.33 — Distinct-branch breakdown on `/api/detections/classes`
 *File:* `backend/main.py`
@@ -654,14 +667,14 @@ query also returns `branch_breakdown: [{branch_id, icon_key, count}, …]`
 sorted by count DESC. The most-common branch is still the headline; the
 others are now visible to the UI.
 
-#### Phase 7.34 — Red-bordered analytics-fallback banner
-*File:* `frontend/src/components/map/AnalyticsToolsPanel.tsx`
+#### Phase 7.34 — Honest analytics availability
+*Files:* `backend/routers/analytics.py`, `frontend/src/components/map/AnalyticsToolsPanel.tsx`
 
-When `/api/analytics/viewshed` / `los` / `routes` returns
-`mode: fixture_no_dem | fixture_no_passes | fixture_no_graph |
-offline_fixture`, each `ToolCard` renders a red-bordered banner with a
-human-readable reason. Previously the fallback was a tiny chip the
-analyst could miss.
+Viewshed/LOS/routes now return explicit unavailable errors when a DEM or routing
+graph is missing; change detection requires both pass IDs; POL returns an empty
+FeatureCollection when no rows exist. Canned geometry remains only behind
+`ANALYTICS_ALLOW_FIXTURES=1` for an explicit demo environment, and the frontend
+surfaces backend error details instead of implying fixture output is analysis.
 
 #### Phase 7.35 — Position-uncertainty halo
 *File:* `frontend/src/components/GaiaMap.tsx`
@@ -717,9 +730,10 @@ fell back to a sine-wave Dubai fixture — and shipped that synthetic
 georeference straight to the analyst as if real. Now
 `TelemetryMissingError` is raised when no real source is found AND
 neither `FMV_ALLOW_SYNTHETIC_TELEMETRY=1` nor the upload-form
-`allow_synthetic_telemetry` flag is set; the upload fails with HTTP
-422 and a clear message. The frontend FMV upload form gained a
-"Demo mode: allow synthetic Dubai telemetry" checkbox.
+`allow_synthetic_telemetry` flag is set; both FMV upload routes now pass
+through the same extractor and fail with HTTP 422 when telemetry is absent.
+The frontend FMV upload form gained a "Demo mode: allow synthetic Dubai
+telemetry" checkbox.
 
 **Logic.** A silent fallback to fake data is worse than a noisy
 failure. Failure mode now matches the analyst's mental model.
@@ -737,27 +751,24 @@ measurements have enough instances for the sparse classes
 be statistically meaningful. New CLI: `--dota-chips`, `--hls-chips`,
 `--skip-dota`, `--skip-hls`.
 
-#### Phase 9.43 — Eval dataset loader skeletons
-*Files:* `scripts/eval_datasets/{xview,fair1m,rareplanes,sentinel1}.py`
+#### Phase 9.43 — Supported eval slices only
+*Files:* `scripts/eval_datasets/{dota,hls_burn,sen1floods,sar_synth,sentinel1}.py`
 
-Match the existing `dota.py` API (`iter_samples`, `iter_<name>`).
-Defined the class lists (`XVIEW_CLASSES`, `FAIR1M_CLASSES`,
-`RAREPLANES_ROLES`, `SENTINEL1_CLASSES`) covering the military-relevant
-labels each dataset exposes. Loaders yield nothing when the dataset
-hasn't been populated, so the comparison harness skips them
-gracefully in environments without the signed dataset agreements.
+The repo now exposes only loaders it can support honestly. Unsupported gated-loader skeletons were removed rather than promising datasets
+that are not shipped here. Production loaders no longer auto-generate synthetic
+DOTA/Inria data; deterministic fixtures are generated only through explicit
+fixture or dry-run paths.
 
 #### Phase 9.45 — Candidate-link eval harness
 *Files:* `scripts/eval_candidate_links.py` (new), `scripts/eval_datasets/candidate_links_gt.json` (new)
 
 The Phase 4.14 score rebalance has no objective gauge without a
-ground-truth set of `(detection, correct_target)` pairs. The script
-reimplements the scoring inline (no live PostGIS/Neo4j needed),
-scores every (det, target) pair, computes per-detection rank of the
-GT target, aggregates top-1 / top-K / MRR, writes Markdown, and
-exits non-zero when top-1 < `--threshold-top1` (default 0.75). A
-sample GT JSON with 5 detections and 6 targets (including a
-near-miss decoy) ships out of the box.
+ground-truth set of `(detection, correct_target)` pairs. API, worker ingest,
+and evaluator now import the same pure scorer, so offline results exactly match
+runtime scoring without PostGIS/Neo4j. The script computes per-detection rank,
+top-1 / top-K / MRR, writes Markdown, and exits non-zero when top-1 <
+`--threshold-top1` (default 0.75). The shipped deterministic fixture contains
+5 detections and 6 targets and clears the default gate.
 
 #### Phase 9.46 — ECE measurement script
 *Files:* `scripts/measure_calibration_ece.py` (new), `scripts/eval_metrics/box_metrics.py`
@@ -808,57 +819,38 @@ python scripts/compare_inference_layers.py \
 
 ---
 
-## 3. File-by-file change index
+## 3. File-by-file applied index
 
-### Backend (Python)
+This is the live May contract surface after validation; removed gated loaders
+are intentionally absent.
 
-| File | Phases touched | Net |
-|---|---|---|
-| `backend/calibration.py` *(new)* | 2.5 | +180 lines |
-| `backend/imagery_metadata.py` | 5.21 | +118 lines |
-| `backend/main.py` | 4.14/4.15, 6.23, 6.26, 7.32/33/35/36 | +255 lines |
-| `backend/ontology.py` | 6.24 | +15 lines |
-| `backend/platform_schema.py` | 2.9, 6.25, 6.26 | +39 lines |
-| `backend/sar_cfar.py` *(new)* | 5.20b | +205 lines |
-| `backend/scripts/seeds/defenceOntology.seed.json` | 1.1, 1.4 | +51 lines |
-| `backend/tests/test_ontology.py` | 6.24 | +5 lines |
-| `backend/threat_assessment.py` | 6.25 | +84 lines |
-| `backend/tracker.py` | 4.16-4.19 | +315 lines |
-| `backend/video_metadata.py` | 8.41 | +46 lines |
-| `backend/worker.py` | 1.3, 2.5-2.8, 3.10-3.13, 5.20/5.20b/5.22, 6.26 | +635 lines |
+### Backend
 
-### Frontend (TypeScript / React)
+| Files | Applied responsibility |
+|---|---|
+| `backend/candidate_linking.py`, `backend/main.py`, `backend/worker.py` | shared candidate scoring, composite detection cursor, ingest parity |
+| `backend/tracker.py`, `backend/init_postgis.sql` | persisted uncertainty / motion / embedding state with additive schema |
+| `backend/worker.py` | WBF changed-head streaming, SAR CFAR overlap dedupe, provenance metadata |
+| `backend/video_metadata.py`, `backend/fmv_helpers.py`, `backend/main.py` | real FMV extraction by default; synthetic telemetry only explicit demo opt-in |
+| `backend/routers/analytics.py`, `backend/change_detection.py`, `backend/terrain.py`, `backend/routing.py`, `backend/schemas.py` | honest analytics unavailable states and empty POL results |
+| `backend/provider_lifecycle.py` | removed dead lifecycle no-op |
+| `backend/tests/conftest.py`, `backend/tests/test_debias_units.py`, `pytest.ini` | offline unit coverage and clean integration-test skipping |
 
-| File | Phases touched | Net |
-|---|---|---|
-| `frontend/src/components/GaiaMap.tsx` | 7.27-7.36 (most) | +374 lines |
-| `frontend/src/components/IngestConnect.tsx` | 8.41 | +26 lines |
-| `frontend/src/components/map/AnalyticsToolsPanel.tsx` | 7.34 | +62 lines |
-| `frontend/src/components/map/ProvenancePanel.tsx` | 7.36 | +33 lines |
+### Frontend
 
-### Inference service
+| Files | Applied responsibility |
+|---|---|
+| `frontend/src/services/analytics.ts`, `frontend/src/components/map/AnalyticsToolsPanel.tsx`, `frontend/src/components/GaiaMap.tsx` | unavailable/error handling with clearly labeled explicit demo fixtures |
 
-| File | Phases touched | Net |
-|---|---|---|
-| `inference-sam3/main.py` | 8.37, 8.38 | +13 lines |
-| `inference-sam3/sam3_runner.py` | 1.2 | +102 lines |
+### Evaluation / docs
 
-### Evaluation / scripts
-
-| File | Phases touched | Net |
-|---|---|---|
-| `scripts/compare_inference_layers.py` | 9.47 | +93 lines |
-| `scripts/eval_candidate_links.py` *(new)* | 9.45 | +245 lines |
-| `scripts/eval_datasets/candidate_links_gt.json` *(new)* | 9.45 | sample GT |
-| `scripts/eval_datasets/fair1m.py` *(new)* | 9.43 | +80 lines |
-| `scripts/eval_datasets/rareplanes.py` *(new)* | 9.43 | +75 lines |
-| `scripts/eval_datasets/sentinel1.py` *(new)* | 9.43 | +95 lines |
-| `scripts/eval_datasets/xview.py` *(new)* | 9.43 | +145 lines |
-| `scripts/eval_metrics/box_metrics.py` | 9.46 | +79 lines |
-| `scripts/fetch_real_datasets.py` | 9.42 | +25 lines |
-| `scripts/measure_calibration_ece.py` *(new)* | 2.5, 9.46 | +280 lines |
-
----
+| Files | Applied responsibility |
+|---|---|
+| `scripts/eval_candidate_links.py`, `scripts/eval_datasets/candidate_links_gt.json` | canonical shared-scorer candidate gate with passing deterministic fixture |
+| `scripts/eval_metrics/label_normalizer.py` | seed-backed pure offline normalization |
+| `scripts/eval_datasets/{dota,hls_burn,sen1floods,sar_synth}.py`, `scripts/fetch_eval_datasets.py` | no implicit synthetic dataset generation in normal eval paths |
+| `scripts/measure_calibration_ece.py` | supported-slice dispatch only |
+| `docs/geoint-debias-2026-05.md`, `README.md` | truthful verification and dataset instructions |
 
 ## 4. Operational tunables reference
 
@@ -896,7 +888,7 @@ PER_CLASS_VALID_FRACTION_OVERRIDES='{"ship": 0.05, "naval": 0.05, "aircraft": 0.
 ```bash
 KALMAN_OBS_NOISE_FLOOR_M=5.0
 KALMAN_GATE_SIGMAS=3.0
-TRACKER_EMBEDDING_WEIGHT=0.4                  # 0.0 disables embedding re-ID
+TRACKER_EMBEDDING_WEIGHT=0.4                  # default; set 0.0 to disable
 TRACKER_COST_WEIGHTS='{"alpha": 0.8, "beta": 1.0, "gamma": 0.4}'
 ```
 
@@ -913,9 +905,10 @@ SAR_CFAR_MIN_PIXELS=4
 SAR_NMS_IOU_DEFAULT=0.25
 ```
 
-### FMV (Phase 8)
+### Analytics + FMV truthful defaults
 ```bash
-FMV_ALLOW_SYNTHETIC_TELEMETRY=0               # opt-in synthetic Dubai for offline demos
+ANALYTICS_ALLOW_FIXTURES=0                    # set 1 only for explicit demo fixtures
+FMV_ALLOW_SYNTHETIC_TELEMETRY=0               # set 1 only for explicit demo telemetry
 ```
 
 ### Dead-weight layers (Phase 8)
@@ -927,6 +920,19 @@ SAM3_LOAD_GROUNDING_DINO=0                    # default; flip to 1 for opt-in
 ---
 
 ## 5. Verification cookbook
+
+### Offline verification (no PostGIS required)
+```bash
+cd frontend && npm run build
+cd ..
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest backend/tests scripts/eval_datasets/tests scripts/eval_metrics/tests -q
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python scripts/compare_inference_layers.py --dry-run --max-chips 2 --output /tmp/inference_layer_comparison.md
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python scripts/measure_calibration_ece.py --dry-run --max-chips 2 --output /tmp/calibration_ece.md
+PYTHONDONTWRITEBYTECODE=1 .venv/bin/python scripts/eval_candidate_links.py --gt scripts/eval_datasets/candidate_links_gt.json --output /tmp/candidate_link_eval.md
+```
+
+The backend test command runs pure unit tests offline and marks PostGIS suites
+as `integration`; they skip cleanly when the database is unavailable.
 
 ### Apply ontology changes
 ```bash
@@ -1043,20 +1049,22 @@ identified 47 distinct biases. Mapping each to its mitigation:
 | 33 | Default time-window 60 min, no signal | 7.31 | ✓ |
 | 34 | `/api/detections/geojson` truncates at 20k | 7.32 | ✓ |
 | 35 | `/api/detections/classes` `mode()` hides minority branches | 7.33 | ✓ |
-| 36 | Analytics fallback fixtures rendered as real | 7.34 | ✓ |
+| 36 | Analytics fallback fixtures rendered as real | 7.34 | ✓ — unavailable by default |
 | 37 | Prithvi burn-scar head IoU=0.0000 | 8.37 | ✓ |
 | 38 | Grounding-DINO marginal +0.0144 mAP for +241 ms | 8.38 | ✓ |
 | 39 | Dangling DINOv3-LVD config keys | — | already removed |
 | 40 | Dangling DEFENCE_YOLO config keys | — | already removed |
 | 41 | FMV synthetic Dubai silent fallback | 8.41 | ✓ |
 | 42 | DOTA-v1 28-chip eval too small | 9.42 | ✓ |
-| 43 | No SAR / xView / FAIR1M / RarePlanes eval slices | 9.43 | ✓ skeleton |
+| 43 | Unsupported gated eval-loader promises | 9.43 | ✓ removed; supported slices retained |
 | 44 | No candidate-link precision/recall harness | 9.45 | ✓ |
 | 45 | No ECE measurement | 9.46 | ✓ |
 | 46 | No per-class regression gate | 9.47 | ✓ |
 | 47 | (Provenance breadcrumb extensions) | 7.36 | ✓ |
 
-**Coverage: 43 / 47 shipped as code.** The four residuals are
+**Coverage note:** the applied repo keeps the original residual design items
+visible below, but unsupported gated-dataset promises are intentionally removed
+rather than counted as shipped code. The remaining residuals are
 documented design decisions (#9 — by design for open-vocab),
 already-existing cleanup (#39, #40), or deeper architectural changes
 flagged for a future session (#7 bucketing, #8 OBB/HBB mixing,

@@ -1,16 +1,9 @@
 """Analytics routes: change, viewshed, LOS, routes, POL, job list.
 
-Viewshed, LOS, and Routes use real terrain/graph data when a DEM
-(``DEM_PATH`` → ``/data/dem/dem.tif``) and routing graph
-(``ROUTING_GRAPH_PATH`` → ``/data/routing/graph.pkl``) are present. When
-either resource is absent the endpoints return the offline GeoJSON fixtures
-the frontend was originally wired against, with ``mode: "fixture_no_dem"``
-or ``mode: "fixture_no_graph"`` on the result so the UI can warn.
-
-Change-detection runs a rasterio absolute-difference pipeline against two
-``satellite_passes`` rows when both IDs are supplied; without them, falls
-back to the offline GeoJSON fixture (``mode: "fixture_no_passes"``). POL
-already issues real PostGIS queries against ``track_points``.
+Production defaults are deliberately honest: terrain work requires a DEM,
+routing requires a graph, and change detection requires two imagery passes.
+The old canned GeoJSON shapes remain available only when
+``ANALYTICS_ALLOW_FIXTURES=1`` is set for an explicit demo environment.
 """
 
 from __future__ import annotations
@@ -18,8 +11,9 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from change_detection import compute_change
 from database import postgis_db
@@ -32,6 +26,10 @@ from routing import compute_routes, graph_available
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _demo_fixtures_enabled() -> bool:
+    return (os.getenv("ANALYTICS_ALLOW_FIXTURES", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _store_analytics_result(job_type: str, req: dict, result: dict) -> dict:
@@ -57,26 +55,29 @@ def _observer_lat_lon(payload: dict | None, default_lat: float, default_lon: flo
 
 @router.post("/api/analytics/change")
 def run_change_detection(req: AnalyticsRequest):
-    real = None
-    if req.before_pass_id is not None and req.after_pass_id is not None:
-        try:
-            real = compute_change(int(req.before_pass_id), int(req.after_pass_id))
-        except Exception as exc:
-            logger.warning(
-                "change: rasterio diff failed (%s) for passes %s/%s, falling back to fixture",
-                exc, req.before_pass_id, req.after_pass_id,
+    if req.before_pass_id is None or req.after_pass_id is None:
+        if not _demo_fixtures_enabled():
+            raise HTTPException(
+                status_code=422,
+                detail="Change detection requires both before_pass_id and after_pass_id.",
             )
-            real = None
-    if real is not None:
-        result = real
-    else:
         lat, lon = _observer_lat_lon(req.observer, 25.078, 55.179)
         features = [
             make_square_feature(lon - 0.018, lat + 0.012, 0.012, {"score": 0.82, "label": "new construction"}),
             make_square_feature(lon + 0.015, lat - 0.01, 0.009, {"score": 0.64, "label": "surface disturbance"}),
         ]
-        mode = "fixture_no_passes" if (req.before_pass_id or req.after_pass_id) else "offline_fixture"
-        result = {"type": "FeatureCollection", "features": features, "mode": mode}
+        result = {"type": "FeatureCollection", "features": features, "mode": "fixture_no_passes"}
+    else:
+        try:
+            result = compute_change(int(req.before_pass_id), int(req.after_pass_id))
+        except Exception as exc:
+            logger.warning("change: rasterio diff failed for passes %s/%s: %s", req.before_pass_id, req.after_pass_id, exc)
+            raise HTTPException(status_code=503, detail=f"Change detection unavailable: {exc}") from exc
+        if result is None:
+            raise HTTPException(
+                status_code=422,
+                detail="Change detection unavailable: passes are missing, identical, or do not overlap.",
+            )
     return {"job": _store_analytics_result("change", req.dict(), result), "result": result}
 
 
@@ -104,8 +105,11 @@ def run_viewshed(req: AnalyticsRequest):
     observer_height_m = float(req.observer_height_m if req.observer_height_m is not None else 1.8)
     target_height_m = float(req.target_height_m if req.target_height_m is not None else 0.0)
 
-    real = None
-    if dem_available():
+    if not dem_available():
+        if not _demo_fixtures_enabled():
+            raise HTTPException(status_code=503, detail="Viewshed unavailable: DEM resource is not configured.")
+        result = _viewshed_fixture(lat, lon, radius)
+    else:
         try:
             real = compute_viewshed(
                 lat, lon,
@@ -114,12 +118,15 @@ def run_viewshed(req: AnalyticsRequest):
                 target_height_m=target_height_m,
             )
         except Exception as exc:
-            logger.warning("viewshed: DEM ray-cast failed (%s), falling back to fixture", exc)
-            real = None
-    if real is None:
-        result = _viewshed_fixture(lat, lon, radius)
-    else:
-        result = {**real, "mode": "dem"}
+            logger.warning("viewshed: DEM ray-cast failed: %s", exc)
+            if _demo_fixtures_enabled():
+                result = _viewshed_fixture(lat, lon, radius)
+            else:
+                raise HTTPException(status_code=503, detail=f"Viewshed unavailable: {exc}") from exc
+        else:
+            if real is None:
+                raise HTTPException(status_code=422, detail="Viewshed unavailable at the requested location.")
+            result = {**real, "mode": "dem"}
     return {"job": _store_analytics_result("viewshed", req.dict(), result), "result": result}
 
 
@@ -143,8 +150,11 @@ def run_los(req: AnalyticsRequest):
     observer_height_m = float(req.observer_height_m if req.observer_height_m is not None else 1.8)
     target_height_m = float(req.target_height_m if req.target_height_m is not None else 0.0)
 
-    real = None
-    if dem_available():
+    if not dem_available():
+        if not _demo_fixtures_enabled():
+            raise HTTPException(status_code=503, detail="Line-of-sight unavailable: DEM resource is not configured.")
+        result = _los_fixture((obs_lat, obs_lon), (dst_lat, dst_lon))
+    else:
         try:
             real = line_of_sight(
                 obs_lat, obs_lon, dst_lat, dst_lon,
@@ -152,12 +162,13 @@ def run_los(req: AnalyticsRequest):
                 target_height_m=target_height_m,
             )
         except Exception as exc:
-            logger.warning("los: DEM ray-cast failed (%s), falling back to fixture", exc)
-            real = None
-
-    if real is None:
-        result = _los_fixture((obs_lat, obs_lon), (dst_lat, dst_lon))
-    else:
+            logger.warning("los: DEM ray-cast failed: %s", exc)
+            if _demo_fixtures_enabled():
+                result = _los_fixture((obs_lat, obs_lon), (dst_lat, dst_lon))
+                return {"job": _store_analytics_result("los", req.dict(), result), "result": result}
+            raise HTTPException(status_code=503, detail=f"Line-of-sight unavailable: {exc}") from exc
+        if real is None:
+            raise HTTPException(status_code=422, detail="Line-of-sight unavailable at the requested locations.")
         line_feature = {
             "type": "Feature",
             "geometry": {
@@ -209,20 +220,22 @@ def run_route_options(req: AnalyticsRequest):
     obs_lat, obs_lon = _observer_lat_lon(req.observer, 25.078, 55.179)
     dst_lat, dst_lon = _observer_lat_lon(req.destination, 25.276987, 55.296249)
 
-    real_features = None
-    if graph_available():
+    if not graph_available():
+        if not _demo_fixtures_enabled():
+            raise HTTPException(status_code=503, detail="Routes unavailable: routing graph is not configured.")
+        result = _routes_fixture((obs_lat, obs_lon), (dst_lat, dst_lon))
+    else:
         try:
             real_features = compute_routes(
                 obs_lat, obs_lon, dst_lat, dst_lon,
                 strategy=req.strategy,
             )
         except Exception as exc:
-            logger.warning("routes: graph routing failed (%s), falling back to fixture", exc)
-            real_features = None
-
-    if not real_features:
-        result = _routes_fixture((obs_lat, obs_lon), (dst_lat, dst_lon))
-    else:
+            logger.warning("routes: graph routing failed: %s", exc)
+            if _demo_fixtures_enabled():
+                result = _routes_fixture((obs_lat, obs_lon), (dst_lat, dst_lon))
+                return {"job": _store_analytics_result("routes", req.dict(), result), "result": result}
+            raise HTTPException(status_code=503, detail=f"Routes unavailable: {exc}") from exc
         result = {"type": "FeatureCollection", "features": real_features, "mode": "graph"}
     return {"job": _store_analytics_result("routes", req.dict(), result), "result": result}
 
@@ -243,8 +256,6 @@ def run_pattern_of_life(req: AnalyticsRequest):
     features = [
         {"type": "Feature", "geometry": {"type": "Point", "coordinates": [row["lon"], row["lat"]]}, "properties": {"count": row["count"]}}
         for row in rows
-    ] or [
-        {"type": "Feature", "geometry": {"type": "Point", "coordinates": [55.179, 25.078]}, "properties": {"count": 7, "mode": "offline_fixture"}}
     ]
     result = {"type": "FeatureCollection", "features": features}
     return {"job": _store_analytics_result("pol", req.dict(), result), "result": result}
@@ -252,11 +263,11 @@ def run_pattern_of_life(req: AnalyticsRequest):
 
 @router.get("/api/analytics/capabilities")
 def analytics_capabilities():
-    """Reports whether real DEM and routing-graph backends are wired up so the
-    UI can show a warning chip when results fall back to fixtures."""
+    """Report whether real analytics resources are currently wired up."""
     return {
         "dem": dem_available(),
         "routing_graph": graph_available(),
+        "demo_fixtures": _demo_fixtures_enabled(),
     }
 
 

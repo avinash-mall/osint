@@ -567,10 +567,12 @@ The 7-layer inference stack was systematically benchmarked on real public data (
 The full benchmark harness lives under [scripts/](scripts/):
 
 ```bash
-# 1. Pull real DOTA-v1.0 val + Sen1Floods11 multispectral slices
-#    (requires HF_TOKEN). Falls back to synthetic if HF unreachable.
+# 1. Pull real DOTA-v1.0 val + Sen1Floods11 multispectral slices.
+#    The default path fails honestly when data is unavailable.
 python scripts/fetch_real_datasets.py
-python scripts/fetch_eval_datasets.py        # also generates synthetic SAR chips
+python scripts/fetch_eval_datasets.py
+#    For deterministic test/demo fixtures only:
+# python scripts/fetch_eval_datasets.py --synthetic-fixtures
 
 # 2. Run the full comparison: 4 box configs + 2 segmenter + 3 embedding + 2 SAR.
 python scripts/compare_inference_layers.py \
@@ -596,7 +598,7 @@ python scripts/video_tracking_stability.py \
 
 # 5. Driver unit + smoke tests
 cd inference-sam3 && python -m pytest tests/ -q
-cd .. && python -m pytest scripts/ --ignore=scripts/eval_datasets/tests/test_inria_fallback.py -q
+cd .. && python -m pytest scripts/ -q
 ```
 
 Pass `--dry-run` to verify report generation without a live service.

@@ -2274,7 +2274,7 @@ export default function GaiaMap({
                   const mode = (analyticsResults.viewshed?.result as any)?.mode;
                   const tip = mode === 'dem'
                     ? `Viewshed · DEM · job ${analyticsResults.viewshed?.job.id}`
-                    : `Viewshed · fixture (no DEM) · job ${analyticsResults.viewshed?.job.id}`;
+                    : `Viewshed · demo fixture · job ${analyticsResults.viewshed?.job.id}`;
                   layer.bindTooltip(tip, { sticky: true, opacity: 0.92 });
                 }}
               />

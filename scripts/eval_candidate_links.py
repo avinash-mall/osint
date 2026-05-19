@@ -3,12 +3,11 @@
 Measures how often Sentinel's detection-to-target candidate-linker proposes
 the *right* target as its top-1 / top-K match. This is the only objective
 gauge for the Phase 4.14 score rebalance (0.30·distance + 0.30·compat +
-0.30·confidence + 0.10·history) and any future change to
-``backend/main.py::generate_candidate_links_for_detection``.
+0.30·confidence + 0.10·history) and any future change to the shared scorer.
 
-The script does NOT call the live backend — it imports the scoring
-functions directly so it works in CI without a running PostGIS / Neo4j /
-inference stack. Ground truth comes from a small hand-curated JSON file
+The script does NOT call the live backend — it imports the pure shared scorer
+from ``backend/candidate_linking.py`` so it works in CI without a running
+PostGIS / Neo4j / inference stack. Ground truth comes from a small hand-curated JSON file
 (see ``scripts/eval_datasets/candidate_links_gt.json`` for the format).
 
 Ground-truth schema::
@@ -58,71 +57,21 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "backend"))
-
-
-def _import_scorer():
-    """Import the scoring helpers from ``backend.main`` without triggering
-    the heavy module-level imports (Celery, FastAPI, Neo4j, …).
-
-    The candidate-link scoring is conceptually pure: distance + compatibility
-    + confidence + history. We re-implement the core scoring inline rather
-    than importing the live function, so this harness can run in a CI
-    container without PostGIS / Neo4j / Redis.
-    """
-    return None  # see _score_candidate_link below
-
-
-def _haversine_metres(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    radius = 6_371_000.0
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    d_phi = math.radians(lat2 - lat1)
-    d_lambda = math.radians(lon2 - lon1)
-    a = math.sin(d_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
-    return radius * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-
-def _compatibility(det_class: str, target_props: dict) -> float:
-    """Phase 4.14 normalized compatibility score in [0, 1]."""
-    det_text = (det_class or "").replace("_", " ").lower()
-    target_text = " ".join(
-        str(target_props.get(key, "")) for key in ("name", "type", "category", "description")
-    ).lower()
-    if not target_text:
-        return 0.40
-    if any(token in target_text for token in det_text.split() if len(token) >= 4):
-        return 1.00
-    # Coarse category fallback — split the class on space/underscore and check
-    # if any token is in the target_text (which already includes ``category``).
-    for token in det_text.split():
-        if len(token) >= 4 and token in target_text:
-            return 0.70
-    return 0.20
-
-
-def _score(det: dict, target: dict, max_distance_m: float, history_anchor: float = 0.0) -> float:
-    """Phase 4.14 score: 0.30·distance + 0.30·compat + 0.30·confidence + 0.10·history."""
-    distance_m = _haversine_metres(det["lat"], det["lon"], target["lat"], target["lon"])
-    if distance_m > max_distance_m:
-        return float("-inf")
-    distance_norm = max(0.0, 1.0 - (distance_m / max_distance_m))
-    compat = _compatibility(det["class"], target)
-    conf = max(0.0, min(1.0, float(det.get("confidence") or 0.0)))
-    return 0.30 * distance_norm + 0.30 * compat + 0.30 * conf + 0.10 * history_anchor
+from candidate_linking import score_candidate_link  # noqa: E402
 
 
 def _rank_for(det: dict, targets: list[dict], max_distance_m: float) -> tuple[int, list[tuple[str, float]]]:
     """Score every target for this detection; return (rank_of_gt_target, ranked_list)."""
     scored = []
     for target in targets:
-        s = _score(det, target, max_distance_m=max_distance_m)
-        if math.isfinite(s):
-            scored.append((target["stable_id"], s))
+        result = score_candidate_link(det, target, max_distance_m=max_distance_m)
+        if result is not None:
+            scored.append((target["stable_id"], result["score"]))
     scored.sort(key=lambda t: t[1], reverse=True)
     gt = det.get("ground_truth_target")
     rank = -1

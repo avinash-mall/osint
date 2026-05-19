@@ -13,7 +13,8 @@ OSMnx during deploy:
         pickle.dump(g, f)
 
 The module falls back gracefully when the graph is missing — callers should
-treat ``None`` returns as "no real routing available, use a fixture."
+treat ``None`` returns as "no real routing available" unless an explicit
+demo-fixture mode was requested.
 """
 
 from __future__ import annotations

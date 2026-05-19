@@ -7,7 +7,7 @@ resulting mask into GeoJSON features.
 
 Designed to be cheap (CPU-only, single-thread) and bounded by
 ``CHANGE_DET_MAX_PIXELS``. Returns ``None`` if either pass is missing or has no
-spatial overlap — the caller falls back to the fixture path.
+spatial overlap; callers should surface that as unavailable, not fabricate data.
 """
 
 from __future__ import annotations

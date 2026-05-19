@@ -8,23 +8,9 @@ Primary: downloads up to 30 RGB chips from the HuggingFace dataset
 ``keremberke/satellite-object-detection`` (DOTA format) and saves them to
 ``inference-sam3/eval/datasets/dota/chips/`` with a ``labels.json``.
 
-Fallback: if the HuggingFace dataset is unavailable or times out, generates
-30 SYNTHETIC DOTA-style chips with known bounding boxes so the pipeline works
-in CI without network access.
-
-Use --real to get instructions for downloading real DOTA imagery (manual
-registration required at https://captain-whu.github.io/DOTA/dataset.html).
-
-Inria fallback
---------------
-When DOTA is unavailable (the common case), this script converts the first
-``MAX_CHIPS`` GeoTIFF files from /nvme/osint/sample/ to PNG and writes
-**synthetic** ground-truth annotations to:
-    inference-sam3/eval/datasets/inria_fallback/chips.json
-
-The synthetic annotations are coarse placeholders (one "large-vehicle" box
-covering the full image).  They are only meant to exercise the evaluation
-pipeline end-to-end, NOT to measure real recall/precision.
+Synthetic fixtures remain available only through the explicit
+``--synthetic-fixtures`` flag for tests and dry-run demos; the default command
+never fabricates evaluation data when a real dataset is unavailable.
 """
 from __future__ import annotations
 
@@ -43,9 +29,6 @@ _DOTA_DIR = _EVAL_DIR / "dota_val"        # legacy (iter_samples)
 _DOTA_NEW_DIR = _EVAL_DIR / "dota"        # new format (iter_dota)
 _DOTA_CHIPS_DIR = _DOTA_NEW_DIR / "chips"
 _DOTA_LABELS = _DOTA_NEW_DIR / "labels.json"
-_INRIA_DIR = _EVAL_DIR / "inria_fallback"
-_INRIA_JSON = _INRIA_DIR / "chips.json"
-_INRIA_SOURCE = Path("/nvme/osint/sample")
 MAX_CHIPS = 30
 _HF_DATASET = "keremberke/satellite-object-detection"
 _HF_SUBSET = "dota"
@@ -281,74 +264,6 @@ def _tif_to_png_pil(tif_path: Path, png_path: Path, Image) -> tuple[int, int]:
 # Public API
 # ---------------------------------------------------------------------------
 
-def _fetch_inria_fallback(max_chips: int = MAX_CHIPS) -> None:
-    """
-    Convert up to *max_chips* Inria GeoTIFF files from /nvme/osint/sample/ to
-    PNG and write synthetic ground-truth annotations to chips.json.
-
-    Annotations are intentionally coarse (full-image bounding box labelled
-    "large-vehicle") and exist solely to exercise the evaluation pipeline.
-    """
-    _INRIA_DIR.mkdir(parents=True, exist_ok=True)
-
-    if not _INRIA_SOURCE.exists():
-        print(
-            f"[fetch_eval_datasets] WARNING: Inria source directory not found: {_INRIA_SOURCE}\n"
-            "  Cannot generate fallback chips.",
-            file=sys.stderr,
-        )
-        return
-
-    tif_files = sorted(_INRIA_SOURCE.glob("*.tif"))[:max_chips]
-    if not tif_files:
-        print(
-            f"[fetch_eval_datasets] WARNING: No .tif files found in {_INRIA_SOURCE}",
-            file=sys.stderr,
-        )
-        return
-
-    use_rasterio, pil_Image = _import_image_lib()
-
-    records: list[dict] = []
-    for tif_path in tif_files:
-        png_path = _INRIA_DIR / (tif_path.stem + ".png")
-        if not png_path.exists():
-            print(f"[fetch_eval_datasets] Converting {tif_path.name} → {png_path.name} …")
-            if use_rasterio:
-                w, h = _tif_to_png_rasterio(tif_path, png_path)
-            else:
-                w, h = _tif_to_png_pil(tif_path, png_path, pil_Image)
-        else:
-            if use_rasterio:
-                import rasterio
-                with rasterio.open(png_path) as ds:
-                    w, h = ds.width, ds.height
-            else:
-                pil_img = pil_Image.open(png_path)
-                w, h = pil_img.size
-
-        record = {
-            "chip_path": str(png_path.resolve()),
-            "modality": "rgb",
-            "gt_boxes": [
-                {
-                    "label": "large-vehicle",
-                    "bbox_xyxy": [0, 0, w, h],
-                    "source": "synthetic",
-                }
-            ],
-        }
-        records.append(record)
-
-    with _INRIA_JSON.open("w") as fh:
-        for rec in records:
-            fh.write(json.dumps(rec) + "\n")
-
-    print(
-        f"[fetch_eval_datasets] Wrote {len(records)} Inria fallback chips to {_INRIA_JSON}"
-    )
-
-
 def _fetch_hf_dota(max_chips: int = MAX_CHIPS) -> bool:
     """
     Attempt to download chips from the HuggingFace DOTA dataset.
@@ -365,8 +280,7 @@ def _fetch_hf_dota(max_chips: int = MAX_CHIPS) -> bool:
         from PIL import Image as PILImage
     except ImportError:
         print(
-            "[fetch_eval_datasets] HuggingFace 'datasets' or 'Pillow' not installed — "
-            "falling back to synthetic chips.",
+            "[fetch_eval_datasets] HuggingFace 'datasets' or 'Pillow' not installed.",
             file=sys.stderr,
         )
         return False
@@ -393,8 +307,7 @@ def _fetch_hf_dota(max_chips: int = MAX_CHIPS) -> bool:
             signal.signal(signal.SIGALRM, old_handler)
     except (TimeoutError, Exception) as exc:
         print(
-            f"[fetch_eval_datasets] HuggingFace download failed ({exc}) — "
-            "falling back to synthetic chips.",
+            f"[fetch_eval_datasets] HuggingFace download failed ({exc}).",
             file=sys.stderr,
         )
         return False
@@ -449,8 +362,7 @@ def _fetch_hf_dota(max_chips: int = MAX_CHIPS) -> bool:
 
     if saved == 0:
         print(
-            "[fetch_eval_datasets] HuggingFace dataset yielded 0 usable chips — "
-            "falling back to synthetic chips.",
+            "[fetch_eval_datasets] HuggingFace dataset yielded 0 usable chips.",
             file=sys.stderr,
         )
         return False
@@ -464,7 +376,7 @@ def _fetch_hf_dota(max_chips: int = MAX_CHIPS) -> bool:
     return True
 
 
-def fetch_dota(max_chips: int = MAX_CHIPS) -> None:
+def fetch_dota(max_chips: int = MAX_CHIPS, *, synthetic_fixtures: bool = False) -> None:
     """
     Idempotent DOTA-v1.0 val slice fetcher (new format).
 
@@ -473,7 +385,8 @@ def fetch_dota(max_chips: int = MAX_CHIPS) -> None:
 
     1. If ``labels.json`` already exists with ≥ 5 entries, skip.
     2. Try downloading from HuggingFace ``keremberke/satellite-object-detection``.
-    3. Fall back to synthetic chips if HF is unavailable.
+    3. Raise when real data is unavailable, unless ``synthetic_fixtures=True``
+       was explicitly requested for a test/demo workflow.
     """
     # Idempotency: skip if labels.json already has enough entries
     if _DOTA_LABELS.exists():
@@ -494,9 +407,13 @@ def fetch_dota(max_chips: int = MAX_CHIPS) -> None:
     if _fetch_hf_dota(max_chips=max_chips):
         return
 
-    # Synthetic fallback
-    print("[fetch_eval_datasets] Generating synthetic DOTA chips (fallback) …")
-    _generate_synthetic_dota_new_format(output_dir=_DOTA_NEW_DIR, n_chips=max_chips)
+    if synthetic_fixtures:
+        print("[fetch_eval_datasets] Generating explicit synthetic DOTA fixtures …")
+        _generate_synthetic_dota_new_format(output_dir=_DOTA_NEW_DIR, n_chips=max_chips)
+        return
+    raise RuntimeError(
+        "Real DOTA fetch failed. Re-run with --synthetic-fixtures only for a test/demo workflow."
+    )
 
 
 def _generate_synthetic_dota_new_format(
@@ -574,80 +491,40 @@ def _generate_synthetic_dota_new_format(
     )
 
 
-def fetch_dota_val(real: bool = False) -> None:
-    """
-    DOTA-v1.0 val slice fetcher (legacy dota_val format).
-
-    By default, generates synthetic DOTA-style chips (idempotent, no network).
-    Pass ``real=True`` to print instructions for downloading the real dataset.
-
-    Parameters
-    ----------
-    real:
-        If True, print manual-download instructions and return without
-        generating synthetic data.
-    """
-    if real:
-        print(
-            "\n[fetch_eval_datasets] Real DOTA-v1.0 images require manual download.\n"
-            "  1. Register at: https://captain-whu.github.io/DOTA/dataset.html\n"
-            "  2. Download the validation set images and annotations.\n"
-            f"  3. Place them under: {_DOTA_DIR}\n"
-            "     (images in dota_val/images/, annotations in dota_val/labelTxt/)\n"
-        )
+def fetch_dota_val(*, synthetic_fixtures: bool = False) -> None:
+    """Prepare the legacy DOTA fixture only when explicitly requested."""
+    if synthetic_fixtures:
+        generate_synthetic_dota()
         return
-
-    generate_synthetic_dota()
-
-
-def fetch_hls_burn(max_chips: int = MAX_CHIPS) -> None:
-    """
-    Idempotent HLS Burn Scars dataset fetcher.
-
-    Triggers the synthetic fallback inside ``eval_datasets.hls_burn`` so the
-    pipeline is ready without a network call.  Generation is skipped when
-    ``labels.json`` already exists with ≥ 5 entries.
-
-    Parameters
-    ----------
-    max_chips:
-        Ignored (the HLS synthetic generator always writes 10 chips).
-        Kept for API symmetry with ``fetch_dota``.
-    """
-    # Inserting scripts/ dir so eval_datasets is importable when running from
-    # any working directory.
-    _scripts_dir = Path(__file__).resolve().parent
-    if str(_scripts_dir) not in sys.path:
-        sys.path.insert(0, str(_scripts_dir))
-
-    from eval_datasets.hls_burn import _ensure_dataset, _DEFAULT_DATASET_DIR  # noqa: PLC0415
-    print("[fetch_eval_datasets] Ensuring HLS Burn Scars dataset …")
-    _ensure_dataset(_DEFAULT_DATASET_DIR)
-    print(f"[fetch_eval_datasets] HLS Burn Scars ready at {_DEFAULT_DATASET_DIR}")
+    print(
+        "\n[fetch_eval_datasets] Real DOTA-v1.0 images require manual download.\n"
+        "  1. Register at: https://captain-whu.github.io/DOTA/dataset.html\n"
+        "  2. Download the validation set images and annotations.\n"
+        f"  3. Place them under: {_DOTA_DIR}\n"
+        "     (images in dota_val/images/, annotations in dota_val/labelTxt/)\n"
+    )
 
 
-def fetch_sen1floods(max_chips: int = MAX_CHIPS) -> None:
-    """
-    Idempotent Sen1Floods11 dataset fetcher.
+def fetch_hls_burn(max_chips: int = MAX_CHIPS, *, synthetic_fixtures: bool = False) -> None:
+    """Verify HLS data, generating fixtures only with explicit opt-in."""
+    if synthetic_fixtures:
+        from eval_datasets.hls_burn import _ensure_dataset, _DEFAULT_DATASET_DIR
+        _ensure_dataset(_DEFAULT_DATASET_DIR)
+        return
+    from eval_datasets.hls_burn import _DEFAULT_DATASET_DIR
+    if not (_DEFAULT_DATASET_DIR / "labels.json").exists():
+        raise RuntimeError("HLS Burn Scars data missing; fetch real data or use --synthetic-fixtures for tests.")
 
-    Triggers the synthetic fallback inside ``eval_datasets.sen1floods`` so the
-    pipeline is ready without a network call.  Generation is skipped when
-    ``labels.json`` already exists with ≥ 5 entries.
 
-    Parameters
-    ----------
-    max_chips:
-        Ignored (the Sen1Floods11 synthetic generator always writes 10 chips).
-        Kept for API symmetry with ``fetch_dota``.
-    """
-    _scripts_dir = Path(__file__).resolve().parent
-    if str(_scripts_dir) not in sys.path:
-        sys.path.insert(0, str(_scripts_dir))
-
-    from eval_datasets.sen1floods import _ensure_dataset, _DEFAULT_DATASET_DIR  # noqa: PLC0415
-    print("[fetch_eval_datasets] Ensuring Sen1Floods11 dataset …")
-    _ensure_dataset(_DEFAULT_DATASET_DIR)
-    print(f"[fetch_eval_datasets] Sen1Floods11 ready at {_DEFAULT_DATASET_DIR}")
+def fetch_sen1floods(max_chips: int = MAX_CHIPS, *, synthetic_fixtures: bool = False) -> None:
+    """Verify Sen1Floods data, generating fixtures only with explicit opt-in."""
+    if synthetic_fixtures:
+        from eval_datasets.sen1floods import _ensure_dataset, _DEFAULT_DATASET_DIR
+        _ensure_dataset(_DEFAULT_DATASET_DIR)
+        return
+    from eval_datasets.sen1floods import _DEFAULT_DATASET_DIR
+    if not (_DEFAULT_DATASET_DIR / "labels.json").exists():
+        raise RuntimeError("Sen1Floods data missing; fetch real data or use --synthetic-fixtures for tests.")
 
 
 def main() -> None:
@@ -656,13 +533,10 @@ def main() -> None:
         description="Fetch / generate evaluation datasets for the inference-layer comparison."
     )
     parser.add_argument(
-        "--real",
+        "--synthetic-fixtures",
         action="store_true",
         default=False,
-        help=(
-            "Print instructions for downloading REAL DOTA-v1.0 imagery "
-            "(requires manual registration).  No synthetic chips are generated."
-        ),
+        help="Explicitly generate deterministic fixtures for tests/dry-runs.",
     )
     parser.add_argument(
         "--max-chips",
@@ -673,12 +547,9 @@ def main() -> None:
     args = parser.parse_args()
 
     print("[fetch_eval_datasets] Starting dataset preparation …")
-    if args.real:
-        fetch_dota_val(real=True)
-    else:
-        fetch_dota(max_chips=args.max_chips)
-        fetch_hls_burn(max_chips=args.max_chips)
-        fetch_sen1floods(max_chips=args.max_chips)
+    fetch_dota(max_chips=args.max_chips, synthetic_fixtures=args.synthetic_fixtures)
+    fetch_hls_burn(max_chips=args.max_chips, synthetic_fixtures=args.synthetic_fixtures)
+    fetch_sen1floods(max_chips=args.max_chips, synthetic_fixtures=args.synthetic_fixtures)
     print("[fetch_eval_datasets] Done.")
 
 

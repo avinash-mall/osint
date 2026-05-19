@@ -228,7 +228,6 @@ def iter_hls_burn(
     """
     if labels_path is None:
         dataset_dir = _DEFAULT_DATASET_DIR
-        _ensure_dataset(dataset_dir)
         resolved = dataset_dir / _LABELS_FNAME
     else:
         resolved = Path(labels_path).resolve()

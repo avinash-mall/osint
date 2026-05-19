@@ -188,7 +188,7 @@ export default function AnalyticsToolsPanel({
         recordMode('routes', res);
       }
     } catch (e: any) {
-      updateTool(kind, { error: e?.message ?? String(e) });
+      updateTool(kind, { error: e?.response?.data?.detail ?? e?.message ?? String(e) });
       onResult(kind, null);
       recordMode(kind, null);
     } finally {

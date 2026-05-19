@@ -106,12 +106,10 @@ _TRACKER_WEIGHTS = _load_tracker_weights()
 ALPHA = _TRACKER_WEIGHTS["alpha"]   # spatial distance weight
 BETA  = _TRACKER_WEIGHTS["beta"]    # class penalty weight
 GAMMA = _TRACKER_WEIGHTS["gamma"]   # confidence penalty weight
-# Phase 4.18: re-ID via DINOv3-SAT embedding cosine similarity. Default 0.0
-# (disabled) preserves legacy behaviour for callers that don't carry embeddings.
-# When set > 0, the Hungarian cost incorporates (1 - cos_sim) so a detection
-# whose visual embedding matches an existing track's anchor embedding is
-# preferred over one with similar geometry but different appearance.
-DELTA = max(0.0, float(os.getenv("TRACKER_EMBEDDING_WEIGHT", "0.0") or "0.0"))
+# Phase 4.18: re-ID via DINOv3-SAT embedding cosine similarity. Enabled by
+# default now that embedding anchors are persisted on tracks; deployments that
+# need legacy geometry-only behavior can still opt out with 0.0.
+DELTA = max(0.0, float(os.getenv("TRACKER_EMBEDDING_WEIGHT", "0.4") or "0.4"))
 
 
 def _embedding_vector(item: dict | None) -> np.ndarray | None:
@@ -123,7 +121,7 @@ def _embedding_vector(item: dict | None) -> np.ndarray | None:
     """
     if not item:
         return None
-    embedding = item.get("embedding") or item.get("embedding_vector")
+    embedding = item.get("embedding") or item.get("embedding_vector") or item.get("embedding_anchor")
     arr: np.ndarray | None = None
     if isinstance(embedding, dict):
         b64 = embedding.get("fp16_b64") or embedding.get("b64")
@@ -305,7 +303,7 @@ def _track_state(track: dict, category: str) -> str:
       * category=maritime and speed > 18 m/s → "underway"
       * else "default"
     """
-    explicit = track.get("state") or track.get("kinematic_state")
+    explicit = track.get("state") or track.get("kinematic_state") or track.get("motion_state")
     if isinstance(explicit, str) and explicit.strip():
         return explicit.strip().lower()
     vel = track.get("last_velocity") or {}
@@ -313,6 +311,11 @@ def _track_state(track: dict, category: str) -> str:
         speed = float(vel.get("speed_mps") or vel.get("speed") or 0.0)
     except (TypeError, ValueError):
         speed = 0.0
+    if speed <= 0.0:
+        try:
+            speed = sqrt(float(vel.get("vx_mps") or 0.0) ** 2 + float(vel.get("vy_mps") or 0.0) ** 2)
+        except (TypeError, ValueError):
+            speed = 0.0
     if speed < 0.5:
         return "stationary"
     if category == "air" and speed > 20.0:
@@ -376,7 +379,36 @@ def _velocity_from_observations(
     return {
         "vx_mps": speed * sin(az_rad),
         "vy_mps": speed * cos(az_rad),
+        "speed_mps": speed,
     }
+
+
+def _observation_sigma_m(det: dict) -> float:
+    try:
+        return max(
+            0.5,
+            float(
+                det.get("position_uncertainty_m")
+                or (det.get("metadata") or {}).get("position_uncertainty_m")
+                or KALMAN_OBSERVATION_NOISE_FLOOR_M
+            ),
+        )
+    except (TypeError, ValueError):
+        return KALMAN_OBSERVATION_NOISE_FLOOR_M
+
+
+def _embedding_payload(det: dict) -> dict | list | None:
+    payload = det.get("embedding") or (det.get("metadata") or {}).get("embedding")
+    return payload if _embedding_vector({"embedding": payload}) is not None else None
+
+
+def _ensure_tracking_columns(postgis_db) -> None:
+    """Backfill Phase 4 tracking columns on older installs."""
+    with postgis_db.get_cursor(commit=True) as cur:
+        cur.execute("ALTER TABLE detection_tracks ADD COLUMN IF NOT EXISTS position_sigma_m REAL DEFAULT 5.0")
+        cur.execute("ALTER TABLE detection_tracks ADD COLUMN IF NOT EXISTS velocity_sigma_mps REAL DEFAULT 0.0")
+        cur.execute("ALTER TABLE detection_tracks ADD COLUMN IF NOT EXISTS motion_state VARCHAR(32) DEFAULT 'default'")
+        cur.execute("ALTER TABLE detection_tracks ADD COLUMN IF NOT EXISTS embedding_anchor JSONB")
 
 
 # ---------------------------------------------------------------------------
@@ -455,6 +487,8 @@ def update_tracks_for_pass(pass_id: int, *, postgis_db) -> dict:
         "lost_tracks": 0,
     }
 
+    _ensure_tracking_columns(postgis_db)
+
     # ------------------------------------------------------------------
     # 1. Load pass metadata
     # ------------------------------------------------------------------
@@ -495,7 +529,11 @@ def update_tracks_for_pass(pass_id: int, *, postgis_db) -> dict:
                    dt.obs_count, dt.miss_count, dt.last_seen,
                    ST_X(dt.last_centroid) AS lon,
                    ST_Y(dt.last_centroid) AS lat,
-                   dt.last_velocity
+                   dt.last_velocity,
+                   dt.position_sigma_m,
+                   dt.velocity_sigma_mps,
+                   dt.motion_state,
+                   dt.embedding_anchor
             FROM detection_tracks dt
             WHERE dt.status IN ('tentative', 'confirmed', 'coast', 'pinned')
               AND (dt.last_seen >= NOW() - INTERVAL '14 days' OR dt.pinned = TRUE)
@@ -509,7 +547,7 @@ def update_tracks_for_pass(pass_id: int, *, postgis_db) -> dict:
     with postgis_db.get_cursor() as cur:
         cur.execute(
             """
-            SELECT id, class, confidence,
+            SELECT id, class, confidence, metadata,
                    ST_Y(centroid) AS lat,
                    ST_X(centroid) AS lon
             FROM detections WHERE pass_id = %s
@@ -613,6 +651,11 @@ def update_tracks_for_pass(pass_id: int, *, postgis_db) -> dict:
             vel = _velocity_from_observations(
                 prev_lon, prev_lat, new_lon, new_lat, dt_seconds
             )
+            obs_sigma = _observation_sigma_m(det)
+            posterior_sigma = _kalman_update_sigma(track, obs_sigma)
+            velocity_sigma = _velocity_sigma_after_update(track, dt_seconds, obs_sigma)
+            next_state = _track_state({**track, "last_velocity": vel}, track.get("category") or "default")
+            embedding_anchor = _embedding_payload(det) or track.get("embedding_anchor")
 
             cur.execute(
                 """
@@ -621,6 +664,10 @@ def update_tracks_for_pass(pass_id: int, *, postgis_db) -> dict:
                     last_seen   = %s,
                     last_centroid = ST_SetSRID(ST_MakePoint(%s, %s), 4326),
                     last_velocity = %s,
+                    position_sigma_m = %s,
+                    velocity_sigma_mps = %s,
+                    motion_state = %s,
+                    embedding_anchor = %s,
                     status = CASE
                         WHEN status = 'tentative' AND obs_count + 1 >= 2 THEN 'confirmed'
                         WHEN pinned THEN 'pinned'
@@ -634,6 +681,10 @@ def update_tracks_for_pass(pass_id: int, *, postgis_db) -> dict:
                     acq_time,
                     new_lon, new_lat,
                     json.dumps(vel),
+                    posterior_sigma,
+                    velocity_sigma,
+                    next_state,
+                    json.dumps(embedding_anchor) if embedding_anchor is not None else None,
                     track["id"],
                 ),
             )
@@ -796,15 +847,18 @@ def _insert_new_track(cur, det: dict, acq_time: datetime, pass_id: int) -> int:
     track_uid = str(uuid.uuid4())
     lon = float(det["lon"])
     lat = float(det["lat"])
+    obs_sigma = _observation_sigma_m(det)
+    embedding_anchor = _embedding_payload(det)
 
     cur.execute(
         """
         INSERT INTO detection_tracks
             (track_uid, primary_class, category, threat_level, status,
              obs_count, first_seen, last_seen,
-             last_centroid, last_velocity, metadata)
+             last_centroid, last_velocity, position_sigma_m, velocity_sigma_mps,
+             motion_state, embedding_anchor, metadata)
         VALUES (%s, %s, %s, %s, 'tentative', 1, %s, %s,
-                ST_SetSRID(ST_MakePoint(%s, %s), 4326), %s, %s)
+                ST_SetSRID(ST_MakePoint(%s, %s), 4326), %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
         (
@@ -815,7 +869,11 @@ def _insert_new_track(cur, det: dict, acq_time: datetime, pass_id: int) -> int:
             acq_time,
             acq_time,
             lon, lat,
-            json.dumps({"vx_mps": 0.0, "vy_mps": 0.0}),
+            json.dumps({"vx_mps": 0.0, "vy_mps": 0.0, "speed_mps": 0.0}),
+            obs_sigma,
+            0.0,
+            "stationary",
+            json.dumps(embedding_anchor) if embedding_anchor is not None else None,
             json.dumps({"seeded_by_pass": pass_id}),
         ),
     )

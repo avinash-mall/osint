@@ -5,8 +5,9 @@ mounted at ``DEM_PATH`` (defaults to ``/data/dem/dem.tif``). Earth curvature
 is applied with the standard k=0.13 atmospheric-refraction adjustment.
 
 The module is intentionally pure-Python with numpy + rasterio so it can be
-unit-tested without a Celery worker, and degrades gracefully when the DEM
-is missing — callers receive ``None`` and should fall back to fixtures.
+unit-tested without a Celery worker, and degrades gracefully when the DEM is
+missing — callers receive ``None`` and should surface an unavailable state
+unless an explicit demo-fixture mode was requested.
 """
 
 from __future__ import annotations

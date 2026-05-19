@@ -1,35 +1,26 @@
-"""
-label_normalizer.py
-===================
-Backwards-compat wrapper around ``backend.ontology.normalize()``.
+"""Pure, seed-backed ontology normalizer for offline evaluation tooling.
 
-The DB-backed ontology in ``backend/ontology.py`` is the canonical
-classifier. This module exists so legacy scripts (and the eval-metrics
-test fixtures) that import ``scripts.eval_metrics.label_normalizer`` keep
-working — it simply delegates to the canonical normalizer and maps the
-returned ``branch_id`` back to the historical lowercase canonical name
-(e.g. ``aircraft``, ``naval``) used by older eval reports.
-
-Prefer ``from backend.ontology import normalize`` in new code.
+Runtime code uses :mod:`backend.ontology`, whose cache is intentionally backed
+by PostGIS. Evaluation and dry-run commands need the same vocabulary without a
+database, so this module reads the checked-in ontology seed and mirrors the
+runtime matching order: exact object label/id, exact prompt, then ordered branch
+regexes. A tiny DOTA alias table covers dataset labels that are broader than the
+seed's operator-facing prompts (for example ``plane``).
 """
 
 from __future__ import annotations
 
-from typing import Dict
+import json
+import re
+from functools import lru_cache
+from pathlib import Path
+from typing import Any, Dict
 
-# ---------------------------------------------------------------------------
-# Branch ID -> historical lowercase canonical name. The wrapper returns these
-# strings so legacy eval reports retain identical labels. Kept in sync with
-# the seed ontology; unknown branch IDs fall back to a lowercased copy.
-# ---------------------------------------------------------------------------
 _BRANCH_ID_TO_CANONICAL: Dict[str, str] = {
-    # top-level branches
     "Military_Forces": "military_forces",
-    # children of Military_Forces (promoted)
     "Armored_Vehicles": "armored_vehicle",
     "Artillery": "artillery",
     "Tactical_Vehicles": "tactical_vehicle",
-    # other top-level branches
     "Air_Defense_EW": "air_defense",
     "Missile_Strategic": "missile_strategic",
     "Military_Installations": "military_installation",
@@ -45,24 +36,98 @@ _BRANCH_ID_TO_CANONICAL: Dict[str, str] = {
     "Auxiliary": "auxiliary",
 }
 
+_DOTA_ALIASES = {
+    "plane": "Airfield_Aviation",
+    "ship": "Naval_Maritime",
+    "large_vehicle": "Logistics",
+    "small_vehicle": "Logistics",
+}
+
+_SEED_PATH = Path(__file__).resolve().parents[2] / "backend" / "scripts" / "seeds" / "defenceOntology.seed.json"
+
+
+def _canonical(text: Any) -> str:
+    if text is None:
+        return ""
+    value = str(text).strip().lower()
+    value = re.sub(r"[\s\-]+", "_", value)
+    value = re.sub(r"_+", "_", value)
+    return value.strip("_")
+
+
+def _strip_source_prefix(text: str) -> str:
+    if ":" in text:
+        head, tail = text.split(":", 1)
+        if head and tail and re.fullmatch(r"[a-z0-9_]+", head):
+            return tail
+    return text
+
+
+@lru_cache(maxsize=1)
+def _seed_index() -> dict[str, Any]:
+    seed = json.loads(_SEED_PATH.read_text(encoding="utf-8"))
+    objects_by_label: dict[str, str] = {}
+    objects_by_prompt: dict[str, str] = {}
+    branch_matchers: list[tuple[int, str, list[re.Pattern[str]]]] = []
+    order = 0
+
+    def visit(branch: dict[str, Any]) -> None:
+        nonlocal order
+        branch_id = str(branch["id"])
+        patterns: list[re.Pattern[str]] = []
+        for raw in branch.get("matchers") or []:
+            try:
+                patterns.append(re.compile(str(raw), re.IGNORECASE))
+            except re.error:
+                continue
+        branch_matchers.append((order, branch_id, patterns))
+        order += 1
+        for obj in branch.get("objects") or []:
+            for raw in (obj.get("label"), obj.get("id")):
+                key = _canonical(raw)
+                if key:
+                    objects_by_label.setdefault(key, branch_id)
+            prompt_key = _canonical(obj.get("prompt"))
+            if prompt_key:
+                objects_by_prompt.setdefault(prompt_key, branch_id)
+        for child in branch.get("children") or []:
+            visit(child)
+
+    for branch in seed.get("branches") or []:
+        visit(branch)
+
+    return {
+        "objects_by_label": objects_by_label,
+        "objects_by_prompt": objects_by_prompt,
+        "branch_matchers": branch_matchers,
+    }
+
 
 def normalize(label: str, layer: str = "") -> str:
-    """Backwards-compat wrapper around ``backend.ontology.normalize()``.
+    """Return the historical lowercase branch name without touching PostGIS."""
+    canon = _canonical(label)
+    if not canon:
+        return "other"
+    canon_no_prefix = _canonical(_strip_source_prefix(canon))
 
-    Returns the canonical branch_id mapped to the historical lowercase
-    canonical name (e.g. ``aircraft``, ``naval``). Prefer calling
-    ``backend.ontology.normalize()`` directly in new code.
-    """
-    # Make `backend` (package) and its sibling `database` module importable
-    # from a script invoked from anywhere. backend/ontology.py uses a flat
-    # ``from database import postgis_db`` so we need backend/ on sys.path too.
-    import sys
-    from pathlib import Path
-    repo_root = Path(__file__).resolve().parent.parent.parent
-    backend_dir = repo_root / "backend"
-    for p in (str(repo_root), str(backend_dir)):
-        if p not in sys.path:
-            sys.path.insert(0, p)
-    from backend.ontology import normalize as _normalize
-    result = _normalize(label or "", layer=layer or "")
-    return _BRANCH_ID_TO_CANONICAL.get(result.branch_id, result.branch_id.lower())
+    if (layer or "").lower() == "dota_obb":
+        alias = _DOTA_ALIASES.get(canon_no_prefix)
+        if alias:
+            return _BRANCH_ID_TO_CANONICAL[alias]
+
+    index = _seed_index()
+    for key in (canon, canon_no_prefix):
+        branch_id = index["objects_by_label"].get(key) or index["objects_by_prompt"].get(key)
+        if branch_id:
+            return _BRANCH_ID_TO_CANONICAL.get(branch_id, branch_id.lower())
+
+    candidates = {
+        canon.replace("_", " "),
+        canon_no_prefix.replace("_", " "),
+        canon,
+        canon_no_prefix,
+    }
+    for _order, branch_id, patterns in index["branch_matchers"]:
+        if any(pattern.search(candidate) for pattern in patterns for candidate in candidates if candidate):
+            return _BRANCH_ID_TO_CANONICAL.get(branch_id, branch_id.lower())
+    return "other"
