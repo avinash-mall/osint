@@ -84,6 +84,9 @@ RUN test -f /usr/share/nginx/html/basemap/0/0/0.png \
  && test -s /usr/share/nginx/html/terrain/ATTRIBUTION.txt
 
 HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
-    CMD wget -qO- http://127.0.0.1/healthz || exit 1
+    CMD wget -qO- http://127.0.0.1/healthz \
+     && wget -q -O /dev/null http://127.0.0.1/basemap/0/0/0.png \
+     && wget -q -O /dev/null http://127.0.0.1/terrain/0/0/0.png \
+     || exit 1
 
 EXPOSE 80

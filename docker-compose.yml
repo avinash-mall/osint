@@ -421,7 +421,7 @@ services:
     image: sentinel-assets:offline
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz && wget -q -O /dev/null http://127.0.0.1/basemap/0/0/0.png && wget -q -O /dev/null http://127.0.0.1/terrain/0/0/0.png || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
