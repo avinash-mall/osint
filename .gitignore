@@ -108,7 +108,9 @@ inference/models/*
 # Local runtime data
 /data/
 /logs/
-/assets/
+/assets/static/basemap/
+/assets/static/terrain/
+/assets/static/fonts/*.woff2
 *_logs.txt
 *_output.txt
 build_*.txt
