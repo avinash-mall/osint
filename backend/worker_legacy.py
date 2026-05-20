@@ -32,6 +32,7 @@ import numpy as np
 from PIL import Image
 from imagery_metadata import extract_raster_metadata
 from calibration import calibrate_confidence
+from detection_evidence import apply_evidence_ranking
 from detection_policy import active_detection_policy, detection_decision, parent_class_for_label
 from size_estimation import estimate_size
 from candidate_linking import rank_candidate_links
@@ -2415,6 +2416,8 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
             total_normalized += 1
             if ont.was_unknown:
                 unknown_count += 1
+            det["ontology_unknown"] = bool(ont.was_unknown)
+            apply_evidence_ranking(det, ontology_unknown=ont.was_unknown)
             ontology = (ontology_by_class or {}).get(det_class) or detection_ontology(det_class)
             # Phase 6.26: per-AOI default allegiance. When the detection's
             # centroid falls inside an AOI with a non-"unknown" default, use
@@ -2495,6 +2498,13 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
                     "source_layer": det.get("source_layer"),
                     "wbf_member_count": det.get("wbf_member_count"),
                     "wbf_member_sources": det.get("wbf_member_sources"),
+                    "member_sources": det.get("member_sources"),
+                    "evidence_score": det.get("evidence_score"),
+                    "evidence_tier": det.get("evidence_tier"),
+                    "semantic_margin": det.get("semantic_margin"),
+                    "semantic_verifier": det.get("semantic_verifier"),
+                    "validator_results": det.get("validator_results"),
+                    "reject_reasons": det.get("reject_reasons"),
                     # Phase 7.35: surface the per-detection position uncertainty
                     # (in metres) so the UI can render an uncertainty halo.
                     "position_uncertainty_m": det.get("position_uncertainty_m"),

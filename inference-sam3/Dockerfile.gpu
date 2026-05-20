@@ -97,7 +97,9 @@ RUN mkdir -p /models/hf/hub /models/torch/ultralytics && \
     huggingface-cli download IDEA-Research/grounding-dino-tiny || echo "[bake] grounding-dino skipped"; \
     : "--- DOTA-OBB (Ultralytics auto-fetch into YOLO_CONFIG_DIR) ---"; \
     cd /models/torch/ultralytics && \
-    python -c "from ultralytics import YOLO; YOLO('yolo11n-obb.pt')" || echo "[bake] dota-obb skipped"; \
+    python -c "from ultralytics import YOLO; YOLO('yolo26m-obb.pt'); YOLO('yolo11n-obb.pt')" || echo "[bake] dota-obb skipped"; \
+    : "--- RemoteCLIP verifier (optional, offline after bake) ---"; \
+    huggingface-cli download chendelong/RemoteCLIP || echo "[bake] remoteclip skipped"; \
     : "--- YOLOE text encoder: MobileCLIP2-B TorchScript (Ultralytics asset) ---"; \
     : "  Pulled by ultralytics' build_text_model() the first time YOLOE is given"; \
     : "  text prompts. attempt_download_asset() writes to CWD by default, which"; \

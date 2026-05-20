@@ -19,7 +19,7 @@ from typing import Any, Iterable
 import numpy as np
 
 
-DOTA_OBB_MODEL_ID = os.getenv("DOTA_OBB_MODEL_ID", "yolo11n-obb.pt")
+DOTA_OBB_MODEL_ID = os.getenv("DOTA_OBB_MODEL_ID", "yolo26m-obb.pt")
 DOTA_OBB_THRESHOLD = float(os.getenv("DOTA_OBB_THRESHOLD", "0.30"))
 DOTA_OBB_IOU = float(os.getenv("DOTA_OBB_IOU", "0.50"))
 DOTA_OBB_IMGSZ = int(os.getenv("DOTA_OBB_IMGSZ", "1024"))

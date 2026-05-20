@@ -1,6 +1,6 @@
 path|tags|summary
 architecture/system-overview.md|arch|nginx:3000 sole entry; routes /api,/ws,/tiles,/maps,/basemap,/fmv to internal services
-architecture/data-flow-imagery.md|arch,imagery|COG translate -> chip 1008x1008 -> /detect -> georef -> PostGIS persistence
+architecture/data-flow-imagery.md|arch,imagery|COG translate -> chip -> /detect -> georef -> evidence-rank -> PostGIS persistence
 architecture/data-flow-fmv.md|arch,fmv|HLS transcode -> KLV/SRT telemetry -> /detect_video NDJSON -> fmv_detections
 architecture/component-boundaries.md|arch|process/file boundaries between backend, worker, inference-sam3, frontend
 architecture/service-topology.md|arch,deployment|docker-compose service graph, internal DNS, exposed ports
@@ -11,6 +11,7 @@ backend/database-connections.md|backend|Neo4j + PostGIS dual stack with pool, ad
 backend/ontology-system.md|backend,ontology|DB-canonical branches/objects/prompts, normalize() with read-through cache
 backend/tracker-satellite.md|backend,tracker|satellite-pass Hungarian tracker, V_MAX state gates, 14-day age cap, 3-miss timeout
 backend/fmv-track-consolidation.md|backend,fmv,tracker|post-inference fmv_detections consolidation: cross-window/prompt track stitching + class vote
+backend/detection-evidence.md|backend|source/verifier/physics evidence ranking into confirmed/candidate/discovery tiers
 backend/detection-policy.md|backend|precision open-vocab policy: default floor, DB/env overrides, parent_class fallback
 backend/detection-helpers.md|backend|shared detection/FMV detail validators + object_details upsert
 backend/platform-schema-migrations.md|backend|idempotent CREATE TABLE IF NOT EXISTS for feed/event/observation tables
@@ -33,7 +34,7 @@ backend/size-estimation-obb.md|backend|UTM-local OBB -> length/width/area/bearin
 backend/terrain-viewshed-los.md|backend|DEM ray-cast with k=0.13 atmospheric refraction
 backend/threat-assessment.md|backend|open-vocab neutral binning into category buckets
 backend/video-metadata-klv.md|backend,fmv|MISB ST 0601 KLV + MP4 GPMD + SRT sidecar parsers
-backend/worker-legacy-monolith.md|backend,celery|3648-line worker_legacy.py: task definitions, chip planner, NDJSON consumer
+backend/worker-legacy-monolith.md|backend,celery|4110-line worker_legacy.py: imagery/FMV tasks, chip planner, evidence persistence
 backend/worker-package-facade.md|backend,celery|worker/__init__.py namespace re-exports preserving Celery task names
 backend-routers/ai-router.md|router|/api/ai/* — LLM analyze/extract/link/propose-actions
 backend-routers/analytics-router.md|router|/api/analytics/* — change/viewshed/los/routes with fixture fallbacks
@@ -48,8 +49,8 @@ backend-routers/ingest-router.md|router|/api/ingest/upload, url, ingest, uploads
 backend-routers/models-training-router.md|router|/api/models, /api/training, dataset registration, promotion
 backend-routers/ontology-router.md|router,ontology|/api/ontology branches/objects/prompts/profiles/unknown-labels/version-history
 backend-routers/websocket-router.md|router|/ws Redis-bridged push channel
-inference/service-overview.md|inference,sam3|FastAPI service bundling SAM3+SAM3.1+YOLOE+DINOv3+Prithvi+TerraMind+DOTA+GDINO
-inference/main-app-entrypoint.md|inference,sam3|/detect precision prompt defaults, source_layer/debug_counts, /detect_video, /load, /health
+inference/service-overview.md|inference,sam3|FastAPI service bundling SAM3+SAM3.1+YOLOE+DINOv3+Prithvi+TerraMind+DOTA+GDINO+RemoteCLIP
+inference/main-app-entrypoint.md|inference,sam3|/detect precision defaults, source_layer/debug_counts, optional RemoteCLIP verifier, /detect_video
 inference/sam3-runner-internals.md|inference,sam3|build_image_bundle, run_text_prompts, run_box_prompts pipelines
 inference/sam3-pcs-multiplex-video.md|inference,sam3,fmv|SAM3.1 multiplex one-prompt-per-session video tracker
 inference/sam3-perf-profiling.md|inference,sam3|stage_timer CUDA-sync per-stage latency accumulator
@@ -57,14 +58,16 @@ inference/fusion-and-nms.md|inference|mask-aware fusion across SAM3/DOTA/GDINO/Y
 inference/grounding-dino-detector.md|inference|IDEA-Research grounding-dino-{tiny,base} text-to-box
 inference/grounding-dino-gate.md|inference|server-side gate that skips GDINO on common-vocab prompts
 inference/yoloe-tracker.md|inference,fmv|YOLOE-26x-seg(-pf) prompt-free + text-promptable, replaces SAM3 AMG
-inference/dota-obb-specialist.md|inference|Ultralytics YOLO11n-obb fixed 18-class DOTA-v1 oriented-box detector
+inference/dota-obb-specialist.md|inference|Ultralytics YOLO26m-obb default with YOLO11n low-VRAM fallback
 inference/dinov3-embeddings.md|inference|DINOv3 ViT-L SAT-493M re-ID embedding head
+inference/remoteclip-verifier.md|inference|optional RemoteCLIP crop verifier; scores candidate labels only
 inference/prithvi-multispectral.md|inference,imagery|Prithvi-EO-2.0 flood/burn/multi-temporal-crop heads
 inference/terramind-sar-synthesis.md|inference,imagery|TerraMind v1 S1->S2 synthetic optical RGB for SAR
 inference/multispectral-bands.md|inference,imagery|HLS-6 band decoder: Blue/Green/Red/Narrow-NIR/SWIR-1/SWIR-2
 inference/sar-bands.md|inference,imagery|Sentinel-1 GRD VV/VH dB clip and linear stretch
 inference/profile-pool-lifecycle.md|inference|imagery/fmv/all profiles with per-GPU replication
 inference/model-manifest.md|inference|MODEL_MANIFEST.json: HF repos, revisions, gating, file lists
+inference/python-requirements.md|inference|inference-sam3 pip dependencies after PyTorch/SAM3 install
 frontend/app-and-routing.md|frontend|App.tsx mounts five workspaces under AuthProvider
 frontend/shell-and-chrome.md|frontend|icon rail 64->224 px, command palette, status bar
 frontend/auth-hook.md|frontend,auth|useAuth.ts cookie-backed session with boot /api/auth/me probe
@@ -91,6 +94,7 @@ frontend/admin-auth-ldap.md|frontend,auth|AdminAuthTab.tsx LDAP config form with
 frontend/utils-ontology-and-icons.md|frontend,ontology|branchIcons, detectionTaxonomy, iconLibrary, useOntology
 frontend/services-analytics.md|frontend|services/analytics.ts job submission types
 deployment/docker-compose-services.md|deployment|service-by-service docker-compose.yml reference
+deployment/inference-gpu-dockerfile.md|deployment,inference|GPU inference image build and offline model bake steps
 deployment/nginx-gateway-and-tile-cache.md|deployment|nginx conf: routes, 24h tile cache, HLS streaming
 deployment/offline-airgap-deployment.md|deployment|build-once / load-and-go runbook, no DNS at runtime
 deployment/gpu-profile-detection.md|deployment,gpu|configure_host.py picks CUDA/PyTorch/arch-list per GPU
@@ -114,6 +118,7 @@ decisions/why-precision-first-inference-defaults.md|decision|bounded prompt defa
 decisions/why-yoloe-replaced-amg.md|decision,fmv|AMG required GDINO labeling pass; YOLOE-26x-seg(-pf) emits labels directly
 decisions/why-fmv-track-consolidation.md|decision,fmv|post-inference consolidation pass stitches windows/prompts; overlap_index removed; temporal-support class vote
 decisions/why-grounding-dino-auto-gated.md|decision|forcing GDINO drops mAP via NMS suppression of DOTA detections
+decisions/why-evidence-ranked-detections.md|decision|confirmed objects require source, verifier, physics, and SAR evidence signals
 decisions/why-dinov3-sat-only.md|decision|DINOv3 ViT-L SAT-493M keeps re-ID quality without DINOv3_LVD NaNs
 decisions/why-postgis-and-neo4j-coexist.md|decision|PostGIS for spatial detections; Neo4j for entity/link graph
 decisions/why-worker-legacy-monolith-kept.md|decision,celery|3500 tested lines preserved; thin facade package avoids breakage

@@ -33,6 +33,7 @@ import grounding_dino
 import grounding_dino_gate
 import multispectral
 import prithvi_heads
+import remoteclip_verifier
 import sam3_runner
 import sar
 import terramind
@@ -172,6 +173,9 @@ SAM3_LOAD_DOTA_OBB        = _flag("SAM3_LOAD_DOTA_OBB",        _DEFAULT)
 # are already covered by SAM3+DOTA-OBB. Operators wanting open-vocab recall on
 # truly novel labels can re-enable with SAM3_LOAD_GROUNDING_DINO=1.
 SAM3_LOAD_GROUNDING_DINO  = _flag("SAM3_LOAD_GROUNDING_DINO",  "0")
+# RemoteCLIP-style verifier is optional and never proposes detections. It is
+# disabled by default because weights must be baked for offline runtime.
+SAM3_LOAD_REMOTECLIP      = _flag("SAM3_LOAD_REMOTECLIP",      "0")
 # YOLOE-26x open-vocabulary segmentation specialist used by the standalone
 # FMV tracker. Bundles both -pf (prompt-free) and -seg (text-prompted)
 # checkpoints — together ~1 GiB, loads on every profile by default.
@@ -204,6 +208,7 @@ PROFILE_COMPONENTS: dict[str, tuple[str, ...]] = {
         "terramind" if SAM3_LOAD_TERRAMIND else None,
         "dota_obb" if SAM3_LOAD_DOTA_OBB else None,
         "grounding_dino" if SAM3_LOAD_GROUNDING_DINO else None,
+        "remoteclip" if SAM3_LOAD_REMOTECLIP else None,
     ),
 }
 PROFILE_COMPONENTS["imagery"] = tuple(c for c in PROFILE_COMPONENTS["imagery"] if c)
@@ -512,6 +517,8 @@ def _build_component(name: str, device: str) -> Any:
         return dota_obb.load(device)
     if name == "grounding_dino":
         return grounding_dino.load(device)
+    if name == "remoteclip":
+        return remoteclip_verifier.load(device)
     if name == "yoloe":
         return yoloe.load(device)
     raise ValueError(f"unknown component: {name}")
@@ -528,6 +535,7 @@ def _empty_bundle(device: str) -> dict[str, Any]:
         "terramind": None,
         "dota_obb": None,
         "grounding_dino": None,
+        "remoteclip": None,
         "yoloe": None,
     }
 
@@ -712,9 +720,17 @@ def _system_stats() -> dict[str, Any]:
         }
 
 
+def _version_snapshot(bundle: dict[str, Any] | None = None) -> dict[str, Any]:
+    versions = dict(sam3_runner.versions())
+    versions["dota_obb"] = dota_obb.model_versions((bundle or {}).get("dota_obb"))
+    versions["remoteclip"] = remoteclip_verifier.model_versions((bundle or {}).get("remoteclip"))
+    return versions
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     vram_used_gib, vram_total_gib = _vram_stats_gib()
+    sample_bundle = _pool[0] if _pool else None
     return {
         "status": "ok",
         "model_loaded": bool(_pool),
@@ -724,7 +740,7 @@ def health() -> dict[str, Any]:
         "device": os.getenv("DEVICE", "auto"),
         "pool_size": len(_pool),
         "replicas": [{"device": b["device"], "components": _bundle_components(b)} for b in _pool],
-        "model_versions": sam3_runner.versions(),
+        "model_versions": _version_snapshot(sample_bundle),
         "model_version": MODEL_VERSION,
         "gpu_model": GPU_MODEL,
         "vram_used_gib": vram_used_gib,
@@ -742,6 +758,7 @@ def health() -> dict[str, Any]:
             "terramind": SAM3_LOAD_TERRAMIND,
             "dota_obb": SAM3_LOAD_DOTA_OBB,
             "grounding_dino": SAM3_LOAD_GROUNDING_DINO,
+            "remoteclip": SAM3_LOAD_REMOTECLIP,
             "yoloe": SAM3_LOAD_YOLOE,
         },
         "uptime_s": round(time.time() - BOOT_TS, 1),
@@ -988,6 +1005,21 @@ async def _detect_pipeline(
             valid_mask=valid_mask,
         )
         det["source_layer"] = source_layer
+        if bundle.get("remoteclip") and _layer_active("remoteclip"):
+            verifier_labels = [
+                str(label),
+                str(det.get("parent_class") or ""),
+                str(det.get("class") or ""),
+            ]
+            remoteclip_result = await run_in_threadpool(
+                remoteclip_verifier.verify,
+                bundle.get("remoteclip"),
+                chip3,
+                bbox_xyxy,
+                verifier_labels,
+            )
+            det["semantic_verifier"] = remoteclip_result
+            det["semantic_margin"] = remoteclip_result.get("semantic_margin")
         if meta.get("geo"):
             det["geo"] = {**meta["geo"], "obb_map_crs": None, "obb_map_geojson": None}
         if SAM3_EMBED_DETECTIONS and _layer_active("dinov3_sat") and bundle.get("dinov3_sat"):
@@ -1050,7 +1082,7 @@ async def _detect_pipeline(
         "detections": detections,
         "debug_counts": debug_counts,
         "model_version": MODEL_VERSION,
-        "model_versions": sam3_runner.versions(),
+        "model_versions": _version_snapshot(bundle),
         "timings_ms": timings,
         "queue_depth": queue_depth,
         "input_metadata": meta,

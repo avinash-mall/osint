@@ -49,6 +49,18 @@
         {"path": "tokenizer.json", "oid": null}
       ]
     },
+    "chendelong/RemoteCLIP": {
+      "role": "remote_sensing_semantic_verifier",
+      "revision": "988de22a30b8eeb2b00a0ab85ed74e0d6e2e3f6c",
+      "gated": false,
+      "license": "Apache-2.0",
+      "note": "Optional OpenCLIP-compatible remote-sensing verifier. Scores existing candidate crops only; it never proposes detections.",
+      "files": [
+        {"path": "RemoteCLIP-ViT-B-32.pt", "lfs": true, "sha256": null},
+        {"path": "RemoteCLIP-RN50.pt", "lfs": true, "sha256": null},
+        {"path": "RemoteCLIP-ViT-L-14.pt", "lfs": true, "sha256": null}
+      ]
+    },
     "ultralytics/assets/mobileclip2_b.ts": {
       "role": "yoloe_text_encoder",
       "gated": false,

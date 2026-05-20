@@ -1,7 +1,7 @@
 # `backend/worker_legacy.py` — Monolithic Celery Tasks
 
 **Path:** [backend/worker_legacy.py](../../backend/worker_legacy.py)
-**Lines:** ~4100 (largest file in the repo)
+**Lines:** ~4110 (largest file in the repo)
 **Depends on:** Most of the rest of `backend/` plus `celery`, `requests`, `numpy`, `rasterio`, `cv2`
 
 ## Purpose
@@ -32,12 +32,13 @@ See [decisions/why-worker-legacy-monolith-kept.md](../decisions/why-worker-legac
 - `chip_plan(...)` — slice a COG into chip windows with overlap; used by the imagery pipeline and by [backend/tests/test_chip_emitter.py](../../backend/tests/test_chip_emitter.py).
 - SAM3 HTTP client constants (`INFERENCE_SAM3_URL`, timeouts).
 - NDJSON consumer for `/detect_video` (parses streaming response and yields per-frame records).
-- [`_calibration_tag_for_detection`](../../backend/worker_legacy.py#L572) — chooses `source_layer` for detector-specific calibration.
-- [`FMV_DEFAULT_PROMPTS`](../../backend/worker_legacy.py#L165) — small PCS fallback prompt set (`vehicle,person,building`) when the operator did not provide FMV prompts.
+- [`_calibration_tag_for_detection`](../../backend/worker_legacy.py#L662-L664) — chooses `source_layer` for detector-specific calibration.
+- [`store_detections`](../../backend/worker_legacy.py#L2390-L2591) — persists calibrated, georeferenced, evidence-ranked detections.
+- [`FMV_DEFAULT_PROMPTS`](../../backend/worker_legacy.py#L236) — small PCS fallback prompt set (`vehicle,person,building`) when the operator did not provide FMV prompts.
 
 ## Inputs / Outputs
 
-Imagery tasks emit per-pass summaries including `candidates_by_layer`, `suppressed_by_nms`, and `suppressed_by_policy` from inference debug counts. The imagery pipeline calibrates raw confidence by `source_layer`, applies [detection-policy.md](detection-policy.md), georeferences OBBs, deduplicates across chips, and persists survivors to PostGIS.
+Imagery tasks emit per-pass summaries including `candidates_by_layer`, `suppressed_by_nms`, and `suppressed_by_policy` from inference debug counts. The imagery pipeline calibrates raw confidence by `source_layer`, applies [detection-policy.md](detection-policy.md), georeferences OBBs, deduplicates across chips, applies [detection-evidence.md](detection-evidence.md), and persists survivors to PostGIS.
 
 FMV tasks consume `/detect_video` NDJSON. SAM3 and YOLOE entries preserve `source_layer` in row metadata so downstream review can distinguish tracker families. `_insert_detection_rows` writes rows **raw** — window-seam and cross-prompt duplicates included; identity is reconciled afterwards by `worker.consolidate_fmv` ([fmv-track-consolidation.md](fmv-track-consolidation.md)), which `process_fmv` dispatches once all windows finish. The earlier per-`(frame, class)` `overlap_index` dedup was removed — see [decisions/why-fmv-track-consolidation.md](../decisions/why-fmv-track-consolidation.md).
 
@@ -45,6 +46,7 @@ FMV tasks consume `/detect_video` NDJSON. SAM3 and YOLOE entries preserve `sourc
 
 - `/detect` 4xx/5xx per chip increments failed chip counts; the worker continues other chips.
 - Detections below the active policy floor are counted in `suppressed_by_policy` and not persisted.
+- Evidence ranking never drops detections; weak rows are persisted as `candidate` or `discovery` metadata.
 - Missing FMV prompts no longer launch a single `"object"` session; the precision fallback launches the bounded `FMV_DEFAULT_PROMPTS` list.
 
 ## Re-export shape
@@ -54,7 +56,9 @@ Anything in this file is re-exported by [backend/worker/__init__.py](../../backe
 ## Cross-references
 
 - [backend/worker-package-facade.md](worker-package-facade.md)
+- [backend/detection-evidence.md](detection-evidence.md)
 - [decisions/why-worker-legacy-monolith-kept.md](../decisions/why-worker-legacy-monolith-kept.md)
+- [decisions/why-evidence-ranked-detections.md](../decisions/why-evidence-ranked-detections.md)
 - [decisions/why-precision-first-inference-defaults.md](../decisions/why-precision-first-inference-defaults.md)
 - [operations/celery-queues-and-tasks.md](../operations/celery-queues-and-tasks.md)
 - [conventions/adding-a-new-celery-task.md](../conventions/adding-a-new-celery-task.md)

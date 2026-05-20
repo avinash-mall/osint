@@ -103,7 +103,14 @@ Variables below are grouped by subsystem. Defaults are the values in `.env.examp
 | `SAM3_LOAD_TERRAMIND` | `1` | TerraMind S1→S2 |
 | `SAM3_LOAD_DOTA_OBB` | `1` | DOTA-OBB specialist |
 | `SAM3_LOAD_GROUNDING_DINO` | `0` | Grounding-DINO (auto-gated and explicitly enabled per request) |
+| `SAM3_LOAD_REMOTECLIP` | `0` | Optional RemoteCLIP verifier; scores existing candidates only |
 | `SAM3_LOAD_YOLOE` | `1` | YOLOE-26x FMV tracker |
+| `DOTA_OBB_MODEL_ID` | `yolo26m-obb.pt` | Default OBB checkpoint; set `yolo11n-obb.pt` for low-VRAM fallback |
+| `REMOTECLIP_MODEL_ID` / `REMOTECLIP_ARCH` | `chendelong/RemoteCLIP` / `ViT-B-32` | OpenCLIP-compatible verifier weights and architecture |
+| `REMOTECLIP_MARGIN_THRESHOLD` | `0.05` | Semantic margin required for verifier pass |
+| `REMOTECLIP_LOCAL_FILES_ONLY` | `1` | Prevent runtime downloads; verifier loads only baked/cache weights |
+| `EVIDENCE_MAX_ASPECT_RATIO` | `35` | Backend physical validator aspect-ratio ceiling |
+| `EVIDENCE_MIN_MASK_COMPACTNESS` / `EVIDENCE_MIN_VALID_FRACTION` | `0.015` / `0.20` | Backend evidence validator floors |
 | `FMV_DEFAULT_PROMPTS` | `vehicle,person,building` | Backend worker PCS fallback when an FMV upload omits prompts |
 | `FMV_TRACKER_COST_WEIGHTS` | `{}` | JSON cost weights for FMV track consolidation (`iou`/`emb`/`gap`/`class`) — see [fmv-track-consolidation.md](../backend/fmv-track-consolidation.md) |
 | `FMV_TRACK_MIN_IOU` / `FMV_TRACK_MIN_EMB_SIM` | `0.30` / `0.55` | FMV consolidation association gates |

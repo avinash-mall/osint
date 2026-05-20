@@ -8,7 +8,7 @@ Explain how `inference-sam3` loads, holds, and frees model bundles. Three profil
 
 | Profile | Components | Used by | VRAM (FP16) |
 |---|---|---|---|
-| `imagery` | `sam3_image`, `dinov3_sat`, `prithvi`, `terramind`, `dota_obb`, `grounding_dino` | Imagery ingest | ~22 GB with all components |
+| `imagery` | `sam3_image`, `dinov3_sat`, `prithvi`, `terramind`, `dota_obb`, `grounding_dino`, optional `remoteclip` | Imagery ingest | ~22 GB with all components before verifier |
 | `fmv` | `sam3_image`, `sam3_video` (multiplex), `dota_obb`, `yoloe` | FMV ingest | ~12 GB |
 | `all` | Union of both | 40+ GiB datacenter GPUs | ~30+ GB |
 

@@ -17,9 +17,10 @@ Single JSON file listing every model weight the inference service uses, with Hug
   "prithvi_burn":   {"repo": "ibm-nasa-...",       "revision": "...", "gated": false, "files": [...]},
   "terramind":      {"repo": "ibm-...",            "revision": "...", "gated": false, "files": [...]},
   "grounding_dino": {"repo": "IDEA-Research/...",  "revision": "...", "gated": false, "files": [...]},
+  "remoteclip":     {"repo": "chendelong/RemoteCLIP", "revision": "...", "gated": false, "files": [...]},
   "yoloe":          {"local": "yoloe-26x-seg.pt"},
   "yoloe_pf":       {"local": "yoloe-26x-seg-pf.pt"},
-  "dota_obb":       {"local": "yolo11n-obb.pt"}
+  "dota_obb":       {"local": "yolo26m-obb.pt"}
 }
 ```
 
@@ -28,6 +29,7 @@ Single JSON file listing every model weight the inference service uses, with Hug
 - **Pinned revisions.** Reproducibility for air-gap deployments: the same build, run twice, produces identical model behavior because revisions are SHAs not tags.
 - **Gating column** so the build can skip gated weights when `HF_TOKEN` is absent or set `SAM3_WEIGHTS_SOURCE=mirror` to use the `1038lab/sam3` mirror instead.
 - **Local-file entries** for weights that ship bundled in the image (YOLOE, DOTA-OBB) and aren't fetched from the Hub.
+- **Verifier entries** such as RemoteCLIP are optional. They are baked for offline use but disabled at runtime unless `SAM3_LOAD_REMOTECLIP=1`.
 
 ## Cross-references
 

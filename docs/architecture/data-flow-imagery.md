@@ -15,7 +15,8 @@ Get a raw raster (GeoTIFF, NITF, Sentinel L2A, HLS-6, S1 GRD) from upload to dis
 3. **Chipping** — slice into overlapping `INFERENCE_CHIP_SIZE`×`INFERENCE_CHIP_SIZE` chips (default 1008×1008, 25% overlap). RGB chips are PNG; multispectral and SAR stay GeoTIFF to preserve band radiometry. See `chip_to_uint8_rgb` in [backend/worker_legacy.py](../../backend/worker_legacy.py).
 4. **Inference dispatch** — `INFERENCE_CHIP_CONCURRENCY` chips POSTed to `inference-sam3:8001/detect` in parallel via a thread pool. Each request includes the `metadata.modality`, sensor-resolved `text_prompts` (from `/api/ontology/default-prompts`), and `enabled_layers` (e.g. `sam3, dota_obb, dinov3_sat`).
 5. **Georeference** — pixel-space bboxes and OBBs warped back to WGS84 lat/lon using the source CRS read from the COG. Mask RLE is preserved in pixel space; OBB coordinates are emitted in `yolo_obb_normalized_xyxyxyxy` (see schema).
-6. **Persist** — detections written to PostGIS `detections` with mask RLE, embedding, parent class, original (open-vocab) class, confidence, review status, chip provenance (chip URL + index), model/taxonomy version, and coverage polygon.
+6. **Evidence rank** — backend scores source agreement, optional RemoteCLIP verifier margin, physical sanity checks, and SAR proxy status into `evidence_score` / `evidence_tier`.
+7. **Persist** — detections written to PostGIS `detections` with mask RLE, embedding, parent class, original (open-vocab) class, confidence, review status, evidence metadata, chip provenance (chip URL + index), model/taxonomy version, and coverage polygon.
 
 ## Modality dispatch
 
@@ -23,7 +24,7 @@ Get a raw raster (GeoTIFF, NITF, Sentinel L2A, HLS-6, S1 GRD) from upload to dis
 |---|---|---|
 | Optical (RGB) | `rgb` | SAM3 text/box prompts → DOTA-OBB → optional GDINO → DINOv3-SAT embed |
 | Multispectral / Hyperspectral | `multispectral` | Prithvi flood + burn → SAM3 on RGB preview → optional 3-timestep crop classifier |
-| SAR | `sar` | TerraMind S1→S2 → SAM3 on synthetic preview → confidence cap 0.85, `sar_proxy=true`, `review_status=review_candidate` |
+| SAR | `sar` | CFAR primary; optional TerraMind S1→S2 → SAM3 synthetic preview remains evidence-capped and review-only unless corroborated |
 | FMV | n/a (routes to [data-flow-fmv.md](data-flow-fmv.md)) | — |
 
 ## Key env knobs
@@ -50,5 +51,6 @@ Full env reference: [deployment/environment-variables-reference.md](../deploymen
 
 - [operations/imagery-ingest-pipeline.md](../operations/imagery-ingest-pipeline.md) — how to launch from UI vs API
 - [backend/worker-legacy-monolith.md](../backend/worker-legacy-monolith.md) — task internals
+- [backend/detection-evidence.md](../backend/detection-evidence.md) — evidence tiering before persistence
 - [inference/sam3-runner-internals.md](../inference/sam3-runner-internals.md) — what `/detect` does once it has the chip
 - [decisions/why-sar-confidence-cap.md](../decisions/why-sar-confidence-cap.md)
