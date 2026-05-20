@@ -10,16 +10,17 @@ The FastAPI application object lives here. Mounts the 13 routers, registers the 
 
 ## Why this design
 
-- **Centralized session middleware** at [main.py#L84-L107](../../backend/main.py#L84-L107) gates every `POST`/`PUT`/`PATCH`/`DELETE` except a small whitelist (`/api/auth/login`, `/api/auth/logout`). New routers inherit this for free — no per-endpoint `Depends(get_current_user)` needed.
+- **Centralized session middleware** at [main.py#L97-L114](../../backend/main.py#L97-L114) gates every `POST`/`PUT`/`PATCH`/`DELETE` except a small whitelist (`/api/auth/login`, `/api/auth/logout`). New routers inherit this for free — no per-endpoint `Depends(get_current_user)` needed.
 - **Read endpoints still here** because they predate the router refactor. Migrating them is a Phase-2 task — see [decisions/why-worker-legacy-monolith-kept.md](../decisions/why-worker-legacy-monolith-kept.md) for the same "preserve names, then migrate" pattern.
 - **CORS allows `*` origins** because nginx is the production gateway and CORS is enforced at the edge. The backend's permissive setting is for development with `npm run dev`.
 
 ## Key symbols
 
-- [`app = FastAPI(...)`](../../backend/main.py#L56) — the application object.
-- [`require_session_on_mutations`](../../backend/main.py#L84-L107) — the middleware.
-- [`app.include_router(...)`](../../backend/main.py#L170-L182) — router mount block; **add new routers here**.
-- [`FMV_FALLBACK_PROMPTS`](../../backend/main.py#L909) — precision-first fallback for FMV PCS uploads without explicit prompts.
+- [`lifespan`](../../backend/main.py#L57-L67) — async contextmanager: calls `_auto_seed_ontology_if_empty()` on startup and `db.close()` on shutdown. Passed to `FastAPI(lifespan=...)`; replaces the deprecated `@app.on_event(...)` pair.
+- [`app = FastAPI(...)`](../../backend/main.py#L69) — the application object.
+- [`require_session_on_mutations`](../../backend/main.py#L97-L114) — the middleware.
+- [`app.include_router(...)`](../../backend/main.py#L183-L195) — router mount block; **add new routers here**.
+- [`FMV_FALLBACK_PROMPTS`](../../backend/main.py#L915) — precision-first fallback for FMV PCS uploads without explicit prompts.
 
 ## Inputs / Outputs
 

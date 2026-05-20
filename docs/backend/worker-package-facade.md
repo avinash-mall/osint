@@ -15,7 +15,7 @@ A thin namespace over [worker_legacy.py](worker-legacy-monolith.md) that preserv
 | [`_shared.py`](../../backend/worker/_shared.py) | Env reads, upload-job DB helpers, progress reporter constants |
 | [`dispatch.py`](../../backend/worker/dispatch.py) | SAM3 HTTP-client constants + `chip_to_uint8_rgb` re-export |
 | [`imagery.py`](../../backend/worker/imagery.py) | COG/slice/satellite imagery task re-exports |
-| [`fmv.py`](../../backend/worker/fmv.py) | FMV consumer re-exports |
+| [`fmv.py`](../../backend/worker/fmv.py) | FMV re-exports — `process_fmv` + `consolidate_fmv` ([fmv-track-consolidation.md](fmv-track-consolidation.md)) |
 | [`postprocess.py`](../../backend/worker/postprocess.py) | Dedup/NMS/candidate-link re-exports |
 
 ## Why this design
@@ -32,7 +32,12 @@ The package contains no real logic, so failure modes are inherited from `worker_
 
 ## Key symbols
 
-- [`_calibration_tag_for_detection`](../../backend/worker_legacy.py#L572) — re-exported for backend unit tests that pin source-layer calibration behavior.
+Underscore-prefixed names are not propagated by `from worker_legacy import *`, so each is listed explicitly in [`worker/__init__.py`](../../backend/worker/__init__.py):
+
+- `_calibration_tag_for_detection` — source-layer calibration tag used by detection persistence + tests.
+- `_DetectionDedupeIndex` — per-class IoU dedupe ring used by chip dispatch and unit tests.
+- `_emit_chip_payload` — chip-encoding helper returning `(fileobj, metadata)` for SAM3 uploads; covered by [`backend/tests/test_chip_emitter.py`](../../backend/tests/test_chip_emitter.py).
+- `_WeightedBoxFusionIndex` — cross-scale WBF aggregator covered by NMS tests.
 
 ## Cross-references
 

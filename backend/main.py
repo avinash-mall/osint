@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from fastapi import Depends, FastAPI, Query, HTTPException, Request, Response, WebSocket, WebSocketDisconnect, UploadFile, File, Form
@@ -53,7 +54,19 @@ from ontology import (
     invalidate_cache as ontology_invalidate_cache,
 )
 
-app = FastAPI(title="Sentinel API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Forward references resolve at call time, not definition time — the
+    # imports below this point (e.g. _auto_seed_ontology_if_empty) are bound
+    # by the time the ASGI server runs startup.
+    _auto_seed_ontology_if_empty()
+    try:
+        yield
+    finally:
+        db.close()
+
+
+app = FastAPI(title="Sentinel API", lifespan=lifespan)
 logger = logging.getLogger(__name__)
 
 _platform_schema_lock = threading.Lock()
@@ -563,15 +576,8 @@ def run_ontology_update(source_type: str, source_id: Optional[str], text: str, d
 
 
 
-@app.on_event("startup")
-def startup_event():
-    _auto_seed_ontology_if_empty()
-
-
-# --- Shutdown ---
-@app.on_event("shutdown")
-def shutdown_event():
-    db.close()
+# Startup and shutdown handlers are wired via the `lifespan` async
+# contextmanager passed to FastAPI() above.
 
 
 # Health + alerts routes are registered via routers.health.

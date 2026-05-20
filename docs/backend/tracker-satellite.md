@@ -1,12 +1,14 @@
-# `backend/tracker.py` — Multi-Pass FMV Tracker
+# `backend/tracker.py` — Multi-Pass Satellite Detection Tracker
 
 **Path:** [backend/tracker.py](../../backend/tracker.py)
 **Lines:** ~979
-**Depends on:** `numpy`, `scipy.optimize.linear_sum_assignment`, [backend/ontology.py](../../backend/ontology.py)
+**Depends on:** `numpy`, `pyproj`, `scipy.optimize.linear_sum_assignment`, [backend/ontology.py](../../backend/ontology.py), [backend/threat_assessment.py](../../backend/threat_assessment.py)
 
 ## Purpose
 
-Takes a stream of per-frame detection rows (the NDJSON from `/detect_video`) and emits **tracks** — stable per-object identifiers carried across frames. Used by the worker after `process_fmv` completes; also re-run by `POST /api/tracks/detections/reprocess`.
+Associates `detections` rows across **satellite passes** (`satellite_passes`) into **tracks** — stable per-object identifiers carried across acquisitions, using geodesic distance + Kalman prediction + DINOv3-SAT embedding similarity. Driven by `update_tracks_for_pass(pass_id)` after `process_satellite_imagery` and re-run by `POST /api/tracks/detections/reprocess`.
+
+> **Not the FMV tracker.** Drone-video / FMV `fmv_detections` are consolidated by a separate module — see [fmv-track-consolidation.md](fmv-track-consolidation.md).
 
 ## Why this design
 
@@ -32,7 +34,8 @@ Takes a stream of per-frame detection rows (the NDJSON from `/detect_video`) and
 
 ## Cross-references
 
-- [architecture/data-flow-fmv.md](../architecture/data-flow-fmv.md)
+- [fmv-track-consolidation.md](fmv-track-consolidation.md) — the FMV-side tracker (separate module)
+- [architecture/data-flow-imagery.md](../architecture/data-flow-imagery.md)
 - [inference/dinov3-embeddings.md](../inference/dinov3-embeddings.md)
 - [benchmarks/video-tracking-stability.md](../benchmarks/video-tracking-stability.md)
 - [scripts/benchmark-scripts.md](../scripts/benchmark-scripts.md) — `bench_fmv.py` and `video_tracking_stability.py`

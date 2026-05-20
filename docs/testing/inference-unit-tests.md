@@ -16,6 +16,11 @@
 | [test_precision_benchmark.py](../../inference-sam3/tests/test_precision_benchmark.py) | Live-service precision benchmark; skipped when `INFERENCE_URL` is unreachable |
 | [test_grounding_dino_gate.py](../../inference-sam3/tests/test_grounding_dino_gate.py) | `is_common` + `should_run_grounding_dino` |
 | [test_inference_utils.py](../../inference-sam3/tests/test_inference_utils.py) | YOLO optimization helpers, memory guard |
+| [test_chip_prep_perf.py](../../inference-sam3/tests/test_chip_prep_perf.py) | `backend/chip_prep_profiler.py` no-op-when-disabled, stage accumulation, CSV side-channel |
+
+## conftest
+
+[conftest.py](../../inference-sam3/tests/conftest.py) puts `inference-sam3/` on `sys.path` and pre-stubs `psutil` + `torch` in `sys.modules` when absent. This makes the suite collectable from the repo root (not only `cd inference-sam3`) and removes the implicit ordering dependency where `test_main_stubbed.py` had to run first to seed `sys.modules` for `import main`.
 
 ## Stubbed-model strategy
 

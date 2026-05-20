@@ -10,8 +10,9 @@
 |---|---|
 | [test_ai_json_parsing.py](../../backend/tests/test_ai_json_parsing.py) | `get_llm_json` / `extract_json_object` across fenced / strict / prose-wrapped responses |
 | [test_auth.py](../../backend/tests/test_auth.py) | Session signing, LDAP binds, admin checks |
-| [test_chip_emitter.py](../../backend/tests/test_chip_emitter.py) | Imagery chip planning, window generation |
+| [test_chip_emitter.py](../../backend/tests/test_chip_emitter.py) | `worker._emit_chip_payload` multispectral/SAR encoding + INFERENCE_SPEED_PROFILE recall_review/fast_review defaults |
 | [test_debias_units.py](../../backend/tests/test_debias_units.py) | Candidate-link scoring, multi-pass ranking |
+| [test_fmv_tracker.py](../../backend/tests/test_fmv_tracker.py) | FMV track consolidation: cost gates, temporal-support class vote, cross-prompt merge, heartbeat routing, idempotency (`integration`: live-PostGIS end-to-end) |
 | [test_object_details.py](../../backend/tests/test_object_details.py) | Threat/affiliation validation, `object_details` upsert |
 | [test_ontology.py](../../backend/tests/test_ontology.py) | Label normalization, cache invalidation, unknown-label logging |
 | [test_ontology_api.py](../../backend/tests/test_ontology_api.py) | Branch/object/prompt API endpoints |

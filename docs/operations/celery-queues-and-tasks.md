@@ -18,7 +18,8 @@ Workers are started with `-Q imagery,default` so both queues drain on the same p
 | Task name | Purpose |
 |---|---|
 | `worker.process_satellite_imagery` | Full imagery pipeline (COG → chip → /detect → georef → persist) |
-| `worker.process_fmv` | Full FMV pipeline (HLS → KLV → /detect_video → persist tracks) |
+| `worker.process_fmv` | Full FMV pipeline (HLS → KLV → /detect_video → persist raw tracks) — `imagery` queue |
+| `worker.consolidate_fmv` | Post-inference FMV track consolidation over `fmv_detections` — `default` queue, idempotent |
 | `worker.train_model` | Forward training request to inference-sam3, persist results |
 | `worker.poll_http_feeds` | Periodic feed poller (Celery beat) |
 | `worker.cleanup_old_observations` | Periodic timeline pruning (Celery beat) |

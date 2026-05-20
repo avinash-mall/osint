@@ -39,6 +39,6 @@ HLS video player with KLV telemetry synced to a side-by-side map and per-frame d
 
 - [architecture/data-flow-fmv.md](../architecture/data-flow-fmv.md)
 - [backend/video-metadata-klv.md](../backend/video-metadata-klv.md)
-- [backend/tracker-fmv.md](../backend/tracker-fmv.md)
+- [backend/fmv-track-consolidation.md](../backend/fmv-track-consolidation.md)
 - [inference/sam3-pcs-multiplex-video.md](../inference/sam3-pcs-multiplex-video.md)
 - [inference/yoloe-tracker.md](../inference/yoloe-tracker.md)

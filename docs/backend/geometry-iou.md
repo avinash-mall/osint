@@ -20,4 +20,4 @@ Small, reusable geometry primitives used by multiple routers. Both xyxy-absolute
 
 - [backend-routers/imagery-router.md](../backend-routers/imagery-router.md) — uses `parse_bbox`
 - [backend-routers/analytics-router.md](../backend-routers/analytics-router.md) — uses `make_square_feature`
-- [backend/tracker-fmv.md](tracker-fmv.md) — uses IoU helpers
+- [backend/fmv-track-consolidation.md](fmv-track-consolidation.md) — uses IoU helpers

@@ -30,6 +30,6 @@ python scripts/video_tracking_stability.py \
 ## Cross-references
 
 - [inference/dinov3-embeddings.md](../inference/dinov3-embeddings.md)
-- [backend/tracker-fmv.md](../backend/tracker-fmv.md)
+- [backend/fmv-track-consolidation.md](../backend/fmv-track-consolidation.md)
 - [decisions/why-dinov3-sat-only.md](../decisions/why-dinov3-sat-only.md)
 - [decisions/removed-dinov3-lvd.md](../decisions/removed-dinov3-lvd.md)

@@ -31,7 +31,7 @@ import {
 import type { CSSProperties, ReactNode } from 'react';
 import axios from 'axios';
 import {
-  Bell, ChevronDown, Crosshair, Film, GitBranch, LogOut, Map as MapIcon, Search, UploadCloud,
+  Bell, ChevronDown, Crosshair, Film, GitBranch, LogOut, Map as MapIcon, Menu, Search, UploadCloud, X,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { StatusDot } from './atoms';
@@ -141,10 +141,21 @@ type ShellProps = {
 
 export function Shell({ active, onNavigate, children, contextLine, statusRight }: ShellProps) {
   const [hover, setHover] = useState(false);
+  const [railOpen, setRailOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const activeNav = useMemo(() => NAV.find((n) => n.key === active) ?? NAV[0], [active]);
   const { health, uploadCount, activeImageryJob } = useSystemStatus();
   const clock = useClock();
+
+  // Rail is expanded on desktop hover OR when the mobile sheet is toggled open.
+  const railExpanded = hover || railOpen;
+
+  // Navigate + dismiss the mobile nav sheet (no-op on desktop where railOpen is
+  // always false).
+  const navigate = useCallback((key: WorkspaceKey) => {
+    setRailOpen(false);
+    onNavigate(key);
+  }, [onNavigate]);
 
   // Global ⌘K / Ctrl+K
   useEffect(() => {
@@ -155,6 +166,7 @@ export function Shell({ active, onNavigate, children, contextLine, statusRight }
         setPaletteOpen(true);
       } else if (e.key === 'Escape') {
         setPaletteOpen(false);
+        setRailOpen(false);
       }
     };
     window.addEventListener('keydown', handler);
@@ -187,50 +199,61 @@ export function Shell({ active, onNavigate, children, contextLine, statusRight }
       }}
     >
       <div
-        className="shell-rail"
+        className={'shell-rail' + (railOpen ? ' is-open' : '')}
         style={{ position: 'relative', height: '100%', zIndex: 1000 }}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
       >
         <aside
+          id="shell-rail-nav"
           className="shell-aside"
           style={{
-            ['--rail-width' as any]: hover ? 'var(--rail-expanded)' : 'var(--rail-collapsed)',
+            ['--rail-width' as any]: railExpanded ? 'var(--rail-expanded)' : 'var(--rail-collapsed)',
             position: 'absolute', top: 0, left: 0, bottom: 0,
             background: 'var(--bg-1)',
             borderRight: '1px solid var(--line)',
             display: 'flex',
             flexDirection: 'column',
-            padding: hover ? 'var(--space-3)' : 'var(--space-3) var(--space-2)',
+            padding: railExpanded ? 'var(--space-3)' : 'var(--space-3) var(--space-2)',
             gap: 'var(--space-3)',
-            transition: 'width .18s ease, padding .18s ease, box-shadow .18s ease',
-            boxShadow: hover ? '10px 0 28px rgba(0,0,0,.40)' : 'none',
+            transition: 'width .18s ease, padding .18s ease, box-shadow .18s ease, transform .2s ease',
+            boxShadow: railExpanded ? '10px 0 28px rgba(0,0,0,.40)' : 'none',
             overflow: 'hidden',
           }}
           aria-label="Workspace navigation"
         >
-          <Brand expanded={hover}/>
+          <Brand expanded={railExpanded}/>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <div className="label-mono shell-rail-section" style={{
-              padding: '4px 6px', fontSize: 10, opacity: hover ? 1 : 0, transition: 'opacity .1s', whiteSpace: 'nowrap',
+              padding: '4px 6px', fontSize: 10, opacity: railExpanded ? 1 : 0, transition: 'opacity .1s', whiteSpace: 'nowrap',
             }}>
               Workspaces
             </div>
             {NAV.map((n) => (
-              <NavButton key={n.key} item={n} active={active === n.key} expanded={hover} onClick={() => onNavigate(n.key)} />
+              <NavButton key={n.key} item={n} active={active === n.key} expanded={railExpanded} onClick={() => navigate(n.key)} />
             ))}
           </div>
           <div style={{ flex: 1 }}/>
-          <SidebarFooter expanded={hover} allOk={allOk} services={services}/>
+          <SidebarFooter expanded={railExpanded} allOk={allOk} services={services}/>
         </aside>
       </div>
+
+      {railOpen && (
+        <div
+          className="shell-rail-backdrop"
+          onClick={() => setRailOpen(false)}
+          aria-hidden
+        />
+      )}
 
       <div className="shell-body" style={{ minWidth: 0, display: 'grid' }}>
         <Topbar
           workspaceLabel={activeNav.label}
           contextLine={contextLine ?? `AOR · Live · UTC ${clock.toISOString().slice(11, 19)}`}
-          onNavigate={onNavigate}
+          onNavigate={navigate}
           onOpenPalette={() => setPaletteOpen(true)}
+          onToggleRail={() => setRailOpen((o) => !o)}
+          railOpen={railOpen}
         />
 
         <main
@@ -252,7 +275,7 @@ export function Shell({ active, onNavigate, children, contextLine, statusRight }
       {paletteOpen && (
         <CommandPalette
           onClose={() => setPaletteOpen(false)}
-          onNavigate={(k) => { setPaletteOpen(false); onNavigate(k); }}
+          onNavigate={(k) => { setPaletteOpen(false); navigate(k); }}
         />
       )}
     </div>
@@ -342,11 +365,13 @@ function SidebarFooter({ expanded, allOk, services }: { expanded: boolean; allOk
 
 /* ── Topbar ──────────────────────────────────────────────────────────── */
 
-function Topbar({ workspaceLabel, contextLine, onNavigate, onOpenPalette }: {
+function Topbar({ workspaceLabel, contextLine, onNavigate, onOpenPalette, onToggleRail, railOpen }: {
   workspaceLabel: string;
   contextLine: string;
   onNavigate: (k: WorkspaceKey) => void;
   onOpenPalette: () => void;
+  onToggleRail: () => void;
+  railOpen: boolean;
 }) {
   return (
     <header
@@ -359,6 +384,16 @@ function Topbar({ workspaceLabel, contextLine, onNavigate, onOpenPalette }: {
         background: 'var(--bg-1)',
       }}
     >
+      <button
+        className="btn sm rounded icon shell-menu-btn"
+        type="button"
+        onClick={onToggleRail}
+        aria-label="Toggle navigation"
+        aria-controls="shell-rail-nav"
+        aria-expanded={railOpen}
+      >
+        {railOpen ? <X size={15} aria-hidden/> : <Menu size={15} aria-hidden/>}
+      </button>
       <div className="shell-topbar-title" style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.15, minWidth: 0 }}>
         <span style={{ fontSize: 14, fontWeight: 600 }}>{workspaceLabel}</span>
         <span className="mono shell-context-line" style={{

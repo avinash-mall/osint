@@ -18,7 +18,7 @@ from typing import Any
 import cv2
 import numpy as np
 import psutil
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from PIL import Image
 from starlette.concurrency import run_in_threadpool
@@ -116,7 +116,15 @@ _warnings.filterwarnings(
     message=r".*torch_dtype.*is deprecated.*",
 )
 
-app = FastAPI(title="Sentinel SAM3 Inference")
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Forward reference: preload_models_on_startup is defined below, but
+    # is only invoked at server-startup time after module import completes.
+    preload_models_on_startup()
+    yield
+
+
+app = FastAPI(title="Sentinel SAM3 Inference", lifespan=lifespan)
 logger = logging.getLogger("inference-sam3")
 
 MODEL_VERSION = os.getenv("MODEL_VERSION", "sam3-image+sam3.1-video+dinov3-sat-l+prithvi+terramind")
@@ -469,7 +477,6 @@ def _tag_candidates(layer: str, candidates: list[tuple[Any, Any, Any, Any]]) -> 
     return [(layer, candidate) for candidate in candidates]
 
 
-@app.on_event("startup")
 def preload_models_on_startup() -> None:
     profile = SAM3_PRELOAD_PROFILE or ("imagery" if SAM3_PRELOAD_MODELS else "")
     if not profile:
@@ -831,6 +838,227 @@ def unload_models() -> dict[str, Any]:
     return {"loaded": False, "current_profile": None, "restarting": True}
 
 
+@app.get("/capabilities")
+def capabilities() -> dict[str, Any]:
+    """Advertise optional protocol features so clients can negotiate.
+
+    Phase 4: returns ``raw_endpoint: true`` to signal that ``/detect_raw``
+    accepts pre-decoded numpy bytes + headers and skips the multipart →
+    PIL/PNG → multipart round-trip used by ``/detect``. The worker
+    fetches this once at startup and switches to the raw path on
+    supported modalities.
+    """
+    return {
+        "raw_endpoint": True,
+        "raw_endpoint_path": "/detect_raw",
+        "supported_modalities": ["rgb"],  # Phase 4 covers RGB; MSI/SAR remain on /detect
+        "supported_dtypes": ["uint8"],
+        "protocol_version": 1,
+    }
+
+
+async def _detect_pipeline(
+    bundle: dict[str, Any],
+    meta: dict,
+    modality: str,
+    chip3: np.ndarray,
+    chip6: np.ndarray | None,
+    chip2: np.ndarray | None,
+    started: float,
+    timings: dict[str, float],
+    queue_depth: int,
+    _peak_dev: int | None,
+    _enabled: set,
+    _layer_active,
+    _unavailable: list,
+) -> dict[str, Any]:
+    """Shared post-decode inference path used by both /detect and /detect_raw.
+
+    Everything downstream of the chip-bytes → numpy conversion lives here:
+    SAM3 image + box/text prompts, DOTA-OBB, Grounding-DINO (auto-gated),
+    Prithvi multispectral overlays, DINOv3-SAT embeddings, mask-aware NMS,
+    timings rollup, and response construction. ``chip3`` is the RGB array
+    SAM3 consumes; ``chip6`` / ``chip2`` are the optional MSI/SAR raw
+    arrays carried through to Prithvi and TerraMind respectively.
+    """
+    def mark(name: str, since: float) -> float:
+        now = time.perf_counter()
+        timings[name] = round((now - since) * 1000, 3)
+        return now
+
+    t0 = time.perf_counter()
+    height, width = chip3.shape[:2]
+    valid_mask = _decode_valid_mask(meta.get("valid_mask"), (height, width))
+    prompt_boxes = meta.get("prompt_boxes")
+    prompt_count = 0
+    prompts: list[str] = []
+    sam3_timings: dict[str, float] = {}
+    layer_candidates: list[tuple[str, tuple[Any, Any, Any, Any]]] = []
+    candidates_by_layer: dict[str, int] = {}
+    if isinstance(prompt_boxes, list) and prompt_boxes:
+        prompt_count = len(prompt_boxes)
+        with _track("sam3_image"):
+            sam3_candidates = await run_in_threadpool(
+                sam3_runner.run_box_prompts, bundle, chip3, prompt_boxes, SAM3_BOX_THR,
+            )
+        layer_candidates.extend(_tag_candidates("sam3", sam3_candidates))
+        candidates_by_layer["sam3"] = len(sam3_candidates)
+    else:
+        try:
+            prompts = resolve_prompts(meta)
+        except OntologyBackendUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        prompt_count = len(prompts)
+        with _track("sam3_image"):
+            sam3_candidates = await run_in_threadpool(
+                sam3_runner.run_text_prompts, bundle, chip3, prompts, SAM3_TEXT_THR, sam3_timings,
+            )
+        layer_candidates.extend(_tag_candidates("sam3", sam3_candidates))
+        candidates_by_layer["sam3"] = len(sam3_candidates)
+    for _k, _v in sam3_timings.items():
+        timings[f"sam3_{_k}"] = _v
+    t0 = mark("sam3_inference", t0)
+
+    force_dota = bool(meta.get("force_dota_obb", False))
+    dota_allowed = (
+        force_dota
+        or (not isinstance(prompt_boxes, list) and _prompts_relevant_to_dota(prompts))
+    )
+    if bundle.get("dota_obb") and (force_dota or _layer_active("dota_obb")) and dota_allowed:
+        with _track("dota_obb"):
+            dota_candidates = await run_in_threadpool(
+                dota_obb.run, bundle["dota_obb"], chip3, dota_obb.DOTA_OBB_THRESHOLD,
+            )
+        layer_candidates.extend(_tag_candidates("dota_obb", dota_candidates))
+        candidates_by_layer["dota_obb"] = len(dota_candidates)
+    else:
+        candidates_by_layer.setdefault("dota_obb", 0)
+
+    gd_force = bool(meta.get("force_grounding_dino", False))
+    gd_explicit = "grounding_dino" in _enabled
+    gd_should_run, gd_gated_reason = grounding_dino_gate.should_run_grounding_dino(
+        prompts, force=gd_force,
+    )
+    if (
+        bundle.get("grounding_dino")
+        and prompts
+        and (gd_force or _layer_active("grounding_dino"))
+        and gd_should_run
+        and (gd_force or gd_explicit)
+    ):
+        with _track("grounding_dino"):
+            gd_candidates = await run_in_threadpool(
+                grounding_dino.run,
+                bundle["grounding_dino"],
+                chip3,
+                prompts,
+                grounding_dino.GROUNDING_DINO_THR,
+            )
+        layer_candidates.extend(_tag_candidates("grounding_dino", gd_candidates))
+        candidates_by_layer["grounding_dino"] = len(gd_candidates)
+    elif _layer_active("grounding_dino") and gd_gated_reason:
+        logger.debug(
+            "grounding_dino auto-gated: reason=%s n_prompts=%d", gd_gated_reason, len(prompts),
+        )
+    candidates_by_layer.setdefault("grounding_dino", 0)
+    t0 = mark("specialists", t0)
+
+    overlays: dict[str, np.ndarray] = {}
+    if modality == "multispectral":
+        if _layer_active("prithvi"):
+            with _track("prithvi"):
+                overlays = await run_in_threadpool(prithvi_heads.run_all, bundle.get("prithvi"), chip6, (height, width))
+        else:
+            overlays = {}
+    t0 = mark("overlays", t0)
+
+    detections = []
+    embedding_ms = 0.0
+    dinov3_calls = 0
+    for source_layer, (mask, bbox_xyxy, score, label) in layer_candidates:
+        det = fusion.candidate_to_detection(
+            mask,
+            bbox_xyxy,
+            score,
+            label,
+            image_size=(width, height),
+            modality=modality,
+            valid_mask=valid_mask,
+        )
+        det["source_layer"] = source_layer
+        if meta.get("geo"):
+            det["geo"] = {**meta["geo"], "obb_map_crs": None, "obb_map_geojson": None}
+        if SAM3_EMBED_DETECTIONS and _layer_active("dinov3_sat") and bundle.get("dinov3_sat"):
+            emb_start = time.perf_counter()
+            det["embedding"] = embedding.embed_crop(bundle.get("dinov3_sat"), chip3, bbox_xyxy)
+            embedding_ms += (time.perf_counter() - emb_start) * 1000
+            dinov3_calls += 1
+        else:
+            det["embedding"] = {"model": "disabled", "dim": 0, "fp16_b64": ""}
+        if modality == "multispectral":
+            det["prithvi_labels"] = fusion.overlay_labels(mask, overlays, threshold=SAM3_PRITHVI_OVERLAY_THR)
+        if modality == "sar":
+            det["confidence"] = float(min(det["confidence"], SAM3_SAR_CONF_CAP))
+            det["sar_proxy"] = True
+            det["review_status"] = "review_candidate"
+            if _layer_active("terramind") and bundle.get("terramind"):
+                det["terramind_embedding"] = terramind.pool_patches(bundle.get("terramind"), chip2)
+            else:
+                det["terramind_embedding"] = None
+        detections.append(det)
+    if dinov3_calls > 0:
+        _record_metric("dinov3_sat", embedding_ms)
+    timings["embedding"] = round(embedding_ms, 3)
+    t0 = mark("postprocess", t0)
+    _nms_agnostic = os.getenv("SAM3_NMS_AGNOSTIC", "1").strip().lower() in {"1", "true", "yes", "on"}
+    _nms_soft = os.getenv("SAM3_NMS_SOFT", "0").strip().lower() in {"1", "true", "yes", "on"}
+    pre_nms_count = len(detections)
+    detections = fusion.mask_aware_nms(
+        detections, iou=0.50, agnostic=_nms_agnostic, soft=_nms_soft,
+    )
+    suppressed_by_nms = max(0, pre_nms_count - len(detections))
+    mark("nms", t0)
+    if _peak_dev is not None:
+        try:
+            import torch as _torch_peak2
+            timings["peak_vram_mib"] = round(
+                _torch_peak2.cuda.max_memory_allocated(_peak_dev) / (1024 * 1024), 1
+            )
+        except Exception:
+            pass
+    timings["total"] = round((time.perf_counter() - started) * 1000, 3)
+    logger.info(
+        "sam3_detect_timing modality=%s prompts=%s candidates=%s detections=%s queue_depth=%s timings_ms=%s",
+        modality,
+        prompt_count,
+        len(layer_candidates),
+        len(detections),
+        queue_depth,
+        timings,
+    )
+    debug_counts = {
+        "prompt_count": prompt_count,
+        "candidates_by_layer": candidates_by_layer,
+        "suppressed_by_policy": 0,
+        "suppressed_by_nms": suppressed_by_nms,
+    }
+    return {
+        "status": "success",
+        "modality": modality,
+        "detections": detections,
+        "debug_counts": debug_counts,
+        "model_version": MODEL_VERSION,
+        "model_versions": sam3_runner.versions(),
+        "timings_ms": timings,
+        "queue_depth": queue_depth,
+        "input_metadata": meta,
+        "enabled_layers_unavailable": _unavailable,
+        "grounding_dino_gated": gd_gated_reason,
+    }
+
+
 @app.post("/detect")
 async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
     started = time.perf_counter()
@@ -904,195 +1132,122 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
             raise HTTPException(status_code=400, detail=f"Unable to decode {modality} chip: {exc}") from exc
         t0 = mark("decode", t0)
 
-        height, width = chip3.shape[:2]
-        valid_mask = _decode_valid_mask(meta.get("valid_mask"), (height, width))
-        prompt_boxes = meta.get("prompt_boxes")
-        prompt_count = 0
-        prompts: list[str] = []
-        sam3_timings: dict[str, float] = {}
-        layer_candidates: list[tuple[str, tuple[Any, Any, Any, Any]]] = []
-        candidates_by_layer: dict[str, int] = {}
-        if isinstance(prompt_boxes, list) and prompt_boxes:
-            prompt_count = len(prompt_boxes)
-            with _track("sam3_image"):
-                sam3_candidates = await run_in_threadpool(
-                    sam3_runner.run_box_prompts, bundle, chip3, prompt_boxes, SAM3_BOX_THR,
-                )
-            layer_candidates.extend(_tag_candidates("sam3", sam3_candidates))
-            candidates_by_layer["sam3"] = len(sam3_candidates)
-        else:
-            try:
-                prompts = resolve_prompts(meta)
-            except OntologyBackendUnavailable as exc:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            prompt_count = len(prompts)
-            with _track("sam3_image"):
-                sam3_candidates = await run_in_threadpool(
-                    sam3_runner.run_text_prompts, bundle, chip3, prompts, SAM3_TEXT_THR, sam3_timings,
-                )
-            layer_candidates.extend(_tag_candidates("sam3", sam3_candidates))
-            candidates_by_layer["sam3"] = len(sam3_candidates)
-        # Promote SAM3 sub-stage timings into the request log dict with a
-        # sam3_ prefix so the existing sam3_detect_timing log line surfaces
-        # them automatically.
-        for _k, _v in sam3_timings.items():
-            timings[f"sam3_{_k}"] = _v
-        t0 = mark("sam3_inference", t0)
+        return await _detect_pipeline(
+            bundle, meta, modality, chip3, chip6, chip2,
+            started, timings, queue_depth, _peak_dev,
+            _enabled, _layer_active, _unavailable,
+        )
+    finally:
+        _leave_request()
 
-        # Specialist detectors run alongside SAM 3 and feed into the same fusion
-        # NMS pipeline. DOTA-OBB uses Ultralytics' DOTA-v1 class names, the
-        # defence-YOLO module uses its own 18 categories, Grounding DINO is
-        # an open-vocab text-to-box detector that takes the same prompt list
-        # we sent to SAM 3. fusion.mask_aware_nms dedupes overlapping
-        # detections across SAM 3 + specialists.
-        force_dota = bool(meta.get("force_dota_obb", False))
-        dota_allowed = (
-            force_dota
-            or (not isinstance(prompt_boxes, list) and _prompts_relevant_to_dota(prompts))
-        )
-        if bundle.get("dota_obb") and (force_dota or _layer_active("dota_obb")) and dota_allowed:
-            with _track("dota_obb"):
-                dota_candidates = await run_in_threadpool(
-                    dota_obb.run, bundle["dota_obb"], chip3, dota_obb.DOTA_OBB_THRESHOLD,
-                )
-            layer_candidates.extend(_tag_candidates("dota_obb", dota_candidates))
-            candidates_by_layer["dota_obb"] = len(dota_candidates)
-        else:
-            candidates_by_layer.setdefault("dota_obb", 0)
-        # GROUNDING_DINO: auto-gated unless prompts include uncommon classes.
-        # The gate skips GROUNDING_DINO (~115 ms) when SAM3's pretrained vocab
-        # already covers every prompt — see grounding_dino_gate.py for the
-        # common-vocab definition (576 ground_v1 + 18 DOTA + geo terms).
-        # `force_grounding_dino: true` in metadata bypasses the gate.
-        gd_force = bool(meta.get("force_grounding_dino", False))
-        gd_explicit = "grounding_dino" in _enabled
-        gd_should_run, gd_gated_reason = grounding_dino_gate.should_run_grounding_dino(
-            prompts, force=gd_force,
-        )
-        if (
-            bundle.get("grounding_dino")
-            and prompts
-            and (gd_force or _layer_active("grounding_dino"))
-            and gd_should_run
-            and (gd_force or gd_explicit)
-        ):
-            with _track("grounding_dino"):
-                gd_candidates = await run_in_threadpool(
-                    grounding_dino.run,
-                    bundle["grounding_dino"],
-                    chip3,
-                    prompts,
-                    grounding_dino.GROUNDING_DINO_THR,
-                )
-            layer_candidates.extend(_tag_candidates("grounding_dino", gd_candidates))
-            candidates_by_layer["grounding_dino"] = len(gd_candidates)
-        elif _layer_active("grounding_dino") and gd_gated_reason:
-            logger.debug(
-                "grounding_dino auto-gated: reason=%s n_prompts=%d", gd_gated_reason, len(prompts),
+
+@app.post("/detect_raw")
+async def detect_raw(request: "Request"):  # type: ignore[name-defined]
+    """Raw-binary chip endpoint that skips PIL/PNG decoding.
+
+    Body: ``application/octet-stream`` containing a C-contiguous numpy
+    buffer. Headers describe the layout so the server can `np.frombuffer`
+    directly into the model input array — no PIL, no PNG, no multipart.
+
+    Required headers:
+        X-Chip-Modality   : "rgb" (Phase 4 covers RGB only; MSI/SAR stay on /detect)
+        X-Chip-Shape      : "H,W,C" e.g. "1008,1008,3"
+        X-Chip-Dtype      : "uint8" (Phase 4 supports uint8 only)
+        X-Chip-Meta-B64   : base64-encoded JSON; same body as /detect's
+                            ``metadata`` form field (modality, geo, valid_mask, …)
+
+    The downstream model pipeline is shared with /detect via
+    ``_detect_pipeline``, so detection counts and confidences are bit-for-
+    bit identical to the multipart path for the same input pixels.
+    """
+    started = time.perf_counter()
+    timings: dict[str, float] = {}
+    queue_depth = _enter_request()
+    _peak_dev: int | None = None
+    try:
+        import torch as _torch_peak
+        if _torch_peak.cuda.is_available():
+            _peak_dev = _torch_peak.cuda.current_device()
+            _torch_peak.cuda.reset_peak_memory_stats(_peak_dev)
+    except Exception:
+        _peak_dev = None
+
+    try:
+        modality_hdr = (request.headers.get("X-Chip-Modality") or "rgb").lower()
+        if modality_hdr != "rgb":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"/detect_raw only supports modality=rgb in this version; "
+                    f"got {modality_hdr!r}. Send multispectral/SAR chips to /detect."
+                ),
             )
-        candidates_by_layer.setdefault("grounding_dino", 0)
-        t0 = mark("specialists", t0)
-
-        overlays: dict[str, np.ndarray] = {}
-        if modality == "multispectral":
-            if _layer_active("prithvi"):
-                with _track("prithvi"):
-                    overlays = await run_in_threadpool(prithvi_heads.run_all, bundle.get("prithvi"), chip6, (height, width))
-            else:
-                overlays = {}
-        t0 = mark("overlays", t0)
-
-        detections = []
-        embedding_ms = 0.0
-        dinov3_calls = 0
-        for source_layer, (mask, bbox_xyxy, score, label) in layer_candidates:
-            det = fusion.candidate_to_detection(
-                mask,
-                bbox_xyxy,
-                score,
-                label,
-                image_size=(width, height),
-                modality=modality,
-                valid_mask=valid_mask,
+        shape_hdr = request.headers.get("X-Chip-Shape") or ""
+        try:
+            shape_tuple = tuple(int(part) for part in shape_hdr.split(",") if part.strip())
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid X-Chip-Shape: {shape_hdr!r}")
+        if len(shape_tuple) != 3 or shape_tuple[2] != 3:
+            raise HTTPException(
+                status_code=400,
+                detail=f"X-Chip-Shape must be H,W,3 for rgb; got {shape_tuple}",
             )
-            det["source_layer"] = source_layer
-            if meta.get("geo"):
-                det["geo"] = {**meta["geo"], "obb_map_crs": None, "obb_map_geojson": None}
-            # DINOV3_SAT is the only embedding backend. DINOV3_LVD was removed
-            # (NaN on drone-video crops, 2.5× slower than SAT, no measured
-            # quality advantage — see docs/video_tracking_stability.md).
-            if SAM3_EMBED_DETECTIONS and _layer_active("dinov3_sat") and bundle.get("dinov3_sat"):
-                emb_start = time.perf_counter()
-                det["embedding"] = embedding.embed_crop(bundle.get("dinov3_sat"), chip3, bbox_xyxy)
-                embedding_ms += (time.perf_counter() - emb_start) * 1000
-                dinov3_calls += 1
-            else:
-                det["embedding"] = {"model": "disabled", "dim": 0, "fp16_b64": ""}
-            if modality == "multispectral":
-                det["prithvi_labels"] = fusion.overlay_labels(mask, overlays, threshold=SAM3_PRITHVI_OVERLAY_THR)
-            if modality == "sar":
-                det["confidence"] = float(min(det["confidence"], SAM3_SAR_CONF_CAP))
-                det["sar_proxy"] = True
-                det["review_status"] = "review_candidate"
-                if _layer_active("terramind") and bundle.get("terramind"):
-                    det["terramind_embedding"] = terramind.pool_patches(bundle.get("terramind"), chip2)
-                else:
-                    det["terramind_embedding"] = None
-            detections.append(det)
-        # Record dinov3_sat once per request (not per detection) so the rolling
-        # p50 reflects request-level cost rather than detection count bias.
-        if dinov3_calls > 0:
-            _record_metric("dinov3_sat", embedding_ms)
-        timings["embedding"] = round(embedding_ms, 3)
-        t0 = mark("postprocess", t0)
-        _nms_agnostic = os.getenv("SAM3_NMS_AGNOSTIC", "1").strip().lower() in {"1", "true", "yes", "on"}
-        _nms_soft = os.getenv("SAM3_NMS_SOFT", "0").strip().lower() in {"1", "true", "yes", "on"}
-        pre_nms_count = len(detections)
-        detections = fusion.mask_aware_nms(
-            detections, iou=0.50, agnostic=_nms_agnostic, soft=_nms_soft,
-        )
-        suppressed_by_nms = max(0, pre_nms_count - len(detections))
-        mark("nms", t0)
-        if _peak_dev is not None:
-            try:
-                import torch as _torch_peak2
-                timings["peak_vram_mib"] = round(
-                    _torch_peak2.cuda.max_memory_allocated(_peak_dev) / (1024 * 1024), 1
-                )
-            except Exception:
-                pass
-        timings["total"] = round((time.perf_counter() - started) * 1000, 3)
-        logger.info(
-            "sam3_detect_timing modality=%s prompts=%s candidates=%s detections=%s queue_depth=%s timings_ms=%s",
-            modality,
-            prompt_count,
-            len(layer_candidates),
-            len(detections),
-            queue_depth,
-            timings,
-        )
-        debug_counts = {
-            "prompt_count": prompt_count,
-            "candidates_by_layer": candidates_by_layer,
-            "suppressed_by_policy": 0,
-            "suppressed_by_nms": suppressed_by_nms,
-        }
+        dtype_hdr = (request.headers.get("X-Chip-Dtype") or "uint8").lower()
+        if dtype_hdr != "uint8":
+            raise HTTPException(status_code=400, detail=f"unsupported dtype {dtype_hdr!r}")
 
-        return {
-            "status": "success",
-            "modality": modality,
-            "detections": detections,
-            "debug_counts": debug_counts,
-            "model_version": MODEL_VERSION,
-            "model_versions": sam3_runner.versions(),
-            "timings_ms": timings,
-            "queue_depth": queue_depth,
-            "input_metadata": meta,
-            "enabled_layers_unavailable": _unavailable,
-            "grounding_dino_gated": gd_gated_reason,
-        }
+        meta_b64 = request.headers.get("X-Chip-Meta-B64") or ""
+        if meta_b64:
+            try:
+                meta = json.loads(base64.b64decode(meta_b64).decode("utf-8"))
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=f"Invalid X-Chip-Meta-B64: {exc}") from exc
+        else:
+            meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+
+        # Layer-toggle parsing mirrors /detect so behaviour is identical.
+        _raw_enabled = meta.get("enabled_layers")
+        _enabled = set(_raw_enabled) if isinstance(_raw_enabled, list) else set()
+        _layer_active = (lambda layer: (layer in _enabled)) if _enabled else (lambda _: True)
+
+        body = await request.body()
+        timings["read_upload"] = round((time.perf_counter() - started) * 1000, 3)
+        t0 = time.perf_counter()
+
+        _ensure_profile("imagery")
+        bundle = _next_bundle()
+        timings["model_queue"] = round((time.perf_counter() - t0) * 1000, 3)
+        t0 = time.perf_counter()
+
+        _unavailable = [l for l in _enabled if l not in ("sam3",) and not bundle.get(l)]
+
+        expected_bytes = int(np.prod(shape_tuple))  # uint8 → 1 byte per element
+        if len(body) != expected_bytes:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"body length {len(body)} != expected {expected_bytes} for shape {shape_tuple} uint8"
+                ),
+            )
+        try:
+            # `np.frombuffer` shares memory with the bytes object, which is
+            # immutable. We copy so downstream callers that expect a writable
+            # array (PIL inside embedding.embed_crop, cv2 ops) don't trip the
+            # writable-buffer assertion.
+            chip3 = np.frombuffer(body, dtype=np.uint8).reshape(shape_tuple).copy()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Unable to reshape raw chip: {exc}") from exc
+        chip6 = None
+        chip2 = None
+        timings["decode"] = round((time.perf_counter() - t0) * 1000, 3)
+
+        return await _detect_pipeline(
+            bundle, meta, "rgb", chip3, chip6, chip2,
+            started, timings, queue_depth, _peak_dev,
+            _enabled, _layer_active, _unavailable,
+        )
     finally:
         _leave_request()
 

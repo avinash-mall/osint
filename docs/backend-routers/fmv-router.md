@@ -25,6 +25,6 @@ Track-level operations (pin/unpin, reprocess) live elsewhere — see [`/api/trac
 ## Cross-references
 
 - [backend/detection-helpers.md](../backend/detection-helpers.md)
-- [backend/tracker-fmv.md](../backend/tracker-fmv.md)
+- [backend/fmv-track-consolidation.md](../backend/fmv-track-consolidation.md)
 - [frontend/workspace-fmv-player.md](../frontend/workspace-fmv-player.md)
 - [architecture/data-flow-fmv.md](../architecture/data-flow-fmv.md)

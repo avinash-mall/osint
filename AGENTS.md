@@ -1,6 +1,6 @@
 # Sentinel — Agent Entry Point
 
-Sentinel is an open-source GEOINT exploitation platform. Single FastAPI backend + Celery worker + an `inference-sam3` ML service that bundles SAM 3 / SAM 3.1 + YOLOE-26x-seg + DINOv3-SAT + Prithvi-EO-2.0 + TerraMind v1 + DOTA-OBB + Grounding-DINO. Frontend is React 19 + Vite 8. Everything ships as a self-contained Docker Compose stack that can run air-gapped.
+Sentinel is an open-source GEOINT exploitation platform. Single FastAPI backend + Celery worker + an `inference-sam3` ML service that bundles SAM 3 / SAM 3.1 + YOLOE-26x-seg + DINOv3-SAT + Prithvi-EO-2.0 + TerraMind v1 + DOTA-OBB + Grounding-DINO. Frontend is React 19 + Vite 8. Everything ships as a self-contained Docker Compose stack that can run air-gapped. The project will be used by defence analyst.
 
 ## Mandatory workflow
 
@@ -36,7 +36,7 @@ Full rules: **[docs/conventions/documentation-workflow.md](docs/conventions/docu
 5. **Open-vocabulary policy.** Every SAM 3 / open-set label is first-class. Confidence floors only via `GLOBAL_CONFIDENCE_FLOOR` and `PER_CLASS_CONFIDENCE_OVERRIDES` — never delete a class. See [docs/decisions/why-open-vocabulary.md](docs/decisions/why-open-vocabulary.md).
 6. **Celery task names are routing identity.** When refactoring a task out of `backend/worker_legacy.py`, preserve `@celery_app.task(name="worker.xxx")` exactly — Celery routes by explicit name, not Python FQN. See [docs/backend/worker-package-facade.md](docs/backend/worker-package-facade.md).
 7. **No `--no-verify`, no force-push, no `git config` edits.** Standard repo hygiene.
-
+8. **Project should be able to work offline.** No links to online resources, no downloads at runtime after building container image, no api calls over internet.
 ## Doc shape (you can pattern-match these)
 
 ```

@@ -9,6 +9,7 @@ import logging
 import math
 import threading
 import concurrent.futures
+import queue
 import tempfile
 import base64
 from collections import deque
@@ -141,6 +142,20 @@ INFERENCE_SMALL_OBJECT_OVERLAP = env_int("INFERENCE_SMALL_OBJECT_OVERLAP", 128)
 INFERENCE_SMALL_OBJECT_MAX_CHIPS = env_int(
     "INFERENCE_SMALL_OBJECT_MAX_CHIPS", _INFERENCE_PROFILE_DEFAULTS["max_chips"] or 0
 )
+def _default_reader_pool_size() -> int:
+    """Default for the Phase 3 reader thread pool.
+
+    Reader threads do GDAL windowed reads + numpy encode; GDAL releases
+    the GIL during `GDALRasterIO()` so threads scale. Bounded to 4 by
+    default to limit open dataset handles and avoid OS file-descriptor
+    pressure on large rasters.
+    """
+    return min(4, max(1, os.cpu_count() or 1))
+
+
+INFERENCE_READER_POOL_SIZE = max(1, env_int("INFERENCE_READER_POOL_SIZE", _default_reader_pool_size()))
+
+
 def _default_chip_concurrency() -> int:
     """Pick a sensible default chip-POST concurrency.
 
@@ -539,7 +554,7 @@ def clip_box_to_valid_mask(
     return clipped_x1, clipped_y1, clipped_x2, clipped_y2
 
 
-from geometry import iou_cxcywh, iou_xyxy as bbox_iou
+from geometry import iou_xyxy as bbox_iou
 
 
 def polygon_iou(a: list[float], b: list[float]) -> float:
@@ -1002,7 +1017,31 @@ def sample_axis_indices(count: int, sample_count: int) -> list[int]:
     return sorted({round(index * (count - 1) / (sample_count - 1)) for index in range(sample_count)})
 
 
-def plan_inference_grid(width: int, height: int, chip_size: int, overlap: int, max_chips: int) -> dict:
+def plan_inference_grid(
+    width: int,
+    height: int,
+    chip_size: int,
+    overlap: int,
+    max_chips: int,
+    block_size: tuple[int, int] | None = None,
+) -> dict:
+    """Plan the sliding-window grid of chips over a raster.
+
+    When ``block_size=(block_x, block_y)`` is provided (Phase 2), each chip
+    origin is snapped down to the nearest multiple of the source's internal
+    tile size. Misaligned reads cost up to 4× the bytes per chip because the
+    output window drags in adjacent source tiles; aligning origins to the
+    block grid is the dominant lever in the Microsoft pytorch-cloud-geotiff
+    optimization paper. Aligning the *origin* — not the *step* — keeps the
+    grid count unchanged so downstream consumers (progress %, sampling
+    ratio) don't see a shape change.
+
+    Returns the legacy ``x_indices`` / ``y_indices`` (integer logical indices
+    into the regular grid) plus ``x_offsets`` / ``y_offsets`` — the actual
+    pixel offsets after block snapping. slice_and_infer reads the offsets
+    directly; legacy callers (e.g. backend/tests/test_chip_emitter.py) keep
+    multiplying ``idx * step`` and still see the same chip coverage.
+    """
     step = max(1, chip_size - overlap)
 
     def axis_count(size: int) -> int:
@@ -1029,10 +1068,30 @@ def plan_inference_grid(width: int, height: int, chip_size: int, overlap: int, m
         y_indices = sample_axis_indices(y_count, target_y)
         sampled = True
 
+    block_x, block_y = block_size if block_size else (1, 1)
+
+    def _snap(value: int, block: int, axis_max: int) -> int:
+        if block <= 1:
+            return min(max(0, value), max(0, axis_max - 1))
+        # Snap DOWN so the chip extent never overshoots the raster bounds.
+        # Then re-clip so `origin + chip_size <= raster_size` when possible.
+        snapped = (value // block) * block
+        # Ensure we never exceed the addressable origin range. When the
+        # last chip would slide past the right/bottom edge, leave it where
+        # rasterio's clipping logic in `min(chip_size, width - x)` can
+        # still cover the residual pixels.
+        return max(0, min(snapped, axis_max - 1))
+
+    x_offsets = [_snap(idx * step, block_x, width) for idx in x_indices]
+    y_offsets = [_snap(idx * step, block_y, height) for idx in y_indices]
+
     return {
         "step": step,
         "x_indices": x_indices,
         "y_indices": y_indices,
+        "x_offsets": x_offsets,
+        "y_offsets": y_offsets,
+        "block_size": [int(block_x), int(block_y)],
         "source_total": source_total,
         "planned_total": max(1, len(x_indices) * len(y_indices)),
         "sampled": sampled,
@@ -1060,6 +1119,41 @@ def classify_detection_ontologies(detections: list, progress_callback=None) -> d
     if progress_callback:
         progress_callback("classification", 94, "Detection classes labeled with deterministic ontology rules.")
     return ontology_by_class
+
+
+_INFERENCE_CAPS_LOCK = threading.Lock()
+_INFERENCE_CAPS_CACHE: dict | None = None
+
+
+def _negotiate_inference_capabilities(session: requests.Session) -> dict:
+    """Probe ``/capabilities`` once and cache the response.
+
+    The inference service advertises optional protocol features (Phase 4:
+    raw-binary `/detect_raw`). We negotiate once at first use so the
+    decision is made before any chip flows, then reuse the cached answer
+    across the lifetime of the worker process. A network failure falls
+    back to the safe legacy `/detect` multipart path.
+    """
+    global _INFERENCE_CAPS_CACHE
+    if _INFERENCE_CAPS_CACHE is not None:
+        return _INFERENCE_CAPS_CACHE
+    with _INFERENCE_CAPS_LOCK:
+        if _INFERENCE_CAPS_CACHE is not None:
+            return _INFERENCE_CAPS_CACHE
+        try:
+            resp = session.get(f"{INFERENCE_SAM3_URL}/capabilities", timeout=5)
+            resp.raise_for_status()
+            caps = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+            if not isinstance(caps, dict):
+                caps = {}
+        except Exception as exc:
+            logger.info(
+                "[WORKER] /capabilities probe failed (%s); falling back to /detect multipart only.",
+                exc,
+            )
+            caps = {}
+        _INFERENCE_CAPS_CACHE = caps
+        return caps
 
 
 def _post_chip_to_sam3(
@@ -1092,6 +1186,44 @@ def _post_chip_to_sam3(
         chip_file.close()
 
 
+def _post_chip_to_sam3_raw(
+    session: requests.Session,
+    chip_array: np.ndarray,
+    chip_meta_payload: str,
+    chip_label: str,
+) -> dict | None:
+    """POST a raw uint8 RGB chip directly as ``application/octet-stream``.
+
+    Skips PIL PNG encode on the worker and PIL PNG decode on the inference
+    service. Metadata is carried in a single base64 header instead of a
+    multipart form field; the payload is exactly ``chip_array.tobytes()``
+    so the server's ``np.frombuffer`` produces a pixel-identical input
+    array to what /detect's ``_decode_rgb`` would have produced.
+    """
+    try:
+        meta_b64 = base64.b64encode(chip_meta_payload.encode("utf-8")).decode("ascii")
+        h, w = chip_array.shape[:2]
+        headers = {
+            "Content-Type": "application/octet-stream",
+            "X-Chip-Modality": "rgb",
+            "X-Chip-Shape": f"{int(h)},{int(w)},3",
+            "X-Chip-Dtype": "uint8",
+            "X-Chip-Meta-B64": meta_b64,
+        }
+        body = chip_array.tobytes()
+        resp = session.post(
+            f"{INFERENCE_SAM3_URL}/detect_raw",
+            data=body,
+            headers=headers,
+            timeout=INFERENCE_CHIP_TIMEOUT_S,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        logger.warning("[WORKER] sam3 inference (raw) failed on chip %s: %s", chip_label, exc)
+        return None
+
+
 def _png_file(rgb: np.ndarray):
     chip_file = tempfile.SpooledTemporaryFile(max_size=INFERENCE_CHIP_SPOOL_MAX_BYTES)
     with _chip_stage_timer("encode_png"):
@@ -1100,9 +1232,26 @@ def _png_file(rgb: np.ndarray):
     return chip_file
 
 
-def _geotiff_window_file(src: rasterio.io.DatasetReader, window: Window, indexes: list[int]):
+def _geotiff_window_file(
+    src: rasterio.io.DatasetReader,
+    window: Window,
+    indexes: list[int],
+    *,
+    preread: np.ndarray | None = None,
+):
+    """Write a windowed GeoTIFF from ``src`` to a spool file.
+
+    When ``preread`` is supplied it is interpreted as the full-band chip
+    already read for this window (Phase 2: callers pass the chip from the
+    earlier probe to skip the redundant GDAL roundtrip). Indexes are
+    treated as 1-based GDAL band numbers; we slice with ``idx - 1`` into
+    the pre-read array.
+    """
     with _chip_stage_timer("encode_geotiff_read"):
-        data = src.read(indexes=indexes, window=window).astype("float32", copy=False)
+        if preread is not None:
+            data = preread[[i - 1 for i in indexes], :, :].astype("float32", copy=False)
+        else:
+            data = src.read(indexes=indexes, window=window).astype("float32", copy=False)
     transform = src.window_transform(window)
     profile = {
         "driver": "GTiff",
@@ -1139,11 +1288,27 @@ def _encode_bool_mask(mask: np.ndarray) -> dict:
     }
 
 
-def _emit_chip_payload(window: Window, src: rasterio.io.DatasetReader, *, valid_mask=None):
-    """Return (fileobj, metadata) for a SAM3 chip upload.
+def _emit_chip_payload(
+    window: Window,
+    src: rasterio.io.DatasetReader,
+    *,
+    valid_mask=None,
+    chip: np.ndarray | None = None,
+    raw_rgb_enabled: bool = False,
+):
+    """Return (fileobj_or_array, metadata) for a SAM3 chip upload.
 
     Multispectral (≥6-band) and SAR (2-band VV/VH) rasters go out as GeoTIFFs;
-    everything else is encoded to a uint8 RGB PNG.
+    everything else is encoded to a uint8 RGB PNG (or, when ``raw_rgb_enabled``
+    is True, a raw uint8 numpy array consumed by ``/detect_raw``).
+
+    Phase 2: ``chip`` accepts the full-band pre-read window so we don't
+    pay for a second `src.read()` here.
+
+    Phase 4: ``raw_rgb_enabled`` short-circuits the PIL PNG encode for the
+    RGB branch — the returned "file" object is actually the numpy array,
+    and the metadata carries ``transport=raw`` so the poster knows to use
+    ``_post_chip_to_sam3_raw`` instead of multipart ``_post_chip_to_sam3``.
     """
     window_transform = src.window_transform(window)
     geo_meta = {
@@ -1167,7 +1332,7 @@ def _emit_chip_payload(window: Window, src: rasterio.io.DatasetReader, *, valid_
         }
         if valid_mask_meta:
             meta["valid_mask"] = valid_mask_meta
-        return _geotiff_window_file(src, window, [1, 2]), meta
+        return _geotiff_window_file(src, window, [1, 2], preread=chip), meta
 
     if src.count >= 6:
         meta = {
@@ -1178,13 +1343,25 @@ def _emit_chip_payload(window: Window, src: rasterio.io.DatasetReader, *, valid_
         }
         if valid_mask_meta:
             meta["valid_mask"] = valid_mask_meta
-        return _geotiff_window_file(src, window, list(range(1, 7))), meta
+        return _geotiff_window_file(src, window, list(range(1, 7)), preread=chip), meta
 
-    chip = src.read(window=window)
+    if chip is None:
+        chip = src.read(window=window)
     chip_rgb = chip_to_uint8_rgb(chip)
     if valid_mask is not None:
         chip_rgb = chip_rgb.copy()
         chip_rgb[~valid_mask] = 0
+    if raw_rgb_enabled:
+        # Phase 4: skip PIL.Image.save(format="PNG") — the array goes
+        # straight onto the wire. `transport=raw` flags the poster path.
+        meta = {
+            "modality": "rgb",
+            "transport": "raw",
+            "geo": geo_meta,
+        }
+        if valid_mask_meta:
+            meta["valid_mask"] = valid_mask_meta
+        return chip_rgb, meta
     meta = {
         "modality": "rgb",
         "filename": "chip.png",
@@ -1279,11 +1456,28 @@ def slice_and_infer(
                 INFERENCE_SMALL_OBJECT_MAX_CHIPS,
             ))
 
+        # Block alignment (Phase 2): read the source's internal tile size
+        # once at open time and pass it to the grid planner so each chip
+        # origin lands on a file-block boundary. Cuts the per-chip GDAL
+        # read cost on tiled COGs (4× bytes drag in for misaligned reads).
+        try:
+            src_block = src.block_shapes[0]  # (block_y, block_x)
+            src_block_size = (int(src_block[1]), int(src_block[0]))
+        except Exception:
+            src_block_size = None
+
         # Pre-plan every pass so total_windows = sum across passes — keeps the
         # progress callback's percentage monotonic 0-100% across multi-scale.
         pass_plans: list[dict] = []
         for pass_chip_size, pass_overlap, pass_max_chips in chip_passes:
-            g = plan_inference_grid(width, height, pass_chip_size, pass_overlap, pass_max_chips)
+            g = plan_inference_grid(
+                width,
+                height,
+                pass_chip_size,
+                pass_overlap,
+                pass_max_chips,
+                block_size=src_block_size,
+            )
             pass_plans.append({
                 "chip_size": pass_chip_size,
                 "overlap": pass_overlap,
@@ -1369,11 +1563,40 @@ def slice_and_infer(
         )
         session.mount("http://", adapter)
         session.mount("https://", adapter)
-        executor = concurrent.futures.ThreadPoolExecutor(
+        # Phase 3: producer parallelism. Reader pool runs valid-mask + read +
+        # encode in parallel (GDAL releases the GIL during RasterIO), then
+        # the existing poster pool fans out HTTP POSTs to the inference
+        # service. A bounded `queue.Queue` of dataset handles lets each
+        # reader thread reuse the same `rasterio.open(cog_path)` for its
+        # lifetime instead of re-parsing the COG header per chip; see
+        # docs/decisions/why-parallel-chip-readers.md for the trade-offs
+        # (notably why we avoid GDAL RFC 101 thread-safe datasets for now).
+        reader_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=INFERENCE_READER_POOL_SIZE,
+            thread_name_prefix="chip-read",
+        )
+        poster_executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=INFERENCE_CHIP_CONCURRENCY,
             thread_name_prefix="chip-post",
         )
+        # Keep backwards-compat alias so any inner closure still referring to
+        # `executor` keeps pointing at the poster pool.
+        executor = poster_executor
+        # Pool of rasterio handles, one per reader worker. Reader tasks borrow
+        # via get()/put(); never more than `INFERENCE_READER_POOL_SIZE` handles
+        # are open at once.
+        _src_handles: queue.Queue = queue.Queue()
+        for _ in range(INFERENCE_READER_POOL_SIZE):
+            _src_handles.put(rasterio.open(cog_path))
         pending: dict[concurrent.futures.Future, dict] = {}
+
+        # Phase 4: probe /capabilities once. When the inference service
+        # advertises ``raw_endpoint=true`` we route RGB chips through the
+        # raw binary path; everything else (MSI/SAR) keeps using /detect.
+        _caps = _negotiate_inference_capabilities(session)
+        _raw_rgb_enabled = bool(_caps.get("raw_endpoint")) and (
+            "rgb" in (_caps.get("supported_modalities") or [])
+        )
 
         def _apply_chip_response(ctx: dict, inference_response: dict) -> list[dict]:
             """Convert the chip's inference response into pass-frame detections.
@@ -1611,6 +1834,62 @@ def slice_and_infer(
                     },
                 )
 
+        def _reader_task(
+            x: int,
+            y: int,
+            chip_size: int,
+            pass_index: int,
+        ) -> tuple | None:
+            """Read + encode one chip in a reader thread; returns
+            (chip_file, chip_meta_payload, ctx) or None to skip.
+
+            Each thread borrows a `rasterio.io.DatasetReader` from
+            ``_src_handles`` for the duration of one chip. The handle is
+            returned (not closed) so the next task on the same thread
+            reuses it. GDAL multi-threaded decoding is enabled via the
+            env block set at module load.
+            """
+            src_t = _src_handles.get()
+            try:
+                win_width = min(chip_size, src_t.width - x)
+                win_height = min(chip_size, src_t.height - y)
+                window = Window(x, y, win_width, win_height)
+                with _chip_stage_timer("valid_mask"):
+                    valid_mask = valid_data_mask(src_t, window)
+                valid_fraction = (
+                    float(np.count_nonzero(valid_mask)) / max(1, valid_mask.size)
+                    if valid_mask is not None
+                    else 1.0
+                )
+                if valid_fraction < INFERENCE_MIN_VALID_CHIP_FRACTION:
+                    return None
+                with _chip_stage_timer("read_probe"):
+                    chip = src_t.read(window=window)
+                if np.all(chip == 0) or (src_t.nodata is not None and np.all(chip == src_t.nodata)):
+                    return None
+                with _chip_stage_timer("encode"):
+                    chip_file, chip_meta = _emit_chip_payload(
+                        window, src_t, valid_mask=valid_mask, chip=chip,
+                        raw_rgb_enabled=_raw_rgb_enabled,
+                    )
+                payload_obj = json.dumps({
+                    "pass_id": pass_id,
+                    "window": [x, y, win_width, win_height],
+                    "scale_pass": pass_index,
+                    **inference_metadata,
+                    **chip_meta,
+                })
+                ctx = {
+                    "x": x, "y": y,
+                    "win_width": win_width, "win_height": win_height,
+                    "valid_mask": valid_mask,
+                    "valid_fraction": round(valid_fraction, 4),
+                    "scale_pass": pass_index,
+                }
+                return (chip_file, payload_obj, ctx)
+            finally:
+                _src_handles.put(src_t)
+
         # Rolling-window latency tracker for memory-aware concurrency back-off.
         # When p95 / p50 > 3.0 the inference service is saturated (one slow
         # chip drags the tail); halve the effective limit to slow new submits.
@@ -1735,67 +2014,97 @@ def slice_and_infer(
                         pass_index, chip_size, plan["overlap"], plan["planned_total"],
                     )
 
-                for y_index in grid["y_indices"]:
-                    y = y_index * step
-                    for x_index in grid["x_indices"]:
-                        x = x_index * step
-                        win_width = min(chip_size, width - x)
-                        win_height = min(chip_size, height - y)
-                        window = Window(x, y, win_width, win_height)
+                # Phase 2: prefer pre-snapped pixel offsets when the planner
+                # supplied them (block-aligned origins on tiled COGs).
+                # Legacy fallback recomputes `idx * step` for any plan dict
+                # that predates the offsets keys.
+                y_offsets_seq = grid.get("y_offsets") or [idx * step for idx in grid["y_indices"]]
+                x_offsets_seq = grid.get("x_offsets") or [idx * step for idx in grid["x_indices"]]
 
-                        with _chip_stage_timer("valid_mask"):
-                            valid_mask = valid_data_mask(src, window)
-                        valid_fraction = (
-                            float(np.count_nonzero(valid_mask)) / max(1, valid_mask.size)
-                            if valid_mask is not None
-                            else 1.0
+                # Phase 3: parallel producer. Build an iterator of (x, y)
+                # tuples and drive a unified wait loop over both
+                # `read_pending` (read+encode futures) and `pending` (POST
+                # futures). The combined in-flight bound is the same
+                # `_effective_pending_limit` used by the runtime back-off,
+                # which keeps memory predictable on huge rasters.
+                chip_iter = ((y, x) for y in y_offsets_seq for x in x_offsets_seq)
+                read_pending: dict[concurrent.futures.Future, tuple[int, int]] = {}
+                exhausted = False
+
+                while not exhausted or read_pending or pending:
+                    while (
+                        not exhausted
+                        and len(read_pending) + len(pending) < _effective_pending_limit
+                    ):
+                        try:
+                            y, x = next(chip_iter)
+                        except StopIteration:
+                            exhausted = True
+                            break
+                        rf = reader_executor.submit(
+                            _reader_task, x, y, chip_size, pass_index,
                         )
-                        if valid_fraction < INFERENCE_MIN_VALID_CHIP_FRACTION:
-                            continue
-                        with _chip_stage_timer("read_probe"):
-                            chip = src.read(window=window)
-                        if np.all(chip == 0) or (src.nodata is not None and np.all(chip == src.nodata)):
-                            continue
+                        read_pending[rf] = (x, y)
 
-                        with _chip_stage_timer("encode"):
-                            chip_file, chip_meta = _emit_chip_payload(
-                                window,
-                                src,
-                                valid_mask=valid_mask,
+                    waitable = list(read_pending.keys()) + list(pending.keys())
+                    if not waitable:
+                        break
+                    done, _ = concurrent.futures.wait(
+                        waitable,
+                        return_when=concurrent.futures.FIRST_COMPLETED,
+                    )
+                    for fut in done:
+                        if fut in read_pending:
+                            xy = read_pending.pop(fut)
+                            try:
+                                result = fut.result()
+                            except Exception as exc:
+                                failed_windows += 1
+                                processed_windows += 1
+                                logger.warning(
+                                    "[WORKER] chip read failed pass=%s x=%s y=%s: %s",
+                                    pass_id, xy[0], xy[1], exc,
+                                )
+                                _report_inference_progress()
+                                continue
+                            if result is None:
+                                # Skipped: low valid_fraction / all-zero / nodata.
+                                # These don't count against `processed_chips`
+                                # because no inference was issued, matching the
+                                # pre-Phase-3 `continue` behaviour.
+                                continue
+                            chip_file_local, chip_meta_payload_local, ctx_local = result
+                            chip_label = (
+                                f"pass={pass_id} scale={pass_index} "
+                                f"x={ctx_local['x']} y={ctx_local['y']}"
                             )
-                        chip_meta_payload = json.dumps({
-                            "pass_id": pass_id,
-                            "window": [x, y, win_width, win_height],
-                            "scale_pass": pass_index,
-                            **inference_metadata,
-                            **chip_meta,
-                        })
-                        chip_label = f"pass={pass_id} scale={pass_index} x={x} y={y}"
+                            ctx_local["started"] = time.perf_counter()
+                            with _chip_stage_timer("submit"):
+                                # Phase 4: a numpy array carrier means the
+                                # RGB chip skipped PIL/PNG and goes on the
+                                # /detect_raw raw-binary path. Anything
+                                # else is a file-like (SpooledTemporaryFile
+                                # holding PNG or GeoTIFF bytes) and uses
+                                # the legacy multipart /detect path.
+                                if isinstance(chip_file_local, np.ndarray):
+                                    pf = poster_executor.submit(
+                                        _post_chip_to_sam3_raw,
+                                        session, chip_file_local,
+                                        chip_meta_payload_local, chip_label,
+                                    )
+                                else:
+                                    pf = poster_executor.submit(
+                                        _post_chip_to_sam3,
+                                        session, chip_file_local,
+                                        chip_meta_payload_local, chip_label,
+                                    )
+                            pending[pf] = ctx_local
+                        else:
+                            _consume_one(fut)
 
-                        with _chip_stage_timer("submit"):
-                            future = executor.submit(
-                                _post_chip_to_sam3,
-                                session, chip_file, chip_meta_payload, chip_label,
-                            )
-                        del chip
-                        pending[future] = {
-                            "x": x, "y": y, "win_width": win_width, "win_height": win_height,
-                            "valid_mask": valid_mask,
-                            "valid_fraction": round(valid_fraction, 4),
-                            "scale_pass": pass_index,
-                            "started": time.perf_counter(),
-                        }
-
-                        while len(pending) >= _effective_pending_limit:
-                            done, _ = concurrent.futures.wait(
-                                list(pending.keys()),
-                                return_when=concurrent.futures.FIRST_COMPLETED,
-                            )
-                            for fut in done:
-                                _consume_one(fut)
-
-                # Drain this pass before starting the next so per-pass detections
-                # are stored before the smaller-scale chips run against them.
+                # Drain any remaining POSTs before starting the next pass so
+                # per-pass detections are stored before the smaller-scale
+                # chips run against them.
                 while pending:
                     done, _ = concurrent.futures.wait(
                         list(pending.keys()),
@@ -1804,7 +2113,20 @@ def slice_and_infer(
                     for fut in done:
                         _consume_one(fut)
         finally:
-            executor.shutdown(wait=False, cancel_futures=True)
+            reader_executor.shutdown(wait=False, cancel_futures=True)
+            poster_executor.shutdown(wait=False, cancel_futures=True)
+            # Drain the rasterio handle pool deterministically — leaving
+            # these open until GC would leak file descriptors on long
+            # Celery worker lifetimes.
+            try:
+                while True:
+                    handle = _src_handles.get_nowait()
+                    try:
+                        handle.close()
+                    except Exception:
+                        pass
+            except queue.Empty:
+                pass
             session.close()
     
     inference_summary["processed_chips"] = processed_windows
@@ -2501,9 +2823,6 @@ def _update_clip_tracking(clip_id: int, **fields) -> None:
         logger.exception("failed to update fmv_clips.metadata for clip %s", clip_id)
 
 
-_bbox_iou = iou_cxcywh
-
-
 def _drain_response_entries(resp) -> list[dict]:
     """Drain one /detect_video streaming response to a list of parsed
     JSON dicts. Pure I/O — safe to run outside any DB / dedup lock so
@@ -2526,9 +2845,7 @@ _SENTINEL_PROMPTS = frozenset({"_yoloe"})
 
 
 def _insert_detection_rows(cur, clip_id: int, source_fps: float, window_idx: int, window_start_frame: int,
-                            session_prompt: str, entries: list[dict], next_track_id: int,
-                            overlap_index: dict[tuple[int, str], list[list[float]]] | None = None,
-                            overlap_iou: float = 0.5) -> tuple[int, int]:
+                            session_prompt: str, entries: list[dict], next_track_id: int) -> tuple[int, int]:
     """Insert one (window, prompt) session's parsed entries into fmv_detections.
 
     Each call corresponds to exactly one (window, prompt) session — the
@@ -2539,14 +2856,13 @@ def _insert_detection_rows(cur, clip_id: int, source_fps: float, window_idx: int
 
     `entries` is the result of `_drain_response_entries(resp)` — split so
     the HTTP drain can happen unlocked while this function runs under the
-    worker's shared lock to mutate `next_track_id` and `overlap_index`
-    without races.
+    worker's shared lock to mutate `next_track_id` without races.
 
-    `overlap_index`, if provided, maps `(source_frame, class)` to the list
-    of cxcywh-normalised bboxes already inserted in *earlier* windows. Any
-    incoming detection with IoU >= `overlap_iou` against an existing entry
-    in that key is skipped to suppress the window-overlap duplicates that
-    sliding-window tracking produces by construction.
+    Rows are inserted raw — including window-seam and cross-prompt
+    duplicates. The post-inference consolidation pass (`worker.consolidate_fmv`
+    / backend/fmv_tracker.py) stitches identity across windows and prompts
+    and collapses those duplicates; doing it here with no full-clip view
+    only ever produced a partial same-`(frame, class)` fix.
 
     Returns (rows_inserted, new_next_track_id).
     """
@@ -2605,15 +2921,6 @@ def _insert_detection_rows(cur, clip_id: int, source_fps: float, window_idx: int
         else:
             global_tid = None
 
-        # Cross-window overlap dedup: windows overlap by 2 s by design so
-        # the tracker has continuity across the seam. Without dedup every
-        # overlap frame produces two rows for the same object.
-        if overlap_index is not None and bbox_norm and len(bbox_norm) == 4:
-            cxcywh_for_check = json.loads(bbox_json)
-            existing_boxes = overlap_index.get((source_frame, cls), [])
-            if any(_bbox_iou(cxcywh_for_check, prev) >= overlap_iou for prev in existing_boxes):
-                continue
-
         meta_json = json.dumps({
             "track_id": global_tid,
             "mask_rle": entry.get("mask_rle"),
@@ -2637,8 +2944,6 @@ def _insert_detection_rows(cur, clip_id: int, source_fps: float, window_idx: int
             (clip_id, source_frame, cls, conf, bbox_json, meta_json),
         )
         inserted += 1
-        if overlap_index is not None and bbox_norm and len(bbox_norm) == 4:
-            overlap_index.setdefault((source_frame, cls), []).append(json.loads(bbox_json))
     return inserted, next_track_id
 
 
@@ -2742,14 +3047,11 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
         total_tasks = len(tasks)
 
         # Shared state guarded by `shared_lock`. `next_track_id` is the
-        # rolling allocator for global track IDs; `overlap_index` is the
-        # cross-window dedup table from the FP-suppression round. Both
-        # are touched per-row in `_insert_detection_rows`, so the lock
-        # also wraps the row insertion itself (otherwise two threads can
-        # race the same (source_frame, class) key).
+        # rolling allocator for global track IDs, touched per-row in
+        # `_insert_detection_rows`, so the lock also wraps the row
+        # insertion itself (otherwise two threads race the allocator).
         shared_lock = threading.Lock()
         state = {"next_track_id": 0, "inserted": 0, "completed": 0}
-        overlap_index: dict[tuple[int, str], list[list[float]]] = {}
 
         def _run_one(args: tuple[int, int, Any, str]) -> int:
             win_idx, win_start_frame, win_path, prompt = args
@@ -2810,7 +3112,6 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
                     n, new_next = _insert_detection_rows(
                         cur, clip_id, source_fps, win_idx, win_start_frame,
                         prompt, entries, state["next_track_id"],
-                        overlap_index=overlap_index,
                     )
                     state["next_track_id"] = new_next
                     state["inserted"] += n
@@ -2834,6 +3135,16 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
                 fut.result()  # re-raise any task exception
 
         inserted = state["inserted"]
+
+        # Consolidate the per-(window, prompt) sessions into stable
+        # clip-global tracks. Runs as a separate task on the `default`
+        # queue so it stays off the GPU-bound `imagery` queue and clips
+        # consolidate in parallel. Dispatch failure must not fail tracking
+        # — the raw detections are still usable, just fragmented.
+        try:
+            consolidate_fmv.delay(clip_id)
+        except Exception:
+            logger.exception("failed to queue worker.consolidate_fmv for clip %s", clip_id)
 
         _update_clip_tracking(
             clip_id,
@@ -2870,6 +3181,28 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
         raise
     finally:
         session.close()
+
+
+@celery_app.task(name="worker.consolidate_fmv", queue="default")
+def consolidate_fmv(clip_id: int) -> dict:
+    """Post-inference FMV track consolidation — see backend/fmv_tracker.py.
+
+    Re-associates every ``fmv_detections`` row of a clip into stable,
+    clip-global tracks, votes one canonical class per track, and
+    soft-deletes cross-prompt per-frame duplicates. Idempotent, so safe to
+    re-dispatch. Pure DB + numpy work — runs on the ``default`` queue.
+    """
+    from fmv_tracker import consolidate_fmv_tracks
+    try:
+        result = consolidate_fmv_tracks(clip_id, postgis_db=postgis_db)
+    except Exception:
+        logger.exception("FMV consolidation failed for clip %s (detections left raw)", clip_id)
+        return {"clip_id": clip_id, "error": "consolidation_failed"}
+    event = {"type": "fmv_detections_complete", "clip_id": clip_id,
+             "count": result.get("rows_rewritten", 0), "consolidated": True}
+    publish_event(f"fmv:{clip_id}", event)
+    publish_event("ops", event)
+    return result
 
 
 def _target_history_anchor(cursor, target_id: str) -> float:
@@ -2972,7 +3305,7 @@ def detection_class_summary(pass_id: int) -> list[dict]:
         return [dict(row) for row in cursor.fetchall()]
 
 
-@celery_app.task(queue="imagery", bind=True)
+@celery_app.task(name="worker.process_satellite_imagery", queue="imagery", bind=True)
 def process_satellite_imagery(
     self,
     image_url: str,

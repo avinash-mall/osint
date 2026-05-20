@@ -1,5 +1,5 @@
-﻿/**
- * AdminScreen â€” consolidates the four admin views into a single workspace:
+/**
+ * AdminScreen — consolidates the four admin views into a single workspace:
  *   - Ontology  : delegates to the existing OntologyAdmin component (full CRUD)
  *   - Processing: live list of analytics + training jobs (POST/queued/running/done)
  *   - Models    : registered detection models, with one-click promotion
@@ -64,7 +64,7 @@ const NAV: NavItemDef[] = [
   { key: 'prompts',    label: 'Prompt profiles',  Icon: Search },
   { key: 'versions',   label: 'Version history',  Icon: History },
   { key: 'alerts',     label: 'Health alerts',    Icon: AlertTriangle, badgeKey: 'alerts' },
-  { key: 'auth',       label: 'Auth Â· LDAP',      Icon: Key },
+  { key: 'auth',       label: 'Auth · LDAP',      Icon: Key },
 ];
 
 type AdminScreenProps = {
@@ -81,7 +81,7 @@ export default function AdminScreen({
   const [tab, setTab] = useState<AdminTab>('ontology');
   const [counts, setCounts] = useState<Counts>({ processing: 0, models: 0, alerts: 0 });
 
-  // Listen for Shell's "jump to admin tab" events (e.g. Bell icon â‡’ alerts).
+  // Listen for Shell's "jump to admin tab" events (e.g. Bell icon ⇒ alerts).
   useEffect(() => {
     const handler = (evt: Event) => {
       const detail = (evt as CustomEvent).detail || {};

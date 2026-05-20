@@ -24,14 +24,13 @@ FastAPI app for the GPU inference service. Holds the request handlers (`/health`
 
 ## Key symbols (internal)
 
-- [`_track`](../../inference-sam3/main.py#L262) — context-manager that records per-stage timings into `/health`.
-- [`_modality_to_sensor`](../../inference-sam3/main.py#L289), [`_fetch_default_prompts`](../../inference-sam3/main.py#L301), [`_precision_default_prompts`](../../inference-sam3/main.py#L358), [`resolve_prompts`](../../inference-sam3/main.py#L381) — prompt resolution ladder.
-- [`_prompts_relevant_to_dota`](../../inference-sam3/main.py#L436) — gate input for DOTA-OBB.
-- [`_tag_candidates`](../../inference-sam3/main.py#L441) — carries per-layer provenance (`source_layer`) through fusion.
-- [`preload_models_on_startup`](../../inference-sam3/main.py#L446).
-- [`_build_component`](../../inference-sam3/main.py#L464), [`_load_profile`](../../inference-sam3/main.py#L521), [`_ensure_profile`](../../inference-sam3/main.py#L558), [`_unload_pool_locked`](../../inference-sam3/main.py#L501).
-- [`_next_bundle`](../../inference-sam3/main.py#L576), [`_acquire_video_bundle`](../../inference-sam3/main.py#L589) — per-GPU replica round-robin.
-- [`_vram_stats_gib`](../../inference-sam3/main.py#L623), [`_system_stats`](../../inference-sam3/main.py#L646).
+- [`lifespan`](../../inference-sam3/main.py#L120) — async contextmanager passed to `FastAPI(...)` that runs `preload_models_on_startup()` on boot. Replaces the deprecated `@app.on_event("startup")` pattern.
+- `_track` — context-manager that records per-stage timings into `/health`.
+- [`_modality_to_sensor`](../../inference-sam3/main.py#L324), [`_fetch_default_prompts`](../../inference-sam3/main.py#L336), [`_precision_default_prompts`](../../inference-sam3/main.py#L393), [`resolve_prompts`](../../inference-sam3/main.py#L416) — prompt resolution ladder.
+- [`_prompts_relevant_to_dota`](../../inference-sam3/main.py#L471) — gate input for DOTA-OBB.
+- [`_tag_candidates`](../../inference-sam3/main.py#L476) — carries per-layer provenance (`source_layer`) through fusion.
+- [`preload_models_on_startup`](../../inference-sam3/main.py#L480) — invoked by `lifespan`.
+- [`_build_component`](../../inference-sam3/main.py#L498), [`_load_profile`](../../inference-sam3/main.py#L555), [`_ensure_profile`](../../inference-sam3/main.py#L592) — profile pool lifecycle.
 
 ## /detect request contract
 

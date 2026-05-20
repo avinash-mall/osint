@@ -46,4 +46,4 @@ The inference endpoint rejects multi-prompt PCS requests with HTTP 400 because t
 - [yoloe-tracker.md](yoloe-tracker.md) — the alternative tracker
 - [decisions/why-yoloe-replaced-amg.md](../decisions/why-yoloe-replaced-amg.md)
 - [architecture/data-flow-fmv.md](../architecture/data-flow-fmv.md)
-- [backend/tracker-fmv.md](../backend/tracker-fmv.md)
+- [backend/fmv-track-consolidation.md](../backend/fmv-track-consolidation.md)

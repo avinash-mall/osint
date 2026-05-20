@@ -10,7 +10,6 @@
 @font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 500; font-display: swap; src: url("/assets/fonts/ibm-plex-mono-500.woff2") format("woff2"); }
 @font-face { font-family: "IBM Plex Mono"; font-style: normal; font-weight: 600; font-display: swap; src: url("/assets/fonts/ibm-plex-mono-600.woff2") format("woff2"); }
 @import "tailwindcss";
-@import "./additions.responsive.css";
 
 /*
  * GEOINT Workstation tokens.
@@ -493,6 +492,9 @@ img, svg, video, canvas { max-inline-size: 100%; }
 .imagery-job-indicator {
   min-inline-size: 0;
 }
+/* Mobile nav affordances — hidden on desktop, surfaced in the 46rem media query. */
+.shell-menu-btn { display: none; }
+.shell-rail-backdrop { display: none; }
 
 .login-screen {
   container: login / inline-size;
@@ -683,19 +685,47 @@ img, svg, video, canvas { max-inline-size: 100%; }
   .shell-grid {
     grid-template-columns: minmax(0, 1fr);
   }
+  .shell-body {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  /* The rail becomes an off-canvas overlay sheet driven by the topbar
+     hamburger (.shell-menu-btn). Closed: aside slid fully off-screen so it
+     occludes nothing. Open: aside slides in over a tap-to-dismiss backdrop. */
   .shell-rail {
     position: absolute !important;
     inset: 0 auto 0 0;
     z-index: 1000;
     pointer-events: none;
   }
-  .shell-rail > * { pointer-events: auto; }
-  .shell-body {
-    grid-column: 1;
-    grid-row: 1;
+  .shell-rail.is-open { pointer-events: auto; }
+  .shell-rail .shell-aside { transform: translateX(-105%); }
+  .shell-rail.is-open .shell-aside { transform: translateX(0); }
+  .shell-menu-btn { display: inline-flex; }
+  .shell-rail-backdrop {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 999;
+    background: color-mix(in oklab, var(--bg-0) 55%, transparent);
   }
 }
 
+/* Topbar / statusbar progressive collapse. `.shell-body` is the `workspace`
+   container; the topbar and statusbar are full-width children of it, so a
+   single container scope drives every field. Consolidated here from the
+   former additions.responsive.css. */
+@container workspace (max-width: 820px) {
+  .imagery-job-message { display: none; }
+}
+@container workspace (max-width: 720px) {
+  .shell-jump-label { display: none; }
+  .shell-jump .kbd  { display: none; }
+}
+@container workspace (max-width: 680px) {
+  .imagery-job-stage { display: none; }
+  .imagery-job-eta   { display: none; }
+}
 @container workspace (max-width: 42rem) {
   .shell-topbar,
   .shell-statusbar {
@@ -704,20 +734,22 @@ img, svg, video, canvas { max-inline-size: 100%; }
   .shell-statusbar {
     gap: var(--space-1);
   }
-  .shell-jump > span:not(.kbd),
-  .analyst-chip-role,
-  .imagery-job-message {
-    display: none;
-  }
 }
-
-@container workspace (max-width: 32rem) {
-  .analyst-chip-name {
-    display: none;
-  }
-  .shell-jump {
-    padding-inline: var(--space-2);
-  }
+@container workspace (max-width: 640px) {
+  .analyst-chip-role { display: none; }
+}
+@container workspace (max-width: 540px) {
+  .shell-context-line { display: none; }
+}
+@container workspace (max-width: 480px) {
+  .imagery-job-filename { display: none; }
+}
+@container workspace (max-width: 420px) {
+  .analyst-chip-name { display: none; }
+  .shell-jump { padding-inline: var(--space-2); }
+}
+@container workspace (max-width: 380px) {
+  .cursor-readout > span:not([style*="tabular-nums"]) { display: none; }
 }
 
 @container login (max-width: 54rem) {
@@ -727,6 +759,7 @@ img, svg, video, canvas { max-inline-size: 100%; }
   .login-brand-pane {
     border-right: 0 !important;
     border-bottom: 1px solid var(--line);
+    min-height: 240px;
   }
 }
 
@@ -899,5 +932,132 @@ img, svg, video, canvas { max-inline-size: 100%; }
   }
   :where(.btn.icon, .sentinel-icon-btn) {
     min-inline-size: var(--control-min-inline);
+  }
+}
+
+/* ===== Consolidated from the former additions.responsive.css =====
+   These rules previously lived in a separate file imported at the top of
+   index.css. Container scopes (object-details, layer-panel, gaiamap, admin,
+   jobs-list, alerts-list, models-table, change-dialog) are named in component
+   code; the shell topbar/statusbar collapse rules were folded into the
+   `@container workspace` blocks above. */
+
+/* ObjectDetailsForm — header/footer chrome + status styling. */
+.object-details-header {
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--line);
+}
+.object-details-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--line);
+}
+.object-details-meta {
+  font-size: var(--text-2xs);
+  color: var(--ink-3);
+}
+.object-details-error {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--nato-hostile);
+  padding: 6px 8px;
+  border: 1px solid var(--nato-hostile);
+  border-radius: 4px;
+}
+.object-details-delete {
+  background: color-mix(in oklab, var(--nato-hostile) 12%, var(--bg-2));
+  border-color: color-mix(in oklab, var(--nato-hostile) 55%, var(--line));
+  color: var(--nato-hostile);
+}
+
+/* Panel-title-row variant — baseline-aligned inside responsive panels. */
+.responsive-panel .panel-title-row {
+  align-items: baseline;
+}
+
+@container object-details (max-width: 340px) {
+  .object-details-seg button {
+    min-width: 30%;
+  }
+  .threat-badge {
+    font-size: 9px;
+    padding: 1px 5px;
+  }
+}
+
+@container layer-panel (max-width: 260px) {
+  .imagery-compare-row { grid-template-columns: 1fr; }
+}
+
+@container selection-panel (max-width: 320px) {
+  .selection-panel nav[role="tablist"] button {
+    font-size: 9.5px;
+    letter-spacing: .04em;
+    padding: 8px 6px;
+  }
+}
+
+@container gaiamap (max-width: 720px) {
+  .selection-panel { display: none; }
+}
+
+@container change-dialog (max-width: 460px) {
+  .change-dialog-stats {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+@container change-dialog (max-width: 320px) {
+  .change-dialog-stats {
+    grid-template-columns: 1fr;
+  }
+}
+
+@container admin (max-width: 720px) {
+  .admin-screen { grid-template-columns: 56px 1fr; }
+  .admin-nav button span:not(.mono) { display: none; }
+  .admin-nav .panel-h .h-title { display: none; }
+}
+
+@container jobs-list (max-width: 540px) {
+  .admin-job-row { grid-template-columns: 1fr; gap: 6px; }
+  .admin-job-actions { justify-content: flex-start; }
+}
+
+@container alerts-list (max-width: 460px) {
+  .admin-alert-card .mono { font-size: 10px; }
+}
+
+@container models-table (max-width: 640px) {
+  .models-tbl thead { display: none; }
+  .models-tbl tr {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  .models-tbl td {
+    padding: 2px 0 !important;
+  }
+  .models-tbl td:nth-child(1) { grid-column: 1 / -1; font-weight: 600; }
+  .models-tbl td:nth-child(2) { grid-column: 1; font-size: var(--text-xs); color: var(--ink-2); }
+  .models-tbl td:nth-child(3),
+  .models-tbl td:nth-child(4),
+  .models-tbl td:nth-child(5) {
+    grid-column: 1;
+    font-size: var(--text-2xs);
+    color: var(--ink-3);
+  }
+  .models-tbl td:nth-child(6) { grid-row: 1 / 6; grid-column: 2; align-self: center; }
+}
+
+/* Respect reduced-motion for the rail sheet and dialog transitions. */
+@media (prefers-reduced-motion: reduce) {
+  .shell-aside,
+  .change-dialog-loading,
+  [class*="transition"] {
+    transition: none !important;
+    animation: none !important;
   }
 }

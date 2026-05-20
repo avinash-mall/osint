@@ -28,6 +28,7 @@ from __future__ import annotations
 from worker_legacy import *  # noqa: F401,F403
 from worker_legacy import (  # noqa: F401  — explicit names for IDE completion
     celery_app,
+    consolidate_fmv,
     process_fmv,
     process_satellite_imagery,
     run_prithvi_multitemporal,
@@ -36,9 +37,11 @@ from worker_legacy import (  # noqa: F401  — explicit names for IDE completion
 )
 
 # Underscore-prefixed test fixtures + helper classes the test suite imports
-# directly via `from worker import _DetectionDedupeIndex`.
+# directly via `from worker import _DetectionDedupeIndex`. `from X import *`
+# does not propagate underscore-prefixed names, so each must be listed.
 from worker_legacy import (  # noqa: F401
     _calibration_tag_for_detection,
     _DetectionDedupeIndex,
+    _emit_chip_payload,
     _WeightedBoxFusionIndex,
 )

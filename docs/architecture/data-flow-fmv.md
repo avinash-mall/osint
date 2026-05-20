@@ -16,8 +16,9 @@ Take a full-motion video clip (typically MISB 0601-compliant H.264 from a UAS fe
 4. **Inference dispatch** — worker POSTs the clip + metadata to `inference-sam3:8001/detect_video` and consumes the **NDJSON stream** one record per frame×track.
    - `metadata.prompt_mode = "pcs"` (default): SAM 3.1 multiplex — worker fans out one request per text prompt and merges streams. When the upload omitted prompts, the worker uses bounded precision defaults (`vehicle`, `person`, `building`).
    - `metadata.prompt_mode = "yoloe"`: standalone YOLOE tracker; empty `text_prompts` → `-pf` (prompt-free), otherwise `-seg` (text-promptable).
-5. **Persist** — each row written to PostGIS `fmv_detections` with frame_index, track_id, bbox, mask RLE, detector `source_layer`, embedding (first frame of each track only), confidence.
-6. **Notify** — when the run finishes, the worker publishes `fmv_detections_complete` on Redis pubsub; backend WebSocket router forwards to subscribed clients.
+5. **Persist** — each row written to PostGIS `fmv_detections` with frame_index, track_id, bbox, mask RLE, detector `source_layer`, embedding (first frame of each track only), confidence. Rows are raw — window-seam and cross-prompt duplicates included.
+6. **Consolidate** — `process_fmv` dispatches `worker.consolidate_fmv` ([backend/fmv-track-consolidation.md](../backend/fmv-track-consolidation.md)), which re-associates the clip's `fmv_detections` into stable clip-global tracks, votes one canonical class per track, and soft-deletes cross-prompt per-frame duplicates. Without it the FmvPlayer side panel grows one row per frame×window×prompt.
+7. **Notify** — `process_fmv` and the consolidation task each publish `fmv_detections_complete` on Redis pubsub; the backend WebSocket router forwards to subscribed clients, which refetch.
 
 ## Sequence (timeline)
 
@@ -59,7 +60,7 @@ The same per-detection schema as `/detect`, plus `frame_index` and `track_id`:
 ## Cross-references
 
 - [operations/fmv-ingest-pipeline.md](../operations/fmv-ingest-pipeline.md)
-- [backend/tracker-fmv.md](../backend/tracker-fmv.md) — Hungarian assignment downstream of the NDJSON stream
+- [backend/fmv-track-consolidation.md](../backend/fmv-track-consolidation.md) — Hungarian assignment downstream of the NDJSON stream
 - [inference/sam3-pcs-multiplex-video.md](../inference/sam3-pcs-multiplex-video.md)
 - [inference/yoloe-tracker.md](../inference/yoloe-tracker.md)
 - [decisions/why-yoloe-replaced-amg.md](../decisions/why-yoloe-replaced-amg.md)

@@ -17,8 +17,9 @@ curl -F "file=@drone.mp4" \
 2. `ffmpeg -c copy -f hls -hls_time 4` produces HLS segments — nginx serves them at `/fmv/<clip_id>/playlist.m3u8`.
 3. Telemetry extracted (KLV → GPMD → SRT → fixture); rows persisted to `fmv_frames`.
 4. Worker POSTs to `inference-sam3:/detect_video` with the operator's chosen prompt mode.
-5. NDJSON stream consumed; rows persisted to `fmv_detections`.
-6. WS `fmv_detections_complete` fires; FMV workspace refetches.
+5. NDJSON stream consumed; raw rows persisted to `fmv_detections`.
+6. `worker.consolidate_fmv` runs (`default` queue) — re-associates the clip's detections into stable clip-global tracks, votes one class per track, soft-deletes cross-prompt per-frame duplicates. See [backend/fmv-track-consolidation.md](../backend/fmv-track-consolidation.md).
+7. WS `fmv_detections_complete` fires (from `process_fmv` and again after consolidation); FMV workspace refetches.
 
 See [architecture/data-flow-fmv.md](../architecture/data-flow-fmv.md) for the sequence diagram.
 
@@ -39,5 +40,5 @@ See [decisions/why-yoloe-replaced-amg.md](../decisions/why-yoloe-replaced-amg.md
 - [architecture/data-flow-fmv.md](../architecture/data-flow-fmv.md)
 - [backend/video-metadata-klv.md](../backend/video-metadata-klv.md)
 - [backend/fmv-helpers-hls.md](../backend/fmv-helpers-hls.md)
-- [backend/tracker-fmv.md](../backend/tracker-fmv.md)
+- [backend/fmv-track-consolidation.md](../backend/fmv-track-consolidation.md)
 - [frontend/workspace-fmv-player.md](../frontend/workspace-fmv-player.md)

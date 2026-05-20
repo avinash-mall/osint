@@ -29,4 +29,4 @@ Per-detection embedding adds ~217 ms per chip (single GPU). For high-volume chip
 - [decisions/removed-dinov3-lvd.md](../decisions/removed-dinov3-lvd.md)
 - [benchmarks/embedding-stability.md](../benchmarks/embedding-stability.md)
 - [benchmarks/video-tracking-stability.md](../benchmarks/video-tracking-stability.md)
-- [backend/tracker-fmv.md](../backend/tracker-fmv.md) — consumer of these embeddings
+- [backend/fmv-track-consolidation.md](../backend/fmv-track-consolidation.md) — consumer of these embeddings

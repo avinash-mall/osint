@@ -1,7 +1,7 @@
 # `backend/worker_legacy.py` — Monolithic Celery Tasks
 
 **Path:** [backend/worker_legacy.py](../../backend/worker_legacy.py)
-**Lines:** ~3678 (largest file in the repo)
+**Lines:** ~4100 (largest file in the repo)
 **Depends on:** Most of the rest of `backend/` plus `celery`, `requests`, `numpy`, `rasterio`, `cv2`
 
 ## Purpose
@@ -17,7 +17,8 @@ See [decisions/why-worker-legacy-monolith-kept.md](../decisions/why-worker-legac
 | Task name | Purpose |
 |---|---|
 | `worker.process_satellite_imagery` | Imagery ingest: COG → chip → /detect → georef → persist |
-| `worker.process_fmv` | FMV ingest: HLS → KLV → /detect_video → persist tracks |
+| `worker.process_fmv` | FMV ingest: HLS → KLV → /detect_video → persist raw tracks; dispatches `worker.consolidate_fmv` on completion |
+| `worker.consolidate_fmv` | Post-inference FMV track consolidation over `fmv_detections` (`default` queue) — see [fmv-track-consolidation.md](fmv-track-consolidation.md) |
 | `worker.train_model` | Forward training request to `inference-sam3:/train` and persist results |
 | `worker.transcribe_audio` | (When enabled) audio → text |
 | `worker.poll_http_feeds` | Periodic feed polling (Celery beat) |
@@ -38,7 +39,7 @@ See [decisions/why-worker-legacy-monolith-kept.md](../decisions/why-worker-legac
 
 Imagery tasks emit per-pass summaries including `candidates_by_layer`, `suppressed_by_nms`, and `suppressed_by_policy` from inference debug counts. The imagery pipeline calibrates raw confidence by `source_layer`, applies [detection-policy.md](detection-policy.md), georeferences OBBs, deduplicates across chips, and persists survivors to PostGIS.
 
-FMV tasks consume `/detect_video` NDJSON. SAM3 and YOLOE entries now preserve `source_layer` in row metadata so downstream review can distinguish tracker families.
+FMV tasks consume `/detect_video` NDJSON. SAM3 and YOLOE entries preserve `source_layer` in row metadata so downstream review can distinguish tracker families. `_insert_detection_rows` writes rows **raw** — window-seam and cross-prompt duplicates included; identity is reconciled afterwards by `worker.consolidate_fmv` ([fmv-track-consolidation.md](fmv-track-consolidation.md)), which `process_fmv` dispatches once all windows finish. The earlier per-`(frame, class)` `overlap_index` dedup was removed — see [decisions/why-fmv-track-consolidation.md](../decisions/why-fmv-track-consolidation.md).
 
 ## Failure modes
 

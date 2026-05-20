@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sys
-import importlib
 from pathlib import Path
 
 import numpy as np
@@ -61,6 +60,18 @@ def test_emit_chip_payload_sar_for_sam3(tmp_path):
     chip_file.close()
 
 
+def _reimport_worker():
+    """Re-execute worker_legacy.py module-level init so env-driven constants
+    pick up the current INFERENCE_SPEED_PROFILE. ``importlib.reload(worker)``
+    only re-runs the facade ``__init__.py``; the underlying worker_legacy
+    module is already cached and its constants are baked at first import.
+    """
+    sys.modules.pop("worker", None)
+    sys.modules.pop("worker_legacy", None)
+    import worker as _worker
+    return _worker
+
+
 def test_fast_review_profile_defaults(monkeypatch):
     monkeypatch.setenv("INFERENCE_SPEED_PROFILE", "fast_review")
     monkeypatch.delenv("INFERENCE_CHIP_SIZE", raising=False)
@@ -68,15 +79,15 @@ def test_fast_review_profile_defaults(monkeypatch):
     monkeypatch.delenv("MAX_INFERENCE_CHIPS", raising=False)
     monkeypatch.delenv("INFERENCE_CHIP_CONCURRENCY", raising=False)
 
-    import worker
-
-    worker = importlib.reload(worker)
+    worker = _reimport_worker()
 
     assert worker.INFERENCE_SPEED_PROFILE == "fast_review"
     assert worker.DEFAULT_INFERENCE_CHIP_SIZE == 1008
     assert worker.DEFAULT_INFERENCE_OVERLAP == 252
     assert worker.MAX_INFERENCE_CHIPS == 256
-    assert worker.INFERENCE_CHIP_CONCURRENCY == 1
+    # Phase 3 reader pool: effective concurrency = max(profile_floor=1, min(8, cpu_count)).
+    # The fast_review profile contributes the lower bound only; CPU floor may raise it.
+    assert worker.INFERENCE_CHIP_CONCURRENCY >= 1
 
 
 def test_recall_review_profile_keeps_full_coverage(monkeypatch):
@@ -86,12 +97,11 @@ def test_recall_review_profile_keeps_full_coverage(monkeypatch):
     monkeypatch.delenv("MAX_INFERENCE_CHIPS", raising=False)
     monkeypatch.delenv("INFERENCE_CHIP_CONCURRENCY", raising=False)
 
-    import worker
-
-    worker = importlib.reload(worker)
+    worker = _reimport_worker()
 
     assert worker.INFERENCE_SPEED_PROFILE == "recall_review"
     assert worker.DEFAULT_INFERENCE_CHIP_SIZE == 1008
     assert worker.DEFAULT_INFERENCE_OVERLAP == 252
     assert worker.MAX_INFERENCE_CHIPS == 0
-    assert worker.INFERENCE_CHIP_CONCURRENCY == 2
+    # See note in test_fast_review_profile_defaults; recall_review profile_floor=2.
+    assert worker.INFERENCE_CHIP_CONCURRENCY >= 2

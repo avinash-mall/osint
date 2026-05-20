@@ -105,6 +105,10 @@ Variables below are grouped by subsystem. Defaults are the values in `.env.examp
 | `SAM3_LOAD_GROUNDING_DINO` | `0` | Grounding-DINO (auto-gated and explicitly enabled per request) |
 | `SAM3_LOAD_YOLOE` | `1` | YOLOE-26x FMV tracker |
 | `FMV_DEFAULT_PROMPTS` | `vehicle,person,building` | Backend worker PCS fallback when an FMV upload omits prompts |
+| `FMV_TRACKER_COST_WEIGHTS` | `{}` | JSON cost weights for FMV track consolidation (`iou`/`emb`/`gap`/`class`) — see [fmv-track-consolidation.md](../backend/fmv-track-consolidation.md) |
+| `FMV_TRACK_MIN_IOU` / `FMV_TRACK_MIN_EMB_SIM` | `0.30` / `0.55` | FMV consolidation association gates |
+| `FMV_TRACK_MAX_FRAME_GAP_SECONDS` | `2.0` | FMV consolidation temporal gate (bridges window seams) |
+| `FMV_TRACK_MATCH_THRESHOLD` / `FMV_TRACK_MERGE_IOU` | `1.50` / `0.55` | FMV consolidation Hungarian reject cutoff / co-temporal merge IoU |
 | `SAM3_HF_HUB_OFFLINE` / `SAM3_TRANSFORMERS_OFFLINE` | `1` | Offline mode |
 | `HF_TOKEN` | from .env | Required for gated weights |
 | `DISABLE_ADDMM_CUDA_LT` | `1` | Route `nn.Linear` off cuBLAS-Lt (A100/cu130 bug) |

@@ -38,6 +38,11 @@ def test_text_prompts_override_dedupes_and_normalizes(monkeypatch):
 
 
 def test_falls_back_to_backend_defaults(monkeypatch):
+    # The ontology-fetch fallback only runs when the operator opts in via
+    # SAM3_DEFAULT_PROMPT_SOURCE=ontology; the default precision-first source
+    # short-circuits before _fetch_default_prompts. See
+    # docs/decisions/why-precision-first-inference-defaults.md.
+    monkeypatch.setenv("SAM3_DEFAULT_PROMPT_SOURCE", "ontology")
     captured = {}
 
     def fake_fetch(sensor, timeout=5.0):
@@ -51,6 +56,7 @@ def test_falls_back_to_backend_defaults(monkeypatch):
 
 
 def test_sar_modality_maps_to_sar_sensor(monkeypatch):
+    monkeypatch.setenv("SAM3_DEFAULT_PROMPT_SOURCE", "ontology")
     seen = {}
 
     def fake_fetch(sensor, timeout=5.0):
@@ -64,6 +70,8 @@ def test_sar_modality_maps_to_sar_sensor(monkeypatch):
 
 
 def test_backend_unavailable_raises_typed_error(monkeypatch):
+    monkeypatch.setenv("SAM3_DEFAULT_PROMPT_SOURCE", "ontology")
+
     def boom(*_a, **_k):
         raise ConnectionError("no route to backend")
 
@@ -85,9 +93,23 @@ def test_explicit_text_prompts_skip_backend_even_on_outage(monkeypatch):
 
 
 def test_empty_backend_response_raises_value_error(monkeypatch):
+    monkeypatch.setenv("SAM3_DEFAULT_PROMPT_SOURCE", "ontology")
     monkeypatch.setattr(main, "_fetch_default_prompts", lambda *_a, **_k: [])
     with pytest.raises(ValueError):
         main.resolve_prompts({"modality": "rgb"})
+
+
+def test_precision_default_source_skips_backend_fetch(monkeypatch):
+    """With the default SAM3_DEFAULT_PROMPT_SOURCE=precision, resolve_prompts
+    must NOT call the ontology backend even when no text_prompts are given.
+    Regression guard for docs/decisions/why-precision-first-inference-defaults.md."""
+    monkeypatch.delenv("SAM3_DEFAULT_PROMPT_SOURCE", raising=False)
+    monkeypatch.setattr(
+        main, "_fetch_default_prompts",
+        lambda *_a, **_k: pytest.fail("precision-first path must not hit backend"),
+    )
+    prompts = main.resolve_prompts({"modality": "rgb"})
+    assert isinstance(prompts, list) and prompts, "precision defaults must be non-empty"
 
 
 def test_fetch_caches_per_sensor(monkeypatch):
