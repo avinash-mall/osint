@@ -1,4 +1,4 @@
-﻿// Lightweight type aliases consumed by the new map/ sub-components
+// Lightweight type aliases consumed by the new map/ sub-components
 // (MapStage, LayerPanel, SelectionPanel, ChangeDetectionDialog). The
 // monolith owns its own richer internal shapes; these exports are the
 // public contract for incremental extraction.
@@ -240,7 +240,7 @@ export default function GaiaMap({
 
   const selectedImageryData = imagery.find((img) => img.id === selectedImagery);
 
-  // Live ontology categories (sensor-agnostic â€” the map shows all detections
+  // Live ontology categories (sensor-agnostic — the map shows all detections
   // regardless of sensor). Order/colour/short come from the API and update
   // automatically when the backend bumps `version_id`.
   const { order: CATEGORY_ORDER, categories: DETECTION_CATEGORIES, branches: ONTOLOGY_BRANCHES_FLAT } = useDetectionCategories();
@@ -330,7 +330,7 @@ export default function GaiaMap({
       if (detectionClassFilter) {
         // SOLO mode: restrict to features whose own raw class matches.
         // Compare ONLY the leaf class (`original_class` / `class` / `label`),
-        // not parent_class â€” otherwise a feature with parent_class="building"
+        // not parent_class — otherwise a feature with parent_class="building"
         // and class="military_facility" gets erased by the auto-hide of
         // every other class (including "building") that SOLO injects into
         // hiddenDetectionLabels.
@@ -1293,7 +1293,7 @@ export default function GaiaMap({
               }}
             >
               <span className="label-mono" style={{ fontSize: 10, color: '#f0c279' }}>
-                âš  Filters from your last session are still hiding:
+                ⚠ Filters from your last session are still hiding:
               </span>
               {restoredHiddenNotice.categories.length > 0 && (
                 <button
@@ -1309,7 +1309,7 @@ export default function GaiaMap({
                     color: '#f0c279',
                   }}
                 >
-                  Show {restoredHiddenNotice.categories.length} hidden categories âœ“
+                  Show {restoredHiddenNotice.categories.length} hidden categories ✓
                 </button>
               )}
               {restoredHiddenNotice.labels.length > 0 && (
@@ -1326,7 +1326,7 @@ export default function GaiaMap({
                     color: '#f0c279',
                   }}
                 >
-                  Show {restoredHiddenNotice.labels.length} hidden labels âœ“
+                  Show {restoredHiddenNotice.labels.length} hidden labels ✓
                 </button>
               )}
               <div style={{ flex: 1 }} />
@@ -1343,7 +1343,7 @@ export default function GaiaMap({
                   padding: '0 4px',
                 }}
               >
-                âœ•
+                ✕
               </button>
             </div>
           )}
@@ -1400,7 +1400,7 @@ export default function GaiaMap({
                 }}
               >
                 <span className="label-mono" style={{ fontSize: 10, color: 'var(--ink-2)' }}>
-                  Showing {visibleDetectionCount}/{suppressionCounts.total} Â·
+                  Showing {visibleDetectionCount}/{suppressionCounts.total} ·
                 </span>
                 {suppressionCounts.byConfidence > 0 && (
                   <button
@@ -1409,7 +1409,7 @@ export default function GaiaMap({
                     title={`Click to reset confidence floor (currently ${confidenceThreshold.toFixed(2)})`}
                     style={chipStyle}
                   >
-                    -{suppressionCounts.byConfidence} below conf {confidenceThreshold.toFixed(2)} âœ•
+                    -{suppressionCounts.byConfidence} below conf {confidenceThreshold.toFixed(2)} ✕
                   </button>
                 )}
                 {suppressionCounts.byCategory > 0 && (
@@ -1419,7 +1419,7 @@ export default function GaiaMap({
                     title="Click to show all hidden categories"
                     style={chipStyle}
                   >
-                    -{suppressionCounts.byCategory} hidden by category ({hiddenDetectionCategories.length}) âœ•
+                    -{suppressionCounts.byCategory} hidden by category ({hiddenDetectionCategories.length}) ✕
                   </button>
                 )}
                 {suppressionCounts.byLabel > 0 && (
@@ -1429,7 +1429,7 @@ export default function GaiaMap({
                     title="Click to show all hidden labels"
                     style={chipStyle}
                   >
-                    -{suppressionCounts.byLabel} hidden by label ({hiddenDetectionLabels.length}) âœ•
+                    -{suppressionCounts.byLabel} hidden by label ({hiddenDetectionLabels.length}) ✕
                   </button>
                 )}
                 {overflowMarkers > 0 && (
@@ -1445,7 +1445,7 @@ export default function GaiaMap({
                     style={{ ...chipStyle, cursor: 'default' }}
                     title="Older detections are excluded by the time-window query; expand the timeline range to see more"
                   >
-                    last {tw}m window â€” older detections excluded
+                    last {tw}m window — older detections excluded
                   </span>
                 )}
                 {showSamplingChip && (
@@ -1456,9 +1456,9 @@ export default function GaiaMap({
                       borderColor: '#d8a14a',
                       color: '#f0c279',
                     }}
-                    title={`The chip planner sub-sampled ${suppressionCounts.sampledPasses} pass(es) â€” only ~${Math.round(suppressionCounts.worstCoverage * 100)}% of the raster was scanned for inference. "No detections" in unscanned regions does not mean "no targets". Re-ingest with INFERENCE_SPEED_PROFILE=recall_review or raise MAX_INFERENCE_CHIPS for full coverage.`}
+                    title={`The chip planner sub-sampled ${suppressionCounts.sampledPasses} pass(es) — only ~${Math.round(suppressionCounts.worstCoverage * 100)}% of the raster was scanned for inference. "No detections" in unscanned regions does not mean "no targets". Re-ingest with INFERENCE_SPEED_PROFILE=recall_review or raise MAX_INFERENCE_CHIPS for full coverage.`}
                   >
-                    âš  {suppressionCounts.sampledPasses} sub-sampled pass(es) Â· coverage {Math.round(suppressionCounts.worstCoverage * 100)}%
+                    ⚠ {suppressionCounts.sampledPasses} sub-sampled pass(es) · coverage {Math.round(suppressionCounts.worstCoverage * 100)}%
                   </span>
                 )}
               </div>
@@ -1482,7 +1482,7 @@ export default function GaiaMap({
             >
               <RefreshCw size={12} />
             </button>
-            <span className="label-mono">Event timeline Â· last {timelineWindowMinutes}m</span>
+            <span className="label-mono">Event timeline · last {timelineWindowMinutes}m</span>
             <div className="seg" style={{ marginLeft: 8 }}>
               {[15, 30, 60].map((minutes) => (
                 <button
@@ -1500,7 +1500,7 @@ export default function GaiaMap({
               {new Date(timeRange.start).toLocaleTimeString()} / {new Date(timeRange.end).toLocaleTimeString()}
             </span>
             <span className="mono" style={{ fontSize: 10, color: 'var(--ink-3)' }}>
-              Â· {visibleDetectionCount} in window
+              · {visibleDetectionCount} in window
             </span>
           </div>
           <div
@@ -1646,7 +1646,7 @@ export default function GaiaMap({
               color: 'var(--ink-1)',
             }}
           >
-            Selection {selectedDetection ? `Â· DET-${selectedDetection.properties?.id}` : ''}
+            Selection {selectedDetection ? `· DET-${selectedDetection.properties?.id}` : ''}
           </span>
           <ChevronLeft size={11} style={{ color: 'var(--ink-3)' }} />
         </button>

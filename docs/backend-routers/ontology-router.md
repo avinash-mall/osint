@@ -1,14 +1,14 @@
 # Ontology Router (`/api/ontology/*`)
 
 **Path:** [backend/routers/ontology.py](../../backend/routers/ontology.py)
-**Lines:** ~593 (the largest router after ingest)
+**Lines:** ~612 (the largest router after ingest)
 **Depends on:** [backend/ontology.py](../../backend/ontology.py), [backend/auth.py](../../backend/auth.py) (`require_admin`), [backend/schemas.py](../../backend/schemas.py)
 
 Router declared with `prefix="/api/ontology"` — endpoints below are relative to that.
 
 ## Purpose
 
-CRUD over the ontology (branches, objects, prompts) plus the prompt-profile system, version-history audit log, and the unknown-label triage workflow that LLM-emitted labels feed.
+CRUD over the ontology (branches, objects, prompts) plus the prompt-profile system, version-history audit log, the proposed ontology updates log, and the unknown-label triage workflow that LLM-emitted labels feed.
 
 ## Endpoints
 
@@ -30,8 +30,7 @@ CRUD over the ontology (branches, objects, prompts) plus the prompt-profile syst
 | `PUT` | `/prompt-profiles/{id}/activate` | | [ontology.py#L550](../../backend/routers/ontology.py#L550) | Make this profile active |
 | `DELETE` | `/prompt-profiles/{id}` | | [ontology.py#L568](../../backend/routers/ontology.py#L568) | Delete profile |
 | `GET` | `/version-history` | | [ontology.py#L580](../../backend/routers/ontology.py#L580) | Audit log of every edit |
-
-`GET /api/ontology/updates` and `POST /api/ontology/update` (LLM-proposed bulk edits) live in [backend/main.py](../../backend/main.py).
+| `GET` | `/updates` | `/api/ontology/updates` | [ontology.py#L597](../../backend/routers/ontology.py#L597) | List proposed ontology updates |
 
 ## Why this design
 

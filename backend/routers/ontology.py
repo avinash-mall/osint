@@ -591,3 +591,20 @@ def get_version_history(limit: int = Query(100, ge=1, le=1000), user: SessionUse
         cur_row = cur.fetchone()
         current = int(cur_row["version_id"]) if cur_row else None
     return {"current_version_id": current, "versions": rows}
+
+
+# ─── Ontology Updates ──────────────────────────────────────────────────
+
+@router.get("/updates")
+def get_ontology_updates(limit: int = Query(8, ge=1, le=100), user: SessionUser = Depends(get_current_user)):
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cur:
+        cur.execute(
+            "SELECT id, source_type, source_id, domain, status, summary, "
+            "proposed_entities, proposed_relationships, context, error, created_at, updated_at "
+            "FROM ontology_updates ORDER BY id DESC LIMIT %s",
+            (limit,),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+    return {"updates": rows}
+

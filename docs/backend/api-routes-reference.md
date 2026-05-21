@@ -58,7 +58,8 @@ The complete route table. Routers in [backend/routers/](../../backend/routers/) 
 | `GET` | `/api/ontology/version` · `/default-prompts` · `/version-history` | [ontology-router.md](../backend-routers/ontology-router.md) |
 | `GET` `POST` | `/api/ontology/unknown-labels` · `/{label}/assign` | [ontology-router.md](../backend-routers/ontology-router.md) |
 | `GET` `POST` `PUT` `DELETE` | `/api/ontology/prompt-profiles[/{id}/activate]` | [ontology-router.md](../backend-routers/ontology-router.md) |
-| `GET` `POST` | `/api/ontology/updates` · `/api/ontology/update` | [backend/main.py](../../backend/main.py) (LLM-proposed bulk edits) |
+| `GET` | `/api/ontology/updates` | [ontology-router.md](../backend-routers/ontology-router.md) |
+| `POST` | `/api/ontology/update` | [backend/main.py](../../backend/main.py) (LLM-proposed bulk edits) |
 
 ## Analytics · Models · Training · Alerts · Feeds · AI
 

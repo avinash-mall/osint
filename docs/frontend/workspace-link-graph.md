@@ -11,6 +11,7 @@ Force-directed visualization of the Neo4j entity graph: Targets, Assets, Observa
 
 - `GET /api/graph` — initial 1000-node load
 - `POST /api/graph/neighborhood` — expanding a node fetches its k-hop neighborhood
+- `GET /api/ontology/updates` — fetches proposed ontology updates for analyst review in the bottom strip
 
 ## Behavior
 

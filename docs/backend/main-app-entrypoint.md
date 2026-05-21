@@ -6,7 +6,7 @@
 
 ## Purpose
 
-The FastAPI application object lives here. Mounts the 13 routers, registers the session middleware that gates mutating verbs, declares the lifespan startup, and **also** holds the bulk read endpoints that were never moved out (`/api/detections` GET, `/api/tracks/*`, `/api/observations`, `/api/timeline/events`, `/api/feeds/*`, `/api/sources/*`, `/api/imagery` extras, `/api/collection/tasks`, `/api/ontology/updates`).
+The FastAPI application object lives here. Mounts the 13 routers, registers the session middleware that gates mutating verbs, declares the lifespan startup, and **also** holds the bulk read endpoints that were never moved out (`/api/detections` GET, `/api/tracks/*`, `/api/observations`, `/api/timeline/events`, `/api/feeds/*`, `/api/sources/*`, `/api/imagery` extras, `/api/collection/tasks`).
 
 ## Why this design
 

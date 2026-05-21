@@ -295,9 +295,9 @@ export default function GraphExplorer() {
           <span>Link Graph · 2-hop neighborhood</span>
           <div className="ml-auto flex items-center gap-2">
             <div className="flex border border-sentinel-line-2 h-6">
-              <button className="px-3 bg-sentinel-accent text-sentinel-bg text-[10px] font-mono uppercase">Force</button>
-              <button className="px-3 text-sentinel-muted text-[10px] font-mono uppercase border-l border-sentinel-line-2">Hier</button>
-              <button className="px-3 text-sentinel-muted text-[10px] font-mono uppercase border-l border-sentinel-line-2">Geo</button>
+              <button className="px-3 bg-sentinel-accent text-sentinel-bg text-[10px] font-mono uppercase whitespace-nowrap">Force</button>
+              <button className="px-3 text-sentinel-muted text-[10px] font-mono uppercase border-l border-sentinel-line-2 whitespace-nowrap">Hier</button>
+              <button className="px-3 text-sentinel-muted text-[10px] font-mono uppercase border-l border-sentinel-line-2 whitespace-nowrap">Geo</button>
             </div>
             <button
               type="button"

@@ -200,6 +200,7 @@ img, svg, video, canvas { max-inline-size: 100%; }
   border: 1px solid var(--line-2); border-radius: 0;
   cursor: pointer; font-size: var(--text-xs);
   transition: background .12s, color .12s, border-color .12s;
+  white-space: nowrap;
 }
 .btn:hover { color: var(--ink-0); border-color: color-mix(in oklab, var(--accent) 50%, var(--line-2)); }
 .btn.sm   { min-block-size: 1.625rem; font-size: var(--text-xs); }
@@ -376,6 +377,7 @@ img, svg, video, canvas { max-inline-size: 100%; }
   background: var(--bg-2); color: var(--ink-0);
   padding: 0 8px;
   font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+  white-space: nowrap;
 }
 .sentinel-btn.primary {
   border-color: var(--accent); background: var(--accent); color: var(--accent-ink);
