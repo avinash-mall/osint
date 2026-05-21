@@ -1,7 +1,7 @@
 # `backend/worker_legacy.py` — Monolithic Celery Tasks
 
 **Path:** [backend/worker_legacy.py](../../backend/worker_legacy.py)
-**Lines:** ~4110 (largest file in the repo)
+**Lines:** ~4130 (largest file in the repo)
 **Depends on:** Most of the rest of `backend/` plus `celery`, `requests`, `numpy`, `rasterio`, `cv2`
 
 ## Purpose
@@ -36,6 +36,10 @@ See [decisions/why-worker-legacy-monolith-kept.md](../decisions/why-worker-legac
 - [`store_detections`](../../backend/worker_legacy.py#L2390-L2591) — persists calibrated, georeferenced, evidence-ranked detections.
 - [`FMV_DEFAULT_PROMPTS`](../../backend/worker_legacy.py#L236) — small PCS fallback prompt set (`vehicle,person,building`) when the operator did not provide FMV prompts.
 
+## Fork safety
+
+This module runs DB queries at **import time** (`DETECTION_POLICY = active_detection_policy()`), so importing it in the Celery MainProcess builds `postgis_db`'s connection pool before the prefork pool forks its workers. A `worker_process_init` signal handler (`_reset_db_pool_after_fork`, just after the `celery_app` definition) calls `postgis_db.reset_after_fork()` in every child so each rebuilds its own pool — without it the first task per child fails with `DatabaseError: error with status PGRES_TUPLES_OK and no message from the libpq`. See [decisions/reset-db-pool-after-fork.md](../decisions/reset-db-pool-after-fork.md).
+
 ## Inputs / Outputs
 
 Imagery tasks emit per-pass summaries including `candidates_by_layer`, `suppressed_by_nms`, and `suppressed_by_policy` from inference debug counts. The imagery pipeline calibrates raw confidence by `source_layer`, applies [detection-policy.md](detection-policy.md), georeferences OBBs, deduplicates across chips, applies [detection-evidence.md](detection-evidence.md), and persists survivors to PostGIS.
@@ -58,6 +62,8 @@ Anything in this file is re-exported by [backend/worker/__init__.py](../../backe
 - [backend/worker-package-facade.md](worker-package-facade.md)
 - [backend/detection-evidence.md](detection-evidence.md)
 - [decisions/why-worker-legacy-monolith-kept.md](../decisions/why-worker-legacy-monolith-kept.md)
+- [decisions/reset-db-pool-after-fork.md](../decisions/reset-db-pool-after-fork.md)
+- [backend/database-connections.md](database-connections.md)
 - [decisions/why-evidence-ranked-detections.md](../decisions/why-evidence-ranked-detections.md)
 - [decisions/why-precision-first-inference-defaults.md](../decisions/why-precision-first-inference-defaults.md)
 - [operations/celery-queues-and-tasks.md](../operations/celery-queues-and-tasks.md)

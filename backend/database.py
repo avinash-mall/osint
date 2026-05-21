@@ -102,6 +102,28 @@ class PostGISConnection:
                     self._pool.closeall()
                     self._pool = None
 
+    def reset_after_fork(self):
+        """Drop the inherited connection pool after ``os.fork()``.
+
+        libpq connections are not fork-safe: a child process that reuses a
+        socket opened by its parent desyncs the wire protocol, which surfaces
+        as ``DatabaseError: error with status PGRES_TUPLES_OK and no message
+        from the libpq``. Celery's prefork pool forks one MainProcess into N
+        children, so any pool built before the fork (e.g. by an import-time
+        query) is shared across every child.
+
+        Clearing ``_pool`` makes the next ``get_connection`` in this process
+        lazily build a fresh pool owning its own connections. The inherited
+        connection objects are dropped without an explicit ``closeall()`` —
+        their sockets are shared with the parent (a forked fd points at the
+        same TCP connection), so closing them here could tear down the
+        parent's connection too. The parent owns their lifecycle.
+
+        See docs/decisions/reset-db-pool-after-fork.md.
+        """
+        with self._pool_lock:
+            self._pool = None
+
     @contextmanager
     def get_cursor(self, commit=False):
         conn = self.get_connection()

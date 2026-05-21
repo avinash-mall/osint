@@ -255,6 +255,26 @@ celery_app.conf.beat_schedule = {
 celery_app.conf.timezone = "UTC"
 
 
+from celery.signals import worker_process_init
+
+
+@worker_process_init.connect
+def _reset_db_pool_after_fork(**_kwargs):
+    """Rebuild the PostGIS pool in every prefork child.
+
+    Importing this module (``DETECTION_POLICY = active_detection_policy()``
+    at module scope, plus other paths) issues a DB query in the Celery
+    MainProcess, which builds ``postgis_db``'s connection pool *before* the
+    prefork pool forks its workers. libpq connections are not fork-safe, so
+    every child must discard the inherited pool and lazily build its own —
+    otherwise the first task fails with ``DatabaseError: error with status
+    PGRES_TUPLES_OK and no message from the libpq``.
+
+    See docs/decisions/reset-db-pool-after-fork.md.
+    """
+    postgis_db.reset_after_fork()
+
+
 def ensure_worker_imagery_schema() -> None:
     with postgis_db.get_cursor(commit=True) as cursor:
         cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", ("sentinel_platform_schema",))
