@@ -92,7 +92,6 @@ export type Props = {
   detectionsLayerVersion: number;
   hiddenDetectionCategories: string[];
   hiddenDetectionLabels: string[];
-  showBbox: boolean;
   bboxMode: 'hbb' | 'obb' | 'mask';
   setBboxMode: (m: 'hbb' | 'obb' | 'mask') => void;
   showDetectionCenterMarkers: boolean;
@@ -159,7 +158,6 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
     detectionsLayerVersion,
     hiddenDetectionCategories,
     hiddenDetectionLabels,
-    showBbox,
     bboxMode,
     setBboxMode,
     showDetectionCenterMarkers,
@@ -417,7 +415,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
             );
           })}
 
-          {activeLayers.detections && !showDetectionCenterMarkers && !showBbox && filteredDetectionsGeoJSON.features?.map((feature: any) => {
+          {activeLayers.detections && !showDetectionCenterMarkers && filteredDetectionsGeoJSON.features?.map((feature: any) => {
             const center = detectionCenter(feature);
             if (!center) return null;
             const category = detectionCategoryForFeature(feature);
@@ -487,7 +485,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
               );
             })}
 
-          {activeLayers.detections && showBbox && (geomDisplayedDetectionsGeoJSON.features?.length || 0) > 0 && (
+          {activeLayers.detections && (geomDisplayedDetectionsGeoJSON.features?.length || 0) > 0 && (
             <CanvasGeoJSON
               key={detectionLayerKey}
               data={geomDisplayedDetectionsGeoJSON}

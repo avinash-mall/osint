@@ -40,9 +40,14 @@ The Common Operating Picture: a 2D Leaflet map with all detection layers, satell
 - `GET /api/geotime/features` for Bases / LaunchPoints / asset tracks
 - Tile URLs for imagery from `GET /api/imagery/{id}/tiles`
 
+## Detection rendering
+
+`GaiaMap` owns the detection-layer view state: `bboxMode` (`hbb`/`obb`/`mask`, default `obb`) and the derived `showDetectionCenterMarkers` flag (`count` 1–`DETECTION_CENTER_MARKER_LIMIT`). Detection bounding boxes always render; there is no `showBbox` toggle. See [map-stage-and-layers.md](map-stage-and-layers.md) and [decisions/why-bbox-toggle-removed.md](../decisions/why-bbox-toggle-removed.md).
+
 ## Cross-references
 
 - [map-stage-and-layers.md](map-stage-and-layers.md)
+- [decisions/why-bbox-toggle-removed.md](../decisions/why-bbox-toggle-removed.md)
 - [map-selection-panel.md](map-selection-panel.md)
 - [backend-routers/imagery-router.md](../backend-routers/imagery-router.md)
 - [backend-routers/detections-router.md](../backend-routers/detections-router.md)

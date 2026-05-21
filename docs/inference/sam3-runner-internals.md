@@ -33,7 +33,7 @@ Loads SAM 3 / SAM 3.1 image weights and runs the text- and box-prompted detectio
 
 `_run_text_prompts_cached_batched` runs the ViT encoder once per image, then iterates text prompts in chunks doing only text-encode + DETR-decode. It relies on the runtime patch [`patches/sam3_cached_forward.py`](../../inference-sam3/patches/sam3_cached_forward.py), which replaces `Sam3Image.forward` with `forward_with_cache` — that variant reuses a stashed `_cached_backbone_out` and skips the encoder.
 
-`forward_with_cache` must mirror the *whole* of upstream `Sam3Image.forward`, including its normalisation of the datapoint onto `self.device` before grounding. It re-applies that with `copy_data_to_device` on `input.find_inputs` / `input.find_targets`; omitting it crashes `_get_img_feats` on multi-GPU hosts when `find_input.img_ids` and the cached `vis_pos_enc` land on different CUDA devices. See [decisions/cached-forward-device-normalise.md](../decisions/cached-forward-device-normalise.md).
+`forward_with_cache` must mirror the *whole* of upstream `Sam3Image.forward`, including its normalisation of the datapoint device before grounding. It moves `input.find_inputs` / `input.find_targets` onto the device of the cached `backbone_out` via the local `_move_tensors_to_device` helper (the upstream `copy_data_to_device` does not recurse into `FindInput`). Omitting it crashes `_get_img_feats` on multi-GPU hosts when `find_input.img_ids` and the cached `vis_pos_enc` land on different CUDA devices. See [decisions/cached-forward-device-normalise.md](../decisions/cached-forward-device-normalise.md).
 
 ## Inputs / Outputs
 

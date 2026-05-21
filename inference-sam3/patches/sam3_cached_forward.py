@@ -18,6 +18,62 @@ from typing import Any
 logger = logging.getLogger("sam3_cached_forward")
 
 
+def _first_tensor_device(obj):
+    """Device of the first ``torch.Tensor`` found in a nested container, or
+    ``None`` if there is none."""
+    import torch
+    if isinstance(obj, torch.Tensor):
+        return obj.device
+    if isinstance(obj, dict):
+        for value in obj.values():
+            found = _first_tensor_device(value)
+            if found is not None:
+                return found
+    elif isinstance(obj, (list, tuple)):
+        for value in obj:
+            found = _first_tensor_device(value)
+            if found is not None:
+                return found
+    return None
+
+
+def _move_tensors_to_device(obj, device, _depth: int = 0):
+    """Recursively move every ``torch.Tensor`` inside ``obj`` onto ``device``,
+    mutating lists / dicts / objects in place.
+
+    The upstream ``copy_data_to_device`` helper only recurses known container
+    types and leaves SAM3's ``FindInput`` / ``FindTarget`` objects untouched,
+    so the cached forward needs its own mover. Recursion depth is bounded as a
+    guard against pathological or cyclic structures.
+    """
+    import torch
+    if _depth > 6:
+        return obj
+    if isinstance(obj, torch.Tensor):
+        return obj.to(device)
+    if isinstance(obj, dict):
+        for key in list(obj.keys()):
+            obj[key] = _move_tensors_to_device(obj[key], device, _depth + 1)
+        return obj
+    if isinstance(obj, list):
+        for idx in range(len(obj)):
+            obj[idx] = _move_tensors_to_device(obj[idx], device, _depth + 1)
+        return obj
+    if isinstance(obj, tuple):
+        return tuple(_move_tensors_to_device(v, device, _depth + 1) for v in obj)
+    attrs = getattr(obj, "__dict__", None)
+    if attrs:
+        for name, value in list(attrs.items()):
+            moved = _move_tensors_to_device(value, device, _depth + 1)
+            if moved is not value:
+                try:
+                    setattr(obj, name, moved)
+                except AttributeError:
+                    pass
+        return obj
+    return obj
+
+
 def install() -> bool:
     """Install the cached-forward patch on Sam3Image. Returns True on success.
 
@@ -51,7 +107,6 @@ def install() -> bool:
         # replace the image-encoder call with the stashed features. ----
         import torch
         from sam3.model.sam3_image import SAM3Output, Prompt
-        from sam3.model.utils.misc import copy_data_to_device
 
         device = self.device
         # Start from the cached image-features dict (deep-share, no copy).
@@ -68,20 +123,22 @@ def install() -> bool:
         previous_stages_out = SAM3Output(
             iter_mode=SAM3Output.IterMode.LAST_STEP_PER_STAGE
         )
-        # The upstream Sam3Image.forward normalises the whole datapoint onto
-        # self.device before grounding. This patched forward bypasses that
-        # forward to reuse cached image features, so the find-side tensors
-        # (notably find_input.img_ids) may still sit on whatever device the
-        # collator/caller left them on. When that differs from the cached
-        # backbone's vis_pos_enc device, _get_img_feats dies with
+        # The upstream Sam3Image.forward normalises the datapoint onto the
+        # model device before grounding. This patched forward bypasses that
+        # normalisation to reuse cached image features, so the find-side
+        # tensors (notably find_input.img_ids) can sit on a different CUDA
+        # device than the cached backbone — _get_img_feats then dies with
         # "indices should be ... on the same device as the indexed tensor".
         # It bites on multi-GPU hosts where the thread-local current CUDA
-        # device drifts from this replica's device. Re-apply the find-side
-        # normalisation here. See docs/decisions/cached-forward-device-normalise.md.
-        _dev = device if isinstance(device, torch.device) else torch.device(device)
-        _non_blocking = _dev.type == "cuda"
-        input.find_inputs = copy_data_to_device(input.find_inputs, _dev, non_blocking=_non_blocking)
-        input.find_targets = copy_data_to_device(input.find_targets, _dev, non_blocking=_non_blocking)
+        # device drifts from this replica's device. The upstream
+        # copy_data_to_device helper does not recurse into the FindInput
+        # object, so move the find side explicitly onto the device the cached
+        # vision features actually live on — that is the operand _get_img_feats
+        # indexes. See docs/decisions/cached-forward-device-normalise.md.
+        feat_device = _first_tensor_device(backbone_out)
+        if feat_device is not None:
+            _move_tensors_to_device(input.find_inputs, feat_device)
+            _move_tensors_to_device(input.find_targets, feat_device)
 
         find_input = input.find_inputs[0]
         find_target = input.find_targets[0]

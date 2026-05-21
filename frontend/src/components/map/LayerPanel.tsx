@@ -74,8 +74,6 @@ type Props = {
   setOverlaysOpen: React.Dispatch<React.SetStateAction<boolean>>;
   activeLayers: ActiveLayerMap;
   setActiveLayers: React.Dispatch<React.SetStateAction<ActiveLayerMap>>;
-  showBbox: boolean;
-  setShowBbox: React.Dispatch<React.SetStateAction<boolean>>;
 
   /* Counts for overlay rows */
   imagery: any[];
@@ -125,8 +123,6 @@ export default function LayerPanel({
   setOverlaysOpen,
   activeLayers,
   setActiveLayers,
-  showBbox,
-  setShowBbox,
   imagery,
   visibleDetectionCount,
   tracksCount,
@@ -248,9 +244,6 @@ export default function LayerPanel({
             {overlaysOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
           </button>
           <span className="sentinel-label flex-1">Overlays</span>
-          <button type="button" onClick={() => setShowBbox((value) => !value)} className={`sentinel-btn h-6 ${showBbox ? 'primary' : ''}`}>
-            BBOX
-          </button>
         </div>
 
         {overlaysOpen && overlayRows.map((layer) => {

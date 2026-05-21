@@ -13,13 +13,20 @@
 
 ## Key behaviors
 
-- **Detection layer** is a GeoJSON renderer for `GET /api/detections/geojson` with style by `parent_class` and confidence band.
+- **Detection layer** renders `GET /api/detections/geojson` as **three stacked sub-layers**:
+  1. *Icon markers* — category icons at each detection, drawn when `showDetectionCenterMarkers` is true (`visibleDetectionCount` 1–`DETECTION_CENTER_MARKER_LIMIT`, currently 800).
+  2. *Dots* — plain `CircleMarker` fallback for dense scenes (`!showDetectionCenterMarkers`, i.e. count > 800).
+  3. *Boxes* — a `<GeoJSON>` canvas layer of the detection bounding-box polygons. **Always rendered** (no toggle); styled by `makeDetectionStyle` in `_helpers.ts` — solid category-coloured outline, weight 2.
+  The box layer and the marker/dot layer always render together, so the analyst sees both the overview icon and the geo-truth box.
+- **GEOM toolbar** (top-centre of the map) switches the box shape: `HBB` (axis-aligned envelope), `OBB` (oriented rectangle, default), `MASK` (raw `geom`). State lives in `GaiaMap` as `bboxMode`.
+- The legacy `showBbox` / **BBOX toggle button was removed** — see [decisions/why-bbox-toggle-removed.md](../decisions/why-bbox-toggle-removed.md).
 - **Satellite pass layer** shows pass footprints (`MULTIPOLYGON`) and on click reveals the COG tile URL.
 - **Time filter** comes from `TimeMachineBar`'s `(start, end)` range.
 - **Cursor lat/lng** is published up to Shell via `MapEventHandlers` for the topbar readout.
 
 ## Cross-references
 
+- [decisions/why-bbox-toggle-removed.md](../decisions/why-bbox-toggle-removed.md)
 - [workspace-geoint-gaiamap.md](workspace-geoint-gaiamap.md)
 - [map-selection-panel.md](map-selection-panel.md)
 - [map-time-machine.md](map-time-machine.md)

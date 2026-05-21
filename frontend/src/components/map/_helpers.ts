@@ -269,11 +269,15 @@ export function makeDetectionStyle(categories: DetectionCategoryMap) {
     const isHeavy = HEAVY_OUTLINE_CATEGORIES.has(category);
     return {
       color,
-      weight: isHeavy ? 1.8 : 1.3,
-      opacity: 0.92,
+      // Solid, slightly heavier outline so detection boxes stay perceptible
+      // at medium zoom — they are the analyst's primary geo-truth marker.
+      weight: isHeavy ? 2.4 : 2,
+      opacity: 1,
       fillColor: color,
       fillOpacity: confidenceValue(feature) > 0.85 ? 0.14 : 0.05,
-      dashArray: category === 'Military_Forces' ? '2, 3' : '3, 4',
+      // Military forces keep a tight dash so they read apart from the rest;
+      // every other category draws a solid box.
+      dashArray: category === 'Military_Forces' ? '6, 3' : undefined,
     };
   };
 }

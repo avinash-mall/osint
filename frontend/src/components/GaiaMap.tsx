@@ -156,7 +156,6 @@ export default function GaiaMap({
   const [selectedDetection, setSelectedDetection] = useState<any | null>(null);
   const [detectionTracks, setDetectionTracks] = useState<DetectionTrack[]>([]);
   const [selectedDetectionTrack, setSelectedDetectionTrack] = useState<DetectionTrack | null>(null);
-  const [showBbox, setShowBbox] = useState(true);
   const [timelineWindowMinutes, setTimelineWindowMinutes] = useState(60);
   const [timelinePlaying, setTimelinePlaying] = useState(false);
   const [cursor, setCursor] = useState({ lat: 25, lon: 55 });
@@ -169,7 +168,7 @@ export default function GaiaMap({
   const { user } = useAuth();
 
   // Map+ enhancements
-  const [bboxMode, setBboxMode] = useState<'hbb' | 'obb' | 'mask'>('mask');
+  const [bboxMode, setBboxMode] = useState<'hbb' | 'obb' | 'mask'>('obb');
   const [prithviOverlays, setPrithviOverlays] = useState<{ flood: boolean; burn: boolean; crops: boolean }>({
     flood: false,
     burn: false,
@@ -497,9 +496,8 @@ export default function GaiaMap({
 
   const maxDetectionLabelCount = Math.max(1, ...detectionLabelStats.map((item) => item.count));
   const visibleDetectionCount = filteredDetectionsGeoJSON.features?.length || 0;
-  const showDetectionCenterMarkers = visibleDetectionCount > 0 && (
-    visibleDetectionCount <= DETECTION_CENTER_MARKER_LIMIT || !showBbox
-  );
+  const showDetectionCenterMarkers =
+    visibleDetectionCount > 0 && visibleDetectionCount <= DETECTION_CENTER_MARKER_LIMIT;
   const detectionCanvasRenderer = useMemo(() => L.canvas({ padding: 0.5 }), []);
   const timelineBuckets = useMemo(() => {
     const buckets = new Array(60).fill(0);
@@ -1086,8 +1084,6 @@ export default function GaiaMap({
         setOverlaysOpen={setOverlaysOpen}
         activeLayers={activeLayers}
         setActiveLayers={setActiveLayers}
-        showBbox={showBbox}
-        setShowBbox={setShowBbox}
         imagery={imagery}
         visibleDetectionCount={visibleDetectionCount}
         tracksCount={data.tracks.length}
@@ -1175,7 +1171,6 @@ export default function GaiaMap({
         detectionsLayerVersion={detectionsLayerVersion}
         hiddenDetectionCategories={hiddenDetectionCategories}
         hiddenDetectionLabels={hiddenDetectionLabels}
-        showBbox={showBbox}
         bboxMode={bboxMode}
         setBboxMode={setBboxMode}
         showDetectionCenterMarkers={showDetectionCenterMarkers}
@@ -1354,8 +1349,7 @@ export default function GaiaMap({
               clear its filter; the marker-mode + time-window chips are
               advisory (no-op clicks). */}
           {(() => {
-            const overflowMarkers = (showBbox || visibleDetectionCount > DETECTION_CENTER_MARKER_LIMIT)
-              && visibleDetectionCount > DETECTION_CENTER_MARKER_LIMIT
+            const overflowMarkers = visibleDetectionCount > DETECTION_CENTER_MARKER_LIMIT
               ? visibleDetectionCount - DETECTION_CENTER_MARKER_LIMIT
               : 0;
             const tw = (() => {

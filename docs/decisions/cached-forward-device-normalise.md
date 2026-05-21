@@ -29,32 +29,42 @@ why the cached path passed earlier testing.
 
 ## Decision
 
-In `forward_with_cache`, before reading `find_input`/`find_target`, re-apply the
-upstream normalisation:
+In `forward_with_cache`, before reading `find_input`/`find_target`, move every
+find-side tensor onto the device the cached vision features actually live on:
 
 ```python
-_dev = device if isinstance(device, torch.device) else torch.device(device)
-input.find_inputs  = copy_data_to_device(input.find_inputs,  _dev, non_blocking=_dev.type == "cuda")
-input.find_targets = copy_data_to_device(input.find_targets, _dev, non_blocking=_dev.type == "cuda")
+feat_device = _first_tensor_device(backbone_out)   # device of the cached vis_pos_enc
+if feat_device is not None:
+    _move_tensors_to_device(input.find_inputs, feat_device)
+    _move_tensors_to_device(input.find_targets, feat_device)
 ```
 
-`device` is `self.device` — the replica's own device, which the cached
-`backbone_out` was produced on (the encode `model.backbone.forward_image(...)`
-succeeds, proving the cached features are on `self.device`). Pinning the
-find-side tensors to the same device restores the `_get_img_feats` invariant.
+`_get_img_feats` indexes `backbone_out["vis_pos_enc"]` with `find_input.img_ids`,
+so the index tensor must be co-located with the *cached* features. The device is
+derived from `backbone_out` itself rather than `self.device` — `backbone_out` is
+the literal operand being indexed, so it is the unambiguous source of truth.
 
-`copy_data_to_device` (the upstream `sam3.model.utils.misc` helper) recurses the
-`FindInput`/`FindTarget` structures, so every nested tensor — `img_ids`,
-`input_boxes`, masks, labels — is moved, not just `img_ids`.
+The first attempt used the upstream `copy_data_to_device` helper, which **did
+not fix the crash**: it recurses known container types (tensor/list/dict/tuple)
+but treats SAM3's `FindInput` / `FindTarget` objects as opaque and returns them
+untouched, so `img_ids` never moved. `_move_tensors_to_device`
+([sam3_cached_forward.py](../../inference-sam3/patches/sam3_cached_forward.py))
+is a local recursive mover that also descends into plain objects via
+`__dict__`, with a bounded depth, so `img_ids`, `input_boxes`, masks and labels
+are all moved.
 
 ## Alternatives considered
 
+- **`copy_data_to_device` (first attempt)** — does not recurse into `FindInput`;
+  left `img_ids` on the wrong device, crash unchanged.
 - **Move the cached `backbone_out` to `img_ids`'s device** — wrong direction:
   the backbone features are large, `img_ids` is tiny, and `img_ids` may be on a
   device that disagrees with the model weights / decoder.
 - **Move only `find_input.img_ids`** — fixes the observed crash but leaves other
   find-side tensors (`input_boxes`, used to build `geometric_prompt`) liable to
   the same mismatch if interactive steps run in eval mode.
+- **Key the move off `self.device`** — works only if `self.device` agrees with
+  the cached features' device; deriving from `backbone_out` is strictly safer.
 - **Pin `bundle["device"]` harder upstream** — does not help: the divergence is
   the thread-local current device, not the bundle config.
 
