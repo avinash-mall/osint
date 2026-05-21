@@ -29,6 +29,12 @@ Loads SAM 3 / SAM 3.1 image weights and runs the text- and box-prompted detectio
 4. For box prompts: SAM3's box-prompted segmentation refines an upstream detector's ROI; threshold is `SAM3_BOX_THRESHOLD` (default 0.25, looser than text).
 5. Output passed to [fusion.py](../../inference-sam3/fusion.py) for mask-aware NMS across layers.
 
+## Cached-encoder fast path
+
+`_run_text_prompts_cached_batched` runs the ViT encoder once per image, then iterates text prompts in chunks doing only text-encode + DETR-decode. It relies on the runtime patch [`patches/sam3_cached_forward.py`](../../inference-sam3/patches/sam3_cached_forward.py), which replaces `Sam3Image.forward` with `forward_with_cache` — that variant reuses a stashed `_cached_backbone_out` and skips the encoder.
+
+`forward_with_cache` must mirror the *whole* of upstream `Sam3Image.forward`, including its normalisation of the datapoint onto `self.device` before grounding. It re-applies that with `copy_data_to_device` on `input.find_inputs` / `input.find_targets`; omitting it crashes `_get_img_feats` on multi-GPU hosts when `find_input.img_ids` and the cached `vis_pos_enc` land on different CUDA devices. See [decisions/cached-forward-device-normalise.md](../decisions/cached-forward-device-normalise.md).
+
 ## Inputs / Outputs
 
 Image paths return `(mask, bbox_xyxy, score, label)` tuples. The service entrypoint wraps those tuples with `source_layer` before fusion.
@@ -46,3 +52,4 @@ The category-presence gate drops an entire prompt when all scores are below the 
 - [sam3-perf-profiling.md](sam3-perf-profiling.md)
 - [decisions/why-sam3-as-foundation.md](../decisions/why-sam3-as-foundation.md)
 - [decisions/why-category-presence-gate.md](../decisions/why-category-presence-gate.md)
+- [decisions/cached-forward-device-normalise.md](../decisions/cached-forward-device-normalise.md)

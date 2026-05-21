@@ -51,6 +51,7 @@ def install() -> bool:
         # replace the image-encoder call with the stashed features. ----
         import torch
         from sam3.model.sam3_image import SAM3Output, Prompt
+        from sam3.model.utils.misc import copy_data_to_device
 
         device = self.device
         # Start from the cached image-features dict (deep-share, no copy).
@@ -67,6 +68,21 @@ def install() -> bool:
         previous_stages_out = SAM3Output(
             iter_mode=SAM3Output.IterMode.LAST_STEP_PER_STAGE
         )
+        # The upstream Sam3Image.forward normalises the whole datapoint onto
+        # self.device before grounding. This patched forward bypasses that
+        # forward to reuse cached image features, so the find-side tensors
+        # (notably find_input.img_ids) may still sit on whatever device the
+        # collator/caller left them on. When that differs from the cached
+        # backbone's vis_pos_enc device, _get_img_feats dies with
+        # "indices should be ... on the same device as the indexed tensor".
+        # It bites on multi-GPU hosts where the thread-local current CUDA
+        # device drifts from this replica's device. Re-apply the find-side
+        # normalisation here. See docs/decisions/cached-forward-device-normalise.md.
+        _dev = device if isinstance(device, torch.device) else torch.device(device)
+        _non_blocking = _dev.type == "cuda"
+        input.find_inputs = copy_data_to_device(input.find_inputs, _dev, non_blocking=_non_blocking)
+        input.find_targets = copy_data_to_device(input.find_targets, _dev, non_blocking=_non_blocking)
+
         find_input = input.find_inputs[0]
         find_target = input.find_targets[0]
 
