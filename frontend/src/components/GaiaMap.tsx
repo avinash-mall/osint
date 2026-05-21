@@ -34,7 +34,6 @@ import {
 import type { OntologyBranch } from '../utils/useOntology';
 import {
   confidenceValue,
-  detectionCategoryForFeature,
   detectionClassKeys,
   detectionLabel,
   makeDetectionStyle,
@@ -151,7 +150,6 @@ export default function GaiaMap({
   const [detectionClassFilter, setDetectionClassFilter] = useState<string | null>(null);
   const [expandedDetectionGroups, setExpandedDetectionGroups] = useState<string[]>([]);
   const [detectionGroupMode, setDetectionGroupMode] = useState<'CAT' | 'SRC'>('CAT');
-  const [detectionsLayerVersion, setDetectionsLayerVersion] = useState(0);
   const [detectionLabelSearch, setDetectionLabelSearch] = useState('');
   const [selectedDetection, setSelectedDetection] = useState<any | null>(null);
   const [detectionTracks, setDetectionTracks] = useState<DetectionTrack[]>([]);
@@ -672,7 +670,6 @@ export default function GaiaMap({
   const fetchDetectionFeatures = useCallback(async () => {
     if (!mapBounds) {
       setDetectionsGeoJSON({ type: 'FeatureCollection', features: [] });
-      setDetectionsLayerVersion((version) => version + 1);
       return;
     }
     setIsLoading(true);
@@ -688,7 +685,6 @@ export default function GaiaMap({
       }
       const response = await axios.get(`${API_URL}/api/detections/geojson?${geoParams.toString()}`, { timeout: 10000 });
       setDetectionsGeoJSON(response.data || { type: 'FeatureCollection', features: [] });
-      setDetectionsLayerVersion((version) => version + 1);
     } catch (error) {
       console.error('Error fetching detections:', error);
     } finally {
@@ -1030,43 +1026,6 @@ export default function GaiaMap({
     }
   }, [fetchCandidateLinks, selectedDetection]);
 
-  const onEachDetection = (feature: any, layer: L.Layer) => {
-    const props = feature.properties;
-    const category = detectionCategoryForFeature(feature);
-    const categoryMeta = categoryFor(category, DETECTION_CATEGORIES);
-    const reviewStatus = props.review_status || props.metadata?.review_status || 'review_candidate';
-    const originalClass = props.original_class || props.metadata?.original_class || props.class;
-    const parentClass = props.parent_class || props.metadata?.parent_class || props.class;
-    const hoverLabel = originalClass && originalClass !== props.class ? detectionClassLabel(originalClass) : props.label || props.class || 'Detection';
-    const rawClassStr = String(originalClass || props.class || '');
-    const source = rawClassStr.startsWith('prithvi:') ? 'Prithvi-EO'
-      : 'SAM 3 / Specialist';
-    layer.bindPopup(`
-      <div style="font-family: sans-serif; min-width: 210px;">
-        <div style="font-weight: 700; font-size: 13px; margin-bottom: 8px; color: #e8ebee; border-bottom: 1px solid #373e46; padding-bottom: 4px;">
-          ${props.label || props.class}
-        </div>
-        <div style="font-size: 12px; color: #aab2bb; line-height: 1.6;">
-          <div>ID: <span style="color:#e8ebee">${props.id}</span></div>
-          <div>Category: <span style="color:${categoryMeta.color}">${categoryMeta.label}</span></div>
-          <div>Source: <span style="color:#e8ebee">${source}</span></div>
-          <div>Parent: <span style="color:#e8ebee">${parentClass}</span></div>
-          <div>Original: <span style="color:#e8ebee">${originalClass}</span></div>
-          <div>Confidence: <span style="color:#e8ebee">${(Number(props.confidence || 0) * 100).toFixed(1)}%</span></div>
-          <div>Review: <span style="color:#e8ebee">${reviewStatus}</span></div>
-          <div>Threat: <span style="color:#e8ebee">${props.threat_level || 'unknown'}</span></div>
-          <div>Tag: <span style="color:#e8ebee">${props.allegiance || 'unknown'}</span></div>
-        </div>
-      </div>
-    `);
-    layer.bindTooltip(`${categoryMeta.short} / ${hoverLabel}`, {
-      direction: 'top',
-      className: 'sentinel-detection-label',
-      opacity: 0.95,
-      sticky: true,
-    });
-    layer.on('click', () => setSelectedDetection(feature));
-  };
 
   return (
     <div ref={workspaceRef} className="map-workspace" style={{ position: 'relative', height: '100%', width: '100%', background: 'var(--bg-0)', overflow: 'hidden' }}>
@@ -1168,15 +1127,11 @@ export default function GaiaMap({
         geomDisplayedDetectionsGeoJSON={geomDisplayedDetectionsGeoJSON}
         detectionsGeoJSON={detectionsGeoJSON}
         detectionClassFilter={detectionClassFilter}
-        detectionsLayerVersion={detectionsLayerVersion}
-        hiddenDetectionCategories={hiddenDetectionCategories}
-        hiddenDetectionLabels={hiddenDetectionLabels}
         bboxMode={bboxMode}
         setBboxMode={setBboxMode}
         showDetectionCenterMarkers={showDetectionCenterMarkers}
         detectionIcon={detectionIcon}
         getDetectionStyle={getDetectionStyle}
-        onEachDetection={onEachDetection}
         detectionCanvasRenderer={detectionCanvasRenderer}
         setSelectedDetection={setSelectedDetection}
         activeLayers={activeLayers}

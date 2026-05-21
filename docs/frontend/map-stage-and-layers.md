@@ -16,8 +16,9 @@
 - **Detection layer** renders `GET /api/detections/geojson` as **three stacked sub-layers**:
   1. *Icon markers* — category icons at each detection, drawn when `showDetectionCenterMarkers` is true (`visibleDetectionCount` 1–`DETECTION_CENTER_MARKER_LIMIT`, currently 800).
   2. *Dots* — plain `CircleMarker` fallback for dense scenes (`!showDetectionCenterMarkers`, i.e. count > 800).
-  3. *Boxes* — a `<GeoJSON>` canvas layer of the detection bounding-box polygons. **Always rendered** (no toggle); styled by `makeDetectionStyle` in `_helpers.ts` — solid category-coloured outline, weight 2.
+  3. *Boxes* — one canvas-rendered react-leaflet `<Polygon>` **per detection feature** (a `features.map(...)`, same pattern as the icon-marker layer). **Always rendered** (no toggle); styled by `makeDetectionStyle` in `_helpers.ts` — solid category-coloured outline, weight 2. Geometry is converted from GeoJSON to Leaflet `[lat,lng]` arrays by `geojsonToLatLngs` in `_helpers.ts`. Clicking a box selects the detection.
   The box layer and the marker/dot layer always render together, so the analyst sees both the overview icon and the geo-truth box.
+  The boxes were previously a single `<GeoJSON>` canvas layer; it silently failed to paint, so it was replaced with the per-feature `<Polygon>` map — see [decisions/why-detection-boxes-use-polygon-map.md](../decisions/why-detection-boxes-use-polygon-map.md).
 - **GEOM toolbar** (top-centre of the map) switches the box shape: `HBB` (axis-aligned envelope), `OBB` (oriented rectangle, default), `MASK` (raw `geom`). State lives in `GaiaMap` as `bboxMode`.
 - The legacy `showBbox` / **BBOX toggle button was removed** — see [decisions/why-bbox-toggle-removed.md](../decisions/why-bbox-toggle-removed.md).
 - **Satellite pass layer** shows pass footprints (`MULTIPOLYGON`) and on click reveals the COG tile URL.
@@ -27,6 +28,7 @@
 ## Cross-references
 
 - [decisions/why-bbox-toggle-removed.md](../decisions/why-bbox-toggle-removed.md)
+- [decisions/why-detection-boxes-use-polygon-map.md](../decisions/why-detection-boxes-use-polygon-map.md)
 - [workspace-geoint-gaiamap.md](workspace-geoint-gaiamap.md)
 - [map-selection-panel.md](map-selection-panel.md)
 - [map-time-machine.md](map-time-machine.md)

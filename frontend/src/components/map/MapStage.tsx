@@ -20,7 +20,6 @@ import {
   forwardRef,
   useEffect,
   useImperativeHandle,
-  useMemo,
   useRef,
 } from 'react';
 import {
@@ -29,6 +28,7 @@ import {
   GeoJSON,
   MapContainer,
   Marker,
+  Polygon,
   Polyline,
   Popup,
   TileLayer,
@@ -46,8 +46,8 @@ import {
   detectionBadgePosition,
   detectionCategoryForFeature,
   detectionCenter,
+  geojsonToLatLngs,
   relativeTime,
-  sizeAwareRadius,
   trackDashArray,
   type DetectionTrack,
 } from './_helpers';
@@ -69,8 +69,6 @@ const CARTO_BASEMAP_URL = '/basemap/{z}/{x}/{y}.png';
 const TERRAIN_BASEMAP_URL = '/terrain/{z}/{x}/{y}.png';
 const TILE_PROXY_URL = (import.meta as any).env?.VITE_TILE_PROXY_URL || '/tiles';
 
-const CanvasGeoJSON = GeoJSON as any;
-
 export type MapHandle = {
   /** Imperatively pan the map to a detection feature's bounds. */
   panToDetection: (feature: any) => void;
@@ -89,15 +87,11 @@ export type Props = {
   geomDisplayedDetectionsGeoJSON: { features?: any[]; [k: string]: any };
   detectionsGeoJSON: { features?: any[]; [k: string]: any };
   detectionClassFilter: string | null;
-  detectionsLayerVersion: number;
-  hiddenDetectionCategories: string[];
-  hiddenDetectionLabels: string[];
   bboxMode: 'hbb' | 'obb' | 'mask';
   setBboxMode: (m: 'hbb' | 'obb' | 'mask') => void;
   showDetectionCenterMarkers: boolean;
   detectionIcon: (feature: any) => L.DivIcon;
   getDetectionStyle: (feature: any) => L.PathOptions;
-  onEachDetection: (feature: any, layer: L.Layer) => void;
   detectionCanvasRenderer: L.Canvas;
   setSelectedDetection: (feature: any) => void;
 
@@ -155,15 +149,11 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
     geomDisplayedDetectionsGeoJSON,
     detectionsGeoJSON,
     detectionClassFilter,
-    detectionsLayerVersion,
-    hiddenDetectionCategories,
-    hiddenDetectionLabels,
     bboxMode,
     setBboxMode,
     showDetectionCenterMarkers,
     detectionIcon,
     getDetectionStyle,
-    onEachDetection,
     detectionCanvasRenderer,
     setSelectedDetection,
     activeLayers,
@@ -227,19 +217,6 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
       }
     },
   }), []);
-
-  const detectionLayerKey = useMemo(
-    () =>
-      `detections-${detectionsLayerVersion}-${detectionClassFilter || 'all'}-${hiddenDetectionCategories.join('|')}-${hiddenDetectionLabels.join('|')}-${geomDisplayedDetectionsGeoJSON.features?.length || 0}-${bboxMode}`,
-    [
-      detectionsLayerVersion,
-      detectionClassFilter,
-      hiddenDetectionCategories,
-      hiddenDetectionLabels,
-      geomDisplayedDetectionsGeoJSON.features?.length,
-      bboxMode,
-    ],
-  );
 
   return (
     <section
@@ -485,22 +462,25 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
               );
             })}
 
-          {activeLayers.detections && (geomDisplayedDetectionsGeoJSON.features?.length || 0) > 0 && (
-            <CanvasGeoJSON
-              key={detectionLayerKey}
-              data={geomDisplayedDetectionsGeoJSON}
-              renderer={detectionCanvasRenderer}
-              pointToLayer={(feature: any, latlng: L.LatLng) =>
-                L.circleMarker(latlng, {
-                  ...getDetectionStyle(feature),
-                  radius: sizeAwareRadius(feature?.properties?.metadata?.size_estimate?.area_m2),
-                  fillOpacity: 0.8,
-                })
-              }
-              style={getDetectionStyle}
-              onEachFeature={onEachDetection}
-            />
-          )}
+          {/* Detection bounding boxes — one canvas-rendered <Polygon> per
+              feature. The per-feature map mirrors the icon-marker layer above;
+              it is reactive to data changes and a single bad geometry only
+              skips that one box instead of silently killing the whole layer
+              (the failure mode of the previous <GeoJSON> canvas layer). */}
+          {activeLayers.detections && geomDisplayedDetectionsGeoJSON.features?.map((feature: any) => {
+            const positions = geojsonToLatLngs(feature?.geometry);
+            if (!positions) return null;
+            const p = feature.properties || {};
+            return (
+              <Polygon
+                key={`det-box-${p.id ?? p.class}`}
+                positions={positions}
+                renderer={detectionCanvasRenderer}
+                pathOptions={getDetectionStyle(feature)}
+                eventHandlers={{ click: () => setSelectedDetection(feature) }}
+              />
+            );
+          })}
 
           {activeLayers.tracks && data.tracks.map((track: any) => {
             const positions: [number, number][] = track.history.map((h: any) => [h.lat, h.lng]);

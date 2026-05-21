@@ -103,6 +103,53 @@ export function detectionBadgePosition(feature: any): [number, number] | null {
   return [north, west];
 }
 
+/**
+ * Convert a GeoJSON `Polygon` / `MultiPolygon` geometry into the nested
+ * `[lat, lng]` array shape react-leaflet's `<Polygon positions>` expects.
+ * GeoJSON stores coordinates as `[lon, lat]`; Leaflet wants `[lat, lon]`.
+ * Returns `null` for `Point`, missing, or degenerate (<3-vertex) geometry so
+ * callers can skip rendering rather than draw a broken box.
+ */
+export function geojsonToLatLngs(
+  geometry: any,
+): L.LatLngExpression[][] | L.LatLngExpression[][][] | null {
+  if (!geometry || !geometry.coordinates) return null;
+
+  const ringToLatLng = (ring: any): L.LatLngExpression[] | null => {
+    if (!Array.isArray(ring)) return null;
+    const out: L.LatLngExpression[] = [];
+    for (const pt of ring) {
+      if (
+        Array.isArray(pt) && pt.length >= 2 &&
+        typeof pt[0] === 'number' && typeof pt[1] === 'number'
+      ) {
+        out.push([pt[1], pt[0]]);
+      }
+    }
+    return out.length >= 3 ? out : null;
+  };
+
+  if (geometry.type === 'Polygon') {
+    const rings = (geometry.coordinates as any[])
+      .map(ringToLatLng)
+      .filter((r): r is L.LatLngExpression[] => r !== null);
+    return rings.length ? rings : null;
+  }
+
+  if (geometry.type === 'MultiPolygon') {
+    const polys = (geometry.coordinates as any[])
+      .map((poly: any) =>
+        (poly as any[])
+          .map(ringToLatLng)
+          .filter((r): r is L.LatLngExpression[] => r !== null),
+      )
+      .filter((p) => p.length > 0);
+    return polys.length ? polys : null;
+  }
+
+  return null;
+}
+
 
 /* ── Detection-track domain types + styling ───────────────────────────── */
 
