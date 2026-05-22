@@ -95,7 +95,7 @@ export default function GaiaMap({
   const [basemapGeoJSON, setBasemapGeoJSON] = useState<any>({ type: 'FeatureCollection', features: [] });
   const [selectedImagery, setSelectedImagery] = useState<number | null>(null);
   const [activeBaseLayer, setActiveBaseLayer] = useState<'base' | 'sat' | 'terrain'>('base');
-  const [layerOpacities, setLayerOpacities] = useState<{ base: number; sat: number; terrain: number }>({ base: 1, sat: 0.8, terrain: 1 });
+  const [layerOpacities, setLayerOpacities] = useState<{ base: number; terrain: number }>({ base: 1, terrain: 1 });
   // Phase 7.29: persist hidden-category state across sessions so the analyst's
   // earlier filter survives a reload, AND show a banner on the next load so a
   // category hidden last week doesn't quietly stay hidden forever.
@@ -1039,7 +1039,6 @@ export default function GaiaMap({
         setActiveBaseLayer={setActiveBaseLayer}
         layerOpacities={layerOpacities}
         setLayerOpacities={setLayerOpacities}
-        selectedImageryData={selectedImageryData}
         overlaysOpen={overlaysOpen}
         setOverlaysOpen={setOverlaysOpen}
         activeLayers={activeLayers}

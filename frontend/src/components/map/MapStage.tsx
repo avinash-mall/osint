@@ -82,7 +82,7 @@ export type MapHandle = {
 export type Props = {
   /* basemap selection */
   activeBaseLayer: BaseLayer;
-  layerOpacities: Record<BaseLayer, number>;
+  layerOpacities: Record<'base' | 'terrain', number>;
   selectedImageryData: any;
 
   /* detections (geojson + filters + rendering helpers) */

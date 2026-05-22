@@ -68,9 +68,8 @@ type Props = {
   /* Basemap selector */
   activeBaseLayer: BaseLayer;
   setActiveBaseLayer: (l: BaseLayer) => void;
-  layerOpacities: Record<BaseLayer, number>;
-  setLayerOpacities: React.Dispatch<React.SetStateAction<Record<BaseLayer, number>>>;
-  selectedImageryData: any;
+  layerOpacities: Record<'base' | 'terrain', number>;
+  setLayerOpacities: React.Dispatch<React.SetStateAction<Record<'base' | 'terrain', number>>>;
 
   /* Overlays section */
   overlaysOpen: boolean;
@@ -167,7 +166,6 @@ export default function LayerPanel({
   setActiveBaseLayer,
   layerOpacities,
   setLayerOpacities,
-  selectedImageryData,
   overlaysOpen,
   setOverlaysOpen,
   activeLayers,
@@ -214,6 +212,11 @@ export default function LayerPanel({
 
   const toggleLayer = (key: keyof ActiveLayerMap) =>
     setActiveLayers((prev) => ({ ...prev, [key]: !prev[key] }));
+
+  // The opacity slider drives the BASE/TERRAIN reference overlay. SAT mode has
+  // no fade-able overlay (imagery always renders at 100%), so the slider is
+  // disabled there and falls back to the BASE value for display.
+  const opacityLayer = activeBaseLayer === 'terrain' ? 'terrain' : 'base';
 
   return (
     <section
@@ -284,16 +287,16 @@ export default function LayerPanel({
             </span>
             <input
               type="range" min="0" max="1" step="0.05"
-              disabled={activeBaseLayer === 'sat' && !!selectedImageryData}
-              value={layerOpacities[activeBaseLayer]}
+              disabled={activeBaseLayer === 'sat'}
+              value={layerOpacities[opacityLayer]}
               onChange={(event) => {
                 const next = parseFloat(event.target.value);
-                setLayerOpacities((prev) => ({ ...prev, [activeBaseLayer]: next }));
+                setLayerOpacities((prev) => ({ ...prev, [opacityLayer]: next }));
               }}
               className="flex-1"
             />
             <span className="font-mono text-[10px] text-sentinel-muted w-8 text-right">
-              {Math.round(layerOpacities[activeBaseLayer] * 100)}%
+              {Math.round(layerOpacities[opacityLayer] * 100)}%
             </span>
           </div>
         </div>

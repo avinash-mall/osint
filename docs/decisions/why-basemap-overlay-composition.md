@@ -45,17 +45,19 @@ is a reference overlay on top, the opacity slider fades the reference.**
 | BASE    | imagery + Carto overlay on top  | Carto fallback 100%        |
 | TERRAIN | imagery + Terrain overlay on top| Terrain fallback 100%      |
 
-The opacity slider drives the overlay in BASE/TERRAIN; in SAT mode with imagery
-loaded it is disabled (imagery always renders at 100%) — see the slider label
-change in `LayerPanel.tsx` (`IMAGERY` vs `<MODE> OVERLAY`).
+The opacity slider drives the overlay in BASE/TERRAIN; in SAT mode it is
+disabled (imagery always renders at 100%) — see the slider label in
+`LayerPanel.tsx` (`IMAGERY` vs `<MODE> OVERLAY`).
 
 Detection / track / analytics layers live in Leaflet's `overlayPane` (above
 `tilePane`), so they stay visible above the zIndex-300 reference overlay.
 
-## Trade-offs accepted
+## Notes
 
-- SAT opacity (`layerOpacities.sat`) is now inert state — kept for possible
-  future use but no longer wired to a rendered layer's opacity.
+- `layerOpacities` no longer carries a `sat` key — SAT imagery always renders
+  at full opacity, so there is nothing to store. The slider keys on
+  `'base' | 'terrain'` (`opacityLayer` in `LayerPanel.tsx`) and is disabled in
+  SAT mode.
 
 ## Cross-references
 
