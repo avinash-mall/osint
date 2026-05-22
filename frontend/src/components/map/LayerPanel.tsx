@@ -70,6 +70,7 @@ type Props = {
   setActiveBaseLayer: (l: BaseLayer) => void;
   layerOpacities: Record<BaseLayer, number>;
   setLayerOpacities: React.Dispatch<React.SetStateAction<Record<BaseLayer, number>>>;
+  selectedImageryData: any;
 
   /* Overlays section */
   overlaysOpen: boolean;
@@ -166,6 +167,7 @@ export default function LayerPanel({
   setActiveBaseLayer,
   layerOpacities,
   setLayerOpacities,
+  selectedImageryData,
   overlaysOpen,
   setOverlaysOpen,
   activeLayers,
@@ -277,9 +279,12 @@ export default function LayerPanel({
             })}
           </div>
           <div className="mt-2 flex items-center gap-2">
-            <span className="sentinel-label">OPACITY</span>
+            <span className="sentinel-label">
+              {activeBaseLayer === 'sat' ? 'IMAGERY' : `${activeBaseLayer.toUpperCase()} OVERLAY`}
+            </span>
             <input
               type="range" min="0" max="1" step="0.05"
+              disabled={activeBaseLayer === 'sat' && !!selectedImageryData}
               value={layerOpacities[activeBaseLayer]}
               onChange={(event) => {
                 const next = parseFloat(event.target.value);

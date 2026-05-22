@@ -52,6 +52,7 @@ export async function installMockApi(page: Page, options: MockOptions = {}) {
 
   const png = Buffer.from(ONE_PIXEL_PNG, 'base64');
   await page.route('**/basemap/**', (route) => route.fulfill({ status: 200, contentType: 'image/png', body: png }));
+  await page.route('**/terrain/**', (route) => route.fulfill({ status: 200, contentType: 'image/png', body: png }));
   await page.route('**/tiles/**', (route) => route.fulfill({ status: 200, contentType: 'image/png', body: png }));
 
   await page.route('**/api/**', async (route) => {

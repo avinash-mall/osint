@@ -191,20 +191,6 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
 
   const mapInstance = useRef<L.Map | null>(null);
 
-  // The SAT base layer is rendered as an overlay on top of BASE/TERRAIN; this
-  // ref records the last cartographic base the user picked so we can keep it
-  // visible underneath when activeBaseLayer === 'sat'.
-  const lastNonSatBaseRef = useRef<'base' | 'terrain'>(
-    activeBaseLayer === 'terrain' ? 'terrain' : 'base',
-  );
-  useEffect(() => {
-    if (activeBaseLayer === 'base' || activeBaseLayer === 'terrain') {
-      lastNonSatBaseRef.current = activeBaseLayer;
-    }
-  }, [activeBaseLayer]);
-  const effectiveBase: 'base' | 'terrain' =
-    activeBaseLayer === 'sat' ? lastNonSatBaseRef.current : activeBaseLayer;
-
   // UX-AUDIT F12 — focus mode collapses the floating map chrome to the
   // viewport edges (a 24 px hover lip remains). Toggled by `F` or the
   // top-right button.
@@ -284,24 +270,79 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
           <MapFitToImagery imagery={selectedImageryData} />
           <MapFitToDetections geojson={filteredDetectionsGeoJSON} filterKey={detectionClassFilter} />
 
-          {effectiveBase === 'base' && (
+          {/* Basemap composition — see decisions/why-basemap-overlay-composition.md.
+              Imagery is the analyst's ground truth: it renders at the bottom
+              (zIndex 200) and the cartographic basemap is a reference overlay
+              on top (zIndex 300). SAT mode = imagery alone; BASE/TERRAIN add
+              the reference overlay; the opacity slider fades the overlay. */}
+
+          {/* 1. SAT imagery — ground truth, bottom of the stack, full opacity.
+                 Rendered whenever imagery is loaded, in every mode. */}
+          {activeLayers.satellite && selectedImageryData && (
             <TileLayer
-              key="base-carto"
+              key={`sat-${selectedImageryData.id}`}
+              url={`${TILE_PROXY_URL}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.webp?url=${encodeURIComponent(selectedImageryData.file_path)}`}
+              opacity={1}
+              maxZoom={22}
+              // Cap upstream tile fetches at the COG's true pixel resolution.
+              // `native_max_zoom` comes from /api/imagery (per-pass GSD); past
+              // it Leaflet upscales the cached tile client-side instead of
+              // hammering TiTiler for upsampled tiles that aren't any sharper.
+              // 18 is the conservative fallback for passes ingested before the
+              // backend started reporting the field.
+              maxNativeZoom={selectedImageryData.native_max_zoom ?? 18}
+              // Keep a wider ring of tiles alive across zoom/pan so the map
+              // does not degrade to bare tiles mid-gesture (default is 2).
+              keepBuffer={6}
+              // Don't chase intermediate zoom levels during a pinch/scroll —
+              // those requests are thrown away the moment the gesture lands.
+              updateWhenZooming={false}
+              zIndex={200}
+            />
+          )}
+
+          {/* 2. Cartographic fallback — only when there is no imagery, so SAT
+                 mode never renders an empty stage. */}
+          {!selectedImageryData && (
+            <TileLayer
+              key="base-fallback"
+              url={activeBaseLayer === 'terrain' ? TERRAIN_BASEMAP_URL : CARTO_BASEMAP_URL}
+              subdomains={activeBaseLayer === 'terrain' ? undefined : 'abcd'}
+              maxZoom={20}
+              maxNativeZoom={10}
+              opacity={1}
+              zIndex={100}
+              attribution={
+                activeBaseLayer === 'terrain'
+                  ? '&copy; OpenStreetMap &copy; OpenTopoMap (CC-BY-SA)'
+                  : '&copy; OpenStreetMap &copy; CARTO'
+              }
+            />
+          )}
+
+          {/* 3. Reference overlay — Carto/Terrain ABOVE the imagery (zIndex 300
+                 > SAT zIndex 200) when the analyst picks BASE/TERRAIN. The
+                 opacity slider drives how much of the imagery shows through. */}
+          {selectedImageryData && activeBaseLayer === 'base' && (
+            <TileLayer
+              key="overlay-carto"
               url={CARTO_BASEMAP_URL}
               subdomains="abcd"
               maxZoom={20}
               maxNativeZoom={10}
               opacity={layerOpacities.base}
+              zIndex={300}
               attribution="&copy; OpenStreetMap &copy; CARTO"
             />
           )}
-          {effectiveBase === 'terrain' && (
+          {selectedImageryData && activeBaseLayer === 'terrain' && (
             <TileLayer
-              key="base-terrain"
+              key="overlay-terrain"
               url={TERRAIN_BASEMAP_URL}
               maxZoom={20}
               maxNativeZoom={10}
               opacity={layerOpacities.terrain}
+              zIndex={300}
               attribution="&copy; OpenStreetMap &copy; OpenTopoMap (CC-BY-SA)"
             />
           )}
@@ -347,28 +388,6 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
                 const name = p.admin || p.name || p.iso_a3;
                 if (name) layer.bindTooltip(String(name), { sticky: true, direction: 'top', opacity: 0.92 });
               }}
-            />
-          )}
-
-          {activeBaseLayer === 'sat' && activeLayers.satellite && selectedImageryData && (
-            <TileLayer
-              key={`sat-${selectedImageryData.id}`}
-              url={`${TILE_PROXY_URL}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.webp?url=${encodeURIComponent(selectedImageryData.file_path)}`}
-              opacity={layerOpacities.sat}
-              maxZoom={22}
-              // Cap upstream tile fetches at the COG's true pixel resolution.
-              // `native_max_zoom` comes from /api/imagery (per-pass GSD); past
-              // it Leaflet upscales the cached tile client-side instead of
-              // hammering TiTiler for upsampled tiles that aren't any sharper.
-              // 18 is the conservative fallback for passes ingested before the
-              // backend started reporting the field.
-              maxNativeZoom={selectedImageryData.native_max_zoom ?? 18}
-              // Keep a wider ring of tiles alive across zoom/pan so the map
-              // does not degrade to bare tiles mid-gesture (default is 2).
-              keepBuffer={6}
-              // Don't chase intermediate zoom levels during a pinch/scroll —
-              // those requests are thrown away the moment the gesture lands.
-              updateWhenZooming={false}
             />
           )}
 
