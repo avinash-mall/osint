@@ -21,7 +21,13 @@
   The boxes were previously a single `<GeoJSON>` canvas layer; it silently failed to paint, so it was replaced with the per-feature `<Polygon>` map — see [decisions/why-detection-boxes-use-polygon-map.md](../decisions/why-detection-boxes-use-polygon-map.md).
 - **GEOM toolbar** (top-centre of the map) switches the box shape: `HBB` (axis-aligned envelope), `OBB` (oriented rectangle, default), `MASK` (raw `geom`). State lives in `GaiaMap` as `bboxMode`.
 - The legacy `showBbox` / **BBOX toggle button was removed** — see [decisions/why-bbox-toggle-removed.md](../decisions/why-bbox-toggle-removed.md).
-- **Satellite pass layer** shows pass footprints (`MULTIPOLYGON`) and on click reveals the COG tile URL.
+- **Satellite pass layer** shows pass footprints (`MULTIPOLYGON`) and on click reveals the COG tile URL. The SAT `TileLayer` proxies TiTiler COG tiles via `/tiles/` and is tuned for smooth zoom:
+  - `maxNativeZoom={selectedImageryData.native_max_zoom ?? 18}` — caps upstream fetches at the COG's true pixel resolution (field from `GET /api/imagery`); past it Leaflet upscales the cached tile client-side instead of round-tripping TiTiler for upsampled tiles.
+  - `maxZoom={22}` — the layer is still interactive past native zoom (client-side upscale).
+  - `keepBuffer={6}` — keeps a wider ring of tiles alive across pan/zoom so the map doesn't degrade to bare tiles mid-gesture.
+  - `updateWhenZooming={false}` — skips intermediate-zoom requests during a gesture.
+  - tile URL uses the `.webp` format extension (~5× smaller than PNG for 3-band RGB).
+  See [decisions/why-sat-tiles-cap-at-native-zoom.md](../decisions/why-sat-tiles-cap-at-native-zoom.md).
 - **Time filter** comes from `TimeMachineBar`'s `(start, end)` range.
 - **Cursor lat/lng** is published up to Shell via `MapEventHandlers` for the topbar readout.
 
@@ -29,6 +35,8 @@
 
 - [decisions/why-bbox-toggle-removed.md](../decisions/why-bbox-toggle-removed.md)
 - [decisions/why-detection-boxes-use-polygon-map.md](../decisions/why-detection-boxes-use-polygon-map.md)
+- [decisions/why-sat-tiles-cap-at-native-zoom.md](../decisions/why-sat-tiles-cap-at-native-zoom.md)
+- [deployment/nginx-gateway-and-tile-cache.md](../deployment/nginx-gateway-and-tile-cache.md)
 - [workspace-geoint-gaiamap.md](workspace-geoint-gaiamap.md)
 - [map-selection-panel.md](map-selection-panel.md)
 - [map-time-machine.md](map-time-machine.md)

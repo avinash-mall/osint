@@ -21,9 +21,15 @@ Single TLS-terminating reverse proxy that routes every path. Single tile cache f
 
 ## Cache
 
-- `proxy_cache_path /var/cache/nginx levels=1:2 keys_zone=tilecache:10m max_size=2g inactive=24h use_temp_path=off;`
-- Applied to `/tiles/` and `/maps/`.
-- Bypassable via `proxy_cache_bypass $http_pragma` for cache-busting during dev.
+- `proxy_cache_path /var/cache/nginx levels=1:2 keys_zone=tiles:100m max_size=10g inactive=24h use_temp_path=off;`
+- Applied to `/tiles/`, `/maps/`, `/basemap/`, `/terrain/`, `/assets/fonts/`.
+- `200` responses cached 24 h on `/tiles/`; `proxy_cache_use_stale` serves stale on upstream error/timeout.
+
+### `/tiles/` cold-cache + refresh tuning
+
+- `proxy_cache_lock on` collapses a burst of identical cold-cache requests into one upstream fetch. `proxy_cache_lock_timeout` is **2 s** (was 5 s): a waiting request falls through to its own TiTiler call after 2 s instead of stalling the whole viewport behind one slow fetch.
+- `proxy_cache_background_update on` serves the stale (expired) tile immediately and refreshes it in the background, so a re-visited pass paints instantly once the 24 h TTL lapses. Pairs with the `updating` flag in `proxy_cache_use_stale`.
+- Rationale: [decisions/why-sat-tiles-cap-at-native-zoom.md](../decisions/why-sat-tiles-cap-at-native-zoom.md).
 
 ## TLS
 
@@ -34,3 +40,5 @@ Single TLS-terminating reverse proxy that routes every path. Single tile cache f
 - [architecture/service-topology.md](../architecture/service-topology.md)
 - [offline-airgap-deployment.md](offline-airgap-deployment.md)
 - [operations/health-monitoring.md](../operations/health-monitoring.md) (nginx healthcheck path)
+- [frontend/map-stage-and-layers.md](../frontend/map-stage-and-layers.md) (SAT TileLayer that consumes `/tiles/`)
+- [decisions/why-sat-tiles-cap-at-native-zoom.md](../decisions/why-sat-tiles-cap-at-native-zoom.md)

@@ -328,9 +328,22 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
           {activeBaseLayer === 'sat' && activeLayers.satellite && selectedImageryData && (
             <TileLayer
               key={`sat-${selectedImageryData.id}`}
-              url={`${TILE_PROXY_URL}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}?url=${encodeURIComponent(selectedImageryData.file_path)}`}
+              url={`${TILE_PROXY_URL}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.webp?url=${encodeURIComponent(selectedImageryData.file_path)}`}
               opacity={layerOpacities.sat}
               maxZoom={22}
+              // Cap upstream tile fetches at the COG's true pixel resolution.
+              // `native_max_zoom` comes from /api/imagery (per-pass GSD); past
+              // it Leaflet upscales the cached tile client-side instead of
+              // hammering TiTiler for upsampled tiles that aren't any sharper.
+              // 18 is the conservative fallback for passes ingested before the
+              // backend started reporting the field.
+              maxNativeZoom={selectedImageryData.native_max_zoom ?? 18}
+              // Keep a wider ring of tiles alive across zoom/pan so the map
+              // does not degrade to bare tiles mid-gesture (default is 2).
+              keepBuffer={6}
+              // Don't chase intermediate zoom levels during a pinch/scroll —
+              // those requests are thrown away the moment the gesture lands.
+              updateWhenZooming={false}
             />
           )}
 

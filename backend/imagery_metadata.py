@@ -1,4 +1,5 @@
 import hashlib
+import math
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -195,6 +196,57 @@ def parse_sar_metadata(tags: dict) -> dict:
             "high" if angle < 25.0 else "moderate" if angle < 35.0 else "low"
         )
     return out
+
+
+# Ground resolution (m/px) of a 256-px WebMercatorQuad tile at zoom 0, at the
+# equator. Each zoom level halves it: res(z) = _WEBMERCATOR_Z0_RES / 2**z.
+_WEBMERCATOR_Z0_RES = 156543.03392804097
+
+
+def native_max_zoom(metadata: dict, default: int = 18) -> int:
+    """Best WebMercatorQuad zoom level for a COG's native pixel resolution.
+
+    Past this zoom TiTiler only ever upsamples its highest overview — wasted
+    round-trips that produce tiles no sharper than what the frontend can get
+    by upscaling the native-zoom tile client-side. The map's SAT ``TileLayer``
+    feeds this value into Leaflet's ``maxNativeZoom`` so it stops fetching
+    once the COG runs out of real pixels.
+
+    Derives ground sample distance from the stored raster ``width`` and
+    ``bounds`` (both written by :func:`extract_raster_metadata`). Returns
+    ``default`` when those tags are missing or the geometry is degenerate, so
+    callers never have to special-case a ``None``.
+    """
+    try:
+        width = float(metadata.get("width") or 0)
+        bounds = metadata.get("bounds") or {}
+        left = float(bounds["left"])
+        right = float(bounds["right"])
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return default
+    span = right - left
+    if width <= 0 or span <= 0:
+        return default
+
+    crs = str(metadata.get("crs") or "").upper()
+    if "4326" in crs or "CRS84" in crs:
+        # Geographic CRS: bounds are degrees. Convert the x-span to metres at
+        # the scene's centre latitude (longitude degrees shrink with cos lat).
+        try:
+            top = float(bounds["top"])
+            bottom = float(bounds["bottom"])
+        except (TypeError, ValueError, KeyError):
+            return default
+        cos_lat = max(math.cos(math.radians((top + bottom) / 2.0)), 0.01)
+        gsd = (span / width) * 111320.0 * cos_lat
+    else:
+        # Projected CRS (UTM, Web Mercator, ...): bounds are already metres.
+        gsd = span / width
+    if gsd <= 0:
+        return default
+
+    zoom = round(math.log2(_WEBMERCATOR_Z0_RES / gsd))
+    return max(10, min(24, int(zoom)))
 
 
 def extract_raster_metadata(path: str | Path, include_hash: bool = True) -> dict:

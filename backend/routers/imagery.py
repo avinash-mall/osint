@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from change_detection import compute_change
 from database import postgis_db
 from geometry import parse_bbox
+from imagery_metadata import native_max_zoom
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -79,7 +80,17 @@ def get_imagery(
     with postgis_db.get_cursor() as cursor:
         cursor.execute(query, params)
         rows = cursor.fetchall()
-        return {"imagery": [dict(r) for r in rows]}
+
+    imagery = []
+    for r in rows:
+        row = dict(r)
+        # Per-pass WebMercatorQuad native-zoom ceiling, derived from the COG's
+        # GSD. The map's SAT TileLayer caps `maxNativeZoom` here so high-GSD
+        # passes can be inspected tight without TiTiler upsampling tiles that
+        # exist only above the COG's real resolution.
+        row["native_max_zoom"] = native_max_zoom(row.get("metadata") or {})
+        imagery.append(row)
+    return {"imagery": imagery}
 
 
 @router.get("/api/imagery/{pass_id}/tiles")
