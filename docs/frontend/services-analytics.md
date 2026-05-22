@@ -9,7 +9,7 @@ Thin typed wrapper around `/api/analytics/*` endpoints. Exposes a small set of T
 
 ## Why one file
 
-There's only one services module today because analytics is the only feature with enough boilerplate to extract. Other endpoints are called inline from their owning component. As the surface grows, more services modules will likely appear — but **don't add a service module just for type aliasing**; only do it when the component file is being dragged down by API plumbing.
+Only one services module today — analytics is the only feature with enough boilerplate to extract. Other endpoints are called inline from their owning component. As the surface grows, more services modules will appear — but **don't add a service module just for type aliasing**; only when the component file is being dragged down by API plumbing.
 
 ## Cross-references
 

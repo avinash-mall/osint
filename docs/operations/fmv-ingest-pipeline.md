@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Upload an FMV clip via the **Admin → Upload imagery** (FMV tab) or directly:
+Upload an FMV clip via **Admin → Upload imagery** (FMV tab) or directly:
 
 ```bash
 curl -F "file=@drone.mp4" \
@@ -23,13 +23,13 @@ curl -F "file=@drone.mp4" \
 
 See [architecture/data-flow-fmv.md](../architecture/data-flow-fmv.md) for the sequence diagram.
 
-When PCS mode has no operator-supplied prompts, the backend uses the bounded precision fallback `["vehicle", "person", "building"]` (or `FMV_DEFAULT_PROMPTS`) rather than expanding all ontology prompts.
+PCS mode with no operator-supplied prompts → backend uses the bounded precision fallback `["vehicle", "person", "building"]` (or `FMV_DEFAULT_PROMPTS`), not all ontology prompts.
 
 ## Prompt-mode choice
 
 | Mode | Engine | Use when |
 |---|---|---|
-| `pcs` *(default)* | SAM 3.1 multiplex | You have a small text-prompt set and want stable temporal masks |
+| `pcs` *(default)* | SAM 3.1 multiplex | Small text-prompt set, want stable temporal masks |
 | `yoloe` (empty prompts) | YOLOE-26x-seg-pf | "Find me anything that looks like a known object" |
 | `yoloe` (text prompts) | YOLOE-26x-seg | Open text + faster than PCS |
 

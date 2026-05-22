@@ -20,7 +20,7 @@
 }
 ```
 
-Any `false` indicates a degraded subsystem. The Alerts feed escalates this into operator-visible alerts when degradation persists.
+Any `false` = a degraded subsystem. The Alerts feed escalates persistent degradation into operator-visible alerts.
 
 ## What `/api/inference/dashboard` returns
 
@@ -32,7 +32,7 @@ Any `false` indicates a degraded subsystem. The Alerts feed escalates this into 
 
 ## Common alert causes
 
-- **PostGIS or Neo4j unreachable** → ingest will fail until restored.
+- **PostGIS or Neo4j unreachable** → ingest fails until restored.
 - **Inference profile unloaded** → ingest queues but cannot dispatch. Trigger `/api/inference/load`.
 - **VRAM near full** → reduce `SAM3_LOAD_*` flags or unload to recover.
 - **Repeated `addmm` errors** → check `DISABLE_ADDMM_CUDA_LT=1` is set on A100/cu130 hosts. See [decisions/disable-addmm-cuda-lt.md](../decisions/disable-addmm-cuda-lt.md).

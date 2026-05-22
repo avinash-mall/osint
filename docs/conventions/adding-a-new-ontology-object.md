@@ -11,7 +11,7 @@ Operator wants to add a new tracked class (e.g. "loitering munition") or a new b
 Through the UI:
 
 1. **Admin → Ontology** tab.
-2. Pick the branch (or create a new one) and click "Add object".
+2. Pick the branch (or create a new one), click "Add object".
 3. Fill in: name, sensor toggles, per-sensor default prompts, icon key.
 4. Save.
 
@@ -25,7 +25,7 @@ For a green-field deployment or a wholesale taxonomy revision:
 
 1. Update [backend/scripts/seeds/](../../backend/scripts/seeds/) JSON files.
 2. On a clean target: `python backend/scripts/seed_ontology.py`.
-3. On a populated target (destructive): `python backend/scripts/seed_ontology.py --force` — this overwrites the live ontology.
+3. On a populated target (destructive): `python backend/scripts/seed_ontology.py --force` — overwrites the live ontology.
 
 ## What an object record carries
 
@@ -41,7 +41,7 @@ After saving:
 
 1. Check `GET /api/ontology/default-prompts?sensor=optical` includes the new prompts.
 2. Wait 30 s (or SIGHUP inference), then `/health.gates.grounding_dino` should reflect the larger vocab.
-3. Run a `/detect` with no `text_prompts` in `metadata` — inference will use the ontology default and the new prompts should fire.
+3. Run a `/detect` with no `text_prompts` in `metadata` — inference uses the ontology default and the new prompts should fire.
 
 ## Cross-references
 

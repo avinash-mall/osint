@@ -6,7 +6,7 @@
 
 ## Purpose
 
-Routes that touch an LLM (Ava). Everything here returns a graceful "LLM unavailable" error when `OPENAI_API_BASE` is unset — the rest of the app still works without it.
+Routes that touch an LLM (Ava). All return a graceful "LLM unavailable" error when `OPENAI_API_BASE` is unset — the rest of the app works without it.
 
 ## Endpoints
 
@@ -22,9 +22,9 @@ Routes that touch an LLM (Ava). Everything here returns a graceful "LLM unavaila
 
 ## Why this design
 
-- LLM is **optional infrastructure**, not core path. Each endpoint catches `AIUnavailable` from [backend/ai.py](../../backend/ai.py) and returns a 503 with a stable error shape, so the frontend can show "LLM offline" without crashing.
-- AI suggestions go through an **approve-then-execute** workflow rather than auto-applying. See [operations/llm-ava-configuration.md](../operations/llm-ava-configuration.md).
-- LLM JSON responses use [`get_llm_json`](../../backend/ai.py) which is unit-tested in [backend/tests/test_ai_json_parsing.py](../../backend/tests/test_ai_json_parsing.py) — it handles fenced/strict/prose-wrapped JSON.
+- LLM = **optional infrastructure**, not core path. Each endpoint catches `AIUnavailable` from [backend/ai.py](../../backend/ai.py) → 503 with stable error shape → frontend shows "LLM offline" without crashing.
+- AI suggestions go through **approve-then-execute**, not auto-apply. See [operations/llm-ava-configuration.md](../operations/llm-ava-configuration.md).
+- LLM JSON via [`get_llm_json`](../../backend/ai.py) — unit-tested in [backend/tests/test_ai_json_parsing.py](../../backend/tests/test_ai_json_parsing.py); handles fenced/strict/prose-wrapped JSON.
 
 ## Failure modes
 

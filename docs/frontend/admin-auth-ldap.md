@@ -5,16 +5,16 @@
 
 ## Purpose
 
-Editable form for the singleton `auth_config` row: LDAP host, port, base DN, bind DN, password, search filter, admin-group DN. Includes two test buttons.
+Editable form for the singleton `auth_config` row: LDAP host, port, base DN, bind DN, password, search filter, admin-group DN. Two test buttons.
 
 ## Test buttons
 
-- **Test connection** → `POST /api/admin/auth/test-connection` — probes TCP/TLS without binding. Returns `{ok, error}` so the UI shows a result.
+- **Test connection** → `POST /api/admin/auth/test-connection` — probes TCP/TLS without binding. Returns `{ok, error}` → UI shows a result.
 - **Test credentials** → `POST /api/admin/auth/test` with a username/password — full LDAP bind against the current config.
 
 ## Why this lives in the UI
 
-LDAP settings need to be editable without a service restart in multi-user deployments. The `auth_config` row holds the live settings; env vars (`LDAP_DEFAULT_HOST`, etc.) only seed the first-boot defaults.
+LDAP settings must be editable without service restart in multi-user deployments. The `auth_config` row holds live settings; env vars (`LDAP_DEFAULT_HOST`, etc.) only seed first-boot defaults.
 
 ## Data sources
 

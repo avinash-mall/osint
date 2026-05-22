@@ -2,28 +2,28 @@
 
 **Path:** [backend/fmv_helpers.py](../../backend/fmv_helpers.py)
 **Lines:** ~88
-**Depends on:** `ffmpeg`/`ffprobe` on `$PATH` (provided by the backend image)
+**Depends on:** `ffmpeg`/`ffprobe` on `$PATH` (provided by backend image)
 
 ## Purpose
 
-Three small responsibilities: turn an uploaded clip into an HLS playlist nginx can serve, probe the clip for FPS/duration/dimensions, and generate the public URL the frontend uses.
+Three responsibilities: uploaded clip → HLS playlist nginx can serve; probe clip for FPS/duration/dimensions; generate the public URL the frontend uses.
 
 ## Why this design
 
-- **`ffmpeg -c copy` first.** When the source is already H.264 + AAC (typical UAS feed), stream-copy is near-instant. Re-encoding is only attempted on failure.
-- **Probe is shallow.** Only the few fields the UI/worker actually consume are read; we don't capture the entire stream graph because the rest is unused and large.
-- **Public URL is configurable** via `FMV_PUBLIC_URL_BASE` so deployments behind reverse proxies with extra hops produce correct URLs.
+- **`ffmpeg -c copy` first** — source already H.264 + AAC (typical UAS feed) → stream-copy near-instant. Re-encode only on failure.
+- **Shallow probe** — only the few fields UI/worker consume; full stream graph unused and large.
+- **Public URL configurable** via `FMV_PUBLIC_URL_BASE` — correct URLs for deployments behind reverse proxies with extra hops.
 
 ## Key symbols
 
 - [`fmv_public_url`](../../backend/fmv_helpers.py#L17).
 - [`probe_video`](../../backend/fmv_helpers.py#L30) — `{duration, fps, width, height}`.
-- [`transcode_hls`](../../backend/fmv_helpers.py#L64) — writes `playlist.m3u8` to `clip_dir`, returns its path or `None` on failure.
+- [`transcode_hls`](../../backend/fmv_helpers.py#L64) — writes `playlist.m3u8` to `clip_dir`; returns path or `None` on failure.
 
 ## Failure modes
 
-- `ffmpeg` missing → caller falls back to raw `.mp4` link (clip viewer still works, scrubbing is slower).
-- Unsupported codec → re-encode attempted; if that also fails, raw passthrough as above.
+- `ffmpeg` missing → caller falls back to raw `.mp4` link (viewer works, scrubbing slower).
+- Unsupported codec → re-encode attempted; if that fails too, raw passthrough.
 
 ## Cross-references
 

@@ -5,12 +5,12 @@
 
 ## What it measures
 
-For each detector (SAM3, DOTA-OBB, Grounding-DINO), bin predictions by confidence (e.g. 0-10%, 10-20%, ...) and measure the gap between mean confidence in the bin and the empirical accuracy in the bin. Lower ECE means the model's confidence is calibrated; high ECE means it's overconfident or underconfident.
+For each detector (SAM3, DOTA-OBB, Grounding-DINO): bin predictions by confidence (e.g. 0-10%, 10-20%, …), measure the gap between mean confidence in the bin and empirical accuracy in the bin. Lower ECE = calibrated confidence; high ECE = over/underconfident.
 
 ## Output
 
 - Markdown table with per-detector ECE pre/post temperature scaling.
-- `model_temperatures.json` with the optimal per-detector temperature values.
+- `model_temperatures.json` with optimal per-detector temperature values.
 
 ## How to reproduce
 

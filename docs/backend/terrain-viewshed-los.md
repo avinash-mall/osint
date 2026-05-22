@@ -6,13 +6,13 @@
 
 ## Purpose
 
-Two operator analytics: line-of-sight between two points, and a viewshed (all points visible from an observer) on the DEM. Surfaces as `POST /api/analytics/los` and `POST /api/analytics/viewshed`.
+Two operator analytics: line-of-sight between two points, and viewshed (all points visible from an observer) on the DEM. Surfaces as `POST /api/analytics/los` and `POST /api/analytics/viewshed`.
 
 ## Why this design
 
-- **CPU-only ray-cast.** The DEM is loaded once and indexed by lat/lon. Each LOS query traces a ray sampled along the great-circle path; viewshed sweeps rays in azimuth.
-- **`k=0.13` atmospheric refraction.** Standard value for terrestrial visibility. Adds an Earth-curvature correction term to elevation deltas.
-- **Fixture fallback.** `dem_available()` lets the analytics router return `mode: "fixture_no_dem"` instead of erroring when `/data/dem/dem.tif` is missing.
+- **CPU-only ray-cast** — DEM loaded once, indexed by lat/lon. LOS query traces a ray sampled along the great-circle path; viewshed sweeps rays in azimuth.
+- **`k=0.13` atmospheric refraction** — standard terrestrial-visibility value; adds an Earth-curvature correction term to elevation deltas.
+- **Fixture fallback** — `dem_available()` lets the analytics router return `mode: "fixture_no_dem"` instead of erroring when `/data/dem/dem.tif` missing.
 
 ## Key symbols
 

@@ -6,19 +6,19 @@
 
 ## Purpose
 
-Take a full-motion video clip (typically MISB 0601-compliant H.264 from a UAS feed), extract telemetry, run per-frame tracking, and stream results back to clients in near real time.
+Full-motion video clip (typically MISB 0601 H.264 from UAS feed) → telemetry extraction → per-frame tracking → near-real-time results to clients.
 
 ## Pipeline
 
-1. **Upload** — multipart `POST /api/fmv/clips` with the `.mp4` and optional `.srt` sidecar. The endpoint accepts the upload, writes to `/data/fmv/incoming/`, and queues `worker.process_fmv`.
-2. **HLS transcode** — [backend/fmv_helpers.py](../../backend/fmv_helpers.py) calls `ffmpeg -c copy -f hls -hls_time 4` (stream-copy when codec already H.264). HLS segments served at `http://localhost:3000/fmv/<clip_id>/playlist.m3u8` via nginx.
-3. **Telemetry extraction** — [backend/video_metadata.py](../../backend/video_metadata.py) tries in order: MISB ST 0601 KLV (klvdata), MP4 GPMD atom, SRT sidecar, then a synthetic demo fixture for offline testing. Rows persisted to `fmv_frames` (clip_id, frame_index, timestamp, telemetry JSON, footprint WKT).
-4. **Inference dispatch** — worker POSTs the clip + metadata to `inference-sam3:8001/detect_video` and consumes the **NDJSON stream** one record per frame×track.
-   - `metadata.prompt_mode = "pcs"` (default): SAM 3.1 multiplex — worker fans out one request per text prompt and merges streams. When the upload omitted prompts, the worker uses bounded precision defaults (`vehicle`, `person`, `building`).
-   - `metadata.prompt_mode = "yoloe"`: standalone YOLOE tracker; empty `text_prompts` → `-pf` (prompt-free), otherwise `-seg` (text-promptable).
-5. **Persist** — each row written to PostGIS `fmv_detections` with frame_index, track_id, bbox, mask RLE, detector `source_layer`, embedding (first frame of each track only), confidence. Rows are raw — window-seam and cross-prompt duplicates included.
-6. **Consolidate** — `process_fmv` dispatches `worker.consolidate_fmv` ([backend/fmv-track-consolidation.md](../backend/fmv-track-consolidation.md)), which re-associates the clip's `fmv_detections` into stable clip-global tracks, votes one canonical class per track, and soft-deletes cross-prompt per-frame duplicates. Without it the FmvPlayer side panel grows one row per frame×window×prompt.
-7. **Notify** — `process_fmv` and the consolidation task each publish `fmv_detections_complete` on Redis pubsub; the backend WebSocket router forwards to subscribed clients, which refetch.
+1. **Upload** — multipart `POST /api/fmv/clips` with `.mp4` + optional `.srt` sidecar. Writes to `/data/fmv/incoming/`, queues `worker.process_fmv`.
+2. **HLS transcode** — [backend/fmv_helpers.py](../../backend/fmv_helpers.py) runs `ffmpeg -c copy -f hls -hls_time 4` (stream-copy when codec already H.264). Segments served at `http://localhost:3000/fmv/<clip_id>/playlist.m3u8` via nginx.
+3. **Telemetry extraction** — [backend/video_metadata.py](../../backend/video_metadata.py) tries in order: MISB ST 0601 KLV (klvdata) → MP4 GPMD atom → SRT sidecar → synthetic demo fixture. Rows → `fmv_frames` (clip_id, frame_index, timestamp, telemetry JSON, footprint WKT).
+4. **Inference dispatch** — worker POSTs clip + metadata to `inference-sam3:8001/detect_video`, consumes the **NDJSON stream**, one record per frame×track.
+   - `metadata.prompt_mode = "pcs"` (default): SAM 3.1 multiplex — one request per text prompt, streams merged. Omitted prompts → bounded precision defaults (`vehicle`, `person`, `building`).
+   - `metadata.prompt_mode = "yoloe"`: standalone YOLOE tracker; empty `text_prompts` → `-pf` (prompt-free), else `-seg` (text-promptable).
+5. **Persist** — each row → PostGIS `fmv_detections`: frame_index, track_id, bbox, mask RLE, detector `source_layer`, embedding (first frame of each track only), confidence. Rows raw — window-seam + cross-prompt duplicates included.
+6. **Consolidate** — `process_fmv` dispatches `worker.consolidate_fmv` ([backend/fmv-track-consolidation.md](../backend/fmv-track-consolidation.md)): re-associates clip's `fmv_detections` into stable clip-global tracks, votes one canonical class per track, soft-deletes cross-prompt per-frame duplicates. Without it FmvPlayer side panel grows one row per frame×window×prompt.
+7. **Notify** — `process_fmv` + consolidation task each publish `fmv_detections_complete` on Redis pubsub; WebSocket router forwards to subscribed clients → refetch.
 
 ## Sequence (timeline)
 
@@ -40,7 +40,7 @@ client    backend            worker             inference-sam3       nginx (HLS)
 
 ## Per-frame record shape
 
-The same per-detection schema as `/detect`, plus `frame_index` and `track_id`:
+Same per-detection schema as `/detect`, plus `frame_index` and `track_id`:
 
 ```json
 {
@@ -55,12 +55,12 @@ The same per-detection schema as `/detect`, plus `frame_index` and `track_id`:
 }
 ```
 
-`embedding` populated only on the first frame of each track.
+`embedding` populated only on first frame of each track.
 
 ## Cross-references
 
 - [operations/fmv-ingest-pipeline.md](../operations/fmv-ingest-pipeline.md)
-- [backend/fmv-track-consolidation.md](../backend/fmv-track-consolidation.md) — Hungarian assignment downstream of the NDJSON stream
+- [backend/fmv-track-consolidation.md](../backend/fmv-track-consolidation.md) — Hungarian assignment downstream of NDJSON stream
 - [inference/sam3-pcs-multiplex-video.md](../inference/sam3-pcs-multiplex-video.md)
 - [inference/yoloe-tracker.md](../inference/yoloe-tracker.md)
 - [decisions/why-yoloe-replaced-amg.md](../decisions/why-yoloe-replaced-amg.md)

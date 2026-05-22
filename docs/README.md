@@ -1,15 +1,15 @@
 # Sentinel Documentation
 
-This tree is **agent-first**. Every module has one short doc that lists path, line counts, dependencies, key symbols (with `file.py#Lx-Ly` ranges), failure modes, and cross-references. Reading is intended to be cheap and pattern-extractable.
+**Agent-first** doc tree. Every module has one short doc: path, line counts, dependencies, key symbols (with `file.py#Lx-Ly` ranges), failure modes, cross-references. Reading is cheap and pattern-extractable.
 
 ## Where to start
 
-- **The workflow every agent must follow** (read-before / update-after): [conventions/documentation-workflow.md](conventions/documentation-workflow.md).
+- **Workflow every agent must follow** (read-before / update-after): [conventions/documentation-workflow.md](conventions/documentation-workflow.md).
 - **Single-screen overview** of every doc: [INDEX.txt](INDEX.txt) (pipe-delimited, ~15 KB, sorted by path).
 - **Architectural identity:** [architecture/system-overview.md](architecture/system-overview.md).
 - **API surface:** [backend/api-routes-reference.md](backend/api-routes-reference.md).
 - **Inference service entry:** [inference/service-overview.md](inference/service-overview.md).
-- **Why this design:** browse [decisions/](decisions/) — every load-bearing trade-off has its own file.
+- **Why this design:** [decisions/](decisions/) — every load-bearing trade-off has its own file.
 - **Change recipes:** [conventions/](conventions/) — adding a model, ontology object, router, Celery task, admin tab.
 
 ## Layout
@@ -55,8 +55,8 @@ Raise / fallback / log.
 Related decision + callers.
 ```
 
-This shape lets an agent extract structure with grep — e.g., `grep -A1 "## Why this design" docs/**/*.md`.
+This shape lets an agent extract structure with grep — e.g. `grep -A1 "## Why this design" docs/**/*.md`.
 
 ## Linking
 
-All cross-references inside `docs/` use relative paths. Source-code references reach back to the repo root with `../../` (e.g., `../../backend/main.py#L120-L180`). Use line ranges, not vague descriptions, so a follow-up edit elsewhere is observable through link rot.
+Cross-references inside `docs/` use relative paths. Source-code references reach back to the repo root with `../../` (e.g. `../../backend/main.py#L120-L180`). Use line ranges, not vague descriptions, so a follow-up edit elsewhere is observable through link rot.

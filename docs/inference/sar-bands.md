@@ -6,7 +6,7 @@
 
 ## Purpose
 
-Decode a 2-band VV/VH GRD GeoTIFF payload, clip to dB range, and produce a normalized `[0, 1]` chip suitable for TerraMind S1→S2 synthesis.
+Decode a 2-band VV/VH GRD GeoTIFF payload, clip to dB range, produce a normalized `[0, 1]` chip for TerraMind S1→S2 synthesis.
 
 ## Pipeline
 

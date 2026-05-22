@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Single TLS-terminating reverse proxy that routes every path. Single tile cache for all tile traffic (24 h TTL). Single FMV HLS endpoint.
+Single TLS-terminating reverse proxy routing every path. Single tile cache for all tile traffic (24 h TTL). Single FMV HLS endpoint.
 
 ## Route table
 
@@ -28,12 +28,12 @@ Single TLS-terminating reverse proxy that routes every path. Single tile cache f
 ### `/tiles/` cold-cache + refresh tuning
 
 - `proxy_cache_lock on` collapses a burst of identical cold-cache requests into one upstream fetch. `proxy_cache_lock_timeout` is **2 s** (was 5 s): a waiting request falls through to its own TiTiler call after 2 s instead of stalling the whole viewport behind one slow fetch.
-- `proxy_cache_background_update on` serves the stale (expired) tile immediately and refreshes it in the background, so a re-visited pass paints instantly once the 24 h TTL lapses. Pairs with the `updating` flag in `proxy_cache_use_stale`.
+- `proxy_cache_background_update on` serves the stale (expired) tile immediately, refreshes it in the background → a re-visited pass paints instantly once the 24 h TTL lapses. Pairs with the `updating` flag in `proxy_cache_use_stale`.
 - Rationale: [decisions/why-sat-tiles-cap-at-native-zoom.md](../decisions/why-sat-tiles-cap-at-native-zoom.md).
 
 ## TLS
 
-`FORCE_HTTPS=1` toggles redirect of port 80 → 443 and adds HSTS. By default, traffic is plain HTTP on port 3000 (development) — operators terminate TLS at the upstream load balancer or set `FORCE_HTTPS=1` + mount certs.
+`FORCE_HTTPS=1` toggles redirect of port 80 → 443 and adds HSTS. Default: plain HTTP on port 3000 (development) — operators terminate TLS at the upstream load balancer or set `FORCE_HTTPS=1` + mount certs.
 
 ## Cross-references
 

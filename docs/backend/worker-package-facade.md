@@ -5,7 +5,7 @@
 
 ## Purpose
 
-A thin namespace over [worker_legacy.py](worker-legacy-monolith.md) that preserves the Celery task-name routing while giving new code narrow, intent-named imports.
+Thin namespace over [worker_legacy.py](worker-legacy-monolith.md) preserving Celery task-name routing while giving new code narrow, intent-named imports.
 
 ## Files
 
@@ -28,7 +28,7 @@ See [decisions/why-worker-legacy-monolith-kept.md](../decisions/why-worker-legac
 
 ## Failure modes
 
-The package contains no real logic, so failure modes are inherited from `worker_legacy.py`. Don't add logic here — put it in a new module under `backend/` and re-export through the appropriate facade.
+No real logic here → failure modes inherited from `worker_legacy.py`. Don't add logic here — put it in a new module under `backend/` and re-export through the appropriate facade.
 
 ## Key symbols
 

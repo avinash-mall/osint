@@ -6,7 +6,7 @@
 
 ## ModelsView
 
-Registered detection models with one-click promotion. Promoting writes a row in `model_history` and updates the active-model pointer.
+Registered detection models with one-click promotion. Promoting writes a `model_history` row, updates the active-model pointer.
 
 - `GET /api/models`
 - `POST /api/models/{id}/promote`
@@ -15,7 +15,7 @@ Registered detection models with one-click promotion. Promoting writes a row in 
 
 ## ProcessingView
 
-Live list of analytics + training Celery jobs. Used to monitor: ingest jobs in flight, training jobs queued/running, periodic feed polls.
+Live list of analytics + training Celery jobs. Monitors: ingest jobs in flight, training jobs queued/running, periodic feed polls.
 
 - `GET /api/training/jobs`
 - `GET /api/analytics/jobs`

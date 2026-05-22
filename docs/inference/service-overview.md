@@ -7,7 +7,7 @@
 
 ## Purpose
 
-A single FastAPI service that bundles every model the platform uses:
+Single FastAPI service bundling every model the platform uses:
 
 | Component | Repo / source | Module |
 |---|---|---|
@@ -21,7 +21,7 @@ A single FastAPI service that bundles every model the platform uses:
 | Grounding-DINO | `IDEA-Research/grounding-dino-*` | [grounding_dino.py](../../inference-sam3/grounding_dino.py) |
 | RemoteCLIP verifier | `chendelong/RemoteCLIP` | [remoteclip_verifier.py](../../inference-sam3/remoteclip_verifier.py) |
 
-The runtime memory pool holds one of three **profiles** swappable via `/load?profile=`. See [profile-pool-lifecycle.md](profile-pool-lifecycle.md).
+Runtime memory pool holds one of three **profiles** swappable via `/load?profile=`. See [profile-pool-lifecycle.md](profile-pool-lifecycle.md).
 
 ## Endpoints
 
@@ -45,7 +45,7 @@ Full per-modality request contract: [main-app-entrypoint.md](main-app-entrypoint
 | + Prithvi + TerraMind | ~22 GB (24 GB+ card required) |
 | + RemoteCLIP verifier | Optional extra VRAM; disabled by default |
 
-Per-component flags: see [main-app-entrypoint.md](main-app-entrypoint.md) and the env table in [deployment/environment-variables-reference.md](../deployment/environment-variables-reference.md).
+Per-component flags: [main-app-entrypoint.md](main-app-entrypoint.md) and the env table in [deployment/environment-variables-reference.md](../deployment/environment-variables-reference.md).
 
 ## Cross-references
 

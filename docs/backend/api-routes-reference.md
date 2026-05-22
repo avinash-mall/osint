@@ -1,6 +1,6 @@
 # API Routes Reference
 
-The complete route table. Routers in [backend/routers/](../../backend/routers/) own their slices; `main.py` owns the bulk reads listed at the bottom.
+Complete route table. Routers in [backend/routers/](../../backend/routers/) own their slices; `main.py` owns the bulk reads at the bottom.
 
 ## Auth · Health · Realtime
 

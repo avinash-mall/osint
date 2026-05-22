@@ -6,21 +6,21 @@
 
 ## Purpose
 
-Read-only Neo4j entity graph for the Link Graph workspace and geotime feature queries used by the map. No mutations — node and edge creation is done by the worker during ingest and by the candidate-link approval workflow.
+Read-only Neo4j entity graph for the Link Graph workspace + geotime feature queries for the map. No mutations — node/edge creation done by the worker during ingest and by the candidate-link approval workflow.
 
 ## Endpoints
 
 | Method | Path | Source | Behavior |
 |---|---|---|---|
-| `GET` | `/api/graph` | [graph.py#L13](../../backend/routers/graph.py#L13) | Returns up to 1000 nodes + edges (limit hard-coded) |
-| `POST` | `/api/graph/neighborhood` | [graph.py#L79](../../backend/routers/graph.py#L79) | Subgraph around a seed node with configurable depth |
+| `GET` | `/api/graph` | [graph.py#L13](../../backend/routers/graph.py#L13) | Up to 1000 nodes + edges (limit hard-coded) |
+| `POST` | `/api/graph/neighborhood` | [graph.py#L79](../../backend/routers/graph.py#L79) | Subgraph around a seed node, configurable depth |
 | `GET` | `/api/geotime/features` | [graph.py#L110](../../backend/routers/graph.py#L110) | Static features (Bases, LaunchPoints) + asset track history within a bbox/time range |
 
 ## Why this design
 
-- **1000-node cap** keeps the Link Graph workspace navigable in `react-force-graph` — past that it becomes unreadable. Neighborhood queries let the operator drill in.
-- **Each link carries `predicate`** (the Neo4j relationship type) alongside `type`, so the Link Graph can label and filter edges by semantic (UX-AUDIT F22).
-- **`/api/geotime/features` overlaps with PostGIS** (`Base`, `LaunchPoint` nodes live in Neo4j but their footprint geometry is in PostGIS). This router pulls both and merges them server-side to keep the map call a single round-trip.
+- **1000-node cap** keeps the Link Graph navigable in `react-force-graph` — past that it's unreadable. Neighborhood queries let the operator drill in.
+- **Each link carries `predicate`** (the Neo4j relationship type) alongside `type` → Link Graph labels and filters edges by semantic (UX-AUDIT F22).
+- **`/api/geotime/features` overlaps PostGIS** — `Base`/`LaunchPoint` nodes live in Neo4j but their footprint geometry is in PostGIS. Router pulls both, merges server-side → single round-trip for the map.
 
 ## Cross-references
 

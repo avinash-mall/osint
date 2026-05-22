@@ -17,11 +17,11 @@ python scripts/configure_host.py --force    # overwrite even if block exists
 
 ## What it writes
 
-Build-time and runtime variables for the GPU layer. See [deployment/gpu-profile-detection.md](../deployment/gpu-profile-detection.md) for the full list.
+Build-time + runtime variables for the GPU layer. See [deployment/gpu-profile-detection.md](../deployment/gpu-profile-detection.md) for the full list.
 
 ## What it never writes
 
-- `HF_TOKEN`, `SESSION_SECRET`, `ADMIN_PASSWORD` — those are operator concerns.
+- `HF_TOKEN`, `SESSION_SECRET`, `ADMIN_PASSWORD` — operator concerns.
 - Anything outside the `SENTINEL GENERATED GPU CONFIG` block — the rest of `.env` is preserved exactly.
 
 ## When to re-run

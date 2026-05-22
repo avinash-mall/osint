@@ -5,19 +5,19 @@
 
 ## Purpose
 
-`AuthProvider` + `useAuth()` hook. Wraps the app and gates rendering on session boot.
+`AuthProvider` + `useAuth()` hook. Wraps the app, gates rendering on session boot.
 
 ## Behavior
 
-1. On mount, calls `GET /api/auth/me`. If 200, `user` is set; if 401, the app shows [LoginScreen.tsx](../../frontend/src/components/LoginScreen.tsx).
-2. `login(username, password)` calls `POST /api/auth/login`; on success refetches `/me`.
-3. `logout()` calls `POST /api/auth/logout`; clears `user` and shows the login screen.
-4. Cookie management is handled by the browser — `sentinel_session` is `HttpOnly`, so JS never sees the token directly.
+1. On mount, calls `GET /api/auth/me`. 200 → `user` set; 401 → app shows [LoginScreen.tsx](../../frontend/src/components/LoginScreen.tsx).
+2. `login(username, password)` → `POST /api/auth/login`; on success refetches `/me`.
+3. `logout()` → `POST /api/auth/logout`; clears `user`, shows login screen.
+4. Cookie management handled by the browser — `sentinel_session` is `HttpOnly` → JS never sees the token.
 
 ## Why this design
 
-- **One source of truth** for `user` and `is_admin`. Components read via `useAuth()` rather than refetching themselves.
-- **Boot-time `/me` call** ensures a refresh that lands on a deep link still authenticates correctly.
+- **One source of truth** for `user` + `is_admin` — components read via `useAuth()`, don't refetch themselves.
+- **Boot-time `/me` call** — a refresh landing on a deep link still authenticates correctly.
 
 ## Cross-references
 

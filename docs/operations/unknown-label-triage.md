@@ -6,18 +6,18 @@ A label that arrived from somewhere (LLM, SAM3 open-vocab output, manual operato
 
 ## How they accumulate
 
-- **LLM classification.** When `ENABLE_LLM_DETECTION_CLASSIFICATION=true`, the post-classifier sometimes coins terms outside the ontology. Those get logged.
-- **SAM3 text output.** Open-vocab labels SAM3 returns that don't match a normalized object.
-- **Operator manual detection.** When the operator types a class on a manually drawn detection, unknown classes get triaged here.
+- **LLM classification** — when `ENABLE_LLM_DETECTION_CLASSIFICATION=true`, the post-classifier sometimes coins terms outside the ontology → logged.
+- **SAM3 text output** — open-vocab labels SAM3 returns that don't match a normalized object.
+- **Operator manual detection** — operator-typed classes on a manually drawn detection get triaged here.
 
 ## How to triage
 
 1. **Admin → Ontology → Unknown labels tab.**
-2. Each row shows: the label string, occurrence count, latest timestamp, originating layer.
-3. For each, the operator picks one of:
-   - **Assign to existing object.** Maps the label to an existing `ontology_objects` row so future detections normalize there.
-   - **Create new object.** Creates a new object (with branch, default prompts per sensor, icon) and assigns the label to it.
-   - **Discard.** Mark as ignored (won't show again).
+2. Each row shows: label string, occurrence count, latest timestamp, originating layer.
+3. For each, operator picks one of:
+   - **Assign to existing object** — maps the label to an existing `ontology_objects` row → future detections normalize there.
+   - **Create new object** — creates a new object (with branch, default prompts per sensor, icon), assigns the label to it.
+   - **Discard** — mark ignored (won't show again).
 
 Backend: `POST /api/ontology/unknown-labels/{label}/assign` with `{object_id?: int, create?: {...}}` body.
 

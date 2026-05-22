@@ -6,13 +6,13 @@
 
 ## Purpose
 
-Polling parsers for external HTTP feeds (analyst-facing data sources like ADS-B feeds, AIS, civilian GeoJSON pushes). Used by the Celery-beat scheduled poller — see [operations/celery-beat-schedule.md](../operations/celery-beat-schedule.md).
+Polling parsers for external HTTP feeds (ADS-B, AIS, civilian GeoJSON pushes). Used by the Celery-beat scheduled poller — see [operations/celery-beat-schedule.md](../operations/celery-beat-schedule.md).
 
 ## Why this design
 
-- **Pure parsers; no DB writes here.** The function returns a list of normalized `{event_type, lat, lon, observed_at, payload}` dicts; the calling task writes to PostGIS. Splitting the parser from the persistence makes both unit-testable and lets the parser run dry.
-- **Three formats out of the box.** JSON, GeoJSON, and ADS-B BaseStation text. Other formats are added by writing another parser function and dispatching on the source's declared `format` field.
-- **Bounded.** Max 500 events per poll; cap on response size before parsing. Stops a misconfigured feed from flooding the DB.
+- **Pure parsers; no DB writes** — returns list of normalized `{event_type, lat, lon, observed_at, payload}` dicts; calling task writes to PostGIS. Splitting parser from persistence → both unit-testable, parser runs dry.
+- **Three formats built in** — JSON, GeoJSON, ADS-B BaseStation text. New formats = another parser function + dispatch on the source's `format` field.
+- **Bounded** — max 500 events per poll; response-size cap before parsing. Stops a misconfigured feed flooding the DB.
 
 ## Key symbols
 
@@ -24,8 +24,8 @@ Polling parsers for external HTTP feeds (analyst-facing data sources like ADS-B 
 
 ## Failure modes
 
-- Endpoint timeout → returns `[]` and logs.
-- Malformed body → parser skips bad rows and returns the rest.
+- Endpoint timeout → `[]` + log.
+- Malformed body → parser skips bad rows, returns the rest.
 
 ## Cross-references
 

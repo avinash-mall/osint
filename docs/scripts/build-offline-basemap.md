@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Pre-fetch Carto Dark Matter raster tiles for zoom levels 0..10 into `assets/static/basemap/` so the offline image can be built without network access at runtime.
+Pre-fetch Carto Dark Matter raster tiles for zoom levels 0..10 into `assets/static/basemap/` → the offline image can be built without runtime network access.
 
 ## Usage
 
@@ -21,7 +21,7 @@ Idempotent: tiles already on disk are skipped.
 - `assets/static/basemap/{z}/{x}/{y}.png` (~3 GB at z=0..10)
 - License + attribution file at `assets/static/LICENSE.txt`
 
-Treat `assets/static/basemap/` as **read-only** from agents — never write here outside of running this script. See [AGENTS.md](../../AGENTS.md).
+Treat `assets/static/basemap/` as **read-only** from agents — never write here outside running this script. See [AGENTS.md](../../AGENTS.md).
 
 ## Cross-references
 

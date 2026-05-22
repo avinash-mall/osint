@@ -5,7 +5,7 @@
 
 ## Purpose
 
-`main.tsx` renders the React root. `App.tsx` mounts five workspaces under a `PreferencesProvider` → `AuthProvider` pair and threads global state (cursor lat/lng, selected detection, current workspace) across them. `PreferencesProvider` ([hooks/usePreferences.tsx](../../frontend/src/hooks/usePreferences.tsx)) owns theme/density/clock-TZ and applies the `<html>` classes (UX-AUDIT F18). The Shell derives its own context line, so `App.tsx` no longer passes a static `CONTEXT_LINE` (F8).
+`main.tsx` renders the React root. `App.tsx` mounts five workspaces under a `PreferencesProvider` → `AuthProvider` pair, threads global state (cursor lat/lng, selected detection, current workspace) across them. `PreferencesProvider` ([hooks/usePreferences.tsx](../../frontend/src/hooks/usePreferences.tsx)) owns theme/density/clock-TZ, applies the `<html>` classes (UX-AUDIT F18). Shell derives its own context line → `App.tsx` no longer passes a static `CONTEXT_LINE` (F8).
 
 ## Workspaces
 
@@ -19,7 +19,7 @@
 
 ## Cross-references
 
-- [shell-and-chrome.md](shell-and-chrome.md) — the persistent rail/topbar/status that frames every workspace
+- [shell-and-chrome.md](shell-and-chrome.md) — the persistent rail/topbar/status framing every workspace
 - [auth-hook.md](auth-hook.md) — `AuthProvider` lives here
 - [decisions/ux-audit-001.md](../decisions/ux-audit-001.md) — `PreferencesProvider`, workspace rename
 - Per-workspace docs: [workspace-geoint-gaiamap.md](workspace-geoint-gaiamap.md), [workspace-fmv-player.md](workspace-fmv-player.md), [workspace-link-graph.md](workspace-link-graph.md), [workspace-admin.md](workspace-admin.md), [workspace-ingest.md](workspace-ingest.md)

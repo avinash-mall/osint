@@ -1,6 +1,6 @@
 # Inference Layer Comparison — Image Stack
 
-**Raw report:** [bench/comparison.md](../../bench/comparison.md) and [bench/sam3_comparison.md](../../bench/sam3_comparison.md)
+**Raw report:** [bench/comparison.md](../../bench/comparison.md), [bench/sam3_comparison.md](../../bench/sam3_comparison.md)
 **Source:** [scripts/compare_inference_layers.py](../../scripts/compare_inference_layers.py)
 **Datasets:** DOTA-v1.0 val (30 chips, 1619 GT boxes); Sen1Floods11; synthetic S1 GRD
 **Hardware:** RTX 5070 Ti, 16 GB

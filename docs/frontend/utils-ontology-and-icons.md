@@ -12,7 +12,7 @@
 
 ## Why these are shared
 
-Every workspace touches ontology lookups (branch icon, taxon color, normalized label). Putting them in `utils/` means the workspaces stay focused on their UX, and the ontology mapping has a single live source — the React hook subscribes to ontology version changes so all consumers refresh together.
+Every workspace touches ontology lookups (branch icon, taxon color, normalized label). Putting them in `utils/` keeps workspaces focused on their UX, and gives the ontology mapping a single live source — the React hook subscribes to ontology version changes → all consumers refresh together.
 
 ## Cross-references
 

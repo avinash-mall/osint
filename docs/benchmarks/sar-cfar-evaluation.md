@@ -6,7 +6,7 @@
 
 ## What it measures
 
-Precision/Recall of the CA-CFAR detector on synthetic SAR chips with known ship locations. Also reports detection count and score distribution — these are the noise-floor smoke checks for changes to the CFAR thresholds.
+Precision/Recall of the CA-CFAR detector on synthetic SAR chips with known ship locations. Also reports detection count + score distribution — noise-floor smoke checks for changes to the CFAR thresholds.
 
 ## How to reproduce
 
@@ -18,7 +18,7 @@ python scripts/eval_sar_cfar.py \
 
 ## Why synthetic
 
-Real S1 GRD with annotated ship locations is hard to come by in volume. The synthetic data is a smoke check, not a quality certification — it catches accidental regressions to the detector when the CFAR window or threshold is tuned.
+Real S1 GRD with annotated ship locations is hard to come by in volume. The synthetic data is a smoke check, not a quality certification — catches accidental regressions when the CFAR window or threshold is tuned.
 
 ## Cross-references
 

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The full build-once / load-and-go runbook for disconnected sites. Every basemap tile, webfont, and AI weight is baked into the images at build time.
+The build-once / load-and-go runbook for disconnected sites. Every basemap tile, webfont, AI weight baked into the images at build time.
 
 ## Connected host (build)
 
@@ -40,11 +40,11 @@ docker compose up -d
 
 ## Runtime DNS verification
 
-After `docker compose up`, you can verify zero outbound traffic with `tcpdump` and `docker network create --internal`. All upstream images are pinned to specific digests for byte-for-byte reproducibility.
+After `docker compose up`, verify zero outbound traffic with `tcpdump` and `docker network create --internal`. All upstream images pinned to specific digests for byte-for-byte reproducibility.
 
 ## Dev override
 
-The offline image bakes weights into the container. For day-to-day inference iteration, layer a `docker-compose.dev.yml` with a writable `sam3_models` volume to restore the "first run downloads, subsequent runs reuse" loop.
+The offline image bakes weights into the container. For day-to-day inference iteration, layer a `docker-compose.dev.yml` with a writable `sam3_models` volume → restores the "first run downloads, subsequent runs reuse" loop.
 
 ## Cross-references
 

@@ -2,17 +2,17 @@
 
 **Path:** [backend/files.py](../../backend/files.py)
 **Lines:** ~52
-**Depends on:** `pathlib`, FastAPI's `UploadFile`
+**Depends on:** `pathlib`, FastAPI `UploadFile`
 
 ## Purpose
 
-Three small primitives shared between the ingest and models-training routers: filename sanitization, streamed upload-to-disk, and a media-type classifier that maps extension → `(media_type, celery_task_name)`.
+Three primitives shared between ingest and models-training routers: filename sanitization, streamed upload-to-disk, media-type classifier (extension → `(media_type, celery_task_name)`).
 
 ## Why this design
 
-- **Streamed write** (1 MiB chunks) so large uploads don't blow process RAM.
-- **Sanitize filenames defensively.** Avoids path-traversal (`../`) and odd Unicode. The original filename is preserved in the database row for the UI.
-- **Classification drives Celery routing.** A `.tif` uploaded through `/api/ingest/upload` becomes `worker.process_satellite_imagery`; a `.mp4` becomes `worker.process_fmv`. Single source of truth for the extension → task map.
+- **Streamed write** (1 MiB chunks) — large uploads don't blow process RAM.
+- **Sanitize filenames defensively** — avoids path-traversal (`../`) and odd Unicode. Original filename preserved in the DB row for the UI.
+- **Classification drives Celery routing** — `.tif` via `/api/ingest/upload` → `worker.process_satellite_imagery`; `.mp4` → `worker.process_fmv`. Single source of truth for the extension → task map.
 
 ## Key symbols
 

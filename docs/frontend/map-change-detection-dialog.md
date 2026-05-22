@@ -5,13 +5,13 @@
 
 ## Purpose
 
-Modal for setting up a two-pass raster diff: pick a "before" pass, a "after" pass (both filterable by date and sensor), submit, then render the resulting polygons on the map.
+Modal for setting up a two-pass raster diff: pick a "before" pass, an "after" pass (both filterable by date and sensor), submit, render resulting polygons on the map.
 
 ## Behavior
 
 1. Lists candidate satellite passes from `GET /api/imagery`.
 2. Submission posts to `POST /api/imagery/change` (single pair) or `POST /api/analytics/change` (AOI-bounded).
-3. Result polygons render as a new map overlay; the user can click each to inspect.
+3. Result polygons render as a new map overlay; user can click each to inspect.
 
 ## Cross-references
 

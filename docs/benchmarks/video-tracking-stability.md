@@ -6,7 +6,7 @@
 
 ## What it measures
 
-Cross-frame re-ID quality. For each tracked object across `N_FRAMES` frames, compute embedding cosine similarity. **SEP** = mean(intra-track sim) - mean(inter-track sim). Higher SEP means better tracking.
+Cross-frame re-ID quality. For each tracked object across `N_FRAMES` frames, compute embedding cosine similarity. **SEP** = mean(intra-track sim) − mean(inter-track sim). Higher SEP = better tracking.
 
 ## Result
 
@@ -15,7 +15,7 @@ Cross-frame re-ID quality. For each tracked object across `N_FRAMES` frames, com
 | **DINOv3-SAT-L** | **+0.22** | 217 ms |
 | DINOv3-LVD-L (removed) | NaN on small crops | 715 ms (2.5× slower) |
 
-DINOV3_LVD was removed because of silent NaN failures — see [decisions/removed-dinov3-lvd.md](../decisions/removed-dinov3-lvd.md). SAT is faster AND better on drone footage.
+DINOV3_LVD was removed for silent NaN failures — see [decisions/removed-dinov3-lvd.md](../decisions/removed-dinov3-lvd.md). SAT is faster AND better on drone footage.
 
 ## How to reproduce
 

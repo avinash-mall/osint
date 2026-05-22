@@ -6,17 +6,17 @@
 
 ## Purpose
 
-Get a raw raster (GeoTIFF, NITF, Sentinel L2A, HLS-6, S1 GRD) from upload to displayable detections in PostGIS.
+Raw raster (GeoTIFF, NITF, Sentinel L2A, HLS-6, S1 GRD) → displayable detections in PostGIS.
 
 ## Six-step pipeline
 
-1. **COG translate** — `gdal_translate -of COG` rewrites the input to Cloud-Optimised GeoTIFF on the shared `/data/imagery/processed/` volume. Tile server (`titiler`) needs the COG format for on-the-fly windowed reads.
-2. **Catalog** — pass footprint stored as `MULTIPOLYGON` in PostGIS (`satellite_passes` table); mirrored as a `SatellitePass` node in Neo4j for graph queries.
-3. **Chipping** — slice into overlapping `INFERENCE_CHIP_SIZE`×`INFERENCE_CHIP_SIZE` chips (default 1008×1008, 25% overlap). RGB chips are PNG; multispectral and SAR stay GeoTIFF to preserve band radiometry. See `chip_to_uint8_rgb` in [backend/worker_legacy.py](../../backend/worker_legacy.py).
-4. **Inference dispatch** — `INFERENCE_CHIP_CONCURRENCY` chips POSTed to `inference-sam3:8001/detect` in parallel via a thread pool. Each request includes the `metadata.modality`, sensor-resolved `text_prompts` (from `/api/ontology/default-prompts`), and `enabled_layers` (e.g. `sam3, dota_obb, dinov3_sat`).
-5. **Georeference** — pixel-space bboxes and OBBs warped back to WGS84 lat/lon using the source CRS read from the COG. Mask RLE is preserved in pixel space; OBB coordinates are emitted in `yolo_obb_normalized_xyxyxyxy` (see schema).
-6. **Evidence rank** — backend scores source agreement, optional RemoteCLIP verifier margin, physical sanity checks, and SAR proxy status into `evidence_score` / `evidence_tier`.
-7. **Persist** — detections written to PostGIS `detections` with mask RLE, embedding, parent class, original (open-vocab) class, confidence, review status, evidence metadata, chip provenance (chip URL + index), model/taxonomy version, and coverage polygon.
+1. **COG translate** — `gdal_translate -of COG` rewrites input to Cloud-Optimised GeoTIFF on shared `/data/imagery/processed/`. `titiler` needs COG for windowed reads.
+2. **Catalog** — pass footprint as `MULTIPOLYGON` in PostGIS (`satellite_passes`); mirrored as `SatellitePass` node in Neo4j.
+3. **Chipping** — slice into overlapping `INFERENCE_CHIP_SIZE`×`INFERENCE_CHIP_SIZE` chips (default 1008×1008, 25% overlap). RGB chips PNG; multispectral/SAR stay GeoTIFF to preserve band radiometry. See `chip_to_uint8_rgb` in [backend/worker_legacy.py](../../backend/worker_legacy.py).
+4. **Inference dispatch** — `INFERENCE_CHIP_CONCURRENCY` chips POSTed to `inference-sam3:8001/detect` in parallel via thread pool. Each request: `metadata.modality`, sensor-resolved `text_prompts` (from `/api/ontology/default-prompts`), `enabled_layers` (e.g. `sam3, dota_obb, dinov3_sat`).
+5. **Georeference** — pixel-space bboxes/OBBs warped to WGS84 via source CRS from COG. Mask RLE kept pixel-space; OBB coords emitted as `yolo_obb_normalized_xyxyxyxy` (see schema).
+6. **Evidence rank** — backend scores source agreement, optional RemoteCLIP verifier margin, physical sanity checks, SAR proxy status → `evidence_score` / `evidence_tier`.
+7. **Persist** — detections → PostGIS `detections`: mask RLE, embedding, parent class, original (open-vocab) class, confidence, review status, evidence metadata, chip provenance (URL + index), model/taxonomy version, coverage polygon.
 
 ## Modality dispatch
 
@@ -24,33 +24,33 @@ Get a raw raster (GeoTIFF, NITF, Sentinel L2A, HLS-6, S1 GRD) from upload to dis
 |---|---|---|
 | Optical (RGB) | `rgb` | SAM3 text/box prompts → DOTA-OBB → optional GDINO → DINOv3-SAT embed |
 | Multispectral / Hyperspectral | `multispectral` | Prithvi flood + burn → SAM3 on RGB preview → optional 3-timestep crop classifier |
-| SAR | `sar` | CFAR primary; optional TerraMind S1→S2 → SAM3 synthetic preview remains evidence-capped and review-only unless corroborated |
-| FMV | n/a (routes to [data-flow-fmv.md](data-flow-fmv.md)) | — |
+| SAR | `sar` | CFAR primary; optional TerraMind S1→S2 → SAM3 synthetic preview, evidence-capped + review-only unless corroborated |
+| FMV | n/a → [data-flow-fmv.md](data-flow-fmv.md) | — |
 
 ## Key env knobs
 
 | Variable | Default | Effect |
 |---|---|---|
-| `INFERENCE_CHIP_SIZE` / `INFERENCE_CHIP_OVERLAP` | 1008 / 252 | Match SAM3's intended chip geometry |
-| `MAX_INFERENCE_CHIPS` | 256 | Worker-side cap (0 = full coverage) |
+| `INFERENCE_CHIP_SIZE` / `INFERENCE_CHIP_OVERLAP` | 1008 / 252 | SAM3 chip geometry |
+| `MAX_INFERENCE_CHIPS` | 256 | Worker cap (0 = full coverage) |
 | `INFERENCE_CHIP_CONCURRENCY` | 1 | Parallel POSTs per pass |
 | `INFERENCE_MAX_PENDING_CHIPS` | 32 | Bounded encoded-chip queue |
-| `INFERENCE_CHIP_SPOOL_MAX_BYTES` | 4 MiB | Spill encoded chip to temp file above this size |
+| `INFERENCE_CHIP_SPOOL_MAX_BYTES` | 4 MiB | Spill encoded chip to temp file above this |
 | `INFERENCE_CHIP_TIMEOUT_S` | 600 | Per-request timeout |
 
 Full env reference: [deployment/environment-variables-reference.md](../deployment/environment-variables-reference.md).
 
 ## Failure modes
 
-- **Missing prompts.** Omitted `metadata.text_prompts` use bounded precision defaults by default. Explicit empty `metadata.text_prompts: []` returns HTTP 400 unless box prompts are supplied. Ontology backend fallback is opt-in with `SAM3_DEFAULT_PROMPT_SOURCE=ontology`; backend unreachable in that mode returns 503.
-- **No CRS.** Worker logs and skips georeferencing; detection coordinates remain pixel-space. The detection is still persisted with a `null` footprint.
-- **Inference timeout.** Chip is marked failed; pass continues. Failed chips are visible in `/api/inference/dashboard`.
-- **OBB extraction.** When the mask is degenerate, the worker falls back to HBB (`edge_truncated=true`).
+- **Missing prompts** — omitted `metadata.text_prompts` → bounded precision defaults. Explicit `metadata.text_prompts: []` → HTTP 400 unless box prompts supplied. Ontology backend fallback opt-in via `SAM3_DEFAULT_PROMPT_SOURCE=ontology`; backend unreachable in that mode → 503.
+- **No CRS** — worker logs, skips georeferencing; coords stay pixel-space; detection persisted with `null` footprint.
+- **Inference timeout** — chip marked failed; pass continues. Failed chips visible in `/api/inference/dashboard`.
+- **OBB extraction** — degenerate mask → HBB fallback (`edge_truncated=true`).
 
 ## Cross-references
 
-- [operations/imagery-ingest-pipeline.md](../operations/imagery-ingest-pipeline.md) — how to launch from UI vs API
+- [operations/imagery-ingest-pipeline.md](../operations/imagery-ingest-pipeline.md) — launch from UI vs API
 - [backend/worker-legacy-monolith.md](../backend/worker-legacy-monolith.md) — task internals
 - [backend/detection-evidence.md](../backend/detection-evidence.md) — evidence tiering before persistence
-- [inference/sam3-runner-internals.md](../inference/sam3-runner-internals.md) — what `/detect` does once it has the chip
+- [inference/sam3-runner-internals.md](../inference/sam3-runner-internals.md) — what `/detect` does with the chip
 - [decisions/why-sar-confidence-cap.md](../decisions/why-sar-confidence-cap.md)

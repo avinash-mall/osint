@@ -22,11 +22,11 @@
 
 ## conftest
 
-[conftest.py](../../backend/tests/conftest.py) sets test-mode env defaults and provides a Postgres fixture for the API tests.
+[conftest.py](../../backend/tests/conftest.py) sets test-mode env defaults, provides a Postgres fixture for the API tests.
 
 ## What's NOT covered here
 
-Worker pipeline integration is covered by end-to-end runs and the benchmark harness — see [benchmark-harness.md](benchmark-harness.md). Splitting `worker_legacy.py` for unit testing is gated on the refactor described in [decisions/why-worker-legacy-monolith-kept.md](../decisions/why-worker-legacy-monolith-kept.md).
+Worker pipeline integration is covered by end-to-end runs and the benchmark harness — see [benchmark-harness.md](benchmark-harness.md). Splitting `worker_legacy.py` for unit testing is gated on the refactor in [decisions/why-worker-legacy-monolith-kept.md](../decisions/why-worker-legacy-monolith-kept.md).
 
 ## Cross-references
 

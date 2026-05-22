@@ -1,21 +1,21 @@
 path|tags|summary
 architecture/system-overview.md|arch|nginx:3000 sole entry; routes /api,/ws,/tiles,/maps,/basemap,/fmv to internal services
-architecture/data-flow-imagery.md|arch,imagery|COG translate -> chip -> /detect -> georef -> evidence-rank -> PostGIS persistence
+architecture/data-flow-imagery.md|arch,imagery|COG translate -> chip -> /detect -> georef -> evidence-rank -> PostGIS persist
 architecture/data-flow-fmv.md|arch,fmv|HLS transcode -> KLV/SRT telemetry -> /detect_video NDJSON -> fmv_detections
-architecture/component-boundaries.md|arch|process/file boundaries between backend, worker, inference-sam3, frontend
+architecture/component-boundaries.md|arch|process/file boundaries: backend, worker, inference-sam3, frontend
 architecture/service-topology.md|arch,deployment|docker-compose service graph, internal DNS, exposed ports
 backend/main-app-entrypoint.md|backend,fastapi|main.py mounts routers, lifespan migrations, session middleware, FMV prompt fallback
-backend/api-routes-reference.md|backend,router|complete route table grouped by tag (auth, graph, detections, fmv, ontology, analytics, ai)
+backend/api-routes-reference.md|backend,router|route table by tag: auth/graph/detections/fmv/ontology/analytics/ai
 backend/auth-and-sessions.md|backend,auth|itsdangerous signed cookies, env-bootstrap admin, optional LDAP via auth_config row
-backend/database-connections.md|backend|Neo4j + PostGIS dual stack with pool, advisory locks, docker DNS fallback
+backend/database-connections.md|backend|Neo4j + PostGIS dual stack: pool, advisory locks, docker DNS fallback
 backend/ontology-system.md|backend,ontology|DB-canonical branches/objects/prompts, normalize() with read-through cache
 backend/tracker-satellite.md|backend,tracker|satellite-pass Hungarian tracker, V_MAX state gates, 14-day age cap, 3-miss timeout
-backend/fmv-track-consolidation.md|backend,fmv,tracker|post-inference fmv_detections consolidation: cross-window/prompt track stitching + class vote
+backend/fmv-track-consolidation.md|backend,fmv,tracker|post-inference fmv_detections consolidation: cross-window/prompt stitch + class vote
 backend/detection-evidence.md|backend|source/verifier/physics evidence ranking into confirmed/candidate/discovery tiers
 backend/detection-policy.md|backend|precision open-vocab policy: default floor, DB/env overrides, parent_class fallback
 backend/detection-helpers.md|backend|shared detection/FMV detail validators + object_details upsert
 backend/platform-schema-migrations.md|backend|idempotent CREATE TABLE IF NOT EXISTS for feed/event/observation tables
-backend/pydantic-schemas.md|backend|all request/response models extracted from main.py to avoid circular imports
+backend/pydantic-schemas.md|backend|request/response models extracted from main.py to avoid circular imports
 backend/candidate-linking.md|backend|pure scorer: 30% spatial + 30% compat + 30% confidence + 10% history
 backend/change-detection-raster.md|backend,imagery|two-pass COG diff, polygonize, CHANGE_DET_MAX_PIXELS bound
 backend/calibration-temperature.md|backend|single-parameter temperature scaling for SAM3/DOTA/GDINO scores
@@ -25,7 +25,7 @@ backend/feed-collectors.md|backend|polling HTTP collectors for JSON/GeoJSON feed
 backend/files-and-uploads.md|backend|safe filename + media-type to Celery task routing
 backend/fmv-helpers-hls.md|backend,fmv|ffmpeg stream-copy HLS transcode, ffprobe metadata
 backend/geometry-iou.md|backend|bbox parse, xyxy/cxcywh IoU, point extraction
-backend/imagery-metadata-hashing.md|backend,imagery|SHA256 + NITF IDATIM + SAR keys extraction
+backend/imagery-metadata-hashing.md|backend,imagery|SHA256 + NITF IDATIM + SAR keys + native_max_zoom extraction
 backend/provider-lifecycle.md|backend|polls inference-sam3 /health for startup gating
 backend/reports-and-collections.md|backend|target-package and collection-requirement persistence
 backend/routing-graph-osmnx.md|backend|NetworkX routing on osmnx pickle, terrain+threat metadata
@@ -50,14 +50,14 @@ backend-routers/models-training-router.md|router|/api/models, /api/training, dat
 backend-routers/ontology-router.md|router,ontology|/api/ontology branches/objects/prompts/profiles/unknown-labels/version-history
 backend-routers/system-router.md|router|/api/system/deployment-mode — env-driven login banner posture
 backend-routers/websocket-router.md|router|/ws Redis-bridged push channel
-inference/service-overview.md|inference,sam3|FastAPI service bundling SAM3+SAM3.1+YOLOE+DINOv3+Prithvi+TerraMind+DOTA+GDINO+RemoteCLIP
-inference/main-app-entrypoint.md|inference,sam3|/detect precision defaults, source_layer/debug_counts, optional RemoteCLIP verifier, /detect_video
+inference/service-overview.md|inference,sam3|FastAPI service: SAM3+SAM3.1+YOLOE+DINOv3+Prithvi+TerraMind+DOTA+GDINO+RemoteCLIP
+inference/main-app-entrypoint.md|inference,sam3|/detect precision defaults, source_layer/debug_counts, RemoteCLIP verifier, /detect_video
 inference/sam3-runner-internals.md|inference,sam3|build_image_bundle, run_text_prompts, run_box_prompts pipelines
 inference/sam3-pcs-multiplex-video.md|inference,sam3,fmv|SAM3.1 multiplex one-prompt-per-session video tracker
 inference/sam3-perf-profiling.md|inference,sam3|stage_timer CUDA-sync per-stage latency accumulator
 inference/fusion-and-nms.md|inference|mask-aware fusion across SAM3/DOTA/GDINO/YOLOE detections
 inference/grounding-dino-detector.md|inference|IDEA-Research grounding-dino-{tiny,base} text-to-box
-inference/grounding-dino-gate.md|inference|server-side gate that skips GDINO on common-vocab prompts
+inference/grounding-dino-gate.md|inference|server-side gate skips GDINO on common-vocab prompts
 inference/yoloe-tracker.md|inference,fmv|YOLOE-26x-seg(-pf) prompt-free + text-promptable, replaces SAM3 AMG
 inference/dota-obb-specialist.md|inference|Ultralytics YOLO26m-obb default with YOLO11n low-VRAM fallback
 inference/dinov3-embeddings.md|inference|DINOv3 ViT-L SAT-493M re-ID embedding head
@@ -109,13 +109,13 @@ operations/fmv-ingest-pipeline.md|operations,fmv|clip upload -> HLS -> telemetry
 operations/ontology-edit-workflow.md|operations,ontology|admin UI flow, version cursor, prompt cache 30s + SIGHUP
 operations/unknown-label-triage.md|operations,ontology|LLM-emitted labels into ontology_unknown_labels, assign workflow
 operations/candidate-link-approval.md|operations|detection->target candidates, deterministic scorer, operator approve/reject
-operations/change-detection-runbook.md|operations,imagery|how to launch a two-pass change detection from the UI or API
+operations/change-detection-runbook.md|operations,imagery|launching a two-pass change detection from the UI or API
 operations/health-monitoring.md|operations|Health Dashboard, /api/health, replica chips, alert escalation
 operations/auth-and-ldap-setup.md|operations,auth|env-bootstrap admin, Admin->Auth LDAP form, test bind workflows
 operations/llm-ava-configuration.md|operations|OPENAI_API_BASE pointing at vLLM/Ollama, graceful degradation
-decisions/cached-forward-device-normalise.md|decision,sam3|multi-GPU _get_img_feats crash: pin thread-local CUDA device so the SAM3 collator builds img_ids right
+decisions/cached-forward-device-normalise.md|decision,sam3|multi-GPU _get_img_feats crash: pin thread-local CUDA device so SAM3 collator builds img_ids right
 decisions/disable-addmm-cuda-lt.md|decision,gpu|routes nn.Linear off cuBLAS-Lt to dodge A100/cu130 corruption bug
-decisions/implemented-ontology-updates-endpoint.md|decision|registers GET /api/ontology/updates in the ontology router to fix Link Graph bottom strip 404
+decisions/implemented-ontology-updates-endpoint.md|decision|registers GET /api/ontology/updates to fix Link Graph bottom strip 404
 decisions/merged-additions-responsive-css.md|decision,frontend|additions.responsive.css folded into index.css to kill duplicate/drifting rules
 decisions/removed-defence-yolo.md|decision|DEFENCE_YOLO emitted 1297 FPs / 0 TPs on DOTA val
 decisions/removed-dinov3-lvd.md|decision|DINOV3_LVD emitted NaN embeddings on drone-video crops
@@ -126,11 +126,11 @@ decisions/why-category-presence-gate.md|decision,sam3|SegEarth-OV-3-style 0.40 f
 decisions/why-detection-boxes-use-polygon-map.md|decision,frontend|box layer is per-feature <Polygon> map; <GeoJSON> canvas layer silently failed to paint
 decisions/why-dinov3-sat-only.md|decision|DINOv3 ViT-L SAT-493M keeps re-ID quality without DINOv3_LVD NaNs
 decisions/why-evidence-ranked-detections.md|decision|confirmed objects require source, verifier, physics, and SAR evidence signals
-decisions/why-fmv-track-consolidation.md|decision,fmv|post-inference consolidation pass stitches windows/prompts; overlap_index removed; temporal-support class vote
+decisions/why-fmv-track-consolidation.md|decision,fmv|post-inference pass stitches windows/prompts; overlap_index removed; temporal-support class vote
 decisions/why-grounding-dino-auto-gated.md|decision|forcing GDINO drops mAP via NMS suppression of DOTA detections
 decisions/why-open-vocabulary.md|decision|no closed taxonomy: explicit/precision/ontology labels are first-class
 decisions/why-postgis-and-neo4j-coexist.md|decision|PostGIS for spatial detections; Neo4j for entity/link graph
-decisions/why-precision-first-inference-defaults.md|decision|bounded prompt defaults, source-layer provenance, specialist gates, and nonzero policy floor
+decisions/why-precision-first-inference-defaults.md|decision|bounded prompt defaults, source-layer provenance, specialist gates, nonzero policy floor
 decisions/why-sam3-as-foundation.md|decision,sam3|open-vocabulary segmentation across RGB/MSI/SAR with native API
 decisions/why-sar-confidence-cap.md|decision,imagery|SAR detections via TerraMind synthetic proxy capped at 0.85
 decisions/why-sat-tiles-cap-at-native-zoom.md|decision,imagery,frontend|SAT TileLayer maxNativeZoom from COG GSD + nginx cache relax kills zoom-in blur

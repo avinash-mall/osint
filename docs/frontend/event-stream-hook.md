@@ -5,7 +5,7 @@
 
 ## Purpose
 
-Open a single WebSocket connection to `/ws` and demultiplex topics to subscribers. Every component that needs live updates passes a topic + handler; the hook handles reconnection.
+Open a single WebSocket connection to `/ws`, demultiplex topics to subscribers. Each component needing live updates passes a topic + handler; the hook handles reconnection.
 
 ## Behavior
 

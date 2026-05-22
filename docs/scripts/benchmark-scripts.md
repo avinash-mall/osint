@@ -37,7 +37,7 @@ Drone-video cross-frame re-ID — see [benchmarks/video-tracking-stability.md](.
 
 ## run_video_profile.sh
 
-Temporarily reconfigures `inference-sam3` to the video profile (SAM3 image + SAM3 video + DINOv3 only), runs a benchmark command, then restores the original config. Useful when running a video benchmark on a host that's normally serving imagery.
+Temporarily reconfigures `inference-sam3` to the video profile (SAM3 image + SAM3 video + DINOv3 only), runs a benchmark command, restores the original config. Useful when running a video benchmark on a host normally serving imagery.
 
 ## inference-sam3/benchmark_detect.py
 

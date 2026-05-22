@@ -4,7 +4,7 @@
 
 ## Purpose
 
-The main quality + latency benchmark. Sweeps a defined set of layer configurations (e.g. `sam3-only`, `sam3+dota`, `sam3+dota+gdino`, etc.) across one or more dataset slices and reports mAP + per-class P/R/F1 + latency tables.
+The main quality + latency benchmark. Sweeps a defined set of layer configurations (e.g. `sam3-only`, `sam3+dota`, `sam3+dota+gdino`, etc.) across one or more dataset slices; reports mAP + per-class P/R/F1 + latency tables.
 
 ## Usage
 
@@ -28,7 +28,7 @@ python scripts/compare_inference_layers.py \
 
 ## Wrapper
 
-[scripts/_eval_runner.py](../../scripts/_eval_runner.py) is a wrapper that filters out historically broken configurations (e.g. the Grounding-DINO instability workaround). Use it when you want the curated set.
+[scripts/_eval_runner.py](../../scripts/_eval_runner.py) is a wrapper that filters out historically broken configurations (e.g. the Grounding-DINO instability workaround). Use it for the curated set.
 
 ## Cross-references
 

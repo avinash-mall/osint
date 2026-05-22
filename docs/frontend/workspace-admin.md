@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Consolidation of all operator tooling into a tab set.
+Consolidates all operator tooling into a tab set.
 
 ## Tabs
 
@@ -22,9 +22,9 @@ Consolidation of all operator tooling into a tab set.
 | Health alerts | [admin/AlertsView.tsx](../../frontend/src/components/admin/AlertsView.tsx) | [admin-alerts-and-versions.md](admin-alerts-and-versions.md) |
 | Sign-in & users | [AdminAuthTab.tsx](../../frontend/src/components/AdminAuthTab.tsx) | [admin-auth-ldap.md](admin-auth-ldap.md) |
 
-The **Model loading** tab loads inference profiles via `/api/inference/load` and frees VRAM via `/api/inference/unload`, the destructive unload gated behind a `ConfirmDialog`; `disabled` models render as a neutral `NEEDS SETUP` step (UX-AUDIT F27/F28). The **Sign-in & users** tab was renamed from `Auth · LDAP` (F29).
+**Model loading** tab loads inference profiles via `/api/inference/load`, frees VRAM via `/api/inference/unload` — destructive unload gated behind a `ConfirmDialog`; `disabled` models render as a neutral `NEEDS SETUP` step (UX-AUDIT F27/F28). **Sign-in & users** tab renamed from `Auth · LDAP` (F29).
 
-The `admin/*View.tsx` files share a common pattern: small components, each calling a small set of REST endpoints. Shared header at [admin/ViewHeader.tsx](../../frontend/src/components/admin/ViewHeader.tsx). Timestamp formatter at [admin/time.ts](../../frontend/src/components/admin/time.ts).
+`admin/*View.tsx` files share a common pattern: small components, each calling a small set of REST endpoints. Shared header [admin/ViewHeader.tsx](../../frontend/src/components/admin/ViewHeader.tsx); timestamp formatter [admin/time.ts](../../frontend/src/components/admin/time.ts).
 
 ## Cross-references
 

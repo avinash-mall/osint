@@ -6,13 +6,13 @@
 
 ## Purpose
 
-Every router request body and most response shapes. Extracted from `main.py` so routers can import shapes without dragging the entire app into their namespace.
+Every router request body + most response shapes. Extracted from `main.py` so routers import shapes without dragging the entire app into their namespace.
 
 ## Why this module
 
-- **Avoid circular imports.** Routers need shapes; the shapes don't need routers. One-way dependency.
-- **No business logic.** Schemas validate; the route handler does the work.
-- **No DB types.** Schemas describe the HTTP boundary, not the rows. PostGIS rowtypes are local to the helper that reads them.
+- **Avoid circular imports** — routers need shapes; shapes don't need routers. One-way dependency.
+- **No business logic** — schemas validate; the route handler does the work.
+- **No DB types** — schemas describe the HTTP boundary, not rows. PostGIS rowtypes local to the helper that reads them.
 
 ## Key shapes (alphabetical, with line refs)
 
@@ -38,15 +38,15 @@ Every router request body and most response shapes. Extracted from `main.py` so 
 | `ReviewUpdate` | [#L77](../../backend/schemas.py#L77) | review PATCH |
 | `TrainingJobCreate` | | [models-training-router.md](../backend-routers/models-training-router.md) |
 
-The above is not exhaustive — the file holds ~25 shapes total. Use `grep -n "^class " backend/schemas.py` for the live list.
+Not exhaustive — ~25 shapes total. `grep -n "^class " backend/schemas.py` for the live list.
 
 ## Convention
 
-When adding a new endpoint:
+Adding a new endpoint:
 
 1. Define the body shape here.
-2. Import it in the router: `from schemas import MyNewBody`.
-3. Use it as the type of the route's `body: MyNewBody = Body(...)` parameter.
+2. Import in the router: `from schemas import MyNewBody`.
+3. Use as the route's `body: MyNewBody = Body(...)` parameter.
 
 Don't define shapes in the router file — keeps router files navigable.
 

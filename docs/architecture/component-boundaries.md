@@ -2,46 +2,45 @@
 
 ## Purpose
 
-Where the cuts are drawn between processes, files, and networks — and why each cut exists.
+Where cuts are drawn between processes, files, networks — and why.
 
 ## Cuts
 
 ### 1. backend ↔ worker (in-process Celery routing)
 
-Two services share the same Docker image (`sentinel-backend:latest`) but run different commands. The backend serves FastAPI and publishes Celery tasks; the worker consumes them. Boundary is **Redis** (broker) and **the explicit task name** declared in `@celery_app.task(name="worker.xxx")`.
+Two services, same image (`sentinel-backend:latest`), different commands. Backend serves FastAPI + publishes Celery tasks; worker consumes. Boundary = **Redis** (broker) + **explicit task name** in `@celery_app.task(name="worker.xxx")`.
 
-- **Code shared:** `backend/database.py`, `backend/ontology.py`, `backend/schemas.py`, and most helper modules import freely.
-- **Code not shared:** the worker reads PostGIS/Neo4j directly; it does **not** make HTTP calls back into the backend. The backend never imports `worker_legacy`'s task bodies — only the `celery_app` and `.delay(...)` interface.
-- **Why:** lets the worker run on a separate host (GPU box) without dragging the API process along, and lets the API stay responsive under long-running ingest.
+- **Shared code:** `backend/database.py`, `backend/ontology.py`, `backend/schemas.py`, most helpers import freely.
+- **Not shared:** worker reads PostGIS/Neo4j directly — no HTTP calls back into backend. Backend never imports `worker_legacy` task bodies — only `celery_app` + `.delay(...)`.
+- **Why:** worker can run on a separate GPU host without the API process; API stays responsive under long ingest.
 
 ### 2. backend ↔ inference-sam3 (HTTP)
 
-Inference runs in its own container with its own image (`sentinel-inference-sam3:gpu`). The backend (and worker) talk to it over HTTP at `${INFERENCE_SAM3_URL}` (default `http://inference-sam3:8001`).
+Inference = own container, own image (`sentinel-inference-sam3:gpu`). Backend + worker talk HTTP at `${INFERENCE_SAM3_URL}` (default `http://inference-sam3:8001`).
 
-- **Why a separate process:** SAM 3's GPU memory cannot be freed without process restart. `/unload` literally re-execs the container. Keeping inference out of the backend means the FastAPI process stays up across model swaps.
-- **Why HTTP not gRPC:** the per-chip payload is dominated by the encoded image (~250 KB PNG), not RPC framing. HTTP is simpler to debug and proxy.
+- **Why separate process:** SAM 3 GPU memory cannot free without process restart; `/unload` re-execs the container. Keeps FastAPI up across model swaps.
+- **Why HTTP not gRPC:** per-chip payload dominated by encoded image (~250 KB PNG), not RPC framing. HTTP simpler to debug/proxy.
 
 ### 3. frontend ↔ backend (single nginx gateway)
 
-The browser never talks to the backend directly. Every call goes through `nginx:3000` which proxies `/api/*` and `/ws` to the backend, `/tiles/` to titiler, `/maps/` to martin, `/basemap/` and `/assets/` to the offline asset image, and `/fmv/` to HLS segments on disk.
+Browser never talks to backend directly. All calls via `nginx:3000`: `/api/*` + `/ws` → backend, `/tiles/` → titiler, `/maps/` → martin, `/basemap/` + `/assets/` → offline asset image, `/fmv/` → HLS segments on disk.
 
-- **Why:** single TLS termination point, single origin for the SPA (no CORS in production), one 24h tile cache.
+- **Why:** single TLS termination, single SPA origin (no CORS in prod), one 24h tile cache.
 
 ### 4. PostGIS ↔ Neo4j
 
-PostGIS owns: detections (with mask RLE and embedding), satellite passes, FMV clips/frames/detections, ontology branches/objects/prompts, auth_config, feed_sources, observations, reports, calibration.
+- **PostGIS owns:** detections (mask RLE + embedding), satellite passes, FMV clips/frames/detections, ontology branches/objects/prompts, auth_config, feed_sources, observations, reports, calibration.
+- **Neo4j owns:** entity graph — Targets, Assets, Observations, Satellites, Bases, LaunchPoints + edges.
 
-Neo4j owns: entity graph — Targets, Assets, Observations, Satellites, Bases, LaunchPoints, and edges between them.
-
-The two databases are not synchronized. A detection lives in PostGIS only; its **resolution** to a Target creates a Neo4j edge. See [decisions/why-postgis-and-neo4j-coexist.md](../decisions/why-postgis-and-neo4j-coexist.md).
+Not synchronized. A detection lives in PostGIS only; its **resolution** to a Target creates a Neo4j edge. See [decisions/why-postgis-and-neo4j-coexist.md](../decisions/why-postgis-and-neo4j-coexist.md).
 
 ### 5. inference profile pool
 
-Within `inference-sam3`, the loaded model set is one of `imagery`, `fmv`, or `all`. Profiles are selected via `POST /load?profile=<name>`. Switching requires `/unload` (process restart) when crossing into a set that needs SAM 3 to drop. See [inference/profile-pool-lifecycle.md](../inference/profile-pool-lifecycle.md).
+Within `inference-sam3`, loaded model set ∈ `imagery` | `fmv` | `all`. Selected via `POST /load?profile=<name>`. Switching needs `/unload` (process restart) when crossing into a set requiring SAM 3 to drop. See [inference/profile-pool-lifecycle.md](../inference/profile-pool-lifecycle.md).
 
 ### 6. ontology cache
 
-Inference pulls prompts from `${ONTOLOGY_BACKEND_URL}/api/ontology/default-prompts?sensor=` every 30 s. SIGHUP to the inference process forces immediate refresh. The backend bumps an ontology `version` cursor on every edit; clients watch `/api/ontology/version` to invalidate their own caches.
+Inference pulls prompts from `${ONTOLOGY_BACKEND_URL}/api/ontology/default-prompts?sensor=` every 30 s. SIGHUP forces immediate refresh. Backend bumps ontology `version` cursor on every edit; clients watch `/api/ontology/version` to invalidate caches.
 
 ## Cross-references
 

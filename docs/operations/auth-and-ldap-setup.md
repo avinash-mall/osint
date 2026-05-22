@@ -31,7 +31,7 @@ SESSION_SECRET=$(openssl rand -hex 32)
 
 ## Logout
 
-Logout is allowed without auth (a stale cookie can always be cleared via `POST /api/auth/logout`).
+Logout allowed without auth — a stale cookie can always be cleared via `POST /api/auth/logout`.
 
 ## Cross-references
 

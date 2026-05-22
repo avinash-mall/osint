@@ -2,7 +2,7 @@
 
 ## When this applies
 
-You're adding a coherent new surface area (e.g. `/api/exports/*`, `/api/calibration/*`) with 3+ routes that share helpers and state.
+You're adding a coherent new surface area (e.g. `/api/exports/*`, `/api/calibration/*`) with 3+ routes sharing helpers and state.
 
 For one-off endpoints, prefer adding them to [backend/main.py](../../backend/main.py) (the bulk-reads pattern).
 
@@ -50,7 +50,7 @@ For one-off endpoints, prefer adding them to [backend/main.py](../../backend/mai
 
    (Adjacent to the existing block at [#L170-L182](../../backend/main.py#L170-L182).)
 
-5. **Auth is automatic.** The session middleware at [main.py#L84](../../backend/main.py#L84) gates mutating verbs across all routers. You only need `Depends(get_current_user)` if you want the `SessionUser` object inside the handler.
+5. **Auth is automatic** — the session middleware at [main.py#L84](../../backend/main.py#L84) gates mutating verbs across all routers. You only need `Depends(get_current_user)` if you want the `SessionUser` object inside the handler.
 
 6. **Write a router doc** at `docs/backend-routers/<name>-router.md` following the template (see existing routers).
 

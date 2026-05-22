@@ -6,14 +6,14 @@
 
 ## Purpose
 
-OpenAI-compatible chat-completions client used for: analyst-question answering, structured extraction from free text, candidate-link ranking suggestions, action proposals, and ontology bulk-edit proposals. Designed to work against a **local** vLLM/Ollama endpoint, not the public OpenAI API.
+OpenAI-compatible chat-completions client for: analyst Q&A, structured extraction from free text, candidate-link ranking suggestions, action proposals, ontology bulk-edit proposals. Targets a **local** vLLM/Ollama endpoint, not public OpenAI.
 
 ## Why this design
 
-- **Graceful degradation.** Every entry raises `AIUnavailable` when the endpoint is unset or unreachable. Routes catch it and return 503 with a stable shape; the rest of the app is unaffected.
-- **Read-only DB intent.** [`get_ai_response`](../../backend/ai.py#L136) builds context by reading from the DB but never lets the LLM generate or execute Cypher/SQL. Arbitrary query execution from LLM output would be a critical injection vector.
-- **JSON-mode fallback ladder.** `get_llm_json` calls `extract_json_object` which handles: native JSON mode → markdown code-fenced JSON → strict prose-wrapped JSON. Tests in [backend/tests/test_ai_json_parsing.py](../../backend/tests/test_ai_json_parsing.py).
-- **Multiple chat URLs tried.** `_chat_completion_urls` covers `/v1/chat/completions`, `/chat/completions`, and bare `/completions` so the same client works against different self-hosted runtimes without configuration.
+- **Graceful degradation** — every entry raises `AIUnavailable` when endpoint unset/unreachable. Routes catch → 503 stable shape; rest of app unaffected.
+- **Read-only DB intent** — [`get_ai_response`](../../backend/ai.py#L136) builds context by reading DB but never lets the LLM generate/execute Cypher/SQL. Arbitrary LLM-driven queries = critical injection vector.
+- **JSON-mode fallback ladder** — `get_llm_json` → `extract_json_object`: native JSON mode → markdown code-fenced JSON → strict prose-wrapped JSON. Tests: [backend/tests/test_ai_json_parsing.py](../../backend/tests/test_ai_json_parsing.py).
+- **Multiple chat URLs tried** — `_chat_completion_urls` covers `/v1/chat/completions`, `/chat/completions`, bare `/completions` → same client works against different self-hosted runtimes without config.
 
 ## Key symbols
 

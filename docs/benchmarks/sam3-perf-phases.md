@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Track the iterative tuning of SAM3's per-stage latency. Each `phase*.json` is a snapshot in the optimization sequence. The corresponding `bench/comparison.md` and `bench/sam3_comparison.md` files describe what changed between phases.
+Track the iterative tuning of SAM3's per-stage latency. Each `phase*.json` is a snapshot in the optimization sequence. The corresponding `bench/comparison.md` and `bench/sam3_comparison.md` describe what changed between phases.
 
 ## How to read
 

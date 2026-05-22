@@ -6,7 +6,7 @@ Removed in v0.10.
 
 ## What it was
 
-A YOLO variant fine-tuned on defense imagery and intended to flag damaged structures as a `battle_damage` class. Loaded via the (now-removed) `SAM3_LOAD_DEFENCE_YOLO` env flag.
+A YOLO variant fine-tuned on defense imagery, intended to flag damaged structures as a `battle_damage` class. Loaded via the (now-removed) `SAM3_LOAD_DEFENCE_YOLO` env flag.
 
 ## Why it was removed
 
@@ -16,11 +16,11 @@ On DOTA-v1.0 val (26 chips, ground-truth available):
 |---|---|---|
 | DEFENCE_YOLO (`battle_damage`) | **0** | **1297** |
 
-Zero true positives, 1297 false positives across 26 chips. The model fired on shadows, terrain texture, parked cars — anything with sharp edges and dark internal regions. It actively degraded mAP at every confidence threshold tested.
+Zero true positives, 1297 false positives across 26 chips. Fired on shadows, terrain texture, parked cars — anything with sharp edges and dark internal regions. Actively degraded mAP at every confidence threshold tested.
 
 ## Why it failed
 
-The training data was thin and the labels were noisy; the resulting model learned "high-contrast pattern" instead of "structural damage." Without a curated eval set, the failure was invisible at training time.
+Training data was thin, labels noisy → the model learned "high-contrast pattern" instead of "structural damage." Without a curated eval set, the failure was invisible at training time.
 
 ## Lesson
 

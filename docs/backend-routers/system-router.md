@@ -6,17 +6,11 @@
 
 ## Purpose
 
-System-metadata routes for the frontend chrome. Currently one endpoint: the
-deployment-mode banner shown on the login screen.
+System-metadata routes for the frontend chrome. Currently one endpoint: the deployment-mode banner shown on the login screen.
 
 ## Why this design
 
-The login screen used to hardcode a `UNCLASSIFIED // FOR OFFICIAL USE ONLY`
-classification bar (UX-AUDIT F1). A stock open-source clone cannot back that
-framing, so the posture is now env-driven and defaults to `demo` — operators
-must opt in to a gov/mil banner. The route is intentionally unauthenticated:
-the banner renders before sign-in. It is a GET, so the session middleware in
-`main.py` does not gate it.
+Login screen used to hardcode a `UNCLASSIFIED // FOR OFFICIAL USE ONLY` classification bar (UX-AUDIT F1). A stock open-source clone cannot back that framing → posture now env-driven, defaults to `demo`; operators opt in to a gov/mil banner. Route intentionally unauthenticated — banner renders before sign-in. It is a GET → session middleware in `main.py` does not gate it.
 
 ## Endpoints
 
@@ -26,8 +20,8 @@ the banner renders before sign-in. It is a GET, so the session middleware in
 
 ## Inputs / Outputs
 
-- `SENTINEL_DEPLOYMENT_MODE` → `mode`: `demo` (default) \| `internal` \| `accredited`; unrecognised values fall back to `demo`.
-- `SENTINEL_DEPLOYMENT_LABEL` → overrides `label`; otherwise a per-mode default.
+- `SENTINEL_DEPLOYMENT_MODE` → `mode`: `demo` (default) \| `internal` \| `accredited`; unrecognised values → `demo`.
+- `SENTINEL_DEPLOYMENT_LABEL` → overrides `label`; otherwise per-mode default.
 - `SENTINEL_AUTH_SUPPORT_CONTACT` → `support_contact` (or `null`) for the LDAP support line on the login screen.
 
 ## Failure modes

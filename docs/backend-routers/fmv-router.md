@@ -6,7 +6,7 @@
 
 ## Purpose
 
-Operator-edit and delete operations on **FMV detections** (the per-frame, per-track rows in `fmv_detections`). The bulk FMV read endpoints — `GET /api/fmv/clips`, `/api/fmv/clips/{id}`, `/api/fmv/clips/{id}/klv`, `/api/fmv/clips/{id}/detections`, `/api/fmv/detections/{id}/similar` — live in [backend/main.py](../../backend/main.py). `POST /api/fmv/clips` (clip upload + processing kickoff) lives in [backend/routers/ingest.py](../../backend/routers/ingest.py).
+Operator-edit + delete on **FMV detections** (per-frame, per-track rows in `fmv_detections`). Bulk FMV reads — `GET /api/fmv/clips`, `/api/fmv/clips/{id}`, `/api/fmv/clips/{id}/klv`, `/api/fmv/clips/{id}/detections`, `/api/fmv/detections/{id}/similar` — live in [backend/main.py](../../backend/main.py). `POST /api/fmv/clips` (clip upload + processing kickoff) lives in [backend/routers/ingest.py](../../backend/routers/ingest.py).
 
 ## Endpoints in this router
 
@@ -18,7 +18,7 @@ Operator-edit and delete operations on **FMV detections** (the per-frame, per-tr
 
 ## Why this design
 
-Mirrors the structure of [detections-router.md](detections-router.md) — same edit/delete surface, separate table. Reusing `ObjectDetailsBody` and `detection_helpers` means the FMV review UI inherits the threat/affiliation/notes validators for free.
+Mirrors [detections-router.md](detections-router.md) — same edit/delete surface, separate table. Reusing `ObjectDetailsBody` + `detection_helpers` → FMV review UI inherits the threat/affiliation/notes validators for free.
 
 Track-level operations (pin/unpin, reprocess) live elsewhere — see [`/api/tracks/detections/*`](../backend/api-routes-reference.md#graph--tracks) in main.py.
 

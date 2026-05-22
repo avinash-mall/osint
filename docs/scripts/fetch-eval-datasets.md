@@ -9,11 +9,11 @@
 Idempotent fetchers for the evaluation datasets used by [testing/benchmark-harness.md](../testing/benchmark-harness.md):
 
 - **`fetch_real_datasets.py`** — downloads real DOTA-v1.0 val + Sen1Floods11 S2Hand slices from HuggingFace. Requires `HF_TOKEN`.
-- **`fetch_eval_datasets.py`** — wrapper that ensures every slice (DOTA, HLS-burn, sen1floods, SAR, embedding-only) has either real or synthetic fixtures available. Pass `--synthetic-fixtures` for deterministic test-only fixtures.
+- **`fetch_eval_datasets.py`** — wrapper ensuring every slice (DOTA, HLS-burn, sen1floods, SAR, embedding-only) has either real or synthetic fixtures available. `--synthetic-fixtures` for deterministic test-only fixtures.
 
 ## Why two scripts
 
-The two-stage design lets CI runs without network use the synthetic fixtures, while real benchmark runs use real data. The marker file (`labels.json`) tracks which slices are real vs synthetic so re-runs are idempotent.
+The two-stage design lets CI runs without network use synthetic fixtures, while real benchmark runs use real data. The marker file (`labels.json`) tracks which slices are real vs synthetic → re-runs are idempotent.
 
 ## Usage
 

@@ -6,15 +6,15 @@
 
 ## Purpose
 
-Small, reusable geometry primitives used by multiple routers. Both xyxy-absolute and cxcywh-normalized bbox formats are supported because the codebase uses both depending on the data path.
+Reusable geometry primitives used by multiple routers. Both xyxy-absolute and cxcywh-normalized bbox formats supported — the codebase uses both depending on data path.
 
 ## Key symbols
 
 - [`parse_bbox`](../../backend/geometry.py#L20) — `"minlon,minlat,maxlon,maxlat"` → tuple. HTTP 400 on malformed input.
 - [`iou_xyxy`](../../backend/geometry.py#L34) — absolute coords, two boxes → IoU float.
 - [`iou_cxcywh`](../../backend/geometry.py#L53) — normalized cxcywh, two boxes → IoU float.
-- [`point_payload`](../../backend/geometry.py#L73) — pulls `(lat, lon)` from heterogeneous payload shapes; returns `(None, None)` if absent.
-- [`make_square_feature`](../../backend/geometry.py#L85) — builds a square GeoJSON Feature centered on a point; used by analytics endpoints.
+- [`point_payload`](../../backend/geometry.py#L73) — pulls `(lat, lon)` from heterogeneous payload shapes; `(None, None)` if absent.
+- [`make_square_feature`](../../backend/geometry.py#L85) — square GeoJSON Feature centered on a point; used by analytics endpoints.
 
 ## Cross-references
 

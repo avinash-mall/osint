@@ -20,10 +20,10 @@
 
 ## Fixture fallback pattern
 
-When a feature requires optional infrastructure (DEM, routing graph), the endpoint returns a 200 with `mode: "fixture_no_*"` rather than 5xx. This is intentional so:
+When a feature requires optional infrastructure (DEM, routing graph), the endpoint returns 200 with `mode: "fixture_no_*"` rather than 5xx. Intentional so:
 
 - Demos without the full data set still work.
-- The frontend can render "DEM not configured" rather than a generic error.
+- The frontend renders "DEM not configured" rather than a generic error.
 
 Examples:
 
@@ -33,17 +33,17 @@ Examples:
 ## Internal trust boundary
 
 - **Validate at the HTTP boundary** (Pydantic models, query parsers, bbox parser).
-- **Trust internal calls** — module A calling module B doesn't need to re-validate B's preconditions.
+- **Trust internal calls** — module A calling module B doesn't re-validate B's preconditions.
 
-This keeps the call paths readable and concentrates validation at one layer.
+Keeps call paths readable, concentrates validation at one layer.
 
 ## Graceful LLM degradation
 
-[backend/ai.py](../../backend/ai.py) raises `AIUnavailable` when the LLM is not reachable. Every AI-backed route catches it and returns 503 with a stable shape. The frontend hides Ava features automatically. See [operations/llm-ava-configuration.md](../operations/llm-ava-configuration.md).
+[backend/ai.py](../../backend/ai.py) raises `AIUnavailable` when the LLM is not reachable. Every AI-backed route catches it → 503 with a stable shape. Frontend hides Ava features automatically. See [operations/llm-ava-configuration.md](../operations/llm-ava-configuration.md).
 
 ## Don't swallow errors silently
 
-The only place we swallow errors is [backend/ontology.py](../../backend/ontology.py) (logging unknown labels must not break the pipeline) and [backend/events.py](../../backend/events.py) (event publishing is best-effort). Both are documented exceptions, not the norm.
+The only places errors are swallowed: [backend/ontology.py](../../backend/ontology.py) (logging unknown labels must not break the pipeline) and [backend/events.py](../../backend/events.py) (event publishing is best-effort). Both are documented exceptions, not the norm.
 
 ## Cross-references
 

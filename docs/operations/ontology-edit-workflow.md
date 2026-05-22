@@ -7,10 +7,10 @@
 ## What an edit does
 
 1. UI calls one of the CRUD endpoints in [backend-routers/ontology-router.md](../backend-routers/ontology-router.md).
-2. The endpoint writes the row in PostGIS (`ontology_branches`, `ontology_objects`, `ontology_prompt_profiles`).
-3. The endpoint bumps the `ontology_version` cursor.
-4. Backend publishes `ontology_updated` on Redis; the WS router forwards it to all clients.
-5. Inference's prompt cache checks the version on its next 30 s poll (or immediately on SIGHUP) and refreshes.
+2. Endpoint writes the row in PostGIS (`ontology_branches`, `ontology_objects`, `ontology_prompt_profiles`).
+3. Endpoint bumps the `ontology_version` cursor.
+4. Backend publishes `ontology_updated` on Redis; WS router forwards to all clients.
+5. Inference's prompt cache checks the version on its next 30 s poll (or immediately on SIGHUP), refreshes.
 6. All frontend consumers of `useOntology` refetch.
 
 ## When changes go live
@@ -20,9 +20,9 @@
 
 ## Seeding new branches/objects from scratch
 
-The bootstrap seed lives at [backend/scripts/seed_ontology.py](../../backend/scripts/seed_ontology.py). It runs **once** at first boot (when the tables are empty — see [backend/platform-schema-migrations.md](../backend/platform-schema-migrations.md#L537)). After bootstrap the DB is canonical.
+Bootstrap seed: [backend/scripts/seed_ontology.py](../../backend/scripts/seed_ontology.py). Runs **once** at first boot (tables empty — see [backend/platform-schema-migrations.md](../backend/platform-schema-migrations.md#L537)). After bootstrap the DB is canonical.
 
-To re-seed manually (destructive — overwrites the live ontology with the seed JSON):
+Re-seed manually (destructive — overwrites the live ontology with the seed JSON):
 
 ```bash
 python backend/scripts/seed_ontology.py --force

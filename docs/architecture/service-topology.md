@@ -4,14 +4,14 @@
 
 ## Purpose
 
-Per-service inventory: image, exposed/internal ports, depends-on, volume mounts. Read this with the compose file open.
+Per-service inventory: image, ports, depends-on, volumes. Read with the compose file open.
 
 ## Services
 
 | Service | Image | Port | Depends on | Notes |
 |---|---|---|---|---|
-| `nginx` | `sentinel-nginx:offline` | **3000:80** (only host-exposed port) | frontend, backend, titiler, martin, assets | TLS termination, 24h tile cache, FMV HLS routing |
-| `frontend` | `sentinel-frontend:latest` | internal 3000 | — | Vite-built React SPA, served by an in-image nginx |
+| `nginx` | `sentinel-nginx:offline` | **3000:80** (only host-exposed) | frontend, backend, titiler, martin, assets | TLS termination, 24h tile cache, FMV HLS routing |
+| `frontend` | `sentinel-frontend:latest` | internal 3000 | — | Vite-built React SPA, served by in-image nginx |
 | `backend` | `sentinel-backend:latest` | internal 8080 | neo4j, postgis, redis | FastAPI + WebSocket |
 | `worker` | `sentinel-backend:latest` | — | neo4j, postgis, redis, inference-sam3 | Celery worker; queues `imagery`, `default` |
 | `worker_beat` | `sentinel-backend:latest` | — | redis | Celery beat scheduler (periodic feed polling, cleanup) |
@@ -39,7 +39,7 @@ Per-service inventory: image, exposed/internal ports, depends-on, volume mounts.
 
 ## Network
 
-A single bridge network (`sentinel_default`). Internal DNS resolves service names (`backend`, `inference-sam3`, `postgis`, etc.). All `--internal` in offline builds — see [deployment/offline-airgap-deployment.md](../deployment/offline-airgap-deployment.md).
+Single bridge network (`sentinel_default`). Internal DNS resolves service names (`backend`, `inference-sam3`, `postgis`, …). All `--internal` in offline builds — see [deployment/offline-airgap-deployment.md](../deployment/offline-airgap-deployment.md).
 
 ## Cross-references
 

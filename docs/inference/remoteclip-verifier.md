@@ -6,26 +6,26 @@
 
 ## Purpose
 
-Semantic verifier for existing detection crops. It scores candidate labels against the crop and context patch, then returns verifier metadata for backend evidence ranking.
+Semantic verifier for existing detection crops. Scores candidate labels against the crop + context patch, returns verifier metadata for backend evidence ranking.
 
 ## Why this design
 
-RemoteCLIP is a remote-sensing vision-language model, so it is a better verifier for satellite crops than generic CLIP. It never proposes detections; this avoids turning a semantic classifier into another false-positive source. Loading is optional and fail-closed so air-gapped deployments without baked weights keep running.
+RemoteCLIP is a remote-sensing vision-language model → better verifier for satellite crops than generic CLIP. Never proposes detections — avoids turning a semantic classifier into another false-positive source. Loading is optional and fail-closed → air-gapped deployments without baked weights keep running.
 
 ## Key symbols
 
 - [`load`](../../inference-sam3/remoteclip_verifier.py#L24-L64) — best-effort OpenCLIP + RemoteCLIP checkpoint loader.
-- [`verify`](../../inference-sam3/remoteclip_verifier.py#L66-L122) — scores a crop against labels and returns `semantic_margin`, `passed`, and `top_labels`.
+- [`verify`](../../inference-sam3/remoteclip_verifier.py#L66-L122) — scores a crop against labels, returns `semantic_margin`, `passed`, `top_labels`.
 - [`model_versions`](../../inference-sam3/remoteclip_verifier.py#L124-L134) — exposes loaded state in `/health`.
 - [`_crop_with_context`](../../inference-sam3/remoteclip_verifier.py#L136-L156) — pads candidate boxes before verifier scoring.
 
 ## Inputs / Outputs
 
-Input is the full chip, a detector-provided pixel bbox, and candidate labels. Output is a JSON-safe verifier record stored on the detection as `semantic_verifier`; the backend copies `semantic_margin` into persisted metadata.
+Input: the full chip, a detector-provided pixel bbox, candidate labels. Output: a JSON-safe verifier record stored on the detection as `semantic_verifier`; backend copies `semantic_margin` into persisted metadata.
 
 ## Failure modes
 
-Missing dependency, missing weights, tiny crops, or verifier runtime errors all return `enabled=false`; detections continue through the pipeline without semantic promotion. `REMOTECLIP_LOCAL_FILES_ONLY=1` is the default so runtime never downloads weights.
+Missing dependency / weights, tiny crops, or verifier runtime errors → return `enabled=false`; detections continue through the pipeline without semantic promotion. `REMOTECLIP_LOCAL_FILES_ONLY=1` is the default → runtime never downloads weights.
 
 ## Cross-references
 

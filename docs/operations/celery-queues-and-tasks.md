@@ -11,7 +11,7 @@
 | `imagery` | Long-running imagery ingest, change detection, training |
 | `default` | Everything else: FMV ingest, feed polls, cleanup |
 
-Workers are started with `-Q imagery,default` so both queues drain on the same pool by default.
+Workers started with `-Q imagery,default` → both queues drain on the same pool by default.
 
 ## Key tasks
 
@@ -28,7 +28,7 @@ Workers are started with `-Q imagery,default` so both queues drain on the same p
 
 ## Retry policy
 
-Most tasks use Celery's default retry (3 attempts, exponential backoff). Imagery ingest with `INFERENCE_CHIP_TIMEOUT_S` will mark individual chips failed but continue with the rest — see [backend/worker-legacy-monolith.md](../backend/worker-legacy-monolith.md).
+Most tasks use Celery's default retry (3 attempts, exponential backoff). Imagery ingest with `INFERENCE_CHIP_TIMEOUT_S` marks individual chips failed but continues with the rest — see [backend/worker-legacy-monolith.md](../backend/worker-legacy-monolith.md).
 
 ## Cross-references
 

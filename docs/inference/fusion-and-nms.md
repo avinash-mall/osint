@@ -6,20 +6,20 @@
 
 ## Purpose
 
-Merge raw candidates from SAM3 + DOTA-OBB + Grounding-DINO + YOLOE into one deduplicated detection list. Builds the canonical per-detection record including OBB extraction, COCO RLE encoding, and overlay-label join.
+Merge raw candidates from SAM3 + DOTA-OBB + Grounding-DINO + YOLOE into one deduplicated detection list. Builds the canonical per-detection record: OBB extraction, COCO RLE encoding, overlay-label join.
 
 ## Why this design
 
-- **Mask IoU, not box IoU.** Closely spaced objects can have ≥0.5 box IoU but ~0 mask IoU (they overlap geometrically but cover different pixels). Mask-aware NMS keeps both.
-- **Edge-touch detection.** A mask that touches the chip edge is marked `edge_truncated=true`; downstream the worker re-stitches at chip boundaries.
-- **OBB extraction from mask contour** via `cv2.minAreaRect`. Falls back to HBB when contour area is tiny.
-- **Overlay labels are additive.** Prithvi flood/burn polygons add labels like `"water"` or `"crop:corn"` to a detection when their mask × Prithvi overlay IoU exceeds `SAM3_PRITHVI_OVERLAY_THRESHOLD`.
+- **Mask IoU, not box IoU** — closely spaced objects can have ≥0.5 box IoU but ~0 mask IoU (overlap geometrically, cover different pixels). Mask-aware NMS keeps both.
+- **Edge-touch detection** — a mask touching the chip edge is marked `edge_truncated=true`; downstream the worker re-stitches at chip boundaries.
+- **OBB extraction from mask contour** via `cv2.minAreaRect`. Falls back to HBB when contour area tiny.
+- **Overlay labels additive** — Prithvi flood/burn polygons add labels like `"water"` / `"crop:corn"` when their mask × Prithvi overlay IoU exceeds `SAM3_PRITHVI_OVERLAY_THRESHOLD`.
 
 ## Key symbols
 
 - [`candidate_to_detection`](../../inference-sam3/fusion.py#L32) — builds one detection dict from a candidate tuple.
 - [`mask_to_obb_record`](../../inference-sam3/fusion.py#L61) — `cv2.minAreaRect` on the mask contour → OBB record.
-- [`coco_rle`](../../inference-sam3/fusion.py#L96), [`decode_rle`](../../inference-sam3/fusion.py#L102) — base64-COCO-RLE encoding/decoding.
+- [`coco_rle`](../../inference-sam3/fusion.py#L96), [`decode_rle`](../../inference-sam3/fusion.py#L102) — base64-COCO-RLE encode/decode.
 - [`overlay_labels`](../../inference-sam3/fusion.py#L110) — Prithvi overlay → label list.
 - [`mask_aware_nms`](../../inference-sam3/fusion.py#L120) — the actual NMS.
 - [`_normalize_obb_points`](../../inference-sam3/fusion.py#L173), [`_hbb_fallback`](../../inference-sam3/fusion.py#L180), [`_touches_edge`](../../inference-sam3/fusion.py#L192), [`_iou`](../../inference-sam3/fusion.py#L199).

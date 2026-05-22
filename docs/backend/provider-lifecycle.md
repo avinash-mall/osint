@@ -6,16 +6,16 @@
 
 ## Purpose
 
-Block until `inference-sam3` reports healthy. Called from the worker before it submits chips so chips don't fail just because the GPU service is still cold-starting.
+Block until `inference-sam3` reports healthy. Called from the worker before submitting chips → chips don't fail just because the GPU service is cold-starting.
 
 ## Key symbols
 
 - [`_wait_for_health`](../../backend/provider_lifecycle.py#L20) — polls `/health` until 200 or deadline.
-- [`ensure_running`](../../backend/provider_lifecycle.py#L35) — public wrapper with timeout from env.
+- [`ensure_running`](../../backend/provider_lifecycle.py#L35) — public wrapper, timeout from env.
 
 ## Why this design
 
-A simple sleep loop is enough — inference startup is bounded (model load + warm-up). Heavyweight orchestration would add complexity for a guarantee compose already provides.
+A simple sleep loop suffices — inference startup is bounded (model load + warm-up). Heavyweight orchestration would add complexity for a guarantee compose already provides.
 
 ## Cross-references
 

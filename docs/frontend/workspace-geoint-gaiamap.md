@@ -5,7 +5,7 @@
 
 ## Purpose
 
-The Common Operating Picture: a 2D Leaflet map with all detection layers, satellite passes, asset tracks, analytics overlays, and the panels that drive them.
+The Common Operating Picture: a 2D Leaflet map with all detection layers, satellite passes, asset tracks, analytics overlays, and the panels driving them.
 
 ## Layout
 
@@ -24,7 +24,7 @@ The Common Operating Picture: a 2D Leaflet map with all detection layers, satell
 
 | Sub-component | File | Doc |
 |---|---|---|
-| MapStage (the actual `<MapContainer>`) | [map/MapStage.tsx](../../frontend/src/components/map/MapStage.tsx) | [map-stage-and-layers.md](map-stage-and-layers.md) |
+| MapStage (the `<MapContainer>`) | [map/MapStage.tsx](../../frontend/src/components/map/MapStage.tsx) | [map-stage-and-layers.md](map-stage-and-layers.md) |
 | LayerPanel (left rail) | [map/LayerPanel.tsx](../../frontend/src/components/map/LayerPanel.tsx) | [map-stage-and-layers.md](map-stage-and-layers.md) |
 | SelectionPanel (right rail) | [map/SelectionPanel.tsx](../../frontend/src/components/map/SelectionPanel.tsx) | [map-selection-panel.md](map-selection-panel.md) |
 | TimeMachineBar (footer) | [map/TimeMachineBar.tsx](../../frontend/src/components/map/TimeMachineBar.tsx) | [map-time-machine.md](map-time-machine.md) |
@@ -34,15 +34,15 @@ The Common Operating Picture: a 2D Leaflet map with all detection layers, satell
 
 ## Data sources
 
-- `GET /api/detections/geojson` for the live detection layer
-- `GET /api/imagery` for satellite passes
-- `GET /api/tracks/detections` for cross-image tracks
-- `GET /api/geotime/features` for Bases / LaunchPoints / asset tracks
+- `GET /api/detections/geojson` — live detection layer
+- `GET /api/imagery` — satellite passes
+- `GET /api/tracks/detections` — cross-image tracks
+- `GET /api/geotime/features` — Bases / LaunchPoints / asset tracks
 - Tile URLs for imagery from `GET /api/imagery/{id}/tiles`
 
 ## Detection rendering
 
-`GaiaMap` owns the detection-layer view state: `bboxMode` (`hbb`/`obb`/`mask`, default `obb`) and the derived `showDetectionCenterMarkers` flag (`count` 1–`DETECTION_CENTER_MARKER_LIMIT`). Detection bounding boxes always render; there is no `showBbox` toggle. See [map-stage-and-layers.md](map-stage-and-layers.md) and [decisions/why-bbox-toggle-removed.md](../decisions/why-bbox-toggle-removed.md).
+`GaiaMap` owns the detection-layer view state: `bboxMode` (`hbb`/`obb`/`mask`, default `obb`) and the derived `showDetectionCenterMarkers` flag (`count` 1–`DETECTION_CENTER_MARKER_LIMIT`). Detection bounding boxes always render; no `showBbox` toggle. See [map-stage-and-layers.md](map-stage-and-layers.md), [decisions/why-bbox-toggle-removed.md](../decisions/why-bbox-toggle-removed.md).
 
 ## Cross-references
 

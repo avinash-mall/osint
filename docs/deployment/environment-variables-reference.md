@@ -2,7 +2,7 @@
 
 **Source of truth:** [.env.example](../../.env.example) ships every variable the platform reads.
 
-Variables below are grouped by subsystem. Defaults are the values in `.env.example`.
+Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 
 ## Databases & Broker
 
@@ -93,7 +93,7 @@ Variables below are grouped by subsystem. Defaults are the values in `.env.examp
 | `SAM3_SAR_CONF_CAP` | `0.85` | Hard cap on SAR confidence |
 | `SAM3_OBB_OPENING_KERNEL_PCT` | `0.01` | Morphological opening kernel before `minAreaRect` |
 | `SAM3_OBB_MIN_AREA_PX` | `4` | Minimum contour area before HBB fallback |
-| `SAM3_DEFAULT_PROMPT_SOURCE` | `precision` | `precision` uses bounded built-ins; `ontology`/`backend` restores `/api/ontology/default-prompts` fan-out |
+| `SAM3_DEFAULT_PROMPT_SOURCE` | `precision` | `precision` = bounded built-ins; `ontology`/`backend` = `/api/ontology/default-prompts` fan-out |
 | `SAM3_PRECISION_DEFAULT_PROMPTS` | empty | Optional JSON override for bounded defaults, e.g. `{"optical":["vehicle","ship"]}` |
 | `SAM3_MAX_PROMPTS_PER_REQUEST` | `64` | Cap on resolved prompts |
 | `SAM3_BATCHED_TEXT` / `SAM3_BATCHED_TEXT_CHUNK_SIZE` | `1` / `8` | Batched text prompting |
@@ -102,11 +102,11 @@ Variables below are grouped by subsystem. Defaults are the values in `.env.examp
 | `SAM3_LOAD_PRITHVI` | `0` | Prithvi flood/burn |
 | `SAM3_LOAD_TERRAMIND` | `1` | TerraMind S1→S2 |
 | `SAM3_LOAD_DOTA_OBB` | `1` | DOTA-OBB specialist |
-| `SAM3_LOAD_GROUNDING_DINO` | `0` | Grounding-DINO (auto-gated and explicitly enabled per request) |
+| `SAM3_LOAD_GROUNDING_DINO` | `0` | Grounding-DINO (auto-gated + explicitly enabled per request) |
 | `SAM3_LOAD_REMOTECLIP` | `0` | Optional RemoteCLIP verifier; scores existing candidates only |
 | `SAM3_LOAD_YOLOE` | `1` | YOLOE-26x FMV tracker |
-| `DOTA_OBB_MODEL_ID` | `yolo26m-obb.pt` | Default OBB checkpoint; set `yolo11n-obb.pt` for low-VRAM fallback |
-| `REMOTECLIP_MODEL_ID` / `REMOTECLIP_ARCH` | `chendelong/RemoteCLIP` / `ViT-B-32` | OpenCLIP-compatible verifier weights and architecture |
+| `DOTA_OBB_MODEL_ID` | `yolo26m-obb.pt` | Default OBB checkpoint; `yolo11n-obb.pt` for low-VRAM fallback |
+| `REMOTECLIP_MODEL_ID` / `REMOTECLIP_ARCH` | `chendelong/RemoteCLIP` / `ViT-B-32` | OpenCLIP-compatible verifier weights + architecture |
 | `REMOTECLIP_MARGIN_THRESHOLD` | `0.05` | Semantic margin required for verifier pass |
 | `REMOTECLIP_LOCAL_FILES_ONLY` | `1` | Prevent runtime downloads; verifier loads only baked/cache weights |
 | `EVIDENCE_MAX_ASPECT_RATIO` | `35` | Backend physical validator aspect-ratio ceiling |
@@ -119,8 +119,8 @@ Variables below are grouped by subsystem. Defaults are the values in `.env.examp
 | `SAM3_HF_HUB_OFFLINE` / `SAM3_TRANSFORMERS_OFFLINE` | `1` | Offline mode |
 | `HF_TOKEN` | from .env | Required for gated weights |
 | `DISABLE_ADDMM_CUDA_LT` | `1` | Route `nn.Linear` off cuBLAS-Lt (A100/cu130 bug) |
-| `SENTINEL_DEPLOYMENT_MODE` | `demo` | Login banner posture — `demo` \| `internal` \| `accredited`. A stock clone stays `demo`; operators opt in to a gov/mil banner. Served by `GET /api/system/deployment-mode`. |
-| `SENTINEL_DEPLOYMENT_LABEL` | _(per-mode default)_ | Overrides the login banner text for `internal` / `accredited` deployments |
+| `SENTINEL_DEPLOYMENT_MODE` | `demo` | Login banner posture — `demo` \| `internal` \| `accredited`. Stock clone stays `demo`; operators opt in to a gov/mil banner. Served by `GET /api/system/deployment-mode`. |
+| `SENTINEL_DEPLOYMENT_LABEL` | _(per-mode default)_ | Overrides login banner text for `internal` / `accredited` deployments |
 | `SENTINEL_AUTH_SUPPORT_CONTACT` | _(unset)_ | Optional admin contact shown on the login screen for LDAP deployments |
 
 ## Build-time GPU args

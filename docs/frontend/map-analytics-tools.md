@@ -5,7 +5,7 @@
 
 ## Purpose
 
-Operator-driven spatial analysis: viewshed, line-of-sight, routing, change detection, patterns-of-life. Each tool has its own form (observer height, target point, route strategy, etc.) and calls one of the `/api/analytics/*` endpoints.
+Operator-driven spatial analysis: viewshed, line-of-sight, routing, change detection, patterns-of-life. Each tool has its own form (observer height, target point, route strategy, etc.), calls one of the `/api/analytics/*` endpoints.
 
 ## Tools
 
@@ -19,7 +19,7 @@ Operator-driven spatial analysis: viewshed, line-of-sight, routing, change detec
 
 ## Capabilities-aware buttons
 
-On open, the panel calls `GET /api/analytics/capabilities` to learn whether DEM and routing graph are present. Missing capabilities disable the corresponding buttons and surface a tooltip: "DEM not configured (mode: fixture_no_dem)."
+On open, the panel calls `GET /api/analytics/capabilities` to learn whether DEM + routing graph are present. Missing capabilities disable the corresponding buttons, surface a tooltip: "DEM not configured (mode: fixture_no_dem)."
 
 ## Cross-references
 

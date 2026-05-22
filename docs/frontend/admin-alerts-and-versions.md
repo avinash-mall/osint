@@ -6,14 +6,14 @@
 
 ## AlertsView
 
-Operator alerts derived from `/api/alerts`. Failed ingest tasks, degraded services, GPU OOM events. Updates in near-real-time via the `health_alert` WS topic.
+Operator alerts derived from `/api/alerts`: failed ingest tasks, degraded services, GPU OOM events. Near-real-time via the `health_alert` WS topic.
 
 - `GET /api/alerts`
 - WS: `health_alert`
 
 ## TaxonomyVersionView
 
-Ontology audit log: every edit (branch/object/prompt-profile) bumps a version and writes a row here.
+Ontology audit log: every edit (branch/object/prompt-profile) bumps a version, writes a row here.
 
 - `GET /api/ontology/version-history`
 

@@ -6,30 +6,30 @@
 
 ## Purpose
 
-Signed session cookie auth with two identity sources: env-bootstrap admin (`ADMIN_USERNAME`/`ADMIN_PASSWORD`) and optional LDAP (from a `auth_config` PostGIS row).
+Signed session-cookie auth, two identity sources: env-bootstrap admin (`ADMIN_USERNAME`/`ADMIN_PASSWORD`) and optional LDAP (from an `auth_config` PostGIS row).
 
 ## Why this design
 
-- **`itsdangerous` not JWT.** Cookies are HMAC-signed but contain no claims an attacker would care about — just `{username, is_admin}`. Adding JWT would buy nothing here and add an algorithm/library choice to maintain.
-- **`SESSION_SECRET` minimum 16 chars enforced at import.** The application **refuses to start** without it. This is intentional — accidentally running with an empty secret would forge usable cookies trivially.
-- **Env-bootstrap admin always available** so the platform is recoverable even if LDAP is misconfigured. LDAP is opt-in: empty `auth_config` row means "no LDAP."
-- **Constant-time username/password check** in `authenticate_admin` to avoid timing-channel disclosure of the admin name.
-- **Group-membership admin role** via LDAP `admin_group_dn` setting — any user whose `memberOf` contains that DN gets `is_admin=true`. Single-tenant: pure env-admin.
+- **`itsdangerous` not JWT** — cookies HMAC-signed, carry only `{username, is_admin}`; JWT would add an algorithm/library to maintain for no gain.
+- **`SESSION_SECRET` ≥ 16 chars enforced at import** — app **refuses to start** without it; empty secret would forge usable cookies trivially.
+- **Env-bootstrap admin always available** — platform recoverable even if LDAP misconfigured. LDAP opt-in: empty `auth_config` row = no LDAP.
+- **Constant-time username/password check** in `authenticate_admin` — avoids timing-channel disclosure of admin name.
+- **Group-membership admin role** — LDAP `admin_group_dn` setting; user whose `memberOf` contains that DN gets `is_admin=true`. Single-tenant: pure env-admin.
 
 ## Key symbols
 
-- [`SessionUser`](../../backend/auth.py#L68) — the unit returned by `get_current_user`.
+- [`SessionUser`](../../backend/auth.py#L68) — unit returned by `get_current_user`.
 - [`LDAPSettings`](../../backend/auth.py#L48) — pydantic model persisted in `auth_config`.
 - [`create_session_cookie`](../../backend/auth.py#L131) / [`decode_session_cookie`](../../backend/auth.py#L135).
-- [`cookie_kwargs`](../../backend/auth.py#L147) — applies `Secure`/`HttpOnly`/`SameSite=Lax` policy based on env.
-- [`ensure_auth_tables`](../../backend/auth.py#L164) — schema bootstrap, idempotent.
-- [`authenticate_admin`](../../backend/auth.py#L230) and [`authenticate_ldap`](../../backend/auth.py#L248).
+- [`cookie_kwargs`](../../backend/auth.py#L147) — `Secure`/`HttpOnly`/`SameSite=Lax` policy by env.
+- [`ensure_auth_tables`](../../backend/auth.py#L164) — idempotent schema bootstrap.
+- [`authenticate_admin`](../../backend/auth.py#L230), [`authenticate_ldap`](../../backend/auth.py#L248).
 - [`require_admin`](../../backend/auth.py) — FastAPI dependency for admin-only routes.
 
 ## Failure modes
 
 - Empty/short `SESSION_SECRET` → `RuntimeError` at import.
-- LDAP TCP/TLS failure → `authenticate_ldap` returns `None`; auth router returns 401.
+- LDAP TCP/TLS failure → `authenticate_ldap` returns `None` → auth router 401.
 - Stale cookie (TTL expired) → `decode_session_cookie` returns `None`.
 
 ## Cross-references

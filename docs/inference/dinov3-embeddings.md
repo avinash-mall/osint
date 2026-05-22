@@ -6,7 +6,7 @@
 
 ## Purpose
 
-Compute a 1024-D embedding per detection (cropped to the bbox) for re-ID across chips and frames. The output is base64-encoded fp16 in the `embedding.fp16_b64` field of every detection record.
+Compute a 1024-D embedding per detection (cropped to the bbox) for re-ID across chips + frames. Output = base64-encoded fp16 in the `embedding.fp16_b64` field of every detection record.
 
 ## Key symbols
 
@@ -17,11 +17,11 @@ Compute a 1024-D embedding per detection (cropped to the bbox) for re-ID across 
 
 ## Why DINOv3-SAT, not DINOv3-LVD
 
-See [decisions/why-dinov3-sat-only.md](../decisions/why-dinov3-sat-only.md). The LVD variant produced silent NaN failures on real drone-video crops; SAT pretraining matches the dominant workload.
+See [decisions/why-dinov3-sat-only.md](../decisions/why-dinov3-sat-only.md). LVD variant produced silent NaN failures on real drone-video crops; SAT pretraining matches the dominant workload.
 
 ## Throughput note
 
-Per-detection embedding adds ~217 ms per chip (single GPU). For high-volume chip throughput, set `SAM3_LOAD_DINOV3_SAT=0` — the rest of the pipeline still works, just without re-ID capability.
+Per-detection embedding adds ~217 ms per chip (single GPU). For high-volume chip throughput, set `SAM3_LOAD_DINOV3_SAT=0` — rest of the pipeline still works, just without re-ID.
 
 ## Cross-references
 

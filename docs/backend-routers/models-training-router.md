@@ -6,7 +6,7 @@
 
 ## Purpose
 
-Registered detection models, curated training datasets, and the training-job queue surfaced in **Admin → AI models** and **Admin → Processing**.
+Registered detection models, curated training datasets, training-job queue — surfaced in **Admin → AI models** and **Admin → Processing**.
 
 ## Endpoints
 
@@ -21,8 +21,8 @@ Registered detection models, curated training datasets, and the training-job que
 
 ## Why this design
 
-- **Registry, not training infra.** The router stores metadata and forwards training requests to the inference service (which has the GPU). The backend doesn't have CUDA.
-- **Promotion is operator-driven.** Even when training reports better metrics, switching the active model is a single human-in-the-loop action: `POST /api/models/{id}/promote` writes a row in `model_history` and updates a single active-model pointer.
+- **Registry, not training infra** — router stores metadata, forwards training requests to the inference service (which has the GPU). Backend has no CUDA.
+- **Promotion operator-driven** — even when training reports better metrics, switching the active model is a single human-in-the-loop action: `POST /api/models/{id}/promote` writes a `model_history` row, updates a single active-model pointer.
 
 ## Cross-references
 

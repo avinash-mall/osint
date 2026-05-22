@@ -2,7 +2,7 @@
 
 ## Ava is optional
 
-Sentinel runs fully without an LLM. When unset, AI-backed endpoints return a stable 503 and the frontend hides Ava features.
+Sentinel runs fully without an LLM. When unset, AI-backed endpoints return a stable 503; frontend hides Ava features.
 
 ## Local vLLM / Ollama
 
@@ -16,13 +16,13 @@ OPENAI_MODEL=google/gemma-4-31b-it
 
 ## Reaching a host-side runtime
 
-If your runtime binds to `127.0.0.1` on the host, containers can't reach it. Enable the optional `llm-local-proxy` compose profile:
+Runtime binds to `127.0.0.1` on the host → containers can't reach it. Enable the optional `llm-local-proxy` compose profile:
 
 ```bash
 docker compose --profile llm-proxy up -d
 ```
 
-This starts an `alpine/socat:1.8.0.3` forwarder on host port 18001 that proxies into the container network.
+Starts an `alpine/socat:1.8.0.3` forwarder on host port 18001 proxying into the container network.
 
 `.env`:
 
@@ -35,7 +35,7 @@ OPENAI_API_BASE=http://llm-local-proxy:8000/v1
 - `GET /api/health` reports `llm: false`.
 - `POST /api/ai/*` returns 503.
 - Frontend gates Ava UI features.
-- Everything else (ingest, inference, ontology, FMV, analytics) is unaffected.
+- Everything else (ingest, inference, ontology, FMV, analytics) unaffected.
 
 ## Toggle LLM post-classification
 
@@ -43,7 +43,7 @@ OPENAI_API_BASE=http://llm-local-proxy:8000/v1
 ENABLE_LLM_DETECTION_CLASSIFICATION=true
 ```
 
-Setting to `false` disables LLM-driven post-classification of detections (useful for benchmarks where determinism matters).
+`false` disables LLM-driven post-classification of detections (useful for benchmarks where determinism matters).
 
 ## Cross-references
 

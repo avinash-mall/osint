@@ -6,7 +6,7 @@
 
 ## Purpose
 
-Liveness probes and operator alerts. The `/api/health` endpoint is what `nginx`'s healthcheck hits; `/api/alerts` powers the Admin → Health Alerts tab.
+Liveness probes + operator alerts. `/api/health` is what `nginx`'s healthcheck hits; `/api/alerts` powers the Admin → Health Alerts tab.
 
 ## Endpoints
 
@@ -17,9 +17,9 @@ Liveness probes and operator alerts. The `/api/health` endpoint is what `nginx`'
 
 ## Why this design
 
-- **Health is a GET (public).** No session required — needed for compose healthchecks and external monitoring.
-- **Health checks each dependency individually**, not all-or-nothing — a degraded LLM shouldn't show the platform as down.
-- **Alerts derive, don't store.** `/api/alerts` synthesizes from `/api/health` + recent Celery task failures from the worker's bookkeeping in PostGIS. There's no separate `alerts` table to keep in sync.
+- **Health is a public GET** — no session required; needed for compose healthchecks and external monitoring.
+- **Checks each dependency individually**, not all-or-nothing — a degraded LLM shouldn't show the platform as down.
+- **Alerts derive, don't store** — `/api/alerts` synthesizes from `/api/health` + recent Celery task failures in PostGIS. No separate `alerts` table to keep in sync.
 
 ## Cross-references
 

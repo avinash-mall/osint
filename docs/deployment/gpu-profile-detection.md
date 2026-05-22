@@ -4,9 +4,9 @@
 
 ## Purpose
 
-Read `nvidia-smi`, resolve the matching CUDA / PyTorch / TorchVision / arch-list profile (Turing through Blackwell), and write a `SENTINEL GENERATED GPU CONFIG` block into `.env`.
+Read `nvidia-smi`, resolve the matching CUDA / PyTorch / TorchVision / arch-list profile (Turing through Blackwell), write a `SENTINEL GENERATED GPU CONFIG` block into `.env`.
 
-**Run this before any GPU build.** Do not hand-edit the generated block or copy it between machines.
+**Run before any GPU build.** Do not hand-edit the generated block or copy it between machines.
 
 ## Supported profiles
 
@@ -25,9 +25,7 @@ Read `nvidia-smi`, resolve the matching CUDA / PyTorch / TorchVision / arch-list
 
 ## Preflight failure
 
-The preflight fails before build when a profile requires a newer host driver. Examples:
-
-- Blackwell profile asks for driver 555.x+; if you're on 535.x, `configure_host.py` reports the missing minimum and exits non-zero.
+Preflight fails before build when a profile requires a newer host driver. E.g. Blackwell profile asks for driver 555.x+; on 535.x, `configure_host.py` reports the missing minimum and exits non-zero.
 
 ## Re-run when
 

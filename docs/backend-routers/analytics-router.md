@@ -6,7 +6,7 @@
 
 ## Purpose
 
-Spatial analyses requested from the **Analytics Tools** panel. Each endpoint has a fixture-fallback so the UI keeps working when DEM or routing graph files are missing — see [backend/terrain-viewshed-los.md](../backend/terrain-viewshed-los.md) and [backend/routing-graph-osmnx.md](../backend/routing-graph-osmnx.md).
+Spatial analyses from the **Analytics Tools** panel. Each endpoint has a fixture-fallback so the UI works when DEM / routing graph files are missing — see [backend/terrain-viewshed-los.md](../backend/terrain-viewshed-los.md), [backend/routing-graph-osmnx.md](../backend/routing-graph-osmnx.md).
 
 ## Endpoints
 
@@ -22,8 +22,8 @@ Spatial analyses requested from the **Analytics Tools** panel. Each endpoint has
 
 ## Why this design
 
-- **Capabilities endpoint** exists because the frontend needs to disable buttons up-front when DEM or graph are missing. The body returns `{mode: "fixture_no_dem"}` instead of failing so a demo deployment without `/data/dem/dem.tif` is still navigable.
-- **Each analysis is a `POST`** (not `GET`) because the AOI body can be large (multi-polygon) and is part of the cache key.
+- **Capabilities endpoint** — frontend disables buttons up-front when DEM/graph missing. Body returns `{mode: "fixture_no_dem"}` instead of failing → demo deployment without `/data/dem/dem.tif` stays navigable.
+- **Each analysis is a `POST`** (not `GET`) — AOI body can be large (multi-polygon) and is part of the cache key.
 
 ## Cross-references
 

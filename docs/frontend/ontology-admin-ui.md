@@ -5,15 +5,15 @@
 
 ## Purpose
 
-The CRUD UI for the DB-canonical ontology: branches (top-level groupings), objects (individual classes with sensor-default prompts and an icon), prompt profiles, and the unknown-label triage queue. Every edit bumps a version that inference picks up on its next cache cycle.
+CRUD UI for the DB-canonical ontology: branches (top-level groupings), objects (classes with sensor-default prompts + an icon), prompt profiles, unknown-label triage queue. Every edit bumps a version inference picks up on its next cache cycle.
 
 ## Sections
 
-1. **Tree view** — `Branch → [Object]` rendered as a collapsible tree. Each branch and object has inline edit / delete actions.
+1. **Tree view** — `Branch → [Object]` as a collapsible tree. Each branch/object has inline edit/delete actions.
 2. **Object editor** — name, parent branch, sensor toggles (optical / multispectral / sar), default prompts per sensor, icon key.
 3. **Prompt profiles** — named bundles of `{sensor: [prompts]}`. Switching the active profile swaps default prompts wholesale.
-4. **Unknown labels** — triage queue of LLM-emitted labels; each can be assigned to an existing object or used to create a new one.
-5. **Version history** — audit log of every edit with timestamp and user.
+4. **Unknown labels** — triage queue of LLM-emitted labels; each assignable to an existing object or used to create a new one.
+5. **Version history** — audit log of every edit with timestamp + user.
 
 ## Data sources
 

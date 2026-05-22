@@ -5,7 +5,7 @@
 
 ## Purpose
 
-HLS video player with KLV telemetry synced to a side-by-side map and per-frame detection overlays. Operators pick the prompt mode (`pcs` / `yoloe`), watch tracks form, and click into individual frame×track detections.
+HLS video player with KLV telemetry synced to a side-by-side map + per-frame detection overlays. Operators pick the prompt mode (`pcs` / `yoloe`), watch tracks form, click into individual frame×track detections.
 
 ## Layout
 
@@ -24,18 +24,18 @@ HLS video player with KLV telemetry synced to a side-by-side map and per-frame d
 
 - `POST /api/fmv/clips` (uploads new clips; lives in [backend-routers/ingest-router.md](../backend-routers/ingest-router.md))
 - `GET /api/fmv/clips` / `/{id}` — clip listing + metadata
-- `GET /api/fmv/clips/{id}/klv` — telemetry rows (used for the timeline + footprint)
+- `GET /api/fmv/clips/{id}/klv` — telemetry rows (timeline + footprint)
 - `GET /api/fmv/clips/{id}/detections` — per-frame detections
-- WebSocket: `fmv_detections_complete` topic triggers refetch
+- WebSocket: `fmv_detections_complete` triggers refetch
 - HLS segments: `http://localhost:3000/fmv/<clip_id>/playlist.m3u8`
 
 ## Key behaviors
 
-- **Time sync.** As the HLS video plays, the current frame index is computed from `currentTime * fps`. Telemetry and detection overlays for that frame are filtered and rendered.
-- **Track formation.** Tracks are colored consistently across frames. Hovering a track shows its trajectory.
+- **Time sync** — as the HLS video plays, current frame index = `currentTime * fps`. Telemetry + detection overlays for that frame filtered and rendered.
+- **Track formation** — tracks colored consistently across frames. Hovering a track shows its trajectory.
 - **Prompt mode change** triggers a new ingest run when the user re-submits.
 - **HUD readouts** sit on a translucent backplate for WCAG-AA contrast over bright video (UX-AUDIT F19).
-- **PiP map** expands to split view on double-click of its header bar, in addition to the existing maximise button (F20).
+- **PiP map** expands to split view on double-click of its header bar, in addition to the maximise button (F20).
 - **Keyboard shortcuts** — `Space`/`K` play-pause, `←`/`→` step frame, `J`/`L` fast scrub, `?` opens a `KeyboardShortcutSheet` overlay listing them (F21).
 
 ## Cross-references

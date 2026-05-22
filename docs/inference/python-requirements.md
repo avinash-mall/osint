@@ -6,25 +6,25 @@
 
 ## Purpose
 
-List inference-service Python packages installed after PyTorch and SAM3 are already present in the image.
+Lists inference-service Python packages installed after PyTorch + SAM3 are already in the image.
 
 ## Why this design
 
-PyTorch is pinned by GPU profile and installed before this file. Domain libraries then install from one small requirements file. `open_clip_torch` is included only so the optional RemoteCLIP verifier can load baked weights; if the verifier is disabled, it does not participate in `/detect`.
+PyTorch pinned by GPU profile, installed before this file. Domain libraries then install from one small requirements file. `open_clip_torch` included only so the optional RemoteCLIP verifier can load baked weights; verifier disabled → it doesn't participate in `/detect`.
 
 ## Key symbols
 
-- `transformers` — Grounding-DINO and DINOv3-SAT loader dependency.
-- `ultralytics` — DOTA-OBB and YOLOE runtime.
+- `transformers` — Grounding-DINO + DINOv3-SAT loader dependency.
+- `ultralytics` — DOTA-OBB + YOLOE runtime.
 - `open_clip_torch` — optional RemoteCLIP verifier runtime.
 
 ## Inputs / Outputs
 
-Input is a pip requirements file. Output is the Python environment inside `sentinel-inference-sam3:gpu`.
+Input: a pip requirements file. Output: the Python environment inside `sentinel-inference-sam3:gpu`.
 
 ## Failure modes
 
-Dependency resolution failures stop image build. Runtime remains offline because packages are installed during build, not pulled by the service.
+Dependency resolution failures stop image build. Runtime stays offline — packages installed during build, not pulled by the service.
 
 ## Cross-references
 

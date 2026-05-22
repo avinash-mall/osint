@@ -4,11 +4,11 @@
 **Lines:** ~584 (the largest router)
 **Depends on:** [backend/files.py](../../backend/files.py), [backend/fmv_helpers.py](../../backend/fmv_helpers.py), [backend/imagery_metadata.py](../../backend/imagery_metadata.py), [backend/video_metadata.py](../../backend/video_metadata.py), [backend/worker/](../../backend/worker/), [backend/ontology.py](../../backend/ontology.py), [backend/provider_lifecycle.py](../../backend/provider_lifecycle.py)
 
-Router declared with `prefix="/api/ingest"` — endpoints below are relative to that.
+Router declared with `prefix="/api/ingest"` — endpoints below relative to that.
 
 ## Purpose
 
-Three ways to push data into the platform: a URL, a path on disk, or a direct upload. Imagery routes through `worker.process_satellite_imagery`; FMV routes through `worker.process_fmv` after HLS transcode.
+Three ways to push data in: a URL, a disk path, or a direct upload. Imagery → `worker.process_satellite_imagery`; FMV → `worker.process_fmv` after HLS transcode.
 
 ## Endpoints
 
@@ -20,14 +20,14 @@ Three ways to push data into the platform: a URL, a path on disk, or a direct up
 | `POST` | `/upload` | `/api/ingest/upload` | [ingest.py#L220](../../backend/routers/ingest.py#L220) | Multipart upload — imagery or FMV; classified by extension via [files.classify_upload](../../backend/files.py) |
 | `POST` | `/url` | `/api/ingest/url` | [ingest.py#L547](../../backend/routers/ingest.py#L547) | `IngestUrlRequest` — backend downloads from a remote URL |
 
-`POST /api/fmv/clips` (FMV-specific upload entry) is **also** in this file even though the path isn't under `/api/ingest` — it shares the transcode/telemetry/Celery-dispatch code.
+`POST /api/fmv/clips` (FMV-specific upload entry) is **also** in this file though its path isn't under `/api/ingest` — shares the transcode/telemetry/Celery-dispatch code.
 
 ## Why this design
 
-- **Three entry points** because the data sources are heterogeneous: an operator with a file, an automated upstream pushing URLs, and a workflow that has already staged a file on the shared volume.
-- **Sensor selection drives `modality` and `enabled_layers`** in the body — see [architecture/data-flow-imagery.md#modality-dispatch](../architecture/data-flow-imagery.md#modality-dispatch).
-- **HLS transcode happens before Celery dispatch** so the client can start streaming the clip while detection runs. The worker emits `fmv_detections_complete` over WebSocket when it finishes.
-- **Upload job rows** are written synchronously so the UI's progress bar can populate before the Celery task starts.
+- **Three entry points** — heterogeneous data sources: operator with a file, automated upstream pushing URLs, workflow that already staged a file on the shared volume.
+- **Sensor selection drives `modality` + `enabled_layers`** in the body — see [architecture/data-flow-imagery.md#modality-dispatch](../architecture/data-flow-imagery.md#modality-dispatch).
+- **HLS transcode before Celery dispatch** → client streams the clip while detection runs. Worker emits `fmv_detections_complete` over WebSocket on finish.
+- **Upload job rows written synchronously** → UI progress bar populates before the Celery task starts.
 
 ## Failure modes
 

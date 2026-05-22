@@ -10,9 +10,9 @@
 ## Synthetic vs real
 
 - **`scripts/fetch_real_datasets.py`** — downloads real DOTA val + Sen1Floods11. Requires `HF_TOKEN` and outbound network.
-- **`scripts/fetch_eval_datasets.py --synthetic-fixtures`** — deterministic synthetic fixtures suitable for CI / smoke tests when the network is unavailable.
+- **`scripts/fetch_eval_datasets.py --synthetic-fixtures`** — deterministic synthetic fixtures for CI / smoke tests when the network is unavailable.
 
-The fetch scripts are **idempotent** and gated by a `labels.json` marker that records which datasets are real vs synthetic — re-running won't re-download.
+Fetch scripts are **idempotent**, gated by a `labels.json` marker recording which datasets are real vs synthetic — re-running won't re-download.
 
 ## What's safe to regenerate
 
@@ -20,7 +20,7 @@ The fetch scripts are **idempotent** and gated by a `labels.json` marker that re
 |---|---|
 | `sample/*.mp4` | Yes — re-fetch from the documented sources |
 | `tests/fixtures/*` | Yes — committed only to make tests reproducible |
-| `bench/*.json` | No — these are historical benchmark snapshots; never overwrite without saving the previous result |
+| `bench/*.json` | No — historical benchmark snapshots; never overwrite without saving the previous result |
 | `scripts/eval_datasets/sar_synth/*.tif` | Yes — synthesizer is deterministic |
 
 ## Cross-references

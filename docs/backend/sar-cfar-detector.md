@@ -6,25 +6,25 @@
 
 ## Purpose
 
-Constant False Alarm Rate ship detection on Sentinel-1 GRD. Cell-Averaging CFAR computes a local clutter mean over a moving window and flags pixels that exceed `mean × multiplier`. Pure CPU; no learned weights.
+Constant False Alarm Rate ship detection on Sentinel-1 GRD. Cell-Averaging CFAR computes a local clutter mean over a moving window, flags pixels exceeding `mean × multiplier`. Pure CPU; no learned weights.
 
 ## Why this design
 
-- **Independent of TerraMind/SAM3.** CFAR detects on the real SAR backscatter — not on the synthetic optical preview. See [decisions/why-sar-confidence-cap.md](../decisions/why-sar-confidence-cap.md): CFAR detections are **not** SAR-proxy; they're real.
-- **CPU-only.** Runs in the worker process without consuming GPU. A 50000×50000 GRD chip processes in seconds.
-- **dB scale.** The detector works on the log-magnitude backscatter (-30 to 0 dB clipped) rather than linear amplitude.
-- **Connected components → bboxes.** Contiguous suprathreshold pixels are merged. Minimum 4 pixels suppresses single-pixel noise.
+- **Independent of TerraMind/SAM3** — CFAR detects on real SAR backscatter, not the synthetic optical preview. See [decisions/why-sar-confidence-cap.md](../decisions/why-sar-confidence-cap.md): CFAR detections are **not** SAR-proxy; they're real.
+- **CPU-only** — runs in the worker process without GPU. A 50000×50000 GRD chip processes in seconds.
+- **dB scale** — works on log-magnitude backscatter (-30 to 0 dB clipped), not linear amplitude.
+- **Connected components → bboxes** — contiguous suprathreshold pixels merged. Minimum 4 pixels suppresses single-pixel noise.
 
 ## Key symbols
 
 - [`_box_kernel_mean`](../../backend/sar_cfar.py#L47) — fast windowed mean via integral image.
 - [`_bbox_components`](../../backend/sar_cfar.py#L75) — connected-component → list of `(x, y, w, h, pixels)`.
-- [`detect_ships_cfar`](../../backend/sar_cfar.py#L150) — main entry; returns list of detection dicts compatible with the standard schema.
+- [`detect_ships_cfar`](../../backend/sar_cfar.py#L150) — main entry; returns detection dicts compatible with the standard schema.
 
 ## Failure modes
 
 - Input not 2-band → `ValueError`.
-- All-zero band → returns `[]`.
+- All-zero band → `[]`.
 
 ## Cross-references
 

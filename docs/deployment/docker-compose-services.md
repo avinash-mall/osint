@@ -22,10 +22,10 @@
 
 ## Why this layout
 
-- **Only nginx exposed.** All inter-service traffic on the internal bridge. Air-gap-friendly.
-- **Worker + worker_beat share the backend image** but run different commands. Saves a build and keeps shared code in sync.
-- **Inference is its own image** because the CUDA stack is heavy (~14 GB image) and unrelated to the Python runtime the backend uses.
-- **`llm-local-proxy` is a separate compose profile** (only started with `--profile llm-proxy`). It's a `socat` forwarder so containers can reach a host-side vLLM/Ollama bound to `127.0.0.1`.
+- **Only nginx exposed** — all inter-service traffic on the internal bridge. Air-gap-friendly.
+- **Worker + worker_beat share the backend image**, run different commands — saves a build, keeps shared code in sync.
+- **Inference is its own image** — CUDA stack is heavy (~14 GB image), unrelated to the backend's Python runtime.
+- **`llm-local-proxy` is a separate compose profile** (only started with `--profile llm-proxy`) — a `socat` forwarder so containers can reach a host-side vLLM/Ollama bound to `127.0.0.1`.
 
 ## Cross-references
 

@@ -6,14 +6,14 @@
 
 ## Purpose
 
-Two coupled responsibilities: ephemeral fan-out via Redis pubsub (consumed by the WebSocket router) and persistent rows in `timeline_events` + `observations` for the analyst feed.
+Two coupled responsibilities: ephemeral fan-out via Redis pubsub (consumed by WebSocket router), and persistent `timeline_events` + `observations` rows for the analyst feed.
 
 ## Why this design
 
-- **Pubsub for "right now," tables for "later."** WebSocket clients see events instantly; the timeline endpoint shows a stored history. Both are populated from the same call site so the two views never diverge.
-- **`normalize_domain`** maps free-form domain strings ("intel", "FMV", "humint") into the closed set `{GEOINT, SIGINT, HUMINT, OSINT, MASINT, FMV, ADMIN, WORKFLOW}` so the UI's domain facets work.
-- **`domain_for_media`** picks a default domain from a media type — used by the ingest router so uploads tag themselves automatically.
-- **Fire-and-forget.** Both publish + record are wrapped in try/except so an event failure never breaks the calling action.
+- **Pubsub for "now," tables for "later"** — WebSocket clients see events instantly; timeline endpoint shows stored history. Both populated from the same call site → views never diverge.
+- **`normalize_domain`** — maps free-form domain strings (`intel`, `FMV`, `humint`) into closed set `{GEOINT, SIGINT, HUMINT, OSINT, MASINT, FMV, ADMIN, WORKFLOW}` for UI domain facets.
+- **`domain_for_media`** — picks default domain from media type; used by ingest router so uploads tag themselves.
+- **Fire-and-forget** — publish + record wrapped in try/except → event failure never breaks the calling action.
 
 ## Key symbols
 
@@ -32,4 +32,4 @@ See [operations/websocket-event-channels.md](../operations/websocket-event-chann
 
 - [backend-routers/websocket-router.md](../backend-routers/websocket-router.md)
 - [operations/websocket-event-channels.md](../operations/websocket-event-channels.md)
-- [backend/platform-schema-migrations.md](platform-schema-migrations.md) (the `timeline_events` / `observations` tables)
+- [backend/platform-schema-migrations.md](platform-schema-migrations.md) — `timeline_events` / `observations` tables

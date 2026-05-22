@@ -6,13 +6,13 @@
 
 ## Purpose
 
-Single-parameter temperature scaling for detector confidence scores. SAM3, DOTA-OBB, and Grounding-DINO produce scores on different distributions — without calibration, a 0.6 from one is not comparable to a 0.6 from another. Temperature scaling rescales each model's logits to a common Platt-style probability space.
+Single-parameter temperature scaling for detector confidence scores. SAM3, DOTA-OBB, Grounding-DINO score on different distributions — uncalibrated, a 0.6 from one ≠ 0.6 from another. Rescales each model's logits into a common Platt-style probability space.
 
 ## Why this design
 
-- **Single scalar per model.** Trained offline on a held-out set; per-detector value lives in a JSON file or env var. No per-class temperatures (would need much more held-out data to fit).
-- **Identity transform when unconfigured.** Missing JSON file or empty env → returns the raw score unchanged. Safe default.
-- **Hot reload.** `reload_temperatures()` is callable from the inference router so operators can adjust without restart.
+- **Single scalar per model** — trained offline on a held-out set; per-detector value in JSON file or env. No per-class temperatures (needs much more held-out data).
+- **Identity transform when unconfigured** — missing JSON / empty env → raw score unchanged. Safe default.
+- **Hot reload** — `reload_temperatures()` callable from inference router; operators adjust without restart.
 
 ## Key symbols
 
@@ -24,7 +24,7 @@ Single-parameter temperature scaling for detector confidence scores. SAM3, DOTA-
 
 ## How to (re)fit
 
-Run [scripts/measure_calibration_ece.py](../scripts/eval-runners.md). It writes `model_temperatures.json` with optimal per-model T values from minimizing Expected Calibration Error on the eval set.
+Run [scripts/measure_calibration_ece.py](../scripts/eval-runners.md) — writes `model_temperatures.json` with optimal per-model T from minimizing Expected Calibration Error on the eval set.
 
 ## Cross-references
 

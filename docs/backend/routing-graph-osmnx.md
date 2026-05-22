@@ -10,10 +10,10 @@ Compute shortest routes, optionally weighted by terrain or threat exposure, on a
 
 ## Why this design
 
-- **Graph is pre-built on disk.** Building from OSM at request time would be intolerably slow. Operators build the graph offline (`osmnx.graph_from_bbox(...)` then `pickle.dump`) and drop it into `/data/routing/graph.pkl`.
-- **Module is lazy.** `_load_graph` is called on first use and cached. Reset with `reset_graph_cache()`.
-- **Multiple weight strategies.** Fastest, shortest, and a "low-threat" mode that down-weights edges passing through high-exposure cells. The exposure data is layered onto the graph at build time.
-- **Fixture fallback when missing.** `graph_available()` lets the analytics router return `mode: "fixture_no_graph"` instead of 500.
+- **Graph pre-built on disk** — building from OSM at request time would be intolerably slow. Operators build offline (`osmnx.graph_from_bbox(...)` → `pickle.dump`), drop into `/data/routing/graph.pkl`.
+- **Lazy** — `_load_graph` called on first use, cached. Reset with `reset_graph_cache()`.
+- **Multiple weight strategies** — fastest, shortest, and "low-threat" mode down-weighting edges through high-exposure cells. Exposure data layered onto the graph at build time.
+- **Fixture fallback when missing** — `graph_available()` lets the analytics router return `mode: "fixture_no_graph"`, not 500.
 
 ## Key symbols
 
@@ -23,12 +23,12 @@ Compute shortest routes, optionally weighted by terrain or threat exposure, on a
 - [`_path_coords`](../../backend/routing.py#L119), [`_path_metrics`](../../backend/routing.py#L131).
 - [`_route_with_weight`](../../backend/routing.py#L150) — single weight-function dispatcher.
 - [`compute_routes`](../../backend/routing.py#L157) — main entry; returns multiple strategies.
-- [`_risk_label`](../../backend/routing.py#L236) — exposure → "low/medium/high" UI label.
+- [`_risk_label`](../../backend/routing.py#L236) — exposure → low/medium/high UI label.
 
 ## Failure modes
 
 - Graph file missing → caller returns fixture response.
-- Source or destination node unreachable in graph → returns empty for that strategy.
+- Source/destination node unreachable in graph → empty for that strategy.
 
 ## Cross-references
 

@@ -26,7 +26,7 @@
 
 ## Read-only paths (treat as immutable from the dev host)
 
-These are populated at build time or by long-running pipelines — agents should not write:
+Populated at build time or by long-running pipelines — agents should not write:
 
 - `bench/` — benchmark output JSON
 - `assets/static/basemap/` — pre-built basemap tiles

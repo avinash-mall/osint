@@ -4,7 +4,7 @@
 
 ## Purpose
 
-Single JSON file listing every model weight the inference service uses, with HuggingFace repo IDs, pinned revisions, file lists, and gating flags. Read at build time by `Dockerfile.gpu` to pre-download weights into the image (offline-deploy compatibility).
+Single JSON file listing every model weight the inference service uses: HuggingFace repo IDs, pinned revisions, file lists, gating flags. Read at build time by `Dockerfile.gpu` to pre-download weights into the image (offline-deploy compatibility).
 
 ## Shape
 
@@ -26,10 +26,10 @@ Single JSON file listing every model weight the inference service uses, with Hug
 
 ## Why this design
 
-- **Pinned revisions.** Reproducibility for air-gap deployments: the same build, run twice, produces identical model behavior because revisions are SHAs not tags.
-- **Gating column** so the build can skip gated weights when `HF_TOKEN` is absent or set `SAM3_WEIGHTS_SOURCE=mirror` to use the `1038lab/sam3` mirror instead.
-- **Local-file entries** for weights that ship bundled in the image (YOLOE, DOTA-OBB) and aren't fetched from the Hub.
-- **Verifier entries** such as RemoteCLIP are optional. They are baked for offline use but disabled at runtime unless `SAM3_LOAD_REMOTECLIP=1`.
+- **Pinned revisions** — reproducibility for air-gap deploys: same build run twice → identical model behavior because revisions are SHAs not tags.
+- **Gating column** — build can skip gated weights when `HF_TOKEN` absent, or set `SAM3_WEIGHTS_SOURCE=mirror` to use the `1038lab/sam3` mirror.
+- **Local-file entries** — weights bundled in the image (YOLOE, DOTA-OBB), not fetched from the Hub.
+- **Verifier entries** (RemoteCLIP) optional — baked for offline use but disabled at runtime unless `SAM3_LOAD_REMOTECLIP=1`.
 
 ## Cross-references
 

@@ -22,7 +22,7 @@ The sensor choice in the UI maps to the request body sent to `/detect`:
 | Multispectral | `multispectral` | `sam3, prithvi, dinov3_sat` |
 | Hyperspectral | `multispectral` (with UI warning) | `sam3, prithvi, dinov3_sat` |
 | SAR | `sar` | `sam3, terramind` |
-| FMV | n/a (routes to [fmv-ingest-pipeline.md](fmv-ingest-pipeline.md)) | `sam3_video` or `yoloe` |
+| FMV | n/a → [fmv-ingest-pipeline.md](fmv-ingest-pipeline.md) | `sam3_video` or `yoloe` |
 
 ## What happens after submission
 

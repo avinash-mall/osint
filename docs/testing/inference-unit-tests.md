@@ -13,18 +13,18 @@
 | [test_prompts_loader.py](../../inference-sam3/tests/test_prompts_loader.py) | `_fetch_default_prompts` + caching + 503 fallback |
 | [test_sam3_perf.py](../../inference-sam3/tests/test_sam3_perf.py) | `stage_timer` accumulation, backend selection |
 | [test_main_stubbed.py](../../inference-sam3/tests/test_main_stubbed.py) | `/detect` request validation, precision prompt defaults, source-layer tags, specialist gates, RemoteCLIP verifier metadata |
-| [test_precision_benchmark.py](../../inference-sam3/tests/test_precision_benchmark.py) | Live-service precision benchmark; skipped when `INFERENCE_URL` is unreachable |
+| [test_precision_benchmark.py](../../inference-sam3/tests/test_precision_benchmark.py) | Live-service precision benchmark; skipped when `INFERENCE_URL` unreachable |
 | [test_grounding_dino_gate.py](../../inference-sam3/tests/test_grounding_dino_gate.py) | `is_common` + `should_run_grounding_dino` |
 | [test_inference_utils.py](../../inference-sam3/tests/test_inference_utils.py) | YOLO optimization helpers, memory guard |
 | [test_chip_prep_perf.py](../../inference-sam3/tests/test_chip_prep_perf.py) | `backend/chip_prep_profiler.py` no-op-when-disabled, stage accumulation, CSV side-channel |
 
 ## conftest
 
-[conftest.py](../../inference-sam3/tests/conftest.py) puts `inference-sam3/` on `sys.path` and pre-stubs `psutil` + `torch` in `sys.modules` when absent. This makes the suite collectable from the repo root (not only `cd inference-sam3`) and removes the implicit ordering dependency where `test_main_stubbed.py` had to run first to seed `sys.modules` for `import main`.
+[conftest.py](../../inference-sam3/tests/conftest.py) puts `inference-sam3/` on `sys.path`, pre-stubs `psutil` + `torch` in `sys.modules` when absent → the suite is collectable from the repo root (not only `cd inference-sam3`), removing the implicit ordering dependency where `test_main_stubbed.py` had to run first to seed `sys.modules` for `import main`.
 
 ## Stubbed-model strategy
 
-The full inference image requires CUDA. `test_main_stubbed.py` seeds the in-memory model pool with stubs and injects lightweight module stubs where developer environments lack GPU-only packages, so request validation, prompt resolution, specialist gating, and fusion can be tested CPU-only.
+The full inference image requires CUDA. `test_main_stubbed.py` seeds the in-memory model pool with stubs and injects lightweight module stubs where developer environments lack GPU-only packages → request validation, prompt resolution, specialist gating, fusion testable CPU-only.
 
 ## Cross-references
 

@@ -15,7 +15,7 @@ The full benchmark (see [benchmarks/inference-layer-comparison.md](../benchmarks
 | DOTA-OBB alone | **0.61** |
 | DOTA-OBB + Grounding-DINO (forced) | 0.11 |
 
-GDINO's text-derived boxes overlap DOTA-OBB's correct detections. NMS keeps GDINO's lower-confidence call and discards DOTA-OBB's correct one. Net effect: **NMS suppression destroys mAP** when GDINO is forced on common-vocab prompts. With +115 ms additional latency, the cost is doubly bad.
+GDINO's text-derived boxes overlap DOTA-OBB's correct detections. NMS keeps GDINO's lower-confidence call, discards DOTA-OBB's correct one. Net effect: **NMS suppression destroys mAP** when GDINO is forced on common-vocab prompts. With +115 ms additional latency, the cost is doubly bad.
 
 When the prompt set contains words SAM3 + DOTA-OBB don't already cover, GDINO genuinely fills a gap. The gate lets the system have it both ways.
 
@@ -28,7 +28,7 @@ For each request, the gate computes the intersection of the resolved prompts wit
 
 If **every** prompt falls inside that union, GDINO is skipped. Otherwise it may run after the service confirms the layer was explicitly enabled (`enabled_layers` includes `grounding_dino`) or forced.
 
-The decision is logged per-request so operators can see in `/api/inference/dashboard` how often GDINO is firing.
+The decision is logged per-request → operators see in `/api/inference/dashboard` how often GDINO is firing.
 
 ## Operator override
 

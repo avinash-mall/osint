@@ -7,12 +7,12 @@
 
 ## Purpose
 
-Three smaller right-rail panels that complement [SelectionPanel.tsx](map-selection-panel.md).
+Three smaller right-rail panels complementing [SelectionPanel.tsx](map-selection-panel.md).
 
 ## ReviewPanel
 
 - Source: `GET /api/detections/queue` (high-priority review queue)
-- Lets the operator bulk-update review status: keep / discard / flag for follow-up
+- Bulk-update review status: keep / discard / flag for follow-up
 - Triggers `PATCH /api/detections/{id}/review`
 
 ## SimilarPanel
@@ -25,7 +25,7 @@ Three smaller right-rail panels that complement [SelectionPanel.tsx](map-selecti
 
 - Source: detection record's `metadata` field (no extra API call)
 - Shows: chip URL, chip index, detector layer (sam3, dota_obb, etc.), model version, taxonomy version
-- Click "Open chip" reveals the source chip with the detection mask overlaid
+- "Open chip" reveals the source chip with the detection mask overlaid
 
 ## Cross-references
 

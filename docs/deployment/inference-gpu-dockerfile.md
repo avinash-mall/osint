@@ -6,11 +6,11 @@
 
 ## Purpose
 
-Build the GPU inference image and pre-bake model weights so the runtime service can run offline.
+Build the GPU inference image, pre-bake model weights so the runtime service runs offline.
 
 ## Why this design
 
-The image downloads Python dependencies and optional model weights at build time, then runtime containers use the populated `/models` cache. The DOTA bake now stages both `yolo26m-obb.pt` and `yolo11n-obb.pt`; RemoteCLIP is baked best-effort for verifier deployments but remains runtime-disabled by default.
+Image downloads Python dependencies + optional model weights at build time; runtime containers use the populated `/models` cache. DOTA bake stages both `yolo26m-obb.pt` and `yolo11n-obb.pt`; RemoteCLIP baked best-effort for verifier deployments but stays runtime-disabled by default.
 
 ## Key symbols
 
@@ -20,7 +20,7 @@ The image downloads Python dependencies and optional model weights at build time
 
 ## Inputs / Outputs
 
-Inputs are Docker build args, `HF_TOKEN`, and the checked-in inference service tree. Output is `sentinel-inference-sam3:gpu`.
+Inputs: Docker build args, `HF_TOKEN`, the checked-in inference service tree. Output: `sentinel-inference-sam3:gpu`.
 
 ## Failure modes
 

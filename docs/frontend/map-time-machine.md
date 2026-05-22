@@ -5,7 +5,7 @@
 
 ## Purpose
 
-A scrubbable range slider at the bottom of the Geoint workspace. Drives the `(start_time, end_time)` filter applied to detections, satellite passes, and asset tracks.
+A scrubbable range slider at the bottom of the Geoint workspace. Drives the `(start_time, end_time)` filter applied to detections, satellite passes, asset tracks.
 
 ## Behavior
 

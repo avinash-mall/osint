@@ -10,23 +10,23 @@
 ## Single-pair vs AOI
 
 - `POST /api/imagery/change` — bounded to the intersection of the two passes. Returns polygons in pixel/geographic space.
-- `POST /api/analytics/change` — accepts an AOI polygon; the backend selects the most recent two passes that overlap the AOI.
+- `POST /api/analytics/change` — accepts an AOI polygon; backend selects the most recent two passes overlapping the AOI.
 
 ## How the result is rendered
 
-Result polygons are returned as GeoJSON and overlaid as a new ephemeral layer on the map. Click a polygon to see:
+Result polygons returned as GeoJSON, overlaid as a new ephemeral map layer. Click a polygon for:
 
 - The two pass IDs.
-- The change magnitude (mean diff in the polygon).
+- Change magnitude (mean diff in the polygon).
 - Quick links to the two pass tile URLs for side-by-side comparison.
 
 ## When the result is empty
 
-A few common causes:
+Common causes:
 
-- **Bbox doesn't intersect** → operator picked passes that don't cover the same area. UI hides the "Submit" button when this happens.
+- **Bbox doesn't intersect** → operator picked passes not covering the same area. UI hides "Submit" when this happens.
 - **Threshold too high** → diff didn't exceed `mean + N*stddev`. Set `CHANGE_DET_THRESHOLD_STDDEVS` lower.
-- **Sensor mismatch** → mixing optical and SAR will produce mostly noise. Restrict pass selection to same-sensor pairs.
+- **Sensor mismatch** → mixing optical and SAR produces mostly noise. Restrict pass selection to same-sensor pairs.
 
 ## Cross-references
 

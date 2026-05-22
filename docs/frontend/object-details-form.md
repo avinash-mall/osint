@@ -5,11 +5,11 @@
 
 ## Purpose
 
-A single component that renders the operator's editable fields for **any** detection — used by both the map Selection Panel and the FMV workspace. Backing tables: `object_details` in PostGIS.
+Single component rendering the operator's editable fields for **any** detection — used by both the map Selection Panel and the FMV workspace. Backing table: `object_details` in PostGIS.
 
 ## Fields
 
-- **Class** — display only (the model output); see also "canonical class" and "branch" derived via [backend/ontology-system.md](../backend/ontology-system.md).
+- **Class** — display only (model output); see also "canonical class" + "branch" derived via [backend/ontology-system.md](../backend/ontology-system.md).
 - **Affiliation** — `unknown | friendly | hostile | neutral` (validated by [backend/detection-helpers.md](../backend/detection-helpers.md))
 - **Threat level** — `unrated | low | medium | high | critical`
 - **Notes** — free-form text

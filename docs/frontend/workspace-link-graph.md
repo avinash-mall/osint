@@ -5,22 +5,22 @@
 
 ## Purpose
 
-Force-directed visualization of the Neo4j entity graph: Targets, Assets, Observations, Satellites, Bases, LaunchPoints, and the edges between them.
+Force-directed visualization of the Neo4j entity graph: Targets, Assets, Observations, Satellites, Bases, LaunchPoints, and edges between them.
 
 ## Data sources
 
 - `GET /api/graph` — initial 1000-node load
 - `POST /api/graph/neighborhood` — expanding a node fetches its k-hop neighborhood
-- `GET /api/ontology/updates` — fetches proposed ontology updates for analyst review in the bottom strip
+- `GET /api/ontology/updates` — proposed ontology updates for analyst review in the bottom strip
 
 ## Behavior
 
 - Drag-pan / wheel-zoom standard graph viewer controls.
 - Node colors by category (Target/Asset/Base/etc.).
-- Clicking a node opens a details popover and pivots focus.
+- Clicking a node opens a details popover, pivots focus.
 - Double-click expands the neighborhood.
-- **Edge predicates** (UX-AUDIT F22) — each edge carries the Neo4j relationship type as `predicate`; edges are tinted by `predicateColor` and labelled mid-edge via `linkCanvasObject` once zoomed in. A `PredicateChipBar` above the canvas filters edges by predicate.
-- The workspace icon is `Share2` (UX-AUDIT F23), not the former `Crosshair`.
+- **Edge predicates** (UX-AUDIT F22) — each edge carries the Neo4j relationship type as `predicate`; edges tinted by `predicateColor`, labelled mid-edge via `linkCanvasObject` once zoomed in. A `PredicateChipBar` above the canvas filters edges by predicate.
+- Workspace icon is `Share2` (UX-AUDIT F23), not the former `Crosshair`.
 
 ## Why a graph viewer
 

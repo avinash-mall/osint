@@ -5,7 +5,7 @@
 
 ## Purpose
 
-CRUD over named prompt profiles. A profile is a bundle of `{sensor: [prompts]}` that the inference layer reads as default prompts when a request doesn't override.
+CRUD over named prompt profiles. A profile = a bundle of `{sensor: [prompts]}` the inference layer reads as default prompts when a request doesn't override.
 
 Activating a profile swaps the active set — useful for switching modes between deployments (maritime, urban, infrastructure-watch).
 
