@@ -462,11 +462,14 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
               );
             })}
 
-          {/* Detection bounding boxes — one canvas-rendered <Polygon> per
-              feature. The per-feature map mirrors the icon-marker layer above;
-              it is reactive to data changes and a single bad geometry only
-              skips that one box instead of silently killing the whole layer
-              (the failure mode of the previous <GeoJSON> canvas layer). */}
+          {/* Detection bounding boxes — one <Polygon> per feature. The
+              per-feature map mirrors the icon-marker layer above; it is
+              reactive to data changes and a single bad geometry only skips
+              that one box instead of silently killing the whole layer (the
+              failure mode of the previous <GeoJSON> canvas layer). Uses the
+              map's default SVG renderer — the shared L.canvas() renderer never
+              painted (it gated both the old <GeoJSON> box layer and this one),
+              so it is deliberately not used here. */}
           {activeLayers.detections && geomDisplayedDetectionsGeoJSON.features?.map((feature: any) => {
             const positions = geojsonToLatLngs(feature?.geometry);
             if (!positions) return null;
@@ -475,7 +478,6 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
               <Polygon
                 key={`det-box-${p.id ?? p.class}`}
                 positions={positions}
-                renderer={detectionCanvasRenderer}
                 pathOptions={getDetectionStyle(feature)}
                 eventHandlers={{ click: () => setSelectedDetection(feature) }}
               />

@@ -33,9 +33,14 @@ markers, dots, uncertainty halos and tracks.
   `Polygon`/`MultiPolygon` (coords `[lon,lat]`) to the nested Leaflet
   `[lat,lng]` array `<Polygon positions>` expects; returns `null` for
   `Point`/missing/degenerate geometry so the caller skips it.
-- Each `<Polygon>` keeps `renderer={detectionCanvasRenderer}` so dense scenes
-  stay fast (canvas, not SVG), takes `pathOptions={getDetectionStyle(feature)}`,
-  and selects the detection on click.
+- Each `<Polygon>` takes `pathOptions={getDetectionStyle(feature)}` and selects
+  the detection on click.
+- **No custom `renderer`.** The boxes use the map's default SVG renderer. The
+  shared `detectionCanvasRenderer` (`L.canvas()`) never painted anything — it
+  gated *both* the old `<GeoJSON>` box layer and the first `<Polygon>` revision,
+  and neither rendered. The default per-map SVG renderer (the same one the
+  uncertainty-halo `<Circle>`s use) is reliable. Detection counts in the box
+  layer are bounded enough that SVG performance is not a concern.
 
 ## Trade-offs accepted
 
