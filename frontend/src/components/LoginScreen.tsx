@@ -19,12 +19,16 @@
 import { useState } from 'react';
 import { Building, Key, Lock, Shield, User } from 'lucide-react';
 import { useAuth } from '../hooks/useAuth';
+import { useDeploymentMode, type DeploymentInfo } from '../hooks/useDeploymentMode';
+import { SentinelMark } from './atoms';
 
 export default function LoginScreen() {
   const { login, error } = useAuth();
+  const deployment = useDeploymentMode();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
+  const canSubmit = !busy && !!username.trim() && !!password;
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -49,7 +53,7 @@ export default function LoginScreen() {
         fontFamily: 'var(--font-sans)',
       }}
     >
-      <ClassifiedBar />
+      <DeploymentBar info={deployment} />
 
       <div
         className="login-layout"
@@ -70,7 +74,7 @@ export default function LoginScreen() {
           <GraticuleBG />
 
           <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 14 }}>
-            <BrandMark />
+            <SentinelMark size={44} title="Sentinel" />
             <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.2 }}>
               <span style={{ fontSize: 18, fontWeight: 600 }}>Sentinel</span>
               <span className="mono" style={{ color: 'var(--ink-2)', fontSize: 11, letterSpacing: '.08em' }}>
@@ -133,7 +137,7 @@ export default function LoginScreen() {
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            <Field label="OPERATOR ID">
+            <Field label="Username or email">
               <Input
                 icon={<User size={14} style={{ color: 'var(--ink-2)' }} aria-hidden/>}
                 value={username}
@@ -145,7 +149,7 @@ export default function LoginScreen() {
               />
             </Field>
 
-            <Field label="PASSPHRASE">
+            <Field label="Password">
               <Input
                 icon={<Lock size={14} style={{ color: 'var(--ink-2)' }} aria-hidden/>}
                 value={password}
@@ -212,8 +216,26 @@ export default function LoginScreen() {
               <Key size={14} aria-hidden/>
               <span aria-live="polite">{busy ? 'Authenticating…' : 'Sign in'}</span>
               <span style={{ flex: 1 }} />
-              <span className="kbd" style={{ marginLeft: 0 }}>↵</span>
+              <span className="kbd" style={{ marginLeft: 0, opacity: canSubmit ? 1 : 0.35 }}>↵</span>
             </button>
+
+            {/* First-time / recovery path — there is otherwise no way to
+                recover access without SSH-ing to the host (UX-AUDIT F4). */}
+            <details className="login-reset">
+              <summary className="login-reset-link">Can’t sign in? Reset via env bootstrap</summary>
+              <p style={{
+                margin: '8px 0 0', fontSize: 11, lineHeight: 1.5, color: 'var(--ink-2)',
+              }}>
+                The first administrator is bootstrapped from <span className="mono">ADMIN_USERNAME</span> /{' '}
+                <span className="mono">ADMIN_PASSWORD</span> in the deployment <span className="mono">.env</span>.
+                Update those values and restart the backend to recover access.
+              </p>
+              {deployment.supportContact && (
+                <p className="login-support-contact" style={{ margin: '6px 0 0' }}>
+                  LDAP support · {deployment.supportContact}
+                </p>
+              )}
+            </details>
           </div>
 
           <div
@@ -234,39 +256,31 @@ export default function LoginScreen() {
   );
 }
 
-function ClassifiedBar() {
+/**
+ * Deployment banner (UX-AUDIT F1). Replaces the hardcoded
+ * `UNCLASSIFIED // FOR OFFICIAL USE ONLY` bar, which a stock open-source
+ * clone cannot back. The posture comes from `/api/system/deployment-mode`
+ * and defaults to `demo`; operators opt in to gov/mil framing by setting
+ * `SENTINEL_DEPLOYMENT_MODE` (see README).
+ */
+function DeploymentBar({ info }: { info: DeploymentInfo }) {
+  if (info.mode === 'internal') {
+    return (
+      <div role="banner" className="deploy-bar deploy-bar--internal">
+        {info.label || 'INTERNAL DEPLOYMENT'}
+      </div>
+    );
+  }
+  if (info.mode === 'accredited') {
+    return (
+      <div role="banner" className="deploy-bar deploy-bar--accredited">
+        {info.label || 'ACCREDITED DEPLOYMENT'}
+      </div>
+    );
+  }
   return (
-    <div
-      role="banner"
-      style={{
-        height: 22,
-        background: 'var(--nato-unknown)',
-        color: '#0b0d10',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        fontFamily: 'var(--font-mono)',
-        fontSize: 10.5, letterSpacing: '.18em', fontWeight: 700,
-      }}
-    >
-      UNCLASSIFIED // FOR OFFICIAL USE ONLY
-    </div>
-  );
-}
-
-function BrandMark() {
-  return (
-    <div
-      style={{
-        width: 44, height: 44,
-        display: 'grid', placeItems: 'center',
-        background: 'color-mix(in oklab, var(--accent) 18%, var(--bg-2))',
-        border: '1px solid color-mix(in oklab, var(--accent) 60%, transparent)',
-        color: 'var(--accent)', borderRadius: 8,
-        fontWeight: 700, fontFamily: 'var(--font-mono)', fontSize: 18,
-        flexShrink: 0,
-      }}
-      aria-hidden
-    >
-      S
+    <div role="banner" className="deploy-bar deploy-bar--demo">
+      {info.label || 'DEMO BUILD · NOT FOR OPERATIONAL USE'}
     </div>
   );
 }
@@ -349,12 +363,15 @@ function TelemetryStrip() {
   );
 }
 
+/**
+ * Field label. UX-AUDIT F3: dropped the all-caps mono treatment — that
+ * style is now reserved for true metadata (build hash, AOR, lat/lon), not
+ * form labels the operator reads as plain words.
+ */
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <span className="label-mono">{label}</span>
-      </span>
+      <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--ink-1)' }}>{label}</span>
       {children}
     </label>
   );

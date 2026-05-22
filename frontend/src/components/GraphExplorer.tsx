@@ -9,7 +9,6 @@ import {
   CircleDot,
   Database,
   Filter,
-  GitBranch,
   Hash,
   Info,
   Maximize2,
@@ -91,12 +90,62 @@ function linkWeight(link: any): number {
   return Number.isFinite(raw) ? Math.max(0.08, Math.min(1, raw)) : 0.45;
 }
 
+// UX-AUDIT F22: edges carry a semantic predicate (the Neo4j relationship
+// type, served as `predicate`). These helpers label and colour edges by it
+// so the graph is an investigation surface, not "lots of dots".
+function predicateOf(link: any): string {
+  return String(link?.predicate || link?.type || 'related');
+}
+
+function predicateText(predicate: string): string {
+  return predicate.replace(/^CANDIDATE_/, '').replace(/_/g, ' ').toUpperCase();
+}
+
+const PREDICATE_PALETTE = ['#5fc4ff', '#ffb14a', '#c87aff', '#5ee0a0', '#ff7a9c', '#9bd1ff', '#f0a020', '#7ad9c4'];
+
+function predicateColor(predicate: string): string {
+  let hash = 0;
+  for (let i = 0; i < predicate.length; i += 1) hash = (hash * 31 + predicate.charCodeAt(i)) | 0;
+  return PREDICATE_PALETTE[Math.abs(hash) % PREDICATE_PALETTE.length];
+}
+
+/** Predicate filter chip-row above the graph (UX-AUDIT F22). */
+function PredicateChipBar({ predicates, enabled, onToggle }: {
+  predicates: string[];
+  enabled: Set<string>;
+  onToggle: (predicate: string) => void;
+}) {
+  if (predicates.length === 0) return null;
+  return (
+    <div className="predicate-chip-bar" role="group" aria-label="Filter edges by predicate">
+      {predicates.map((predicate) => {
+        const on = enabled.has(predicate);
+        const color = predicateColor(predicate);
+        return (
+          <button
+            key={predicate}
+            type="button"
+            className={`predicate-chip ${on ? 'on' : ''}`}
+            aria-pressed={on}
+            onClick={() => onToggle(predicate)}
+            style={on ? { color } : undefined}
+          >
+            <span className="predicate-swatch" style={{ background: on ? color : 'var(--line-2)' }} />
+            {predicateText(predicate)}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function GraphExplorer() {
   const [data, setData] = useState<any>({ nodes: [], links: [] });
   const [filteredData, setFilteredData] = useState<any | null>(null);
   const [selectedNode, setSelectedNode] = useState<any>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; node: any } | null>(null);
   const [showCandidateLinks, setShowCandidateLinks] = useState(false);
+  const [disabledPredicates, setDisabledPredicates] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState('');
   const [updates, setUpdates] = useState<any[]>([]);
   const [dimensions, setDimensions] = useState({ width: 900, height: 600 });
@@ -131,7 +180,35 @@ export default function GraphExplorer() {
     return () => observer.disconnect();
   }, []);
 
-  const graphData = filteredData || data;
+  // UX-AUDIT F22 — predicate set + filter folded into the rendered graph.
+  const availablePredicates = useMemo(() => {
+    const set = new Set<string>();
+    data.links.forEach((link: any) => set.add(predicateOf(link)));
+    return Array.from(set).sort();
+  }, [data.links]);
+
+  const enabledPredicates = useMemo(
+    () => new Set(availablePredicates.filter((p) => !disabledPredicates.has(p))),
+    [availablePredicates, disabledPredicates],
+  );
+
+  const togglePredicate = useCallback((predicate: string) => {
+    setDisabledPredicates((cur) => {
+      const next = new Set(cur);
+      if (next.has(predicate)) next.delete(predicate);
+      else next.add(predicate);
+      return next;
+    });
+  }, []);
+
+  const graphData = useMemo(() => {
+    const base = filteredData || data;
+    if (disabledPredicates.size === 0) return base;
+    return {
+      nodes: base.nodes,
+      links: base.links.filter((link: any) => !disabledPredicates.has(predicateOf(link))),
+    };
+  }, [filteredData, data, disabledPredicates]);
 
   const nodeMap = useMemo(() => new Map(data.nodes.map((node: any) => [node.id, node])), [data.nodes]);
 
@@ -237,7 +314,8 @@ export default function GraphExplorer() {
     <div className="graph-shell h-full min-h-0 bg-sentinel-bg text-sentinel-text overflow-hidden" onClick={() => setContextMenu(null)}>
       <aside className="graph-entity-panel sentinel-panel border-y-0 border-l-0 min-h-0 flex flex-col">
         <div className="sentinel-panel-header">
-          <GitBranch size={14} className="text-sentinel-accent" />
+          {/* UX-AUDIT F23: Share2 reads as "link network", not "target lock". */}
+          <Share2 size={14} className="text-sentinel-accent" />
           <span>Entities · {data.nodes.length}</span>
           <button type="button" onClick={fetchData} className="sentinel-icon-btn ml-auto h-6 w-6">
             <Plus size={13} />
@@ -320,6 +398,11 @@ export default function GraphExplorer() {
             </button>
           </div>
         </div>
+        <PredicateChipBar
+          predicates={availablePredicates}
+          enabled={enabledPredicates}
+          onToggle={togglePredicate}
+        />
         <div ref={graphPaneRef} className="relative flex-1 min-h-0 overflow-hidden bg-[#0a0d10]">
           <div className="absolute inset-0 opacity-70" style={{ backgroundImage: 'radial-gradient(circle, #1d2227 1px, transparent 1px)', backgroundSize: '22px 22px' }} />
           <ForceGraph2D
@@ -334,9 +417,33 @@ export default function GraphExplorer() {
             linkDirectionalArrowRelPos={1}
             linkColor={(link: any) => {
               const hot = selectedNode && (nodeId(link.source) === selectedNode.id || nodeId(link.target) === selectedNode.id);
-              return hot ? '#ff7a1a' : link.candidate ? '#f5b400' : '#373e46';
+              if (hot) return '#ff7a1a';
+              if (link.candidate) return '#f5b400';
+              // UX-AUDIT F22: edges tinted by predicate so the semantic
+              // is legible at a glance, not just "lots of grey lines".
+              return predicateColor(predicateOf(link));
             }}
             linkLineDash={(link: any) => link.candidate ? [4, 4] : null}
+            linkCanvasObjectMode={() => 'after'}
+            linkCanvasObject={(link: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
+              // Only label edges once zoomed in enough to be readable.
+              if (globalScale < 1.4) return;
+              const s = link.source;
+              const t = link.target;
+              if (typeof s !== 'object' || typeof t !== 'object' || s.x == null || t.x == null) return;
+              const label = predicateText(predicateOf(link));
+              const mx = (s.x + t.x) / 2;
+              const my = (s.y + t.y) / 2;
+              const fontSize = Math.max(8 / globalScale, 2.6);
+              ctx.font = `${fontSize}px JetBrains Mono, monospace`;
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              const w = ctx.measureText(label).width;
+              ctx.fillStyle = 'rgba(10,13,16,0.78)';
+              ctx.fillRect(mx - w / 2 - 1.5, my - fontSize / 2 - 0.5, w + 3, fontSize + 1);
+              ctx.fillStyle = predicateColor(predicateOf(link));
+              ctx.fillText(label, mx, my);
+            }}
             linkWidth={(link: any) => {
               const hot = selectedNode && (nodeId(link.source) === selectedNode.id || nodeId(link.target) === selectedNode.id);
               return (hot ? 1.25 : 0.45) + linkWeight(link) * 1.1;

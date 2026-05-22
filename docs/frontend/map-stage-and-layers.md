@@ -30,12 +30,14 @@
   See [decisions/why-sat-tiles-cap-at-native-zoom.md](../decisions/why-sat-tiles-cap-at-native-zoom.md).
 - **Time filter** comes from `TimeMachineBar`'s `(start, end)` range.
 - **Cursor lat/lng** is published up to Shell via `MapEventHandlers` for the topbar readout.
+- **Focus mode** (UX-AUDIT F12) — `F` (or the eye button in the zoom cluster) collapses the floating map chrome to the viewport edges via the `.map-focus-on` / `.map-focus-collapsible` classes, leaving a 24 px hover lip. The floating zoom controls are 32×32 px, wired to the live Leaflet instance, with keyboard hints in their tooltips (F14).
 
 ## Cross-references
 
 - [decisions/why-bbox-toggle-removed.md](../decisions/why-bbox-toggle-removed.md)
 - [decisions/why-detection-boxes-use-polygon-map.md](../decisions/why-detection-boxes-use-polygon-map.md)
 - [decisions/why-sat-tiles-cap-at-native-zoom.md](../decisions/why-sat-tiles-cap-at-native-zoom.md)
+- [decisions/ux-audit-001.md](../decisions/ux-audit-001.md)
 - [deployment/nginx-gateway-and-tile-cache.md](../deployment/nginx-gateway-and-tile-cache.md)
 - [workspace-geoint-gaiamap.md](workspace-geoint-gaiamap.md)
 - [map-selection-panel.md](map-selection-panel.md)

@@ -7,7 +7,7 @@
  */
 
 import { Pause, Play, RotateCcw } from 'lucide-react';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { ModalityBadge, Panel } from '../atoms';
 
 export type ImageryPass = {
@@ -72,6 +72,10 @@ export default function TimeMachineBar({
   }, [passes, start, end]);
 
   const playheadIso = new Date(start + value * (end - start)).toISOString();
+
+  // UX-AUDIT F15 — surface the exact ISO timestamp under the playhead while
+  // the operator hovers or keyboard-focuses the scrubber.
+  const [showTip, setShowTip] = useState(false);
 
   return (
     <Panel style={{ padding: 8 }}>
@@ -143,7 +147,16 @@ export default function TimeMachineBar({
         </span>
       </div>
 
-      <div style={{ position: 'relative', height: 22 }}>
+      <div
+        style={{ position: 'relative', height: 22 }}
+        onMouseEnter={() => setShowTip(true)}
+        onMouseLeave={() => setShowTip(false)}
+      >
+        {showTip && (
+          <div className="timeline-tip" style={{ left: `${value * 100}%` }}>
+            {playheadIso}
+          </div>
+        )}
         {/* Track */}
         <div
           style={{
@@ -217,7 +230,10 @@ export default function TimeMachineBar({
           step="0.005"
           value={value}
           onChange={(e) => onValueChange(Number(e.target.value))}
+          onFocus={() => setShowTip(true)}
+          onBlur={() => setShowTip(false)}
           aria-label="Time-machine scrubber"
+          aria-valuetext={playheadIso}
           style={{
             position: 'absolute',
             inset: 0,

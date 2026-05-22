@@ -27,7 +27,9 @@
   --color-sentinel-muted: #7b8794;
   --color-sentinel-accent: #ff7a1a;
   --color-sentinel-ok: #3dd68c;
-  --color-sentinel-warn: #f5b400;
+  /* UX-AUDIT F17: warmer amber, ~10° off NATO yellow, so a degraded service
+     no longer renders the same hue as an unknown-affiliation marker. */
+  --color-sentinel-warn: #f0a020;
   --color-sentinel-crit: #ff3b30;
   --color-sentinel-info: #4ea1ff;
 }
@@ -60,7 +62,9 @@
   --nato-unknown: #f5b400;
 
   --ok:   #3dd68c;
-  --warn: #f5b400;
+  /* UX-AUDIT F17: warmer amber, ~10° off NATO yellow (--nato-unknown stays
+     #f5b400) so a system warning no longer collides with an unknown marker. */
+  --warn: #f0a020;
   --crit: #ff3b30;
   --info: #4ea1ff;
 }
@@ -1063,3 +1067,289 @@ img, svg, video, canvas { max-inline-size: 100%; }
     animation: none !important;
   }
 }
+
+/* ======================================================================
+   === UX-AUDIT-001 ===
+   Styles for the 25-finding UX/UI sweep. Tokens already existed for every
+   colour; this section adds component classes only. Grouped by finding.
+   ====================================================================== */
+
+/* F17 — warn carries a glyph as well as a hue, so colour-blind operators
+   are not relying on the amber alone. */
+.tag.warn::before,
+.sentinel-tag.warn::before { content: '\26A0'; margin-right: .15em; }
+
+/* F1 — deployment banner. Replaces the hardcoded classification bar. */
+.deploy-bar {
+  block-size: 1.375rem;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 10.5px; letter-spacing: .18em; font-weight: 700;
+  flex-shrink: 0;
+}
+.deploy-bar--demo {
+  background: var(--bg-2); color: var(--ink-2);
+  border-bottom: 1px solid var(--line-2);
+}
+.deploy-bar--internal { background: var(--accent-cool); color: var(--accent-ink); }
+.deploy-bar--accredited { background: var(--nato-unknown); color: #0b0d10; }
+
+/* F4 — passive password-reset hint on the login screen. */
+.login-reset-link {
+  align-self: flex-start;
+  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .04em;
+  color: var(--ink-2); text-decoration: none;
+  border-bottom: 1px dotted var(--line-2);
+}
+.login-reset-link:hover { color: var(--accent); border-color: var(--accent); }
+.login-support-contact {
+  font-family: var(--font-mono); font-size: 10px;
+  color: var(--ink-3);
+}
+
+/* F9 — unread-alert badge on the topbar bell. */
+.btn.icon { position: relative; }
+.bell-badge {
+  position: absolute;
+  top: -3px; right: -3px;
+  min-inline-size: 14px; block-size: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 9px; font-weight: 700;
+  display: grid; place-items: center;
+  background: var(--warn); color: var(--accent-ink);
+  border: 1px solid var(--bg-1);
+}
+.bell-badge.crit { background: var(--crit); color: #fff; }
+
+/* F10/F18 — analyst dropdown menu with theme/density/clock preferences. */
+.analyst-menu {
+  position: absolute; top: calc(100% + 6px); right: 0;
+  min-inline-size: 232px; z-index: 1500;
+  background: var(--bg-1); border: 1px solid var(--line);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .45);
+  padding: 8px; display: flex; flex-direction: column; gap: 6px;
+}
+.analyst-menu-header { padding: 6px 8px 8px; border-bottom: 1px solid var(--line); }
+.analyst-menu hr { border: 0; border-top: 1px solid var(--line); margin: 2px 0; }
+.analyst-menu-pref {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; padding: 2px 8px;
+}
+.analyst-menu-pref > span:first-child {
+  font-family: var(--font-mono); font-size: 10px;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--ink-2);
+}
+.analyst-menu-signout {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border: 0; background: transparent;
+  color: var(--ink-1); cursor: pointer; font-size: 12px; text-align: left;
+}
+.analyst-menu-signout:hover { background: var(--bg-2); color: var(--ink-0); }
+
+/* F11 — slim imagery-job pill in the status bar. */
+.imagery-job-pill {
+  display: inline-grid;
+  grid-template-columns: minmax(0, 14ch) 60px 32px;
+  align-items: center; gap: 6px;
+  block-size: 20px; padding-inline: 6px;
+  border: 1px solid var(--line); background: var(--bg-2);
+  cursor: pointer; color: var(--ink-2);
+}
+.imagery-job-pill:hover {
+  border-color: color-mix(in oklab, var(--accent) 40%, var(--line));
+  color: var(--ink-0);
+}
+.imagery-job-pill-name {
+  font-family: var(--font-mono); font-size: var(--text-2xs);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.imagery-job-pill-bar {
+  block-size: 4px; background: var(--line-2);
+  border: 1px solid var(--line); position: relative;
+}
+.imagery-job-pill-bar > span {
+  position: absolute; inset: 0; background: var(--accent);
+  transition: width 400ms linear;
+}
+.imagery-job-popover {
+  position: absolute; bottom: calc(100% + 6px); right: 0;
+  min-inline-size: 240px; z-index: 1500;
+  background: var(--bg-1); border: 1px solid var(--line);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .45);
+  padding: 10px 12px;
+  font-family: var(--font-mono); font-size: var(--text-2xs);
+}
+
+/* Danger / glass button variants used by dialogs + map chrome. */
+.btn.danger {
+  background: color-mix(in oklab, var(--crit) 16%, var(--bg-2));
+  border-color: color-mix(in oklab, var(--crit) 55%, var(--line-2));
+  color: var(--crit); font-weight: 600;
+}
+.btn.danger:hover {
+  background: var(--crit); color: #fff; border-color: var(--crit);
+}
+.btn.glass {
+  background: color-mix(in oklab, var(--bg-1) 88%, transparent);
+  backdrop-filter: blur(8px);
+  border-color: var(--line-2);
+}
+
+/* F27 — ConfirmDialog. */
+.confirm-overlay,
+.shortcut-overlay {
+  position: fixed; inset: 0; z-index: 2200;
+  display: grid; place-items: center;
+  background: color-mix(in oklab, var(--bg-0) 62%, transparent);
+  backdrop-filter: blur(3px);
+  padding: 1rem;
+}
+.confirm-dialog {
+  inline-size: min(30rem, calc(100vw - 2rem));
+  background: var(--bg-1); border: 1px solid var(--line);
+  border-top: 3px solid var(--crit);
+  box-shadow: 0 24px 48px rgba(0, 0, 0, .55);
+  padding: 18px 20px; display: flex; flex-direction: column; gap: 12px;
+}
+.confirm-dialog-title { font-size: 14px; font-weight: 600; color: var(--ink-0); }
+.confirm-dialog-body { font-size: 12.5px; color: var(--ink-1); line-height: 1.5; }
+.confirm-dialog-body ul { margin: 6px 0 0; padding-left: 18px; }
+.confirm-dialog-body li { font-family: var(--font-mono); font-size: 11px; color: var(--ink-2); }
+.confirm-dialog-actions {
+  display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px;
+}
+
+/* F21 — KeyboardShortcutSheet. */
+.shortcut-sheet {
+  inline-size: min(34rem, calc(100vw - 2rem));
+  max-block-size: 80vh; overflow-y: auto;
+  background: var(--bg-1); border: 1px solid var(--line);
+  box-shadow: 0 24px 48px rgba(0, 0, 0, .55);
+}
+.shortcut-sheet-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-bottom: 1px solid var(--line);
+  font-size: 13px; font-weight: 600;
+}
+.shortcut-sheet-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr));
+  gap: 2px 18px; padding: 14px 16px;
+}
+.shortcut-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 5px 0; border-bottom: 1px solid var(--line);
+}
+.shortcut-keys { display: inline-flex; gap: 3px; min-inline-size: 5.5rem; }
+.shortcut-keys .kbd { margin-left: 0; }
+.shortcut-label { font-size: 11.5px; color: var(--ink-1); }
+
+/* F28 — `setup` tag: a gated model needs a token, it is not a fault. */
+.tag.setup,
+.sentinel-tag.setup {
+  color: var(--accent);
+  border-color: color-mix(in oklab, var(--accent) 45%, var(--line-2));
+  background: color-mix(in oklab, var(--accent) 10%, var(--bg-2));
+}
+
+/* F19 — FMV HUD readout backplate for contrast over bright video. */
+.fmv-hud-text {
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--accent);
+  padding: 2px 6px;
+  background: color-mix(in oklab, #000 65%, transparent);
+  border-radius: 2px;
+  text-shadow: 0 0 1px rgba(0, 0, 0, .6);
+  inline-size: fit-content;
+}
+
+/* F13 — detection label "always show" toggle in the layer panel. */
+.layer-sub-toggle {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; color: var(--ink-1); cursor: pointer;
+  padding: 4px 0;
+}
+
+/* F12 — map focus mode: floating chrome slides to the edge. */
+.map-focus-collapsible {
+  transition: transform .18s ease;
+}
+.map-focus-on .map-focus-collapsible.map-focus-left {
+  transform: translateX(calc(-100% + 24px));
+}
+.map-focus-on .map-focus-collapsible.map-focus-right {
+  transform: translateX(calc(100% - 24px));
+}
+.map-focus-collapsible.map-focus-left:hover,
+.map-focus-collapsible.map-focus-right:hover {
+  transform: translateX(0);
+}
+
+/* F15 — timeline scrubber ISO-timestamp tooltip. */
+.timeline-tip {
+  position: absolute; bottom: calc(100% + 6px); left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-1); border: 1px solid var(--line-2);
+  color: var(--ink-0);
+  font-family: var(--font-mono); font-size: 10px;
+  padding: 2px 6px; white-space: nowrap; pointer-events: none;
+  z-index: 600;
+}
+
+/* F22 — predicate filter chip-row above the link graph. */
+.predicate-chip-bar {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  padding: 8px 12px; border-bottom: 1px solid var(--line);
+  background: var(--bg-1);
+}
+.predicate-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 8px; border: 1px solid var(--line-2);
+  background: var(--bg-2); color: var(--ink-2);
+  font-family: var(--font-mono); font-size: 10px;
+  letter-spacing: .04em; cursor: pointer;
+}
+.predicate-chip.on { color: var(--ink-0); border-color: currentColor; }
+.predicate-chip .predicate-swatch {
+  inline-size: 8px; block-size: 8px; flex-shrink: 0;
+}
+
+/* F25 — split "drop a file" / "paste a URL" affordances. */
+.ingest-two-up {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(15rem, 100%), 1fr));
+  gap: 12px;
+}
+.ingest-two-up .dropzone,
+.ingest-two-up .paste-url {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 6px; padding: 20px 16px;
+  border: 1px dashed var(--line-2); background: var(--bg-2);
+  text-align: center;
+}
+.ingest-two-up .paste-url { justify-content: center; }
+.ingest-two-up .paste-url .input { inline-size: 100%; }
+
+/* F26 — pipeline toggle groups with per-stage GPU cost. */
+.pipeline-toggle-group {
+  border: 1px solid var(--line); background: var(--bg-2);
+  margin-bottom: 8px;
+}
+.pipeline-toggle-group > header {
+  font-family: var(--font-mono); font-size: 10px;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--ink-2);
+  padding: 6px 10px; border-bottom: 1px solid var(--line);
+}
+.pipeline-toggle {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; border-bottom: 1px solid var(--line);
+}
+.pipeline-toggle:last-child { border-bottom: 0; }
+.pipeline-toggle-cost {
+  margin-left: auto;
+  font-family: var(--font-mono); font-size: 9.5px; color: var(--ink-3);
+}
+
+/* Rail pin button (F6). */
+.rail-pin-btn { margin-left: auto; }

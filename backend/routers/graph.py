@@ -35,6 +35,10 @@ def get_graph(include_candidates: bool = Query(False, description="Include pendi
                     "source": n.element_id,
                     "target": m.element_id,
                     "type": r.type,
+                    # `predicate` is the semantic edge label the graph UI
+                    # renders mid-edge and filters on (UX-AUDIT F22). It is
+                    # the Neo4j relationship type — the canonical predicate.
+                    "predicate": r.type,
                     "candidate": str(r.type).startswith("CANDIDATE_"),
                     "properties": dict(r),
                 })
@@ -67,6 +71,7 @@ def get_graph(include_candidates: bool = Query(False, description="Include pendi
                         "source": t.element_id,
                         "target": d.element_id,
                         "type": "CANDIDATE_DETECTED_AS",
+                        "predicate": "CANDIDATE_DETECTED_AS",
                         "candidate": True,
                         "candidate_id": c["id"],
                         "score": c["score"],
@@ -86,7 +91,8 @@ def get_graph_neighborhood(req: GraphActionRequest):
             WITH n, collect(DISTINCT m) AS neighbors, collect(DISTINCT rel) AS rels
             RETURN n, neighbors,
                    [rel IN rels WHERE rel IS NOT NULL |
-                    {source: elementId(startNode(rel)), target: elementId(endNode(rel)), type: type(rel)}] AS links
+                    {source: elementId(startNode(rel)), target: elementId(endNode(rel)),
+                     type: type(rel), predicate: type(rel)}] AS links
         """, {"id": req.node_id})
         record = result.single()
         if not record:

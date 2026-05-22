@@ -34,10 +34,14 @@ HLS video player with KLV telemetry synced to a side-by-side map and per-frame d
 - **Time sync.** As the HLS video plays, the current frame index is computed from `currentTime * fps`. Telemetry and detection overlays for that frame are filtered and rendered.
 - **Track formation.** Tracks are colored consistently across frames. Hovering a track shows its trajectory.
 - **Prompt mode change** triggers a new ingest run when the user re-submits.
+- **HUD readouts** sit on a translucent backplate for WCAG-AA contrast over bright video (UX-AUDIT F19).
+- **PiP map** expands to split view on double-click of its header bar, in addition to the existing maximise button (F20).
+- **Keyboard shortcuts** — `Space`/`K` play-pause, `←`/`→` step frame, `J`/`L` fast scrub, `?` opens a `KeyboardShortcutSheet` overlay listing them (F21).
 
 ## Cross-references
 
 - [architecture/data-flow-fmv.md](../architecture/data-flow-fmv.md)
+- [decisions/ux-audit-001.md](../decisions/ux-audit-001.md)
 - [backend/video-metadata-klv.md](../backend/video-metadata-klv.md)
 - [backend/fmv-track-consolidation.md](../backend/fmv-track-consolidation.md)
 - [inference/sam3-pcs-multiplex-video.md](../inference/sam3-pcs-multiplex-video.md)

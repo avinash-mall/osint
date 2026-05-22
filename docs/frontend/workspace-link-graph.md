@@ -19,6 +19,8 @@ Force-directed visualization of the Neo4j entity graph: Targets, Assets, Observa
 - Node colors by category (Target/Asset/Base/etc.).
 - Clicking a node opens a details popover and pivots focus.
 - Double-click expands the neighborhood.
+- **Edge predicates** (UX-AUDIT F22) — each edge carries the Neo4j relationship type as `predicate`; edges are tinted by `predicateColor` and labelled mid-edge via `linkCanvasObject` once zoomed in. A `PredicateChipBar` above the canvas filters edges by predicate.
+- The workspace icon is `Share2` (UX-AUDIT F23), not the former `Crosshair`.
 
 ## Why a graph viewer
 
@@ -28,3 +30,4 @@ Spatial joins are PostGIS; graph traversals are Neo4j. The Link Graph workspace 
 
 - [backend-routers/graph-router.md](../backend-routers/graph-router.md)
 - [decisions/why-postgis-and-neo4j-coexist.md](../decisions/why-postgis-and-neo4j-coexist.md)
+- [decisions/ux-audit-001.md](../decisions/ux-audit-001.md)

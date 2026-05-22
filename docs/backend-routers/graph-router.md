@@ -19,6 +19,7 @@ Read-only Neo4j entity graph for the Link Graph workspace and geotime feature qu
 ## Why this design
 
 - **1000-node cap** keeps the Link Graph workspace navigable in `react-force-graph` — past that it becomes unreadable. Neighborhood queries let the operator drill in.
+- **Each link carries `predicate`** (the Neo4j relationship type) alongside `type`, so the Link Graph can label and filter edges by semantic (UX-AUDIT F22).
 - **`/api/geotime/features` overlaps with PostGIS** (`Base`, `LaunchPoint` nodes live in Neo4j but their footprint geometry is in PostGIS). This router pulls both and merges them server-side to keep the map call a single round-trip.
 
 ## Cross-references

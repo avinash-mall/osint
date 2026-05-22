@@ -67,7 +67,9 @@ docker compose up -d --build
 open http://localhost:3000
 ```
 
-Sign in with `ADMIN_USERNAME` / `ADMIN_PASSWORD`. Configure LDAP from **Admin → Auth · LDAP** for multi-user deployments.
+Sign in with `ADMIN_USERNAME` / `ADMIN_PASSWORD`. Configure LDAP from **Admin → Sign-in & users** for multi-user deployments.
+
+> **Deployment banner:** the login screen shows `DEMO BUILD · NOT FOR OPERATIONAL USE` by default. Set `SENTINEL_DEPLOYMENT_MODE=internal|accredited` (and optionally `SENTINEL_DEPLOYMENT_LABEL`) in `.env` to change it — a stock clone has no accreditation to imply otherwise.
 
 > **LLM (Ava):** point `.env` → `OPENAI_API_BASE` at a local vLLM / Ollama instance. Without it, LLM-backed features return a graceful 503; everything else works offline. See [docs/operations/llm-ava-configuration.md](docs/operations/llm-ava-configuration.md).
 

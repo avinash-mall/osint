@@ -119,6 +119,9 @@ Variables below are grouped by subsystem. Defaults are the values in `.env.examp
 | `SAM3_HF_HUB_OFFLINE` / `SAM3_TRANSFORMERS_OFFLINE` | `1` | Offline mode |
 | `HF_TOKEN` | from .env | Required for gated weights |
 | `DISABLE_ADDMM_CUDA_LT` | `1` | Route `nn.Linear` off cuBLAS-Lt (A100/cu130 bug) |
+| `SENTINEL_DEPLOYMENT_MODE` | `demo` | Login banner posture — `demo` \| `internal` \| `accredited`. A stock clone stays `demo`; operators opt in to a gov/mil banner. Served by `GET /api/system/deployment-mode`. |
+| `SENTINEL_DEPLOYMENT_LABEL` | _(per-mode default)_ | Overrides the login banner text for `internal` / `accredited` deployments |
+| `SENTINEL_AUTH_SUPPORT_CONTACT` | _(unset)_ | Optional admin contact shown on the login screen for LDAP deployments |
 
 ## Build-time GPU args
 

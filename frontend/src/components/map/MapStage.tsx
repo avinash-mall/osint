@@ -13,6 +13,8 @@
 import L from 'leaflet';
 import {
   Crosshair,
+  Eye,
+  EyeOff,
   Minus,
   Plus,
 } from 'lucide-react';
@@ -21,6 +23,7 @@ import {
   useEffect,
   useImperativeHandle,
   useRef,
+  useState,
 } from 'react';
 import {
   Circle,
@@ -202,6 +205,28 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
   const effectiveBase: 'base' | 'terrain' =
     activeBaseLayer === 'sat' ? lastNonSatBaseRef.current : activeBaseLayer;
 
+  // UX-AUDIT F12 — focus mode collapses the floating map chrome to the
+  // viewport edges (a 24 px hover lip remains). Toggled by `F` or the
+  // top-right button.
+  const [focusMode, setFocusMode] = useState(false);
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'f' && e.key !== 'F') return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
+      if (t && t.isContentEditable) return;
+      setFocusMode((f) => !f);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
+  // F14 — wire the floating zoom controls to the live Leaflet instance.
+  const zoomIn = () => mapInstance.current?.zoomIn();
+  const zoomOut = () => mapInstance.current?.zoomOut();
+  const recenter = () => mapInstance.current?.setView([25.0, 55.0], 6);
+
   useImperativeHandle(ref, () => ({
     getMap: () => mapInstance.current,
     panToDetection: (feature: any) => {
@@ -220,7 +245,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
 
   return (
     <section
-      className="relative flex min-h-0 min-w-0 flex-col bg-sentinel-bg"
+      className={`relative flex min-h-0 min-w-0 flex-col bg-sentinel-bg${focusMode ? ' map-focus-on' : ''}`}
       style={{ position: 'absolute', inset: 0 }}
     >
       <div className="relative min-h-0 flex-1">
@@ -660,30 +685,59 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
         {/* Floating overlays drawn on top of the map */}
         <div className="pointer-events-none absolute inset-0">
           <div className="sentinel-grid" />
-          <div className="absolute left-2 top-2 font-mono text-[10px] tracking-wider text-sentinel-muted">WGS84 / MERCATOR / LIVE COP</div>
-          <div className="absolute right-2 top-2 font-mono text-[10px] tracking-wider text-sentinel-muted">AOR / CURRENT VIEW</div>
+          <div className="map-focus-collapsible map-focus-left absolute left-2 top-2 font-mono text-[10px] tracking-wider text-sentinel-muted">WGS84 / MERCATOR / LIVE COP</div>
+          <div className="map-focus-collapsible map-focus-right absolute right-2 top-2 font-mono text-[10px] tracking-wider text-sentinel-muted">AOR / CURRENT VIEW</div>
           <div className="absolute left-1/2 top-8 -translate-x-1/2 border border-sentinel-line-2 bg-sentinel-panel px-3 py-1 font-mono text-[11px]">
             <span className="text-sentinel-accent">{visibleDetectionCount}</span>
             <span className="text-sentinel-muted"> / {detectionsGeoJSON.features?.length || 0} detections / last {timelineWindowMinutes}m</span>
             {visibleDetectionCount > 0 && <span className="text-sentinel-muted"> / hover labels</span>}
           </div>
-          <div className="absolute left-3 bottom-4 border border-sentinel-line-2 bg-sentinel-panel px-3 py-2 font-mono text-[11px]">
+          <div className="map-focus-collapsible map-focus-left absolute left-3 bottom-4 border border-sentinel-line-2 bg-sentinel-panel px-3 py-2 font-mono text-[11px]">
             <div className="sentinel-label">cursor</div>
             <div>LAT {cursor.lat.toFixed(3).padStart(8, ' ')} deg</div>
             <div>LON {cursor.lon.toFixed(3).padStart(8, ' ')} deg</div>
             <div className="mt-1 text-sentinel-muted">MGRS <span className="text-slate-200">AUTO</span></div>
           </div>
-          <div className="absolute right-3 bottom-4 border border-sentinel-line-2 bg-sentinel-panel px-3 py-2 font-mono text-[11px]">
+          <div className="map-focus-collapsible map-focus-right absolute right-3 bottom-4 border border-sentinel-line-2 bg-sentinel-panel px-3 py-2 font-mono text-[11px]">
             <div className="sentinel-label">scale</div>
             <div className="flex items-center gap-2">
               <span className="h-px w-20 bg-slate-200" />
               <span>500 km</span>
             </div>
           </div>
+          {/* F14 — 32×32 px controls, wired to the live map, keyboard hints
+              in tooltips. F12 — the focus toggle lives in this cluster. */}
           <div className="absolute right-3 top-10 flex flex-col border border-sentinel-line-2 bg-sentinel-panel">
-            <button type="button" className="pointer-events-auto grid h-7 w-7 place-items-center border-b border-sentinel-line text-sentinel-muted"><Plus className="h-3.5 w-3.5" /></button>
-            <button type="button" className="pointer-events-auto grid h-7 w-7 place-items-center border-b border-sentinel-line text-sentinel-muted"><Minus className="h-3.5 w-3.5" /></button>
-            <button type="button" className="pointer-events-auto grid h-7 w-7 place-items-center text-sentinel-muted"><Crosshair className="h-3.5 w-3.5" /></button>
+            <button
+              type="button" onClick={zoomIn}
+              title="Zoom in (=)" aria-label="Zoom in"
+              className="pointer-events-auto grid h-8 w-8 place-items-center border-b border-sentinel-line text-sentinel-muted hover:text-white"
+            >
+              <Plus className="h-4 w-4" />
+            </button>
+            <button
+              type="button" onClick={zoomOut}
+              title="Zoom out (-)" aria-label="Zoom out"
+              className="pointer-events-auto grid h-8 w-8 place-items-center border-b border-sentinel-line text-sentinel-muted hover:text-white"
+            >
+              <Minus className="h-4 w-4" />
+            </button>
+            <button
+              type="button" onClick={recenter}
+              title="Recenter (0)" aria-label="Recenter map"
+              className="pointer-events-auto grid h-8 w-8 place-items-center border-b border-sentinel-line text-sentinel-muted hover:text-white"
+            >
+              <Crosshair className="h-4 w-4" />
+            </button>
+            <button
+              type="button" onClick={() => setFocusMode((f) => !f)}
+              title="Focus map (F)" aria-label="Toggle focus mode" aria-pressed={focusMode}
+              className={`pointer-events-auto grid h-8 w-8 place-items-center ${
+                focusMode ? 'text-sentinel-accent' : 'text-sentinel-muted hover:text-white'
+              }`}
+            >
+              {focusMode ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+            </button>
           </div>
 
           {/* Top-center toolbar — geometry mode, Prithvi overlays, draw mode */}

@@ -9,7 +9,8 @@
  * @container queries to adapt without media queries.
  */
 
-import type { CSSProperties, ReactNode } from 'react';
+import { useEffect, type CSSProperties, type ReactNode } from 'react';
+import { X } from 'lucide-react';
 import {
   natoColor as taxonomyNatoColor,
   threatColor as taxonomyThreatColor,
@@ -280,6 +281,165 @@ export function Panel({
         </div>
       )}
       {children}
+    </div>
+  );
+}
+
+/* ─── SentinelMark — brand glyph (UX-AUDIT F2) ────────────────────────── */
+
+/**
+ * Inline-SVG brand mark: a square frame, a radial sweep arc, and an offset
+ * compass needle. Replaces the placeholder "S" monogram on the login screen
+ * and the rail. No raster assets; renders crisp at any size and inherits the
+ * accent colour so it tracks theme changes.
+ */
+export function SentinelMark({ size = 30, title }: { size?: number; title?: string }) {
+  return (
+    <svg
+      width={size} height={size} viewBox="0 0 32 32"
+      role={title ? 'img' : undefined} aria-hidden={title ? undefined : true}
+      aria-label={title}
+      style={{ display: 'block', flexShrink: 0 }}
+    >
+      {title && <title>{title}</title>}
+      <rect
+        x="2.25" y="2.25" width="27.5" height="27.5" rx="3"
+        fill="color-mix(in oklab, var(--accent) 16%, var(--bg-2))"
+        stroke="color-mix(in oklab, var(--accent) 60%, transparent)" strokeWidth="1.5"
+      />
+      {/* radial sweep arc */}
+      <path
+        d="M16 16 L16 5.5 A10.5 10.5 0 0 1 25 11"
+        fill="none" stroke="var(--accent)" strokeWidth="1.4"
+        strokeLinecap="round" opacity="0.5"
+      />
+      {/* offset compass needle */}
+      <path d="M16 16 L20.5 8 L17 16 Z" fill="var(--accent)" />
+      <path d="M16 16 L11.5 24 L15 16 Z" fill="color-mix(in oklab, var(--accent) 45%, var(--ink-3))" />
+      <circle cx="16" cy="16" r="1.7" fill="var(--bg-1)" stroke="var(--accent)" strokeWidth="1" />
+    </svg>
+  );
+}
+
+/* ─── BellBadge — unread-count overlay (UX-AUDIT F9) ──────────────────── */
+
+/**
+ * Small count badge anchored to the top-right of an icon button. Renders
+ * nothing when `count <= 0`. `tone="crit"` for any critical unread alert,
+ * `warn` otherwise. Used by the Shell topbar bell and the graph alerts strip.
+ */
+export function BellBadge({ count, tone = 'warn' }: { count: number; tone?: 'warn' | 'crit' }) {
+  if (count <= 0) return null;
+  return (
+    <span className={`bell-badge ${tone === 'crit' ? 'crit' : 'warn'}`} aria-hidden>
+      {count > 9 ? '9+' : count}
+    </span>
+  );
+}
+
+/* ─── ConfirmDialog — destructive-action gate (UX-AUDIT F27) ──────────── */
+
+/**
+ * Modal confirm dialog. Replaces bare `window.confirm()` for destructive
+ * actions (model unload, deletes). `Esc` cancels, `Enter` confirms. Pass
+ * `destructive` to colour the confirm button as a danger action.
+ */
+export function ConfirmDialog({
+  title, body, confirmLabel = 'Confirm', cancelLabel = 'Cancel',
+  destructive = false, busy = false, onConfirm, onClose,
+}: {
+  title: ReactNode;
+  body?: ReactNode;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  destructive?: boolean;
+  busy?: boolean;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); onClose(); }
+      else if (e.key === 'Enter' && !busy) { e.preventDefault(); onConfirm(); }
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [onClose, onConfirm, busy]);
+
+  return (
+    <div role="presentation" className="confirm-overlay" onClick={onClose}>
+      <div
+        role="alertdialog" aria-modal="true" aria-labelledby="confirm-dialog-title"
+        className="confirm-dialog" onClick={(e) => e.stopPropagation()}
+      >
+        <div id="confirm-dialog-title" className="confirm-dialog-title">{title}</div>
+        {body && <div className="confirm-dialog-body">{body}</div>}
+        <div className="confirm-dialog-actions">
+          <button type="button" className="btn sm" onClick={onClose} disabled={busy}>
+            {cancelLabel}
+          </button>
+          <button
+            type="button"
+            className={`btn sm ${destructive ? 'danger' : 'primary'}`}
+            onClick={onConfirm} disabled={busy} aria-busy={busy} autoFocus
+          >
+            {busy ? 'Working…' : confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── KeyboardShortcutSheet — the `?` overlay (UX-AUDIT F21) ──────────── */
+
+export type ShortcutBinding = { keys: string; label: string };
+
+/**
+ * Generic keyboard-shortcut reference overlay, opened with `?`. `keys` is a
+ * space-separated chord (e.g. `"J"`, `"⌘ K"`) rendered as `<kbd>` chips.
+ * Shared by FmvPlayer, MapStage, and GraphExplorer.
+ */
+export function KeyboardShortcutSheet({
+  title = 'Keyboard shortcuts', bindings, onClose,
+}: {
+  title?: string;
+  bindings: ShortcutBinding[];
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); onClose(); }
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [onClose]);
+
+  return (
+    <div role="presentation" className="shortcut-overlay" onClick={onClose}>
+      <div
+        role="dialog" aria-modal="true" aria-label={title}
+        className="shortcut-sheet" onClick={(e) => e.stopPropagation()}
+      >
+        <div className="shortcut-sheet-head">
+          <span>{title}</span>
+          <button type="button" className="btn xs ghost icon" onClick={onClose} aria-label="Close">
+            <X size={13} />
+          </button>
+        </div>
+        <div className="shortcut-sheet-grid">
+          {bindings.map((b) => (
+            <div key={b.keys + b.label} className="shortcut-row">
+              <span className="shortcut-keys">
+                {b.keys.split(' ').filter(Boolean).map((k, i) => (
+                  <kbd key={i} className="kbd">{k}</kbd>
+                ))}
+              </span>
+              <span className="shortcut-label">{b.label}</span>
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

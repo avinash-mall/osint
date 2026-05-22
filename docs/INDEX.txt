@@ -48,6 +48,7 @@ backend-routers/inference-router.md|router|/api/inference/load,unload,health,das
 backend-routers/ingest-router.md|router|/api/ingest/upload, url, ingest, uploads, jobs
 backend-routers/models-training-router.md|router|/api/models, /api/training, dataset registration, promotion
 backend-routers/ontology-router.md|router,ontology|/api/ontology branches/objects/prompts/profiles/unknown-labels/version-history
+backend-routers/system-router.md|router|/api/system/deployment-mode — env-driven login banner posture
 backend-routers/websocket-router.md|router|/ws Redis-bridged push channel
 inference/service-overview.md|inference,sam3|FastAPI service bundling SAM3+SAM3.1+YOLOE+DINOv3+Prithvi+TerraMind+DOTA+GDINO+RemoteCLIP
 inference/main-app-entrypoint.md|inference,sam3|/detect precision defaults, source_layer/debug_counts, optional RemoteCLIP verifier, /detect_video
@@ -135,6 +136,7 @@ decisions/why-sar-confidence-cap.md|decision,imagery|SAR detections via TerraMin
 decisions/why-sat-tiles-cap-at-native-zoom.md|decision,imagery,frontend|SAT TileLayer maxNativeZoom from COG GSD + nginx cache relax kills zoom-in blur
 decisions/why-worker-legacy-monolith-kept.md|decision,celery|3500 tested lines preserved; thin facade package avoids breakage
 decisions/why-yoloe-replaced-amg.md|decision,fmv|AMG required GDINO labeling pass; YOLOE-26x-seg(-pf) emits labels directly
+decisions/ux-audit-001.md|decision,frontend|25-finding UX sweep: deployment banner, rail pin, focus mode, edge predicates
 testing/backend-unit-tests.md|testing,backend|pytest layout, fixtures, ontology/auth/size/object_details/precision-policy coverage
 testing/inference-unit-tests.md|testing,inference|fusion/oom-recovery/prompt defaults/source-layer gates/sam3-perf/box prompts
 testing/playwright-frontend.md|testing,frontend|playwright.config.ts, visual testing workflow

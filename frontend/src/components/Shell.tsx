@@ -31,11 +31,13 @@ import {
 import type { CSSProperties, ReactNode } from 'react';
 import axios from 'axios';
 import {
-  Bell, ChevronDown, Crosshair, Film, GitBranch, LogOut, Map as MapIcon, Menu, Search, UploadCloud, X,
+  Bell, ChevronDown, ChevronLeft, ChevronRight, Film, GitBranch, LogOut,
+  Map as MapIcon, Menu, Search, Share2, UploadCloud, X,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { StatusDot } from './atoms';
+import { BellBadge, SentinelMark, StatusDot } from './atoms';
 import { useAuth } from '../hooks/useAuth';
+import { usePreferences } from '../hooks/usePreferences';
 import {
   type UploadJob,
   isUploadActive,
@@ -51,11 +53,14 @@ export type WorkspaceKey = 'ingest' | 'map' | 'fmv' | 'graph' | 'admin';
 
 type NavItem = { key: WorkspaceKey; label: string; short: string; Icon: LucideIcon };
 
+// UX-AUDIT F7: 'Geoint' → 'Map' (consistent with the 'Common Operating
+// Picture' sub-title and the sibling 'Drone Video' / 'Link Graph' labels).
+// F23: Link Graph uses Share2, not Crosshair ('target lock' read wrong).
 const NAV: NavItem[] = [
   { key: 'ingest', label: 'Ingest',      short: 'ING', Icon: UploadCloud },
-  { key: 'map',    label: 'Geoint',      short: 'GEO', Icon: MapIcon },
+  { key: 'map',    label: 'Map',         short: 'COP', Icon: MapIcon },
   { key: 'fmv',    label: 'Drone Video', short: 'FMV', Icon: Film },
-  { key: 'graph',  label: 'Link Graph',  short: 'LNK', Icon: Crosshair },
+  { key: 'graph',  label: 'Link Graph',  short: 'LNK', Icon: Share2 },
   { key: 'admin',  label: 'Admin',       short: 'ADM', Icon: GitBranch },
 ];
 
@@ -76,6 +81,7 @@ function useClock() {
 function useSystemStatus() {
   const [health, setHealth] = useState<Health>({});
   const [activeUploads, setActiveUploads] = useState<UploadJob[]>([]);
+  const [failedUploadCount, setFailedUploadCount] = useState(0);
   const activeRef = useRef(0);
 
   useEffect(() => {
@@ -92,9 +98,12 @@ function useSystemStatus() {
         ]);
         if (cancelled) return;
         setHealth(h.data ?? {});
-        const active = (u.data?.uploads ?? []).filter(isUploadActive);
+        const allJobs = u.data?.uploads ?? [];
+        const active = allJobs.filter(isUploadActive);
         activeRef.current = active.length;
         setActiveUploads(active);
+        // Failed jobs feed the topbar bell badge (UX-AUDIT F9).
+        setFailedUploadCount(allJobs.filter((j) => /fail|error/i.test(String(j.status || ''))).length);
       } catch {
         if (!cancelled) setHealth({ healthy: false });
       } finally {
@@ -127,28 +136,78 @@ function useSystemStatus() {
     () => activeUploads.find((job) => job.media_type === 'imagery') || null,
     [activeUploads],
   );
-  return { health, uploadCount: activeUploads.length, activeImageryJob };
+  return { health, uploadCount: activeUploads.length, activeImageryJob, failedUploadCount };
 }
 
 type ShellProps = {
   active: WorkspaceKey;
   onNavigate: (key: WorkspaceKey) => void;
   children: ReactNode;
+  /** Optional override; when omitted the Shell derives a live context line. */
   contextLine?: string;
   /** Right-side content slotted into the status bar (cursor readout, etc). */
   statusRight?: ReactNode;
 };
 
+/**
+ * UX-AUDIT F8 — build the topbar context line. `ingest` and `admin` carry
+ * live counts the Shell already polls; the other workspaces stay descriptive
+ * (their per-AOI live state lives inside the workspace, not the Shell) but
+ * still surface the live UTC clock instead of a purely decorative phrase.
+ */
+function contextLineFor(
+  active: WorkspaceKey,
+  s: {
+    uploadCount: number;
+    failedUploadCount: number;
+    alerts: { unread: number };
+    services: { up: number; total: number };
+    clock: Date;
+  },
+): string {
+  const utc = `UTC ${s.clock.toISOString().slice(11, 19)}`;
+  switch (active) {
+    case 'ingest':
+      return `${s.uploadCount} active · ${s.failedUploadCount} failed · ${utc}`;
+    case 'map':
+      return `Common operating picture · live detections + imagery · ${utc}`;
+    case 'fmv':
+      return `Full-motion video · MISB 0601 telemetry · ${utc}`;
+    case 'graph':
+      return `Neo4j link analysis · ${utc}`;
+    case 'admin':
+      return `${s.alerts.unread} alert${s.alerts.unread === 1 ? '' : 's'} · ${s.services.up}/${s.services.total} services · ${utc}`;
+    default:
+      return utc;
+  }
+}
+
 export function Shell({ active, onNavigate, children, contextLine, statusRight }: ShellProps) {
   const [hover, setHover] = useState(false);
   const [railOpen, setRailOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // UX-AUDIT F6: rail was hover-only. `pinned` (persisted) and `keyboardFocus`
+  // make it usable for touch-laptop and keyboard operators too.
+  const [pinned, setPinned] = useState(() => {
+    try { return localStorage.getItem('shell:railPinned') === '1'; } catch { return false; }
+  });
+  const [keyboardFocus, setKeyboardFocus] = useState(false);
   const activeNav = useMemo(() => NAV.find((n) => n.key === active) ?? NAV[0], [active]);
-  const { health, uploadCount, activeImageryJob } = useSystemStatus();
+  const { health, uploadCount, activeImageryJob, failedUploadCount } = useSystemStatus();
   const clock = useClock();
+  const { clockTz } = usePreferences();
 
-  // Rail is expanded on desktop hover OR when the mobile sheet is toggled open.
-  const railExpanded = hover || railOpen;
+  // Rail expands on hover, on keyboard focus into a nav button, when pinned,
+  // or when the mobile sheet is toggled open.
+  const railExpanded = pinned || hover || keyboardFocus || railOpen;
+
+  const togglePin = useCallback(() => {
+    setPinned((cur) => {
+      const next = !cur;
+      try { localStorage.setItem('shell:railPinned', next ? '1' : '0'); } catch { /* no-op */ }
+      return next;
+    });
+  }, []);
 
   // Navigate + dismiss the mobile nav sheet (no-op on desktop where railOpen is
   // always false).
@@ -182,6 +241,17 @@ export function Shell({ active, onNavigate, children, contextLine, statusRight }
     return { up, total };
   })();
   const allOk = services.up === services.total;
+
+  // UX-AUDIT F9 — unread-alert summary feeding the topbar bell badge.
+  const alerts = {
+    unread: (allOk ? 0 : 1) + failedUploadCount,
+    highest: (!allOk ? 'crit' : 'warn') as 'crit' | 'warn',
+  };
+  // UX-AUDIT F8 — context line carries live counts where the Shell knows
+  // them (ingest/admin) instead of a fixed decorative description.
+  const resolvedContextLine = contextLine ?? contextLineFor(active, {
+    uploadCount, failedUploadCount, alerts, services, clock,
+  });
 
   return (
     <div
@@ -221,8 +291,12 @@ export function Shell({ active, onNavigate, children, contextLine, statusRight }
             overflow: 'hidden',
           }}
           aria-label="Workspace navigation"
+          onFocusCapture={() => setKeyboardFocus(true)}
+          onBlurCapture={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node)) setKeyboardFocus(false);
+          }}
         >
-          <Brand expanded={railExpanded}/>
+          <Brand expanded={railExpanded} pinned={pinned} onTogglePin={togglePin}/>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <div className="label-mono shell-rail-section" style={{
               padding: '4px 6px', fontSize: 10, opacity: railExpanded ? 1 : 0, transition: 'opacity .1s', whiteSpace: 'nowrap',
@@ -249,7 +323,8 @@ export function Shell({ active, onNavigate, children, contextLine, statusRight }
       <div className="shell-body" style={{ minWidth: 0, display: 'grid' }}>
         <Topbar
           workspaceLabel={activeNav.label}
-          contextLine={contextLine ?? `AOR · Live · UTC ${clock.toISOString().slice(11, 19)}`}
+          contextLine={resolvedContextLine}
+          alerts={alerts}
           onNavigate={navigate}
           onOpenPalette={() => setPaletteOpen(true)}
           onToggleRail={() => setRailOpen((o) => !o)}
@@ -268,6 +343,7 @@ export function Shell({ active, onNavigate, children, contextLine, statusRight }
           activeImageryJob={activeImageryJob}
           allOk={allOk}
           clock={clock}
+          clockTz={clockTz}
           statusRight={statusRight}
         />
       </div>
@@ -284,7 +360,11 @@ export function Shell({ active, onNavigate, children, contextLine, statusRight }
 
 /* ── Brand ────────────────────────────────────────────────────────────── */
 
-function Brand({ expanded }: { expanded: boolean }) {
+function Brand({ expanded, pinned, onTogglePin }: {
+  expanded: boolean;
+  pinned: boolean;
+  onTogglePin: () => void;
+}) {
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 10,
@@ -292,12 +372,7 @@ function Brand({ expanded }: { expanded: boolean }) {
       borderBottom: '1px solid var(--line)',
       justifyContent: expanded ? 'flex-start' : 'center',
     }}>
-      <div style={{
-        width: 30, height: 30, display: 'grid', placeItems: 'center', flexShrink: 0,
-        background: 'color-mix(in oklab, var(--accent) 18%, var(--bg-2))',
-        border: '1px solid color-mix(in oklab, var(--accent) 60%, transparent)',
-        color: 'var(--accent)', borderRadius: 6, fontWeight: 700, fontFamily: 'var(--font-mono)', fontSize: 13,
-      }} aria-hidden>S</div>
+      <SentinelMark size={30} />
       <div style={{
         display: 'flex', flexDirection: 'column', lineHeight: 1.2,
         opacity: expanded ? 1 : 0,
@@ -307,6 +382,18 @@ function Brand({ expanded }: { expanded: boolean }) {
         <span style={{ fontWeight: 600, fontSize: 13 }}>Sentinel</span>
         <span className="mono" style={{ color: 'var(--ink-2)', fontSize: 10, letterSpacing: '.06em' }}>GEOINT WORKSTATION</span>
       </div>
+      {expanded && (
+        <button
+          type="button"
+          className="btn icon xs ghost rail-pin-btn"
+          onClick={onTogglePin}
+          aria-pressed={pinned}
+          aria-label={pinned ? 'Unpin sidebar' : 'Pin sidebar'}
+          title={pinned ? 'Unpin sidebar' : 'Pin sidebar open'}
+        >
+          {pinned ? <ChevronLeft size={13}/> : <ChevronRight size={13}/>}
+        </button>
+      )}
     </div>
   );
 }
@@ -365,9 +452,10 @@ function SidebarFooter({ expanded, allOk, services }: { expanded: boolean; allOk
 
 /* ── Topbar ──────────────────────────────────────────────────────────── */
 
-function Topbar({ workspaceLabel, contextLine, onNavigate, onOpenPalette, onToggleRail, railOpen }: {
+function Topbar({ workspaceLabel, contextLine, alerts, onNavigate, onOpenPalette, onToggleRail, railOpen }: {
   workspaceLabel: string;
   contextLine: string;
+  alerts: { unread: number; highest: 'crit' | 'warn' };
   onNavigate: (k: WorkspaceKey) => void;
   onOpenPalette: () => void;
   onToggleRail: () => void;
@@ -419,14 +507,15 @@ function Topbar({ workspaceLabel, contextLine, onNavigate, onOpenPalette, onTogg
       <button
         className="btn sm rounded icon"
         type="button"
-        title="View health alerts"
-        aria-label="View health alerts"
+        title={alerts.unread > 0 ? `${alerts.unread} unread health alert${alerts.unread === 1 ? '' : 's'}` : 'View health alerts'}
+        aria-label={alerts.unread > 0 ? `View ${alerts.unread} unread health alerts` : 'View health alerts'}
         onClick={() => {
           onNavigate('admin');
           window.dispatchEvent(new CustomEvent('sentinel:admin-tab', { detail: { tab: 'alerts' } }));
         }}
       >
         <Bell size={13} aria-hidden/>
+        <BellBadge count={alerts.unread} tone={alerts.highest}/>
       </button>
       <AnalystChip/>
     </header>
@@ -435,8 +524,41 @@ function Topbar({ workspaceLabel, contextLine, onNavigate, onOpenPalette, onTogg
 
 /* ── Analyst chip ────────────────────────────────────────────────────── */
 
+/** Segmented toggle used by the analyst preferences menu (F10/F16/F18). */
+function PrefSeg({ label, options, value, onChange }: {
+  label: string;
+  options: [string, string][];
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="analyst-menu-pref">
+      <span>{label}</span>
+      <div className="seg" role="group" aria-label={label}>
+        {options.map(([v, text]) => (
+          <button
+            key={v} type="button"
+            className={v === value ? 'on' : ''}
+            aria-pressed={v === value}
+            onClick={() => onChange(v)}
+          >
+            {text}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Analyst chip + dropdown. UX-AUDIT F10/F18: the dropdown used to hold only
+ * "Sign out" (a chevron promising nothing). It now surfaces the real
+ * theme / density / clock-TZ preferences, which were already supported in
+ * CSS but had no UI toggle.
+ */
 function AnalystChip() {
   const { user, logout } = useAuth();
+  const { theme, density, clockTz, setTheme, setDensity, setClockTz } = usePreferences();
   const [open, setOpen] = useState(false);
   const initials = (user?.display_name || user?.username || 'AN')
     .split(/[\s.]+/)
@@ -472,33 +594,33 @@ function AnalystChip() {
         <ChevronDown size={12} style={{ color: 'var(--ink-3)' }} aria-hidden/>
       </button>
       {open && (
-        <div
-          onMouseLeave={() => setOpen(false)}
-          role="menu"
-          style={{
-            position: 'absolute', top: 'calc(100% + 6px)', right: 0,
-            minWidth: 200, zIndex: 1500,
-            background: 'var(--bg-1)',
-            border: '1px solid var(--line)',
-            boxShadow: '0 8px 28px rgba(0,0,0,.45)',
-            padding: 8,
-            display: 'flex', flexDirection: 'column', gap: 4,
-          }}
-        >
-          <div style={{ padding: '6px 8px', borderBottom: '1px solid var(--line)' }}>
+        <div onMouseLeave={() => setOpen(false)} role="menu" className="analyst-menu">
+          <div className="analyst-menu-header">
             <div style={{ fontSize: 12, fontWeight: 600 }}>{user?.display_name || user?.username}</div>
             <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)' }}>
               {user?.email || user?.username} · {(user?.role || 'analyst').toUpperCase()}
             </div>
           </div>
+          <PrefSeg
+            label="Theme" value={theme}
+            options={[['dark', 'Dark'], ['light', 'Light']]}
+            onChange={(v) => setTheme(v as 'dark' | 'light')}
+          />
+          <PrefSeg
+            label="Density" value={density}
+            options={[['comfort', 'Comfort'], ['compact', 'Compact']]}
+            onChange={(v) => setDensity(v as 'compact' | 'comfort')}
+          />
+          <PrefSeg
+            label="Clock" value={clockTz}
+            options={[['utc', 'UTC'], ['local', 'Local']]}
+            onChange={(v) => setClockTz(v as 'utc' | 'local')}
+          />
+          <hr/>
           <button
             type="button" role="menuitem"
+            className="analyst-menu-signout"
             onClick={async () => { setOpen(false); await logout(); }}
-            style={{
-              display: 'flex', alignItems: 'center', gap: 8,
-              padding: '8px 10px', border: 0, background: 'transparent',
-              color: 'var(--ink-1)', cursor: 'pointer', fontSize: 12, textAlign: 'left',
-            }}
           >
             <LogOut size={13} aria-hidden/> Sign out
           </button>
@@ -516,7 +638,14 @@ function formatEta(s: number): string {
   return `≈ ${Math.round(s / 60)}m`;
 }
 
-function ImageryJobIndicator({ job }: { job: UploadJob }) {
+/**
+ * UX-AUDIT F11 — slim imagery-job pill. The status bar previously packed
+ * 11 fields; the pill collapses the imagery job to filename · slim bar ·
+ * percent, with the full stage/message/ETA breakdown in a hover/click
+ * popover so the eye has somewhere to land.
+ */
+function ImageryJobPill({ job }: { job: UploadJob }) {
+  const [open, setOpen] = useState(false);
   const progress = uploadProgress(job);
   const meta = uploadMetadata(job);
   const processed = Number(meta.processed_chips);
@@ -527,34 +656,46 @@ function ImageryJobIndicator({ job }: { job: UploadJob }) {
     const elapsedSec = (Date.now() - createdAt) / 1000;
     eta = formatEta((elapsedSec / processed) * (total - processed));
   }
+  const name = job.filename.length > 24 ? `${job.filename.slice(0, 23)}…` : job.filename;
   return (
     <span
-      className="imagery-job-indicator"
-      role="status" aria-live="polite"
-      style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0 }}
+      style={{ position: 'relative', display: 'inline-block' }}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
     >
-      <span className="imagery-job-filename mono">{job.filename}</span>
-      <span className="mono imagery-job-stage" style={{ color: 'var(--ink-2)' }}>{uploadStage(job)}</span>
-      <span className="imagery-job-message mono" style={{ color: 'var(--ink-3)' }}>{uploadMessage(job)}</span>
-      <span aria-hidden style={{
-        width: 96, height: 4, background: 'var(--line-2)',
-        border: '1px solid var(--line)', position: 'relative', flexShrink: 0,
-      }}>
-        <span style={{ position: 'absolute', inset: 0, width: `${progress}%`, background: 'var(--accent)', transition: 'width 400ms linear' }}/>
-      </span>
-      <span className="mono" style={{ color: 'var(--ink-2)', fontVariantNumeric: 'tabular-nums' }}>{progress}%</span>
-      {eta && <span className="mono imagery-job-eta" style={{ color: 'var(--ink-3)' }}>{eta}</span>}
+      <button
+        type="button"
+        className="imagery-job-pill"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-label={`Imagery job ${job.filename}, ${progress}% — ${uploadStage(job)}`}
+      >
+        <span className="imagery-job-pill-name">{name}</span>
+        <span className="imagery-job-pill-bar" aria-hidden>
+          <span style={{ width: `${progress}%` }}/>
+        </span>
+        <span className="mono" style={{ fontVariantNumeric: 'tabular-nums', textAlign: 'right' }}>{progress}%</span>
+      </button>
+      {open && (
+        <div className="imagery-job-popover" role="status" aria-live="polite">
+          <div style={{ color: 'var(--ink-0)' }}>{job.filename}</div>
+          <div style={{ marginTop: 4 }}>STAGE <span style={{ color: 'var(--ink-1)' }}>{uploadStage(job)}</span></div>
+          <div>MSG <span style={{ color: 'var(--ink-1)' }}>{uploadMessage(job)}</span></div>
+          {eta && <div>ETA <span style={{ color: 'var(--ink-1)' }}>{eta}</span></div>}
+        </div>
+      )}
     </span>
   );
 }
 
 /* ── Status bar ──────────────────────────────────────────────────────── */
 
-function StatusBar({ uploadCount, activeImageryJob, allOk, clock, statusRight }: {
+function StatusBar({ uploadCount, activeImageryJob, allOk, clock, clockTz, statusRight }: {
   uploadCount: number;
   activeImageryJob: UploadJob | null;
   allOk: boolean;
   clock: Date;
+  clockTz: 'utc' | 'local';
   statusRight?: ReactNode;
 }) {
   return (
@@ -576,10 +717,14 @@ function StatusBar({ uploadCount, activeImageryJob, allOk, clock, statusRight }:
         <span style={{ color: allOk ? 'var(--ok)' : 'var(--crit)' }}>{allOk ? 'Connected' : 'Degraded'}</span>
       </span>
       <span className="mono">{uploadCount} upload{uploadCount === 1 ? '' : 's'} active</span>
-      {activeImageryJob && <ImageryJobIndicator job={activeImageryJob}/>}
+      {activeImageryJob && <ImageryJobPill job={activeImageryJob}/>}
       <div style={{ flex: 1 }}/>
       {statusRight}
-      <span className="mono">{clock.toISOString().slice(0, 19)}Z</span>
+      <span className="mono">
+        {clockTz === 'local'
+          ? `${clock.toLocaleTimeString([], { hour12: false })} LCL`
+          : `${clock.toISOString().slice(0, 19)}Z`}
+      </span>
     </footer>
   );
 }

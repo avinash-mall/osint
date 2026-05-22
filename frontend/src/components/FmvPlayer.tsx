@@ -17,7 +17,7 @@ import {
   SkipForward,
 } from 'lucide-react';
 import { useEventStream } from '../hooks/useEventStream';
-import { AffGlyph, type Affiliation } from './atoms';
+import { AffGlyph, KeyboardShortcutSheet, type Affiliation, type ShortcutBinding } from './atoms';
 import {
   categoryFor,
   detectionClassLabel,
@@ -28,6 +28,18 @@ import { useAuth } from '../hooks/useAuth';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 const CARTO_BASEMAP_URL = '/basemap/{z}/{x}/{y}.png';
+
+// UX-AUDIT F21 — keyboard bindings surfaced by the `?` overlay. Every entry
+// here is wired in the player's keydown handler below.
+const FMV_BINDINGS: ShortcutBinding[] = [
+  { keys: 'Space', label: 'Play / pause' },
+  { keys: 'K', label: 'Play / pause' },
+  { keys: '←', label: 'Step back one frame' },
+  { keys: '→', label: 'Step forward one frame' },
+  { keys: 'J', label: 'Scrub back (fast)' },
+  { keys: 'L', label: 'Scrub forward (fast)' },
+  { keys: '?', label: 'Show / hide this help' },
+];
 
 type Clip = {
   id: number;
@@ -305,6 +317,7 @@ export default function FmvPlayer({
   const [detectionsSort, setDetectionsSort] = useState<DetectionsSort>('time_asc');
   const [selectedDetectionId, setSelectedDetectionId] = useState<number | null>(null);
   const [mapCursor, setMapCursor] = useState<{ lat: number; lon: number } | null>(null);
+  const [showShortcuts, setShowShortcuts] = useState(false);
   const { user } = useAuth();
 
   // FMV+ stream counters — incremented on every ws frame; the per-second
@@ -842,16 +855,27 @@ export default function FmvPlayer({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!selectedClip || selectedClip.status !== 'ready') return;
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
-      if (e.code === 'Space') {
+      // `?` opens the shortcut sheet and works regardless of clip state.
+      if (e.key === '?') {
+        e.preventDefault();
+        setShowShortcuts((s) => !s);
+        return;
+      }
+      if (!selectedClip || selectedClip.status !== 'ready') return;
+      const t = videoRef.current?.currentTime || 0;
+      if (e.code === 'Space' || e.key === 'k' || e.key === 'K') {
         e.preventDefault();
         togglePlay();
       } else if (e.code === 'ArrowLeft') {
-        seekTo((videoRef.current?.currentTime || 0) - 1 / fps);
+        seekTo(t - 1 / fps);
       } else if (e.code === 'ArrowRight') {
-        seekTo((videoRef.current?.currentTime || 0) + 1 / fps);
+        seekTo(t + 1 / fps);
+      } else if (e.key === 'j' || e.key === 'J') {
+        seekTo(t - 10 / fps);
+      } else if (e.key === 'l' || e.key === 'L') {
+        seekTo(t + 10 / fps);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -1045,6 +1069,13 @@ export default function FmvPlayer({
         minHeight: 0,
       }}
     >
+      {showShortcuts && (
+        <KeyboardShortcutSheet
+          title="Drone Video — keyboard shortcuts"
+          bindings={FMV_BINDINGS}
+          onClose={() => setShowShortcuts(false)}
+        />
+      )}
       {/* === LEFT COLUMN: video + (optional) synced map + transport === */}
       <section className="fmv-primary" style={{ display: 'flex', flexDirection: 'column', background: 'var(--bg-0)', minWidth: 0, minHeight: 0 }}>
         <div
@@ -1089,7 +1120,10 @@ export default function FmvPlayer({
                   style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'none' }}
                 />
 
-                {/* Telemetry HUD — top-left, monospace */}
+                {/* Telemetry HUD — top-left, monospace. UX-AUDIT F19: a
+                    translucent backplate keeps the readout above WCAG AA on
+                    bright video (snow, cloud, white roofs) — a text-shadow
+                    alone was not enough. */}
                 {hudRows.length > 0 && (
                   <div
                     style={{
@@ -1099,8 +1133,11 @@ export default function FmvPlayer({
                       fontFamily: 'var(--font-mono)',
                       fontSize: 10.5,
                       color: '#bbf2d0',
-                      textShadow: '0 0 4px rgba(0,0,0,.8)',
+                      textShadow: '0 0 1px rgba(0,0,0,.6)',
                       pointerEvents: 'none',
+                      background: 'color-mix(in oklab, #000 65%, transparent)',
+                      padding: '5px 8px',
+                      borderRadius: 2,
                     }}
                   >
                     {hudRows.map(([k, v]) => (
@@ -1147,6 +1184,16 @@ export default function FmvPlayer({
                     )}
                     <button className="btn icon sm" style={{ background: 'rgba(0,0,0,.5)', borderColor: 'rgba(255,255,255,.15)', color: '#fff' }} title="Fullscreen">
                       <Maximize2 size={12} />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn icon sm"
+                      style={{ background: 'rgba(0,0,0,.5)', borderColor: 'rgba(255,255,255,.15)', color: '#fff' }}
+                      title="Keyboard shortcuts (?)"
+                      aria-label="Keyboard shortcuts"
+                      onClick={() => setShowShortcuts(true)}
+                    >
+                      ?
                     </button>
                   </div>
 
@@ -1269,6 +1316,8 @@ export default function FmvPlayer({
                       )}
                     </MapContainer>
                     <div
+                      onDoubleClick={() => setMapMode('split')}
+                      title="Double-click to expand to split view"
                       style={{
                         position: 'absolute',
                         top: 0,
@@ -1284,6 +1333,7 @@ export default function FmvPlayer({
                         fontSize: 9.5,
                         color: '#fff',
                         letterSpacing: '.08em',
+                        cursor: 'pointer',
                       }}
                     >
                       <MapIcon size={10} style={{ color: 'var(--accent)' }} />

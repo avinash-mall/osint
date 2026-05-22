@@ -29,12 +29,14 @@ import PromptProfilesView from './admin/PromptProfilesView';
 import TaxonomyVersionView from './admin/TaxonomyVersionView';
 import ProcessingView from './admin/ProcessingView';
 import ModelsView from './admin/ModelsView';
+import ModelLoadingView from './admin/ModelLoadingView';
 import AlertsView from './admin/AlertsView';
 
 type AdminTab =
   | 'ontology'
   | 'processing'
   | 'models'
+  | 'modelload'
   | 'alerts'
   | 'auth'
   | 'health'
@@ -59,12 +61,15 @@ const NAV: NavItemDef[] = [
   { key: 'ontology',   label: 'Ontology',         Icon: GitBranch },
   { key: 'processing', label: 'Processing',       Icon: Activity, badgeKey: 'processing' },
   { key: 'models',     label: 'AI models',        Icon: Box,      badgeKey: 'models' },
+  { key: 'modelload',  label: 'Model loading',    Icon: Cpu },
   { key: 'health',     label: 'Health dashboard', Icon: HeartPulse },
   { key: 'confidence', label: 'Conf overrides',   Icon: Filter },
   { key: 'prompts',    label: 'Prompt profiles',  Icon: Search },
   { key: 'versions',   label: 'Version history',  Icon: History },
   { key: 'alerts',     label: 'Health alerts',    Icon: AlertTriangle, badgeKey: 'alerts' },
-  { key: 'auth',       label: 'Auth · LDAP',      Icon: Key },
+  // UX-AUDIT F29: 'Auth · LDAP' surfaced an implementation detail as the
+  // tab name. 'Sign-in & users' names the operator-facing function.
+  { key: 'auth',       label: 'Sign-in & users',  Icon: Key },
 ];
 
 type AdminScreenProps = {
@@ -171,6 +176,7 @@ export default function AdminScreen({
           />
         )}
         {tab === 'models'     && <ModelsView onCount={(n) => setCounts((c) => ({ ...c, models: n }))} />}
+        {tab === 'modelload'  && <ModelLoadingView />}
         {tab === 'alerts'     && <AlertsView onCount={(n) => setCounts((c) => ({ ...c, alerts: n }))} />}
         {tab === 'auth'       && <AdminAuthTab />}
         {tab === 'health'     && <HealthDashboardView />}

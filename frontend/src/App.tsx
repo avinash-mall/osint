@@ -27,14 +27,7 @@ import { Shell } from './components/Shell';
 import type { WorkspaceKey } from './components/Shell';
 import { CursorReadout, type CursorPos } from './components/atoms';
 import { AuthProvider, useAuth } from './hooks/useAuth';
-
-const CONTEXT_LINE: Record<WorkspaceKey, string> = {
-  ingest: 'Ingest · upload imagery, video, and feeds',
-  map:    'Common Operating Picture · live detections + imagery',
-  fmv:    'Full-motion video · synced map · MISB 0601 telemetry',
-  graph:  'Entity graph · Neo4j-backed link analysis',
-  admin:  'Ontology · processing · models · alerts · auth',
-};
+import { PreferencesProvider } from './hooks/usePreferences';
 
 export type CrossNavTarget = {
   workspace: WorkspaceKey;
@@ -45,9 +38,11 @@ export type CrossNavTarget = {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <Gate />
-    </AuthProvider>
+    <PreferencesProvider>
+      <AuthProvider>
+        <Gate />
+      </AuthProvider>
+    </PreferencesProvider>
   );
 }
 
@@ -96,7 +91,6 @@ function AuthedApp() {
     <Shell
       active={active}
       onNavigate={onNavigate}
-      contextLine={CONTEXT_LINE[active]}
       statusRight={<CursorReadout cursor={cursor} />}
     >
       {active === 'ingest' && <IngestConnect />}
