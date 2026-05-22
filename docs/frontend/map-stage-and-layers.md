@@ -2,14 +2,16 @@
 
 **Paths:**
 - [frontend/src/components/map/MapStage.tsx](../../frontend/src/components/map/MapStage.tsx) (~33720 chars)
-- [frontend/src/components/map/LayerPanel.tsx](../../frontend/src/components/map/LayerPanel.tsx) (~19277 chars)
+- [frontend/src/components/map/LayerPanel.tsx](../../frontend/src/components/map/LayerPanel.tsx) (~20786 chars)
 - [frontend/src/components/map/MapEventHandlers.tsx](../../frontend/src/components/map/MapEventHandlers.tsx)
 - [frontend/src/components/map/_helpers.ts](../../frontend/src/components/map/_helpers.ts) (projection/bounds/GeoJSON transforms)
-- [frontend/src/components/map/_icons.tsx](../../frontend/src/components/map/_icons.tsx) (detection-type icon factory)
+- [frontend/src/components/map/_icons.tsx](../../frontend/src/components/map/_icons.tsx) (detection-type icon factory + `BasemapThumb` previews)
 
 ## Purpose
 
 `MapStage` = the `<MapContainer>` with the offline Carto Dark basemap + every overlay layer (detections, satellite passes, asset tracks, analytics polygons, sensor footprints). `LayerPanel` = the left rail toggling layer visibility, setting confidence filters, showing provenance.
+
+The basemap selector is a **thumbnail gallery** — three 56×40 hand-painted `BasemapThumb` SVGs (`_icons.tsx`) for the dark-vector / satellite / hillshade options, active tile outlined in `--accent-cool` with a check chip. Overlay rows carry **no eye-toggle column**: a 10 px coloured dot is the visibility signal (filled = on, hollow = off), and `viewshed` / `los` / `routes` sit in a separate "Analytics tools" subgroup with a lock glyph until their tool is run. See [decisions/why-layerpanel-dot-toggle.md](../decisions/why-layerpanel-dot-toggle.md).
 
 ## Key behaviors
 
@@ -35,6 +37,7 @@
 ## Cross-references
 
 - [decisions/why-bbox-toggle-removed.md](../decisions/why-bbox-toggle-removed.md)
+- [decisions/why-layerpanel-dot-toggle.md](../decisions/why-layerpanel-dot-toggle.md)
 - [decisions/why-detection-boxes-use-polygon-map.md](../decisions/why-detection-boxes-use-polygon-map.md)
 - [decisions/why-sat-tiles-cap-at-native-zoom.md](../decisions/why-sat-tiles-cap-at-native-zoom.md)
 - [decisions/ux-audit-001.md](../decisions/ux-audit-001.md)

@@ -347,6 +347,121 @@ img, svg, video, canvas { max-inline-size: 100%; }
 }
 .sentinel-row:hover, .sentinel-row.selected { background: var(--bg-2); }
 
+/* ── LayerPanel basemap thumbnail gallery ─────────────────────────────── */
+.layer-panel-basemap-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.layer-panel-basemap-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--ink-1);
+}
+.layer-panel-basemap-tile > svg:first-child {
+  width: 100%;
+  height: auto;
+  border-radius: 4px;
+  outline: 1px solid var(--line-2);
+  outline-offset: 0;
+  display: block;
+}
+.layer-panel-basemap-tile.is-active > svg:first-child {
+  outline: 2px solid var(--accent-cool);
+  outline-offset: -1px;
+}
+.layer-panel-basemap-tile.is-active { color: var(--ink-0); }
+.layer-panel-basemap-check {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 6px;
+  background: var(--accent-cool);
+  color: var(--bg-0);
+  padding: 1px;
+}
+.layer-panel-basemap-label {
+  font: 600 9px/1 var(--font-mono);
+  letter-spacing: 1px;
+}
+.layer-panel-basemap-sub {
+  font: 400 8.5px/1 var(--font-sans);
+  color: var(--ink-2);
+}
+
+/* ── LayerPanel overlay rows — dot indicator pattern ──────────────────── */
+.layer-panel-subhead {
+  font: 600 9px/1 var(--font-mono);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  padding: 8px 14px 4px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-2);
+}
+.layer-panel-overlay-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid color-mix(in oklab, var(--bg-2) 70%, transparent);
+  color: var(--ink-1);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  min-height: 28px;
+}
+.layer-panel-overlay-row:hover { background: var(--bg-2); }
+.layer-panel-overlay-row.is-disabled {
+  cursor: help;
+  color: var(--ink-3);
+}
+.layer-panel-overlay-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 5px;
+  justify-self: center;
+}
+.layer-panel-overlay-dot.is-on {
+  background: var(--dot-color);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--dot-color) 24%, transparent);
+}
+.layer-panel-overlay-dot.is-off {
+  background: transparent;
+  border: 1.5px solid var(--ink-3);
+}
+.layer-panel-overlay-dot.is-lock {
+  width: 12px;
+  height: 12px;
+  border-radius: 0;
+  color: var(--ink-3);
+  background: transparent;
+}
+.layer-panel-overlay-label {
+  font-size: 12px;
+  line-height: 1.2;
+  color: var(--ink-1);
+}
+.layer-panel-overlay-row.is-off .layer-panel-overlay-label { color: var(--ink-2); }
+.layer-panel-overlay-row.is-disabled .layer-panel-overlay-label { color: var(--ink-3); }
+.layer-panel-overlay-metric {
+  font: 500 10px/1 var(--font-mono);
+  color: var(--ink-2);
+}
+
 .sentinel-icon-btn {
   display: grid;
   place-items: center;

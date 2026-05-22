@@ -8,7 +8,7 @@
  * Every panel pulls from the real backend.  No mocked data.
  */
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -85,6 +85,14 @@ export default function AdminScreen({
 }: AdminScreenProps = {}) {
   const [tab, setTab] = useState<AdminTab>('ontology');
   const [counts, setCounts] = useState<Counts>({ processing: 0, models: 0, alerts: 0 });
+
+  // Stable count-setters. The Processing/Models/Alerts views list their
+  // `onCount` prop in a useEffect dependency array; an inline arrow here would
+  // get a new identity on every AdminScreen render, re-firing those effects →
+  // setCounts → re-render → … (React "Maximum update depth exceeded").
+  const setProcessingCount = useCallback((n: number) => setCounts((c) => ({ ...c, processing: n })), []);
+  const setModelsCount = useCallback((n: number) => setCounts((c) => ({ ...c, models: n })), []);
+  const setAlertsCount = useCallback((n: number) => setCounts((c) => ({ ...c, alerts: n })), []);
 
   // Listen for Shell's "jump to admin tab" events (e.g. Bell icon ⇒ alerts).
   useEffect(() => {
@@ -170,14 +178,14 @@ export default function AdminScreen({
         )}
         {tab === 'processing' && (
           <ProcessingView
-            onCount={(n) => setCounts((c) => ({ ...c, processing: n }))}
+            onCount={setProcessingCount}
             onOpenOnMap={onOpenDetectionOnMap}
             onOpenInFmv={onOpenDetectionInFmv}
           />
         )}
-        {tab === 'models'     && <ModelsView onCount={(n) => setCounts((c) => ({ ...c, models: n }))} />}
+        {tab === 'models'     && <ModelsView onCount={setModelsCount} />}
         {tab === 'modelload'  && <ModelLoadingView />}
-        {tab === 'alerts'     && <AlertsView onCount={(n) => setCounts((c) => ({ ...c, alerts: n }))} />}
+        {tab === 'alerts'     && <AlertsView onCount={setAlertsCount} />}
         {tab === 'auth'       && <AdminAuthTab />}
         {tab === 'health'     && <HealthDashboardView />}
         {tab === 'confidence' && <ConfOverrideView />}

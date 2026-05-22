@@ -11,7 +11,6 @@ Consolidates all operator tooling into a tab set.
 | Tab | Component | Doc |
 |---|---|---|
 | Ontology | [OntologyAdmin.tsx](../../frontend/src/components/OntologyAdmin.tsx) | [ontology-admin-ui.md](ontology-admin-ui.md) |
-| Upload imagery | [IngestConnect.tsx](../../frontend/src/components/IngestConnect.tsx) (shared with Ingest workspace) | [workspace-ingest.md](workspace-ingest.md) |
 | Processing | [admin/ProcessingView.tsx](../../frontend/src/components/admin/ProcessingView.tsx) | [admin-models-and-processing.md](admin-models-and-processing.md) |
 | AI models | [admin/ModelsView.tsx](../../frontend/src/components/admin/ModelsView.tsx) | [admin-models-and-processing.md](admin-models-and-processing.md) |
 | Model loading | [admin/ModelLoadingView.tsx](../../frontend/src/components/admin/ModelLoadingView.tsx) | (UX-AUDIT F27/F28) |

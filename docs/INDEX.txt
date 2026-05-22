@@ -128,6 +128,7 @@ decisions/why-dinov3-sat-only.md|decision|DINOv3 ViT-L SAT-493M keeps re-ID qual
 decisions/why-evidence-ranked-detections.md|decision|confirmed objects require source, verifier, physics, and SAR evidence signals
 decisions/why-fmv-track-consolidation.md|decision,fmv|post-inference pass stitches windows/prompts; overlap_index removed; temporal-support class vote
 decisions/why-grounding-dino-auto-gated.md|decision|forcing GDINO drops mAP via NMS suppression of DOTA detections
+decisions/why-layerpanel-dot-toggle.md|decision,frontend|eye-toggle column removed; 10px coloured dot is the visibility signal, locked analytics subgroup
 decisions/why-open-vocabulary.md|decision|no closed taxonomy: explicit/precision/ontology labels are first-class
 decisions/why-postgis-and-neo4j-coexist.md|decision|PostGIS for spatial detections; Neo4j for entity/link graph
 decisions/why-precision-first-inference-defaults.md|decision|bounded prompt defaults, source-layer provenance, specialist gates, nonzero policy floor

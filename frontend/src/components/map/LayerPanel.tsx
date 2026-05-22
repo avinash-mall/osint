@@ -16,12 +16,14 @@
  */
 
 import {
+  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   Eye,
   EyeOff,
   Layers,
+  Lock,
   RefreshCw,
   Satellite,
   Search,
@@ -33,7 +35,7 @@ import {
 } from '../../utils/detectionTaxonomy';
 import type { OntologyBranch } from '../../utils/useOntology';
 import { threatClass, type DetectionClassStat } from './_helpers';
-import { CategoryIcon, DetectionSubclassIcon } from './_icons';
+import { BasemapThumb, CategoryIcon, DetectionSubclassIcon } from './_icons';
 
 export type ActiveLayerMap = {
   satellite: boolean;
@@ -112,6 +114,51 @@ type Props = {
   setSelectedImagery: (id: number | null) => void;
 };
 
+/**
+ * One overlay row. The full row is the click target; the 10 px coloured dot
+ * (filled = on, hollow = off) is the visibility *signal*, not the
+ * affordance. Disabled analytics tools show a lock instead — see
+ * docs/decisions/why-layerpanel-dot-toggle.md.
+ */
+function OverlayRow({
+  label,
+  metric,
+  colorVar,
+  active,
+  disabled = false,
+  onToggle,
+}: {
+  label: string;
+  metric: number | string;
+  colorVar: string;
+  active: boolean;
+  disabled?: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onToggle}
+      className={`layer-panel-overlay-row ${active && !disabled ? 'is-on' : 'is-off'} ${disabled ? 'is-disabled' : ''}`}
+      title={disabled ? 'Run the tool first to enable this layer' : ''}
+      aria-pressed={!disabled && active}
+    >
+      {disabled ? (
+        <Lock className="layer-panel-overlay-dot is-lock" aria-hidden />
+      ) : (
+        <span
+          className={`layer-panel-overlay-dot ${active ? 'is-on' : 'is-off'}`}
+          style={{ ['--dot-color' as string]: colorVar }}
+          aria-hidden
+        />
+      )}
+      <span className="layer-panel-overlay-label">{label}</span>
+      {!disabled && <span className="layer-panel-overlay-metric">{metric}</span>}
+    </button>
+  );
+}
+
 export default function LayerPanel({
   onRefresh,
   onCollapse,
@@ -150,16 +197,21 @@ export default function LayerPanel({
   selectedImagery,
   setSelectedImagery,
 }: Props) {
-  const overlayRows = [
-    { key: 'satellite',  label: 'Satellite Imagery', metric: imagery.length,           color: 'text-sentinel-info',   available: true },
-    { key: 'detections', label: 'AI Detections',     metric: visibleDetectionCount,    color: 'text-sentinel-accent', available: true },
-    { key: 'tracks',     label: 'Active Tracks',     metric: tracksCount,              color: 'text-sentinel-info',   available: true },
-    { key: 'static',     label: 'Static Features',   metric: staticCount,              color: 'text-sentinel-crit',   available: true },
-    { key: 'grid',       label: 'Tactical Grid',     metric: 'WGS84' as const,          color: 'text-sentinel-muted',  available: true },
-    { key: 'viewshed',   label: 'Viewshed',          metric: analyticsCounts.viewshed, color: 'text-sentinel-accent', available: analyticsCounts.viewshedAvailable },
-    { key: 'los',        label: 'Line of Sight',     metric: analyticsCounts.los,      color: 'text-sentinel-accent', available: analyticsCounts.losAvailable },
-    { key: 'routes',     label: 'Routes',            metric: analyticsCounts.routes,   color: 'text-sentinel-accent', available: analyticsCounts.routesAvailable },
-  ];
+  const liveLayerRows = [
+    { key: 'satellite',  label: 'Satellite Imagery', metric: imagery.length,        colorVar: 'var(--color-sentinel-info)'   },
+    { key: 'detections', label: 'AI Detections',     metric: visibleDetectionCount, colorVar: 'var(--color-sentinel-accent)' },
+    { key: 'tracks',     label: 'Active Tracks',     metric: tracksCount,           colorVar: 'var(--color-sentinel-info)'   },
+    { key: 'static',     label: 'Static Features',   metric: staticCount,           colorVar: 'var(--color-sentinel-crit)'   },
+    { key: 'grid',       label: 'Tactical Grid',     metric: 'WGS84',               colorVar: 'var(--color-sentinel-muted)'  },
+  ] as const;
+  const analyticsToolRows = [
+    { key: 'viewshed', label: 'Viewshed',      metric: analyticsCounts.viewshed, colorVar: 'var(--color-sentinel-accent)', available: analyticsCounts.viewshedAvailable },
+    { key: 'los',      label: 'Line of Sight', metric: analyticsCounts.los,      colorVar: 'var(--color-sentinel-accent)', available: analyticsCounts.losAvailable },
+    { key: 'routes',   label: 'Routes',        metric: analyticsCounts.routes,   colorVar: 'var(--color-sentinel-accent)', available: analyticsCounts.routesAvailable },
+  ] as const;
+
+  const toggleLayer = (key: keyof ActiveLayerMap) =>
+    setActiveLayers((prev) => ({ ...prev, [key]: !prev[key] }));
 
   return (
     <section
@@ -196,22 +248,30 @@ export default function LayerPanel({
       <div className="sentinel-scroll">
         {/* Basemap selector */}
         <div className="border-b border-sentinel-line p-2">
-          <div className="grid grid-cols-3 border border-sentinel-line-2">
-            {(['base', 'sat', 'terrain'] as const).map((key) => {
-              const isActive = activeBaseLayer === key;
+          <div className="layer-panel-basemap-grid">
+            {([
+              { k: 'base',    label: 'BASE',    sub: 'Dark vector' },
+              { k: 'sat',     label: 'SAT',     sub: 'Imagery'     },
+              { k: 'terrain', label: 'TERRAIN', sub: 'Hillshade'   },
+            ] as const).map(({ k, label, sub }) => {
+              const isActive = activeBaseLayer === k;
               return (
                 <button
-                  key={key}
+                  key={k}
                   type="button"
                   onClick={() => {
-                    if (key === 'sat' && selectedImagery === null && imagery.length > 0) {
+                    if (k === 'sat' && selectedImagery === null && imagery.length > 0) {
                       setSelectedImagery(imagery[0].id);
                     }
-                    setActiveBaseLayer(key);
+                    setActiveBaseLayer(k);
                   }}
-                  className={`h-7 font-mono text-[10px] uppercase tracking-widest ${isActive ? 'bg-sentinel-panel-2 text-slate-100' : 'text-sentinel-muted'}`}
+                  className={`layer-panel-basemap-tile ${isActive ? 'is-active' : ''}`}
+                  aria-pressed={isActive}
                 >
-                  {key}
+                  <BasemapThumb kind={k} />
+                  {isActive && <Check className="layer-panel-basemap-check" />}
+                  <span className="layer-panel-basemap-label">{label}</span>
+                  <span className="layer-panel-basemap-sub">{sub}</span>
                 </button>
               );
             })}
@@ -246,26 +306,32 @@ export default function LayerPanel({
           <span className="sentinel-label flex-1">Overlays</span>
         </div>
 
-        {overlaysOpen && overlayRows.map((layer) => {
-          const active = activeLayers[layer.key as keyof ActiveLayerMap];
-          const disabled = layer.available === false;
-          return (
-            <button
-              key={layer.key}
-              type="button"
-              disabled={disabled}
-              onClick={() => setActiveLayers((prev) => ({ ...prev, [layer.key]: !active }))}
-              className={`sentinel-row w-full grid-cols-[22px_1fr_auto] text-left ${disabled ? 'opacity-40 cursor-not-allowed' : ''}`}
-              title={disabled ? 'Run the tool first to enable this layer' : ''}
-            >
-              <span className={active && !disabled ? layer.color : 'text-sentinel-muted'}>
-                {active && !disabled ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
-              </span>
-              <span className="truncate text-xs text-slate-200">{layer.label}</span>
-              <span className="font-mono text-[10px] text-sentinel-muted">{layer.metric}</span>
-            </button>
-          );
-        })}
+        {overlaysOpen && (
+          <>
+            {liveLayerRows.map((layer) => (
+              <OverlayRow
+                key={layer.key}
+                label={layer.label}
+                metric={layer.metric}
+                colorVar={layer.colorVar}
+                active={activeLayers[layer.key as keyof ActiveLayerMap]}
+                onToggle={() => toggleLayer(layer.key as keyof ActiveLayerMap)}
+              />
+            ))}
+            <div className="layer-panel-subhead">Analytics tools</div>
+            {analyticsToolRows.map((layer) => (
+              <OverlayRow
+                key={layer.key}
+                label={layer.label}
+                metric={layer.metric}
+                colorVar={layer.colorVar}
+                active={activeLayers[layer.key as keyof ActiveLayerMap]}
+                disabled={!layer.available}
+                onToggle={() => toggleLayer(layer.key as keyof ActiveLayerMap)}
+              />
+            ))}
+          </>
+        )}
 
         {/* Detection Classes section header */}
         <div className="border-b border-sentinel-line bg-sentinel-panel-2 px-3 py-2">

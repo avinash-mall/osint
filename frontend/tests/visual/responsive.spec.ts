@@ -11,7 +11,7 @@ async function stabilize(page: Page) {
 async function openAuthed(page: Page) {
   await installMockApi(page, { authenticated: true });
   await page.goto('/');
-  await expect(page.getByTitle('Geoint')).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTitle('Map', { exact: true })).toBeVisible({ timeout: 10_000 });
   await stabilize(page);
 }
 
@@ -59,8 +59,13 @@ test.describe('responsive visual regression', () => {
   test('map workspace adapts at compact and wide widths', async ({ page }) => {
     await page.setViewportSize({ width: 430, height: 900 });
     await openAuthed(page);
-    await page.evaluate(() => window.dispatchEvent(new CustomEvent('sentinel:jump-to-detection', { detail: { id: 1 } })));
-    await expect(page.getByText('Tank').first()).toBeVisible();
+    // Re-dispatch until the detection data has loaded — the jump handler is a
+    // one-shot listener, so a dispatch that lands before the geojson fetch
+    // resolves is silently dropped (flaky under parallel dev-server load).
+    await expect(async () => {
+      await page.evaluate(() => window.dispatchEvent(new CustomEvent('sentinel:jump-to-detection', { detail: { id: 1 } })));
+      await expect(page.getByText('Tank').first()).toBeVisible({ timeout: 1_000 });
+    }).toPass({ timeout: 15_000 });
     await expect(page).toHaveScreenshot('map-compact.png');
     await page.setViewportSize({ width: 1365, height: 900 });
     await expect(page).toHaveScreenshot('map-wide.png');
@@ -95,10 +100,9 @@ test.describe('responsive visual regression', () => {
 
     const cases = [
       ['ontology', '.ontology-admin'],
-      ['upload', '.ingest-connect'],
-      ['processing', '.admin-content > .sentinel-scroll'],
-      ['models', '.admin-content > .sentinel-scroll'],
-      ['alerts', '.admin-content > .sentinel-scroll'],
+      ['processing', '.admin-jobs-list'],
+      ['models', '.admin-models-table'],
+      ['alerts', '.admin-alerts-list'],
       ['auth', '.admin-view'],
       ['health', '.admin-view'],
       ['confidence', '.admin-view'],
@@ -114,13 +118,37 @@ test.describe('responsive visual regression', () => {
     }
   });
 
+  test('admin count tabs do not trigger a React render loop', async ({ page }) => {
+    await page.setViewportSize({ width: 1365, height: 900 });
+
+    // The Processing/Models/Alerts views each report a row count to AdminScreen
+    // via an `onCount` callback listed in a useEffect dependency array. If that
+    // callback is not referentially stable, the effect re-fires every render →
+    // setState → re-render → "Maximum update depth exceeded".
+    const loopErrors: string[] = [];
+    page.on('console', (msg) => {
+      if (/maximum update depth/i.test(msg.text())) loopErrors.push(msg.text());
+    });
+
+    await openAuthed(page);
+    await page.getByTitle('Admin').click();
+
+    for (const tab of ['processing', 'models', 'alerts'] as const) {
+      await page.evaluate((t) => {
+        window.dispatchEvent(new CustomEvent('sentinel:admin-tab', { detail: { tab: t } }));
+      }, tab);
+      // Dwell long enough for a loop, if present, to trip React's depth guard
+      // (~50 iterations) — empirically well under a second.
+      await page.waitForTimeout(1500);
+      expect(loopErrors, `${tab} tab triggered a render loop`).toEqual([]);
+    }
+  });
+
   test('upload object chooser does not trap the page above lower controls', async ({ page }) => {
     await page.setViewportSize({ width: 1365, height: 700 });
     await openAuthed(page);
-    await page.getByTitle('Admin').click();
-    await page.evaluate(() => {
-      window.dispatchEvent(new CustomEvent('sentinel:admin-tab', { detail: { tab: 'upload' } }));
-    });
+    // Ingest is now a top-level workspace, not an Admin tab.
+    await page.getByTitle('Ingest', { exact: true }).click();
 
     const tree = page.locator('.ingest-object-tree');
     await expect(tree).toBeVisible();
@@ -147,8 +175,13 @@ test.describe('responsive visual regression', () => {
     await openAuthed(page);
 
     await expectCanScroll(page, '.map-left-panel .sentinel-scroll', 'map left panel');
-    await page.evaluate(() => window.dispatchEvent(new CustomEvent('sentinel:jump-to-detection', { detail: { id: 1 } })));
-    await expect(page.getByText('Tank').first()).toBeVisible();
+    // Re-dispatch until the detection data has loaded — the jump handler is a
+    // one-shot listener, so a dispatch that lands before the geojson fetch
+    // resolves is silently dropped (flaky under parallel dev-server load).
+    await expect(async () => {
+      await page.evaluate(() => window.dispatchEvent(new CustomEvent('sentinel:jump-to-detection', { detail: { id: 1 } })));
+      await expect(page.getByText('Tank').first()).toBeVisible({ timeout: 1_000 });
+    }).toPass({ timeout: 15_000 });
     await expectCanScroll(page, '.map-right-panel .sentinel-scroll', 'map right panel');
 
     await page.getByTitle('Link Graph').click();
