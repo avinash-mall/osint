@@ -27,6 +27,12 @@ replicas on different GPUs, so the device a tensor is created on can drift from
 the replica that ends up consuming it. Single-GPU hosts never diverge, which is
 why the cached path passed earlier testing.
 
+> **Superseded in part — see [Follow-up](#follow-up-the-mover-was-a-silent-no-op) below.**
+> The `_move_tensors_to_device` approach recorded here did *not* actually fix
+> the crash: it is a silent no-op on SAM3's frozen-dataclass / `__slots__`
+> find-side objects. The real fix pins the CUDA device upstream of the
+> collator. This section is kept for history.
+
 ## Decision
 
 In `forward_with_cache`, before reading `find_input`/`find_target`, move every
@@ -74,6 +80,38 @@ Only the cached fast path was missing the normalisation. The non-cached
 `_run_text_prompts_batched` calls `model(batch)` straight after
 `copy_data_to_device(batch, ...)` and routes through the unpatched upstream
 forward, which normalises on its own — it is safe by construction.
+
+## Follow-up: the mover was a silent no-op
+
+The `_move_tensors_to_device` fix above shipped but the crash persisted on the
+multi-GPU host. Cause: SAM3's `FindInput` / `FindTarget` are **frozen
+dataclasses / `__slots__` objects**. The mover's plain-object branch either hit
+a swallowed `FrozenInstanceError` (a subclass of `AttributeError`, caught and
+ignored) or was skipped entirely because `__dict__` was `None` on a slotted
+object. `find_input.img_ids` was never moved — single-GPU testing never
+diverged so the regression was invisible.
+
+The real fix is two layers:
+
+- **Layer 1 — pin the CUDA device (root cause).** A `_device_ctx(device)`
+  context wraps the inference `with` stacks in `sam3_runner.py`. PyTorch's
+  current CUDA device is thread-local; under the anyio threadpool it drifts
+  across replicas. The SAM3 collator (`collate_fn_api`) builds `img_ids` on the
+  *current* device — pinning it to the replica's device makes the collator
+  place `img_ids` on the right GPU in the first place, so no later move is
+  needed. This is distinct from the rejected "pin `bundle["device"]`"
+  alternative below: that pinned a config field; this pins the actual
+  thread-local `torch.cuda` current device, which *is* the divergence.
+- **Layer 2 — hardened mover (defense in depth).** `_move_tensors_to_device`
+  now enumerates attribute names from both `__dict__` and the `__slots__` of
+  every class in the MRO, and falls back to `object.__setattr__` (the
+  documented escape hatch for frozen dataclasses) then direct `__dict__`
+  mutation when `setattr` is blocked. The `forward_with_cache` normalisation is
+  therefore now a genuine backstop, not a no-op.
+
+A per-chunk `try/except` was also added to `_run_text_prompts_cached_batched`:
+a failing chunk is logged and skipped so the tile returns partial detections
+instead of 500-ing the whole `/detect_raw` request.
 
 ## Cross-references
 

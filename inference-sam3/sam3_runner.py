@@ -695,6 +695,25 @@ def _sdpa_ctx():
     return nullcontext()
 
 
+def _device_ctx(device: str):
+    """Pin PyTorch's thread-local current CUDA device for a forward.
+
+    The current CUDA device is thread-local; the service runs inference in an
+    anyio worker threadpool whose threads are reused across replicas pinned to
+    different GPUs, so the ambient current device can drift from this replica's
+    device. The SAM3 collator builds index tensors (notably find_input.img_ids)
+    on the *current* device — under drift that is a wrong GPU and _get_img_feats
+    then dies indexing the cached vis_pos_enc. Pinning makes the collator build
+    those tensors on the replica's GPU. No-op for CPU devices.
+    """
+    import torch
+    from contextlib import nullcontext
+
+    if device.startswith("cuda"):
+        return torch.cuda.device(device)
+    return nullcontext()
+
+
 def run_text_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompts: Iterable[str], score_threshold: float, timings: dict[str, float] | None = None):
     """Native facebookresearch/sam3 API.
 
@@ -735,7 +754,7 @@ def run_text_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompt
     pil_image = Image.fromarray(image_rgb_uint8)
     candidates: list[tuple[np.ndarray, list[float], float, str]] = []
 
-    with bundle["lock"], _inference_mode(), _autocast_ctx(device), _sdpa_ctx():
+    with bundle["lock"], _device_ctx(device), _inference_mode(), _autocast_ctx(device), _sdpa_ctx():
         with stage_timer(timings, "encode_image"):
             state = processor.set_image(pil_image)
         with stage_timer(timings, "decode_loop"):
@@ -852,7 +871,7 @@ def _run_text_prompts_batched(
         always_interpolate_masks_on_gpu=device.startswith("cuda"),
     )
 
-    with bundle["lock"], _inference_mode(), _autocast_ctx(device), _sdpa_ctx():
+    with bundle["lock"], _device_ctx(device), _inference_mode(), _autocast_ctx(device), _sdpa_ctx():
         with stage_timer(timings, "batched_forward"):
             output = bundle["sam3_image"]["model"](batch)
         with stage_timer(timings, "batched_postproc"):
@@ -914,7 +933,7 @@ def _run_text_prompts_cached_batched(
     candidates: list[tuple[np.ndarray, list[float], float, str]] = []
     chunk_size = max(1, SAM3_BATCHED_TEXT_CHUNK_SIZE)
 
-    with bundle["lock"], _inference_mode(), _autocast_ctx(device), _sdpa_ctx():
+    with bundle["lock"], _device_ctx(device), _inference_mode(), _autocast_ctx(device), _sdpa_ctx():
         # ---- Encode the image ONCE for the whole request ----
         # We bypass the collator/Datapoint path here because the SAM3 collator
         # requires at least one find_query, but at seed time we have zero —
@@ -938,59 +957,70 @@ def _run_text_prompts_cached_batched(
         # ---- Iterate chunks: build a tiny batch (no image work), reuse cache ----
         for offset in range(0, len(prompts), chunk_size):
             chunk = prompts[offset:offset + chunk_size]
-            query_labels: dict[int, str] = {}
-            chunk_dp = Datapoint(
-                find_queries=[],
-                images=[SAMImage(data=pil_image, objects=[], size=[height, width])],
-            )
-            for label in chunk:
-                qid = next(_QUERY_IDS)
-                phrase = PROMPT_TEMPLATE.format(label=label)
-                chunk_dp.find_queries.append(
-                    FindQueryLoaded(
-                        query_text=phrase,
-                        image_id=0,
-                        object_ids_output=[],
-                        is_exhaustive=True,
-                        query_processing_order=0,
-                        inference_metadata=InferenceMetadata(
-                            coco_image_id=qid,
-                            original_image_id=qid,
-                            original_category_id=1,
-                            original_size=(height, width),
-                            object_id=0,
-                            frame_index=0,
-                        ),
-                    )
+            # Degrade gracefully: a single failing chunk (e.g. GPU OOM on a
+            # content-heavy tile) is logged and skipped so the tile still
+            # returns the detections from the chunks that did succeed, rather
+            # than 500-ing the whole /detect_raw request and blanking the tile.
+            try:
+                query_labels: dict[int, str] = {}
+                chunk_dp = Datapoint(
+                    find_queries=[],
+                    images=[SAMImage(data=pil_image, objects=[], size=[height, width])],
                 )
-                query_labels[qid] = label
-            chunk_dp = transform(chunk_dp)
-            chunk_batch = collate([chunk_dp], dict_key="sam3")["sam3"]
-            chunk_batch = copy_data_to_device(
-                chunk_batch, torch.device(device),
-                non_blocking=device.startswith("cuda"),
-            )
-            # Carry cached image features onto this batch — Sam3Image.forward
-            # patched in patches.sam3_cached_forward picks this up and skips
-            # the vision encoder.
-            chunk_batch.img_batch = cached_img_batch
-            chunk_batch._cached_backbone_out = cached_backbone_out
+                for label in chunk:
+                    qid = next(_QUERY_IDS)
+                    phrase = PROMPT_TEMPLATE.format(label=label)
+                    chunk_dp.find_queries.append(
+                        FindQueryLoaded(
+                            query_text=phrase,
+                            image_id=0,
+                            object_ids_output=[],
+                            is_exhaustive=True,
+                            query_processing_order=0,
+                            inference_metadata=InferenceMetadata(
+                                coco_image_id=qid,
+                                original_image_id=qid,
+                                original_category_id=1,
+                                original_size=(height, width),
+                                object_id=0,
+                                frame_index=0,
+                            ),
+                        )
+                    )
+                    query_labels[qid] = label
+                chunk_dp = transform(chunk_dp)
+                chunk_batch = collate([chunk_dp], dict_key="sam3")["sam3"]
+                chunk_batch = copy_data_to_device(
+                    chunk_batch, torch.device(device),
+                    non_blocking=device.startswith("cuda"),
+                )
+                # Carry cached image features onto this batch — Sam3Image.forward
+                # patched in patches.sam3_cached_forward picks this up and skips
+                # the vision encoder.
+                chunk_batch.img_batch = cached_img_batch
+                chunk_batch._cached_backbone_out = cached_backbone_out
 
-            postprocessor = PostProcessImage(
-                max_dets_per_img=-1,
-                iou_type="segm",
-                use_original_sizes_box=True,
-                use_original_sizes_mask=True,
-                convert_mask_to_rle=False,
-                detection_threshold=score_threshold,
-                to_cpu=True,
-                always_interpolate_masks_on_gpu=device.startswith("cuda"),
-            )
-            with stage_timer(timings, "batched_forward"):
-                output = model(chunk_batch)
-            with stage_timer(timings, "batched_postproc"):
-                processed = postprocessor.process_results(output, chunk_batch.find_metadatas)
-            candidates.extend(_collect_batched_candidates(processed, query_labels))
+                postprocessor = PostProcessImage(
+                    max_dets_per_img=-1,
+                    iou_type="segm",
+                    use_original_sizes_box=True,
+                    use_original_sizes_mask=True,
+                    convert_mask_to_rle=False,
+                    detection_threshold=score_threshold,
+                    to_cpu=True,
+                    always_interpolate_masks_on_gpu=device.startswith("cuda"),
+                )
+                with stage_timer(timings, "batched_forward"):
+                    output = model(chunk_batch)
+                with stage_timer(timings, "batched_postproc"):
+                    processed = postprocessor.process_results(output, chunk_batch.find_metadatas)
+                candidates.extend(_collect_batched_candidates(processed, query_labels))
+            except Exception as exc:
+                logger.warning(
+                    "sam3 cached-batched chunk failed (offset=%d, labels=%s): %s",
+                    offset, chunk, exc,
+                )
+                continue
 
     return candidates
 
@@ -1036,7 +1066,7 @@ def run_box_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompt_
     pil_image = Image.fromarray(image_rgb_uint8)
     candidates: list[tuple[np.ndarray, list[float], float, str]] = []
 
-    with bundle["lock"], _inference_mode(), _autocast_ctx(device), _sdpa_ctx():
+    with bundle["lock"], _device_ctx(device), _inference_mode(), _autocast_ctx(device), _sdpa_ctx():
         state = processor.set_image(pil_image)
         for entry in prompt_boxes:
             cxcywh = _entry_to_norm_cxcywh(entry)

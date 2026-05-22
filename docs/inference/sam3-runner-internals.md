@@ -1,7 +1,7 @@
 # `inference-sam3/sam3_runner.py` — SAM 3 Orchestration
 
 **Path:** [inference-sam3/sam3_runner.py](../../inference-sam3/sam3_runner.py)
-**Lines:** ~1613 (the largest inference-side file)
+**Lines:** ~1648 (the largest inference-side file)
 **Depends on:** `torch`, `transformers`, `huggingface_hub`, `sam3` (Meta SAM3 package)
 
 ## Purpose
@@ -20,6 +20,7 @@ Loads SAM 3 / SAM 3.1 image weights and runs the text- and box-prompted detectio
 - [`_load_per_class_category_thresholds`](../../inference-sam3/sam3_runner.py#L62) — `SAM3_PER_CLASS_CATEGORY_THRESHOLDS` env JSON.
 - [`_canonical_prompt_key`](../../inference-sam3/sam3_runner.py#L96) — same canonicalization as `backend.ontology._canonical`.
 - [`_category_threshold_for`](../../inference-sam3/sam3_runner.py#L108) — per-class override or fall through to `SAM3_CATEGORY_THRESHOLD`.
+- [`_device_ctx`](../../inference-sam3/sam3_runner.py#L698) — pins PyTorch's thread-local current CUDA device to the replica's device for the duration of a forward; `nullcontext()` on CPU. Outermost context in every inference `with` stack.
 
 ## How a `/detect` call uses this module
 
@@ -33,7 +34,11 @@ Loads SAM 3 / SAM 3.1 image weights and runs the text- and box-prompted detectio
 
 `_run_text_prompts_cached_batched` runs the ViT encoder once per image, then iterates text prompts in chunks doing only text-encode + DETR-decode. It relies on the runtime patch [`patches/sam3_cached_forward.py`](../../inference-sam3/patches/sam3_cached_forward.py), which replaces `Sam3Image.forward` with `forward_with_cache` — that variant reuses a stashed `_cached_backbone_out` and skips the encoder.
 
-`forward_with_cache` must mirror the *whole* of upstream `Sam3Image.forward`, including its normalisation of the datapoint device before grounding. It moves `input.find_inputs` / `input.find_targets` onto the device of the cached `backbone_out` via the local `_move_tensors_to_device` helper (the upstream `copy_data_to_device` does not recurse into `FindInput`). Omitting it crashes `_get_img_feats` on multi-GPU hosts when `find_input.img_ids` and the cached `vis_pos_enc` land on different CUDA devices. See [decisions/cached-forward-device-normalise.md](../decisions/cached-forward-device-normalise.md).
+All four inference `with` stacks (`run_text_prompts`, `_run_text_prompts_batched`, `_run_text_prompts_cached_batched`, `run_box_prompts`) open with `_device_ctx(device)` as the outermost context. The SAM3 collator builds index tensors (notably `find_input.img_ids`) on PyTorch's *current* CUDA device, which is thread-local and drifts across replicas in the anyio threadpool; pinning it makes the collator place those tensors on the replica's GPU. This is the root-cause fix for the multi-GPU `_get_img_feats` crash.
+
+The per-chunk body of `_run_text_prompts_cached_batched` is wrapped in `try/except`: a chunk that fails (e.g. GPU OOM) is logged via `logger.warning` and skipped, so the tile still returns detections from the chunks that succeeded instead of 500-ing the whole `/detect_raw` request.
+
+`forward_with_cache` also moves `input.find_inputs` / `input.find_targets` onto the device of the cached `backbone_out` via the local `_move_tensors_to_device` helper (the upstream `copy_data_to_device` does not recurse into `FindInput`). This is now a defense-in-depth backstop behind `_device_ctx`; the mover descends into frozen dataclasses / `__slots__` objects (which `FindInput`/`FindTarget` are) via `object.__setattr__` and MRO slot enumeration. See [decisions/cached-forward-device-normalise.md](../decisions/cached-forward-device-normalise.md).
 
 ## Inputs / Outputs
 
@@ -44,6 +49,8 @@ Video paths stream JSON records. SAM3 PCS records now include `source_layer="sam
 ## Failure modes
 
 The category-presence gate drops an entire prompt when all scores are below the configured threshold. Video category gating buffers through the hotstart window before either flushing or suppressing a prompt's stream.
+
+Before the `_device_ctx` pinning was added, multi-GPU hosts failed ~half of `/detect_raw` tiles with `RuntimeError: indices should be either on cpu or on the same device as the indexed tensor` in `_get_img_feats` — the collated `img_ids` landed on a drifted current CUDA device. Detections then covered only the region whose tiles happened to route to a matching replica. A single chunk failure inside the cached-batched loop is now contained per-chunk rather than failing the whole tile.
 
 ## Cross-references
 

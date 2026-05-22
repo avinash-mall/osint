@@ -45,6 +45,13 @@ def _move_tensors_to_device(obj, device, _depth: int = 0):
     types and leaves SAM3's ``FindInput`` / ``FindTarget`` objects untouched,
     so the cached forward needs its own mover. Recursion depth is bounded as a
     guard against pathological or cyclic structures.
+
+    SAM3's find-side objects are frozen dataclasses / ``__slots__`` objects:
+    plain ``setattr`` raises ``FrozenInstanceError`` and slotted objects have no
+    ``__dict__``. The plain-object branch therefore enumerates attribute names
+    from both ``__dict__`` and the ``__slots__`` of every class in the MRO, and
+    falls back to ``object.__setattr__`` (the documented escape hatch for frozen
+    dataclasses) and direct ``__dict__`` mutation when ``setattr`` is blocked.
     """
     import torch
     if _depth > 6:
@@ -61,16 +68,29 @@ def _move_tensors_to_device(obj, device, _depth: int = 0):
         return obj
     if isinstance(obj, tuple):
         return tuple(_move_tensors_to_device(v, device, _depth + 1) for v in obj)
-    attrs = getattr(obj, "__dict__", None)
-    if attrs:
-        for name, value in list(attrs.items()):
-            moved = _move_tensors_to_device(value, device, _depth + 1)
-            if moved is not value:
-                try:
-                    setattr(obj, name, moved)
-                except AttributeError:
-                    pass
-        return obj
+    inst_dict = getattr(obj, "__dict__", None)
+    names = list(inst_dict.keys()) if inst_dict else []
+    for klass in type(obj).__mro__:
+        for slot in getattr(klass, "__slots__", ()) or ():
+            if slot not in names:
+                names.append(slot)
+    for name in names:
+        try:
+            value = getattr(obj, name)
+        except AttributeError:
+            continue  # unset slot
+        moved = _move_tensors_to_device(value, device, _depth + 1)
+        if moved is value:
+            continue
+        # frozen dataclass / read-only slot: setattr raises; fall back.
+        try:
+            setattr(obj, name, moved)
+        except Exception:
+            try:
+                object.__setattr__(obj, name, moved)
+            except Exception:
+                if inst_dict is not None:
+                    inst_dict[name] = moved
     return obj
 
 

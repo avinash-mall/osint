@@ -113,7 +113,7 @@ operations/change-detection-runbook.md|operations,imagery|how to launch a two-pa
 operations/health-monitoring.md|operations|Health Dashboard, /api/health, replica chips, alert escalation
 operations/auth-and-ldap-setup.md|operations,auth|env-bootstrap admin, Admin->Auth LDAP form, test bind workflows
 operations/llm-ava-configuration.md|operations|OPENAI_API_BASE pointing at vLLM/Ollama, graceful degradation
-decisions/cached-forward-device-normalise.md|decision,sam3|cached SAM3 forward must move find_inputs onto self.device or _get_img_feats crashes on multi-GPU
+decisions/cached-forward-device-normalise.md|decision,sam3|multi-GPU _get_img_feats crash: pin thread-local CUDA device so the SAM3 collator builds img_ids right
 decisions/disable-addmm-cuda-lt.md|decision,gpu|routes nn.Linear off cuBLAS-Lt to dodge A100/cu130 corruption bug
 decisions/implemented-ontology-updates-endpoint.md|decision|registers GET /api/ontology/updates in the ontology router to fix Link Graph bottom strip 404
 decisions/merged-additions-responsive-css.md|decision,frontend|additions.responsive.css folded into index.css to kill duplicate/drifting rules
