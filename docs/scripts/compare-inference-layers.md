@@ -24,7 +24,12 @@ python scripts/compare_inference_layers.py \
 
 - `--restart-cmd` + `--restart-wait-timeout` — between configs, restart the inference container to free SAM3 VRAM cleanly. Required when switching profiles.
 - `--force-grounding-dino` — disables [the gate](../inference/grounding-dino-gate.md) so the harness can measure GDINO's impact on common-vocab prompts.
+- `--ontology-mode` (+ `--ontology-url`, `--ontology-branch`) — for the `dota` slice, replaces each chip's ground-truth class names (an oracle the operator never has) with the live ontology default-prompt vocabulary fetched from the backend. Measures detection quality the way an analyst actually sees it. `--ontology-branch` takes a comma-separated list of branch ids; the union of those branches' scoped subsets is used, modelling a scene-relevant vocabulary.
 - `--dry-run` — verify report generation without a live service.
+
+## Oracle prompts vs `--ontology-mode`
+
+By default each DOTA chip is fed `text_prompts` = the exact GT class names present in that chip — a best-case oracle. `--ontology-mode` instead feeds every chip the full ontology vocabulary, so precision reflects the real false-positive rate when the model is asked about ~130 classes at once. The gap between the two runs is the cost of not knowing what is in the scene.
 
 ## Wrapper
 

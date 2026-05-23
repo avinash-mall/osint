@@ -10,7 +10,7 @@ The map's satellite `TileLayer` no longer fetches TiTiler tiles past the COG's r
 
 ## Why
 
-The SAT `TileLayer` was configured `maxZoom={22}` with **no `maxNativeZoom`** — unlike the basemap/terrain layers in the same file, which correctly cap at `maxNativeZoom={10}` (their pre-baked pyramid ceiling). With no native-zoom ceiling, every notch the analyst zoomed past the COG's real resolution triggered a fresh round-trip to TiTiler for tiles that do not exist as native pixels. TiTiler answered by re-reading its highest overview and resampling on the fly. That request storm:
+The SAT `TileLayer` was configured `maxZoom={22}` with **no `maxNativeZoom`** — unlike the basemap/terrain layers in the same file, which correctly cap at `maxNativeZoom={BASEMAP_OVERLAY_MAX_ZOOM}` (their pre-baked pyramid ceiling — currently z=14; see [why-basemap-z14-cap.md](why-basemap-z14-cap.md)). With no native-zoom ceiling, every notch the analyst zoomed past the COG's real resolution triggered a fresh round-trip to TiTiler for tiles that do not exist as native pixels. TiTiler answered by re-reading its highest overview and resampling on the fly. That request storm:
 
 - blocked behind `proxy_cache_lock` (up to 5 s) for any uncached tile;
 - returned upsampled tiles no sharper than what Leaflet could produce client-side from the native-zoom tiles;

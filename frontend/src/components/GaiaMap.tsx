@@ -1039,6 +1039,7 @@ export default function GaiaMap({
         setActiveBaseLayer={setActiveBaseLayer}
         layerOpacities={layerOpacities}
         setLayerOpacities={setLayerOpacities}
+        mapZoom={mapZoom}
         overlaysOpen={overlaysOpen}
         setOverlaysOpen={setOverlaysOpen}
         activeLayers={activeLayers}

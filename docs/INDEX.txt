@@ -122,8 +122,10 @@ decisions/removed-dinov3-lvd.md|decision|DINOV3_LVD emitted NaN embeddings on dr
 decisions/removed-sam3-amg.md|decision,fmv|SAM3 AMG path removed in favor of YOLOE
 decisions/reset-db-pool-after-fork.md|decision,celery|worker_process_init resets PostGIS pool so prefork children don't share libpq sockets
 decisions/why-basemap-overlay-composition.md|decision,frontend|imagery is bottom ground-truth; BASE/TERRAIN are reference overlays on top; opacity fades overlay
+decisions/why-basemap-z14-cap.md|decision,frontend,deployment|offline bake to z=14 + overlay unmounts above; imagery is source of truth past z=14
 decisions/why-bbox-toggle-removed.md|decision,frontend|BBOX toggle removed; detection boxes always render, GEOM toolbar defaults to OBB
 decisions/why-category-presence-gate.md|decision,sam3|SegEarth-OV-3-style 0.40 filter suppresses absent concepts
+decisions/why-deconflicted-detection-prompts.md|decision,ontology|one object per unique prompt; label IS the prompt; collapses overloaded false-positive prompts
 decisions/why-detection-boxes-use-polygon-map.md|decision,frontend|box layer is per-feature <Polygon> map; <GeoJSON> canvas layer silently failed to paint
 decisions/why-dinov3-sat-only.md|decision|DINOv3 ViT-L SAT-493M keeps re-ID quality without DINOv3_LVD NaNs
 decisions/why-evidence-ranked-detections.md|decision|confirmed objects require source, verifier, physics, and SAR evidence signals
@@ -149,10 +151,13 @@ benchmarks/embedding-stability.md|benchmark|DINOv3-SAT augmentation re-ID top-1 
 benchmarks/video-tracking-stability.md|benchmark,fmv|DINOv3-SAT SEP +0.22 vs LVD on 1440p drone video
 benchmarks/sar-cfar-evaluation.md|benchmark,imagery|CA-CFAR ship detection P/R on synthetic and real GRD
 benchmarks/calibration-ece.md|benchmark|expected calibration error per detector pre/post temperature scaling
+benchmarks/detection-quality-eval-2026-05-22.md|benchmark|DOTA-v1.0 box-quality snapshot: sam3+dota_obb best at 0.60 mAP; GD hurts the DOTA stack
+benchmarks/detection-quality-ontology-mode-2026-05-22.md|benchmark|DOTA-v1.0 ontology-mode (131-prompt vocab, no oracle): sam3+dota_obb 0.51 mAP; SAM3-alone collapses
+benchmarks/detection-quality-scoped-2026-05-22.md|benchmark|DOTA-v1.0 branch-scoped vocab (87 prompts): sam3+dota_obb 0.55 mAP, ~45% lower latency vs unscoped
 benchmarks/sam3-perf-phases.md|benchmark,sam3|phaseA/A3/BC profiling progression in bench/sam3_*.json
 scripts/configure-host-gpu.md|scripts,gpu|reads nvidia-smi, writes SENTINEL GENERATED block to .env
-scripts/build-offline-basemap.md|scripts,deployment|Carto Dark z=0..10 pre-fetch into assets/static/basemap
-scripts/build-offline-terrain.md|scripts,deployment|OpenTopoMap z=0..10 terrain tiles for analytics overlays
+scripts/build-offline-basemap.md|scripts,deployment|Carto Dark z=0..14 pre-fetch (~13 GB) into assets/static/basemap
+scripts/build-offline-terrain.md|scripts,deployment|OpenTopoMap z=0..14 terrain tiles (~22 GB) for analytics overlays
 scripts/fetch-eval-datasets.md|scripts,benchmark|DOTA-v1.0 + Sen1Floods11 from HF with idempotent gating
 scripts/compare-inference-layers.md|scripts,benchmark|main benchmark CLI: layer configs, repeats, restart-cmd
 scripts/eval-runners.md|scripts,benchmark|eval_candidate_links + eval_sar_cfar + measure_calibration_ece

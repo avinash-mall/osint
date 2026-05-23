@@ -17,7 +17,7 @@ Three ways to push data in: a URL, a disk path, or a direct upload. Imagery → 
 | `GET` | `/uploads` | `/api/ingest/uploads` | [ingest.py#L163](../../backend/routers/ingest.py#L163) | List recent upload rows |
 | `GET` | `/jobs/{task_id}` | `/api/ingest/jobs/{task_id}` | [ingest.py#L181](../../backend/routers/ingest.py#L181) | Celery task status |
 | `POST` | `""` | `/api/ingest` | [ingest.py#L204](../../backend/routers/ingest.py#L204) | `IngestRequest` — path or URL already on the local shared volume |
-| `POST` | `/upload` | `/api/ingest/upload` | [ingest.py#L220](../../backend/routers/ingest.py#L220) | Multipart upload — imagery or FMV; classified by extension via [files.classify_upload](../../backend/files.py) |
+| `POST` | `/upload` | `/api/ingest/upload` | [ingest.py#L220](../../backend/routers/ingest.py#L220) | Multipart upload — imagery or FMV; classified by extension via [files.classify_upload](../../backend/files.py). Optional form fields: `text_prompts`, `ontology_branch` (scopes ontology-mode detection vocabulary to one branch), `modality`, `enabled_layers` |
 | `POST` | `/url` | `/api/ingest/url` | [ingest.py#L547](../../backend/routers/ingest.py#L547) | `IngestUrlRequest` — backend downloads from a remote URL |
 
 `POST /api/fmv/clips` (FMV-specific upload entry) is **also** in this file though its path isn't under `/api/ingest` — shares the transcode/telemetry/Celery-dispatch code.

@@ -45,21 +45,39 @@ def test_falls_back_to_backend_defaults(monkeypatch):
     monkeypatch.setenv("SAM3_DEFAULT_PROMPT_SOURCE", "ontology")
     captured = {}
 
-    def fake_fetch(sensor, timeout=5.0):
+    def fake_fetch(sensor, branch=None, timeout=5.0):
         captured["sensor"] = sensor
+        captured["branch"] = branch
         return ["car", "Car", " building "]
 
     monkeypatch.setattr(main, "_fetch_default_prompts", fake_fetch)
     prompts = main.resolve_prompts({"modality": "rgb"})
     assert captured["sensor"] == "optical"
+    assert captured["branch"] is None  # no scope → full vocabulary
     assert prompts == ["car", "building"]
+
+
+def test_ontology_branch_scopes_fetch(monkeypatch):
+    """A request naming an ontology branch fetches that branch's scoped subset."""
+    monkeypatch.setenv("SAM3_DEFAULT_PROMPT_SOURCE", "ontology")
+    captured = {}
+
+    def fake_fetch(sensor, branch=None, timeout=5.0):
+        captured["sensor"] = sensor
+        captured["branch"] = branch
+        return ["destroyer", "frigate", "submarine"]
+
+    monkeypatch.setattr(main, "_fetch_default_prompts", fake_fetch)
+    prompts = main.resolve_prompts({"modality": "rgb", "ontology_branch": "Naval_Maritime"})
+    assert captured["branch"] == "Naval_Maritime"
+    assert prompts == ["destroyer", "frigate", "submarine"]
 
 
 def test_sar_modality_maps_to_sar_sensor(monkeypatch):
     monkeypatch.setenv("SAM3_DEFAULT_PROMPT_SOURCE", "ontology")
     seen = {}
 
-    def fake_fetch(sensor, timeout=5.0):
+    def fake_fetch(sensor, branch=None, timeout=5.0):
         seen["sensor"] = sensor
         return ["__prithvi_flood__"]
 

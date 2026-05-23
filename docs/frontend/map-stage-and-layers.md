@@ -1,8 +1,8 @@
 # Map Stage + LayerPanel
 
 **Paths:**
-- [frontend/src/components/map/MapStage.tsx](../../frontend/src/components/map/MapStage.tsx) (~33720 chars)
-- [frontend/src/components/map/LayerPanel.tsx](../../frontend/src/components/map/LayerPanel.tsx) (~20786 chars)
+- [frontend/src/components/map/MapStage.tsx](../../frontend/src/components/map/MapStage.tsx) (~38280 chars)
+- [frontend/src/components/map/LayerPanel.tsx](../../frontend/src/components/map/LayerPanel.tsx) (~21960 chars)
 - [frontend/src/components/map/MapEventHandlers.tsx](../../frontend/src/components/map/MapEventHandlers.tsx)
 - [frontend/src/components/map/_helpers.ts](../../frontend/src/components/map/_helpers.ts) (projection/bounds/GeoJSON transforms)
 - [frontend/src/components/map/_icons.tsx](../../frontend/src/components/map/_icons.tsx) (detection-type icon factory + `BasemapThumb` previews)
@@ -23,7 +23,7 @@ The basemap selector is a **thumbnail gallery** — three 56×40 hand-painted `B
   Boxes were previously a single `<GeoJSON>` canvas layer; it silently failed to paint → replaced with the per-feature `<Polygon>` map — see [decisions/why-detection-boxes-use-polygon-map.md](../decisions/why-detection-boxes-use-polygon-map.md).
 - **GEOM toolbar** (top-centre) switches box shape: `HBB` (axis-aligned envelope), `OBB` (oriented rectangle, default), `MASK` (raw `geom`). State in `GaiaMap` as `bboxMode`.
 - Legacy `showBbox` / **BBOX toggle button removed** — see [decisions/why-bbox-toggle-removed.md](../decisions/why-bbox-toggle-removed.md).
-- **Basemap composition** — the SAT / BASE / TERRAIN picker composes an ordered, `zIndex`-explicit `TileLayer` stack: the COG imagery is the analyst's ground truth and renders at the bottom (`zIndex={200}`, full opacity) whenever a scene is loaded, in *every* mode; BASE/TERRAIN add the Carto/Terrain basemap as a **reference overlay on top** (`zIndex={300}`, opacity from the LayerPanel slider); a cartographic fallback (`zIndex={100}`) renders only when no imagery is loaded so the stage is never empty. SAT mode = imagery alone. The old `lastNonSatBaseRef` "remember last non-SAT base" workaround was removed — it kept a basemap rendered *under* the imagery and hid the imagery in BASE/TERRAIN. The LayerPanel opacity slider label reads `IMAGERY` (disabled in SAT mode) or `<MODE> OVERLAY`, and keys only on `base`/`terrain` — SAT imagery always renders at full opacity. See [decisions/why-basemap-overlay-composition.md](../decisions/why-basemap-overlay-composition.md).
+- **Basemap composition** — the SAT / BASE / TERRAIN picker composes an ordered, `zIndex`-explicit `TileLayer` stack: the COG imagery is the analyst's ground truth and renders at the bottom (`zIndex={200}`, full opacity) whenever a scene is loaded, in *every* mode; BASE/TERRAIN add the Carto/Terrain basemap as a **reference overlay on top** (`zIndex={300}`, opacity from the LayerPanel slider); a cartographic fallback (`zIndex={100}`) renders only when no imagery is loaded so the stage is never empty. SAT mode = imagery alone. The old `lastNonSatBaseRef` "remember last non-SAT base" workaround was removed — it kept a basemap rendered *under* the imagery and hid the imagery in BASE/TERRAIN. The LayerPanel opacity slider label reads `IMAGERY` (disabled in SAT mode) or `<MODE> OVERLAY`, and keys only on `base`/`terrain` — SAT imagery always renders at full opacity. The reference overlay also **unmounts above z=14** (the offline bake ceiling, `BASEMAP_OVERLAY_MAX_ZOOM`) — the panel surfaces a `Reference hidden past zoom 14 · imagery only` hint and disables the opacity slider. See [decisions/why-basemap-overlay-composition.md](../decisions/why-basemap-overlay-composition.md) and [decisions/why-basemap-z14-cap.md](../decisions/why-basemap-z14-cap.md).
 - **Satellite pass layer** shows pass footprints (`MULTIPOLYGON`), on click reveals the COG tile URL. The SAT `TileLayer` proxies TiTiler COG tiles via `/tiles/`, tuned for smooth zoom:
   - `maxNativeZoom={selectedImageryData.native_max_zoom ?? 18}` — caps upstream fetches at the COG's true pixel resolution (field from `GET /api/imagery`); past it Leaflet upscales the cached tile client-side instead of round-tripping TiTiler for upsampled tiles.
   - `maxZoom={22}` — layer still interactive past native zoom (client-side upscale).
@@ -39,6 +39,7 @@ The basemap selector is a **thumbnail gallery** — three 56×40 hand-painted `B
 
 - [decisions/why-bbox-toggle-removed.md](../decisions/why-bbox-toggle-removed.md)
 - [decisions/why-basemap-overlay-composition.md](../decisions/why-basemap-overlay-composition.md)
+- [decisions/why-basemap-z14-cap.md](../decisions/why-basemap-z14-cap.md)
 - [decisions/why-layerpanel-dot-toggle.md](../decisions/why-layerpanel-dot-toggle.md)
 - [decisions/why-detection-boxes-use-polygon-map.md](../decisions/why-detection-boxes-use-polygon-map.md)
 - [decisions/why-sat-tiles-cap-at-native-zoom.md](../decisions/why-sat-tiles-cap-at-native-zoom.md)

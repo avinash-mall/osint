@@ -33,7 +33,8 @@ docker compose up -d
 
 ## What's baked in
 
-- Carto Dark Matter basemap (z=0..10), ~3 GB
+- Carto Dark Matter basemap (z=0..14), ~13 GB — see [decisions/why-basemap-z14-cap.md](../decisions/why-basemap-z14-cap.md)
+- OpenTopoMap terrain tiles (z=0..14), ~22 GB
 - IBM Plex webfonts + SIL OFL 1.1 license bundle
 - All Hugging Face model weights listed in [inference/model-manifest.md](../inference/model-manifest.md)
 - Natural Earth country polygons

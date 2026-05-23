@@ -1,0 +1,320 @@
+{
+  "generated_at": "2026-05-22T18:50:58.284287+00:00",
+  "gpu": "unknown",
+  "slice": "dota",
+  "max_chips": 30,
+  "repeats": 1,
+  "results": [
+    {
+      "chips_evaluated": 30,
+      "metrics": {
+        "per_class": {
+          "logistics": {
+            "precision": 0.1079,
+            "recall": 0.1017,
+            "f1": 0.1047,
+            "ap": 0.0262,
+            "tp": 90,
+            "fp": 744,
+            "fn": 795
+          },
+          "naval": {
+            "precision": 0.5527,
+            "recall": 0.6384,
+            "f1": 0.5925,
+            "ap": 0.5055,
+            "tp": 173,
+            "fp": 140,
+            "fn": 98
+          },
+          "industrial": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 364,
+            "fn": 0
+          },
+          "transportation": {
+            "precision": 0.0314,
+            "recall": 1.0,
+            "f1": 0.061,
+            "ap": 0.2179,
+            "tp": 5,
+            "fp": 154,
+            "fn": 0
+          },
+          "other": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 0,
+            "fn": 289
+          },
+          "aircraft": {
+            "precision": 0.3295,
+            "recall": 0.503,
+            "f1": 0.3981,
+            "ap": 0.3895,
+            "tp": 85,
+            "fp": 173,
+            "fn": 84
+          }
+        },
+        "macro_f1": 0.17,
+        "map_50": 0.1821
+      },
+      "latency_ms": {
+        "median_total": 2696.8,
+        "p95_total": 19066.0,
+        "median_sam3": 1970.8,
+        "median_specialists": 0.3
+      },
+      "layers_unavailable_count": 0,
+      "config_name": "sam3_only",
+      "enabled_layers": [
+        "sam3"
+      ]
+    },
+    {
+      "chips_evaluated": 30,
+      "metrics": {
+        "per_class": {
+          "logistics": {
+            "precision": 0.3784,
+            "recall": 0.5469,
+            "f1": 0.4473,
+            "ap": 0.2731,
+            "tp": 484,
+            "fp": 795,
+            "fn": 401
+          },
+          "naval": {
+            "precision": 0.5831,
+            "recall": 0.7897,
+            "f1": 0.6708,
+            "ap": 0.6108,
+            "tp": 214,
+            "fp": 153,
+            "fn": 57
+          },
+          "industrial": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 324,
+            "fn": 0
+          },
+          "transportation": {
+            "precision": 0.0321,
+            "recall": 1.0,
+            "f1": 0.0621,
+            "ap": 0.2949,
+            "tp": 5,
+            "fp": 151,
+            "fn": 0
+          },
+          "other": {
+            "precision": 0.8514,
+            "recall": 0.218,
+            "f1": 0.3471,
+            "ap": 0.3788,
+            "tp": 63,
+            "fp": 11,
+            "fn": 226
+          },
+          "aircraft": {
+            "precision": 0.4424,
+            "recall": 0.9763,
+            "f1": 0.6089,
+            "ap": 0.6754,
+            "tp": 165,
+            "fp": 208,
+            "fn": 4
+          }
+        },
+        "macro_f1": 0.4948,
+        "map_50": 0.549
+      },
+      "latency_ms": {
+        "median_total": 2946.3,
+        "p95_total": 21677.7,
+        "median_sam3": 1972.5,
+        "median_specialists": 22.2
+      },
+      "layers_unavailable_count": 0,
+      "config_name": "sam3+dota_obb",
+      "enabled_layers": [
+        "sam3",
+        "dota_obb"
+      ]
+    },
+    {
+      "chips_evaluated": 30,
+      "metrics": {
+        "per_class": {
+          "logistics": {
+            "precision": 0.1079,
+            "recall": 0.1017,
+            "f1": 0.1047,
+            "ap": 0.0262,
+            "tp": 90,
+            "fp": 744,
+            "fn": 795
+          },
+          "naval": {
+            "precision": 0.5527,
+            "recall": 0.6384,
+            "f1": 0.5925,
+            "ap": 0.5055,
+            "tp": 173,
+            "fp": 140,
+            "fn": 98
+          },
+          "industrial": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 364,
+            "fn": 0
+          },
+          "transportation": {
+            "precision": 0.0314,
+            "recall": 1.0,
+            "f1": 0.061,
+            "ap": 0.2179,
+            "tp": 5,
+            "fp": 154,
+            "fn": 0
+          },
+          "other": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 0,
+            "fn": 289
+          },
+          "aircraft": {
+            "precision": 0.3295,
+            "recall": 0.503,
+            "f1": 0.3981,
+            "ap": 0.3895,
+            "tp": 85,
+            "fp": 173,
+            "fn": 84
+          }
+        },
+        "macro_f1": 0.17,
+        "map_50": 0.1821
+      },
+      "latency_ms": {
+        "median_total": 2730.6,
+        "p95_total": 19220.5,
+        "median_sam3": 1987.5,
+        "median_specialists": 0.3
+      },
+      "layers_unavailable_count": 0,
+      "config_name": "sam3+grounding_dino",
+      "enabled_layers": [
+        "sam3",
+        "grounding_dino"
+      ]
+    },
+    {
+      "chips_evaluated": 30,
+      "metrics": {
+        "per_class": {
+          "logistics": {
+            "precision": 0.3784,
+            "recall": 0.5469,
+            "f1": 0.4473,
+            "ap": 0.2731,
+            "tp": 484,
+            "fp": 795,
+            "fn": 401
+          },
+          "naval": {
+            "precision": 0.46,
+            "recall": 0.4244,
+            "f1": 0.4415,
+            "ap": 0.422,
+            "tp": 115,
+            "fp": 135,
+            "fn": 156
+          },
+          "battle_damage": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 117,
+            "fn": 0
+          },
+          "industrial": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 324,
+            "fn": 0
+          },
+          "transportation": {
+            "precision": 0.0321,
+            "recall": 1.0,
+            "f1": 0.0621,
+            "ap": 0.2949,
+            "tp": 5,
+            "fp": 151,
+            "fn": 0
+          },
+          "other": {
+            "precision": 0.2669,
+            "recall": 0.218,
+            "f1": 0.24,
+            "ap": 0.3247,
+            "tp": 63,
+            "fp": 173,
+            "fn": 226
+          },
+          "aircraft": {
+            "precision": 0.3081,
+            "recall": 0.3846,
+            "f1": 0.3421,
+            "ap": 0.3609,
+            "tp": 65,
+            "fp": 146,
+            "fn": 104
+          }
+        },
+        "macro_f1": 0.4675,
+        "map_50": 0.4959
+      },
+      "latency_ms": {
+        "median_total": 2904.4,
+        "p95_total": 21596.0,
+        "median_sam3": 1917.5,
+        "median_specialists": 22.4
+      },
+      "layers_unavailable_count": 0,
+      "config_name": "sam3+dota_obb+grounding_dino",
+      "enabled_layers": [
+        "sam3",
+        "dota_obb",
+        "grounding_dino"
+      ]
+    }
+  ],
+  "segmenter_results": null,
+  "embedding_results": null
+}

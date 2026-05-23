@@ -1,0 +1,563 @@
+{
+  "generated_at": "2026-05-22T18:02:48.024090+00:00",
+  "gpu": "unknown",
+  "slice": "dota",
+  "max_chips": 30,
+  "repeats": 1,
+  "results": [
+    {
+      "chips_evaluated": 30,
+      "metrics": {
+        "per_class": {
+          "battle_damage": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 748,
+            "fn": 0
+          },
+          "logistics": {
+            "precision": 0.1122,
+            "recall": 0.0655,
+            "f1": 0.0827,
+            "ap": 0.0195,
+            "tp": 58,
+            "fp": 459,
+            "fn": 827
+          },
+          "military_installation": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 613,
+            "fn": 0
+          },
+          "missile_strategic": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 135,
+            "fn": 0
+          },
+          "tactical_vehicle": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 64,
+            "fn": 0
+          },
+          "urban": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 690,
+            "fn": 0
+          },
+          "armored_vehicle": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 25,
+            "fn": 0
+          },
+          "naval": {
+            "precision": 0.4791,
+            "recall": 0.3801,
+            "f1": 0.4239,
+            "ap": 0.3828,
+            "tp": 103,
+            "fp": 112,
+            "fn": 168
+          },
+          "industrial": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 176,
+            "fn": 0
+          },
+          "transportation": {
+            "precision": 0.0352,
+            "recall": 1.0,
+            "f1": 0.068,
+            "ap": 0.2361,
+            "tp": 5,
+            "fp": 137,
+            "fn": 0
+          },
+          "other": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 0,
+            "fn": 289
+          },
+          "fortification": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 12,
+            "fn": 0
+          },
+          "aircraft": {
+            "precision": 0.3473,
+            "recall": 0.4911,
+            "f1": 0.4069,
+            "ap": 0.3887,
+            "tp": 83,
+            "fp": 156,
+            "fn": 86
+          }
+        },
+        "macro_f1": 0.148,
+        "map_50": 0.1599
+      },
+      "latency_ms": {
+        "median_total": 4740.9,
+        "p95_total": 32711.5,
+        "median_sam3": 3113.6,
+        "median_specialists": 0.5
+      },
+      "layers_unavailable_count": 0,
+      "config_name": "sam3_only",
+      "enabled_layers": [
+        "sam3"
+      ]
+    },
+    {
+      "chips_evaluated": 30,
+      "metrics": {
+        "per_class": {
+          "battle_damage": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 573,
+            "fn": 0
+          },
+          "logistics": {
+            "precision": 0.4323,
+            "recall": 0.4328,
+            "f1": 0.4325,
+            "ap": 0.2156,
+            "tp": 383,
+            "fp": 503,
+            "fn": 502
+          },
+          "military_installation": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 603,
+            "fn": 0
+          },
+          "missile_strategic": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 130,
+            "fn": 0
+          },
+          "tactical_vehicle": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 38,
+            "fn": 0
+          },
+          "urban": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 683,
+            "fn": 0
+          },
+          "armored_vehicle": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 7,
+            "fn": 0
+          },
+          "naval": {
+            "precision": 0.6068,
+            "recall": 0.786,
+            "f1": 0.6849,
+            "ap": 0.6051,
+            "tp": 213,
+            "fp": 138,
+            "fn": 58
+          },
+          "industrial": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 136,
+            "fn": 0
+          },
+          "transportation": {
+            "precision": 0.0355,
+            "recall": 1.0,
+            "f1": 0.0685,
+            "ap": 0.3194,
+            "tp": 5,
+            "fp": 136,
+            "fn": 0
+          },
+          "other": {
+            "precision": 0.8514,
+            "recall": 0.218,
+            "f1": 0.3471,
+            "ap": 0.3788,
+            "tp": 63,
+            "fp": 11,
+            "fn": 226
+          },
+          "fortification": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 12,
+            "fn": 0
+          },
+          "aircraft": {
+            "precision": 0.4609,
+            "recall": 0.9763,
+            "f1": 0.6262,
+            "ap": 0.6754,
+            "tp": 165,
+            "fp": 193,
+            "fn": 4
+          }
+        },
+        "macro_f1": 0.4817,
+        "map_50": 0.51
+      },
+      "latency_ms": {
+        "median_total": 5528.8,
+        "p95_total": 34655.2,
+        "median_sam3": 2986.3,
+        "median_specialists": 112.5
+      },
+      "layers_unavailable_count": 0,
+      "config_name": "sam3+dota_obb",
+      "enabled_layers": [
+        "sam3",
+        "dota_obb"
+      ]
+    },
+    {
+      "chips_evaluated": 30,
+      "metrics": {
+        "per_class": {
+          "battle_damage": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 748,
+            "fn": 0
+          },
+          "logistics": {
+            "precision": 0.1122,
+            "recall": 0.0655,
+            "f1": 0.0827,
+            "ap": 0.0195,
+            "tp": 58,
+            "fp": 459,
+            "fn": 827
+          },
+          "military_installation": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 613,
+            "fn": 0
+          },
+          "missile_strategic": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 135,
+            "fn": 0
+          },
+          "tactical_vehicle": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 64,
+            "fn": 0
+          },
+          "urban": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 690,
+            "fn": 0
+          },
+          "armored_vehicle": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 25,
+            "fn": 0
+          },
+          "naval": {
+            "precision": 0.4791,
+            "recall": 0.3801,
+            "f1": 0.4239,
+            "ap": 0.3828,
+            "tp": 103,
+            "fp": 112,
+            "fn": 168
+          },
+          "industrial": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 176,
+            "fn": 0
+          },
+          "transportation": {
+            "precision": 0.0352,
+            "recall": 1.0,
+            "f1": 0.068,
+            "ap": 0.2361,
+            "tp": 5,
+            "fp": 137,
+            "fn": 0
+          },
+          "other": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 0,
+            "fn": 289
+          },
+          "fortification": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 12,
+            "fn": 0
+          },
+          "aircraft": {
+            "precision": 0.3473,
+            "recall": 0.4911,
+            "f1": 0.4069,
+            "ap": 0.3887,
+            "tp": 83,
+            "fp": 156,
+            "fn": 86
+          }
+        },
+        "macro_f1": 0.148,
+        "map_50": 0.1599
+      },
+      "latency_ms": {
+        "median_total": 4627.4,
+        "p95_total": 35109.8,
+        "median_sam3": 2996.9,
+        "median_specialists": 0.5
+      },
+      "layers_unavailable_count": 0,
+      "config_name": "sam3+grounding_dino",
+      "enabled_layers": [
+        "sam3",
+        "grounding_dino"
+      ]
+    },
+    {
+      "chips_evaluated": 30,
+      "metrics": {
+        "per_class": {
+          "battle_damage": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 724,
+            "fn": 0
+          },
+          "logistics": {
+            "precision": 0.4323,
+            "recall": 0.4328,
+            "f1": 0.4325,
+            "ap": 0.2156,
+            "tp": 383,
+            "fp": 503,
+            "fn": 502
+          },
+          "military_installation": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 603,
+            "fn": 0
+          },
+          "missile_strategic": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 130,
+            "fn": 0
+          },
+          "tactical_vehicle": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 38,
+            "fn": 0
+          },
+          "urban": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 683,
+            "fn": 0
+          },
+          "armored_vehicle": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 7,
+            "fn": 0
+          },
+          "naval": {
+            "precision": 0.47,
+            "recall": 0.3469,
+            "f1": 0.3992,
+            "ap": 0.3795,
+            "tp": 94,
+            "fp": 106,
+            "fn": 177
+          },
+          "industrial": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 136,
+            "fn": 0
+          },
+          "transportation": {
+            "precision": 0.0355,
+            "recall": 1.0,
+            "f1": 0.0685,
+            "ap": 0.3194,
+            "tp": 5,
+            "fp": 136,
+            "fn": 0
+          },
+          "other": {
+            "precision": 0.2669,
+            "recall": 0.218,
+            "f1": 0.24,
+            "ap": 0.3247,
+            "tp": 63,
+            "fp": 173,
+            "fn": 226
+          },
+          "fortification": {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "ap": 0.0,
+            "tp": 0,
+            "fp": 12,
+            "fn": 0
+          },
+          "aircraft": {
+            "precision": 0.3316,
+            "recall": 0.3846,
+            "f1": 0.3562,
+            "ap": 0.3609,
+            "tp": 65,
+            "fp": 131,
+            "fn": 104
+          }
+        },
+        "macro_f1": 0.4491,
+        "map_50": 0.4525
+      },
+      "latency_ms": {
+        "median_total": 5292.9,
+        "p95_total": 40230.4,
+        "median_sam3": 3022.1,
+        "median_specialists": 24.2
+      },
+      "layers_unavailable_count": 0,
+      "config_name": "sam3+dota_obb+grounding_dino",
+      "enabled_layers": [
+        "sam3",
+        "dota_obb",
+        "grounding_dino"
+      ]
+    }
+  ],
+  "segmenter_results": null,
+  "embedding_results": null
+}

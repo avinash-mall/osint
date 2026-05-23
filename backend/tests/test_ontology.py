@@ -273,6 +273,36 @@ def test_default_prompts():
     # Empty string sensor is treated as "no filter" (returns all)
     assert "test zxqkk sar prompt" in none_filter
 
+
+def test_default_prompts_branch_scope():
+    """``branch=`` scopes to the branch plus all its descendant branches."""
+    import json
+    _insert_test_branch()  # TEST_BRANCH_ID, a root branch
+    child_id = "test_zxqkk_child_branch"
+    with postgis_db.get_cursor(commit=True) as cur:
+        cur.execute(
+            "INSERT INTO ontology_branches "
+            "(id, parent_id, label, color, short, icon_key, matchers, sensors, order_index) "
+            "VALUES (%s, %s, 'Child', '#abcdef', 'TSC', 'circle_help', %s::jsonb, %s::jsonb, 2) "
+            "ON CONFLICT (id) DO NOTHING",
+            (child_id, TEST_BRANCH_ID, json.dumps([]), json.dumps(["optical"])),
+        )
+    _insert_test_object(prompt="test zxqkk root prompt")
+    _insert_test_object(
+        oid="test_zxqkk_child_object",
+        branch_id=child_id,
+        prompt="test zxqkk child prompt",
+    )
+    ontology.bump_version()
+    ontology.invalidate_cache()
+
+    # Root branch rolls up its own object plus the child branch's object.
+    root_scope = ontology.default_prompts(branch=TEST_BRANCH_ID)
+    assert set(root_scope) == {"test zxqkk root prompt", "test zxqkk child prompt"}
+    # Child branch yields only its own.
+    child_scope = ontology.default_prompts(branch=child_id)
+    assert set(child_scope) == {"test zxqkk child prompt"}
+
     assert ontology.all_prompts() == all_p
 
 

@@ -24,13 +24,19 @@ import numpy as np
 
 
 GROUNDING_DINO_REPO_ID = os.getenv("GROUNDING_DINO_REPO_ID", "IDEA-Research/grounding-dino-tiny")
-# 0.35 default — slightly stricter than vanilla 0.30 because GD's text-grounding
-# returns short token fragments (e.g. "oil" extracted from "oil or gas facility"
-# at conf 0.31) that we want to suppress on absent concepts, matching the
-# behaviour of SAM 3's internal presence-gate at 0.30 multiplied by 1.0.
-GROUNDING_DINO_THR = float(os.getenv("GROUNDING_DINO_THRESHOLD", "0.20"))
-GROUNDING_DINO_TEXT_THR = float(os.getenv("GROUNDING_DINO_TEXT_THRESHOLD", "0.15"))
+# 0.30 box / 0.25 text — stricter than the permissive 0.20/0.15 that let GD's
+# short token fragments (e.g. "oil" extracted from "oil or gas facility" at
+# conf 0.31) through as false positives on overhead imagery. Open-vocabulary
+# detectors run at a 69% FP rate on aerial scenes; a firmer floor is the cheap
+# part of the fix (the vocabulary scoping is the rest).
+GROUNDING_DINO_THR = float(os.getenv("GROUNDING_DINO_THRESHOLD", "0.30"))
+GROUNDING_DINO_TEXT_THR = float(os.getenv("GROUNDING_DINO_TEXT_THRESHOLD", "0.25"))
 GROUNDING_DINO_IMGSZ = int(os.getenv("GROUNDING_DINO_IMGSZ", "1024"))
+# Max phrases per GD forward pass. Concatenating a long caption makes adjacent
+# concepts "bleed" into each other's token spans; chunking the vocabulary into
+# short queries keeps each phrase cleanly grounded. Detections from every chunk
+# merge in fusion.mask_aware_nms downstream, so chunking is transparent.
+GROUNDING_DINO_MAX_PHRASES = int(os.getenv("GROUNDING_DINO_MAX_PHRASES_PER_QUERY", "10"))
 
 
 def load(device: str) -> dict[str, Any]:
@@ -67,9 +73,10 @@ def run(
 ) -> list[tuple[np.ndarray, list[float], float, str]]:
     """Run Grounding DINO on a chip with the supplied prompts.
 
-    Each prompt produces zero or more boxes. Output is the SAM3-shaped tuple
-    list so the existing `fusion.mask_aware_nms` step can dedupe across all
-    detector sources.
+    The vocabulary is split into chunks of at most GROUNDING_DINO_MAX_PHRASES
+    phrases per forward pass to avoid cross-concept token bleed. Output is the
+    SAM3-shaped tuple list so the existing `fusion.mask_aware_nms` step can
+    dedupe across chunks and across all detector sources.
     """
     if bundle is None or bundle.get("model") is None:
         return []
@@ -90,75 +97,77 @@ def run(
     height, width = image_rgb_uint8.shape[:2]
     pil = Image.fromarray(image_rgb_uint8)
 
-    # Grounding DINO's processor expects a list of phrases joined by ". " in a
-    # single text query string. The post-processor uses `text_labels` to map
-    # detected token spans back to the original phrase strings.
-    label_list = list(prompts)
-    text_query = ". ".join(label_list) + "."
-
     from inference_utils import safe_predict, cuda_cleanup, memory_guard
 
-    def _do_forward():
-        inputs = processor(
-            images=pil,
-            text=text_query,
-            return_tensors="pt",
-        )
-        # Move every tensor in the BatchEncoding to the target device. The
-        # default `.to(device)` only walks the top-level dict and can leave
-        # nested ints/longs on CPU, triggering "tensors on different devices"
-        # at forward time.
-        inputs_dev = {k: (v.to(device) if hasattr(v, "to") else v) for k, v in inputs.items()}
-        with torch.inference_mode():
-            outputs = model(**inputs_dev)
-        return processor.post_process_grounded_object_detection(
-            outputs,
-            input_ids=inputs_dev.get("input_ids"),
-            threshold=score_threshold,
-            text_threshold=GROUNDING_DINO_TEXT_THR,
-            target_sizes=[(height, width)],
-            text_labels=[label_list],
-        )
+    def _forward_chunk(label_list: list[str]) -> list[tuple[np.ndarray, list[float], float, str]]:
+        # Grounding DINO's processor expects a list of phrases joined by ". "
+        # in a single text query string. The post-processor uses `text_labels`
+        # to map detected token spans back to the original phrase strings.
+        text_query = ". ".join(label_list) + "."
 
-    try:
-        with memory_guard("grounding_dino"):
-            results = safe_predict(
-                _do_forward,
-                on_oom=cuda_cleanup,
-                max_retries=1,
-                fallback=lambda: [],
-                name="grounding_dino.run",
+        def _do_forward():
+            inputs = processor(images=pil, text=text_query, return_tensors="pt")
+            # Move every tensor in the BatchEncoding to the target device. The
+            # default `.to(device)` only walks the top-level dict and can leave
+            # nested ints/longs on CPU, triggering "tensors on different
+            # devices" at forward time.
+            inputs_dev = {k: (v.to(device) if hasattr(v, "to") else v) for k, v in inputs.items()}
+            with torch.inference_mode():
+                outputs = model(**inputs_dev)
+            return processor.post_process_grounded_object_detection(
+                outputs,
+                input_ids=inputs_dev.get("input_ids"),
+                threshold=score_threshold,
+                text_threshold=GROUNDING_DINO_TEXT_THR,
+                target_sizes=[(height, width)],
+                text_labels=[label_list],
             )
-    except Exception as exc:
-        print(f"[grounding_dino] inference failed: {exc}")
-        return []
 
-    if not results:
-        return []
-    result = results[0]
-    boxes = result.get("boxes")
-    scores = result.get("scores")
-    labels = result.get("text_labels") or result.get("labels")
-    if boxes is None or scores is None or labels is None:
-        return []
+        try:
+            with memory_guard("grounding_dino"):
+                results = safe_predict(
+                    _do_forward,
+                    on_oom=cuda_cleanup,
+                    max_retries=1,
+                    fallback=lambda: [],
+                    name="grounding_dino.run",
+                )
+        except Exception as exc:
+            print(f"[grounding_dino] inference failed: {exc}")
+            return []
 
+        if not results:
+            return []
+        result = results[0]
+        boxes = result.get("boxes")
+        scores = result.get("scores")
+        labels = result.get("text_labels") or result.get("labels")
+        if boxes is None or scores is None or labels is None:
+            return []
+
+        chunk_out: list[tuple[np.ndarray, list[float], float, str]] = []
+        boxes_np = boxes.detach().cpu().numpy() if hasattr(boxes, "detach") else np.asarray(boxes)
+        scores_np = scores.detach().cpu().numpy() if hasattr(scores, "detach") else np.asarray(scores)
+        for box, score, label in zip(boxes_np, scores_np, labels):
+            score_f = float(score)
+            if score_f < score_threshold:
+                continue
+            # Grounding DINO's post-processor returns short token-span strings
+            # (e.g. "oil" from "oil or gas facility", or "fixed - wing
+            # aircraft" with mangled punctuation). Map back to the canonical
+            # prompt so the detection routes to the right ontology branch.
+            canonical = _map_to_original_prompt(str(label), label_list)
+            if canonical is None:
+                continue
+            x1, y1, x2, y2 = (float(v) for v in box[:4])
+            mask = _bbox_mask(x1, y1, x2, y2, height, width)
+            chunk_out.append((mask, [x1, y1, x2, y2], score_f, canonical))
+        return chunk_out
+
+    all_prompts = list(prompts)
     out: list[tuple[np.ndarray, list[float], float, str]] = []
-    boxes_np = boxes.detach().cpu().numpy() if hasattr(boxes, "detach") else np.asarray(boxes)
-    scores_np = scores.detach().cpu().numpy() if hasattr(scores, "detach") else np.asarray(scores)
-    for box, score, label in zip(boxes_np, scores_np, labels):
-        score_f = float(score)
-        if score_f < score_threshold:
-            continue
-        # Grounding DINO's post-processor returns short token-span strings
-        # (e.g. "oil" from "oil or gas facility", or "fixed - wing aircraft"
-        # with mangled punctuation). Map back to the canonical prompt so the
-        # detection routes to the right defence-ontology branch downstream.
-        canonical = _map_to_original_prompt(str(label), label_list)
-        if canonical is None:
-            continue
-        x1, y1, x2, y2 = (float(v) for v in box[:4])
-        mask = _bbox_mask(x1, y1, x2, y2, height, width)
-        out.append((mask, [x1, y1, x2, y2], score_f, canonical))
+    for i in range(0, len(all_prompts), GROUNDING_DINO_MAX_PHRASES):
+        out.extend(_forward_chunk(all_prompts[i:i + GROUNDING_DINO_MAX_PHRASES]))
     return out
 
 

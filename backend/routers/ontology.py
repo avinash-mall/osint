@@ -126,8 +126,13 @@ def get_ontology_version():
 
 
 @router.get("/default-prompts")
-def get_ontology_default_prompts(sensor: Optional[str] = Query(None)):
-    return {"prompts": ontology_default_prompts(sensor or None)}
+def get_ontology_default_prompts(
+    sensor: Optional[str] = Query(None),
+    branch: Optional[str] = Query(
+        None, description="Scope to one branch + its descendants for a smaller, scene-relevant vocabulary"
+    ),
+):
+    return {"prompts": ontology_default_prompts(sensor or None, branch or None)}
 
 
 # ─── Unknown labels (triage queue) ─────────────────────────────────────

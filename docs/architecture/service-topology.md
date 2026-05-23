@@ -21,7 +21,7 @@ Per-service inventory: image, ports, depends-on, volumes. Read with the compose 
 | `redis` | `redis:8-alpine` | internal 6379 | — | Celery broker |
 | `titiler` | `ghcr.io/developmentseed/titiler:2.0.2` | internal 8080 | — | on-the-fly COG tile server |
 | `martin` | `ghcr.io/maplibre/martin:1.9.1` | internal 3000 | postgis | PostGIS → MVT vector tiles |
-| `assets` | `sentinel-assets:offline` | internal 80 | — | offline Carto Dark basemap (z=0..10), IBM Plex fonts |
+| `assets` | `sentinel-assets:offline` | internal 80 | — | offline Carto Dark + OpenTopoMap basemap (z=0..14), IBM Plex fonts |
 | `llm-local-proxy` *(profile `llm-proxy`)* | `alpine/socat:1.8.0.3` | host 18001 | — | optional TCP forwarder for host-side vLLM/Ollama |
 
 ## Shared volumes

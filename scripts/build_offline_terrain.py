@@ -7,7 +7,7 @@ Run this on a connected host before `docker compose build`. Tiles land at
 The script is idempotent: re-running fills only missing tiles, so a
 crashed run can be resumed with the same command.
 
-    python scripts/build_offline_terrain.py --zoom 0-10
+    python scripts/build_offline_terrain.py --zoom 0-14
 
 Notes
 -----
@@ -15,8 +15,12 @@ Notes
   off exponentially on 429/5xx; expect the first full bake to take
   significantly longer than the CARTO basemap bake. Use a smaller
   ``--zoom`` range (e.g. 0-4) for a smoke test.
-* World coverage at z=0..10 is ~1.4 M tiles. Per OpenTopoMap's policy,
-  cache aggressively and keep concurrency low.
+* World coverage at z=0..14 is ~358 M tiles / ~22 GB OpenTopoMap. Allow
+  multiple days at low concurrency — the upstream rate-limits
+  aggressively. Use ``--zoom 0-10`` for a faster bake if block-level
+  terrain isn't needed. z=14 matches the frontend overlay autohide
+  threshold — see ``docs/decisions/why-basemap-z14-cap.md``.
+* Per OpenTopoMap's policy, cache aggressively and keep concurrency low.
 * Attribution is mandatory under OpenTopoMap/OSM's CC-BY-SA: an
   ``ATTRIBUTION.txt`` is dropped next to the tile tree.
 """
@@ -91,7 +95,7 @@ def fetch_one(root: Path, z: int, x: int, y: int) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--zoom", default="0-10", help="zoom range, e.g. 0-10 or 6")
+    parser.add_argument("--zoom", default="0-14", help="zoom range, e.g. 0-14 or 6")
     parser.add_argument("--out", default="assets/static/terrain", help="output directory")
     parser.add_argument(
         "--concurrency",

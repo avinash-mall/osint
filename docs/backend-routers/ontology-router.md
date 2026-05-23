@@ -16,7 +16,7 @@ CRUD over the ontology (branches, objects, prompts) + the prompt-profile system,
 |---|---|---|---|---|
 | `GET` | `""` | `/api/ontology` | [ontology.py#L66](../../backend/routers/ontology.py#L66) | Branches + objects; filter by `?sensor=` |
 | `GET` | `/version` | `/api/ontology/version` | [ontology.py#L123](../../backend/routers/ontology.py#L123) | Current version cursor (clients invalidate cache) |
-| `GET` | `/default-prompts` | `/api/ontology/default-prompts` | [ontology.py#L128](../../backend/routers/ontology.py#L128) | DB-backed prompt list (inference reads this) |
+| `GET` | `/default-prompts` | `/api/ontology/default-prompts` | [ontology.py#L128](../../backend/routers/ontology.py#L128) | DB-backed prompt list (inference reads this); `?sensor=` and/or `?branch=` scope it — `branch` returns that branch + its descendants for a smaller, scene-relevant vocabulary |
 | `GET` | `/unknown-labels` | `/api/ontology/unknown-labels` | [ontology.py#L135](../../backend/routers/ontology.py#L135) | LLM-emitted labels awaiting triage |
 | `POST` | `/unknown-labels/{label}/assign` | | [ontology.py#L172](../../backend/routers/ontology.py#L172) | Map a label to an object or create one |
 | `POST` | `/branches` | | [ontology.py#L264](../../backend/routers/ontology.py#L264) | Create a branch (admin) |

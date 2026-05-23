@@ -338,25 +338,35 @@ def _modality_to_sensor(modality: str) -> str:
     }.get(m, "optical")
 
 
-def _fetch_default_prompts(sensor: str, timeout: float = 5.0) -> list[str]:
+def _fetch_default_prompts(
+    sensor: str, branch: str | None = None, timeout: float = 5.0
+) -> list[str]:
     """Fetch the default prompt list from the backend ontology API.
-    Caches per-sensor for _DEFAULT_PROMPTS_TTL seconds."""
+
+    Caches per ``(sensor, branch)`` for _DEFAULT_PROMPTS_TTL seconds. ``branch``
+    scopes the vocabulary to one ontology branch + its descendants — a smaller,
+    scene-relevant prompt set that keeps open-vocabulary detection precise
+    instead of fanning every chip out across the whole ~130-class vocabulary."""
+    key = (sensor, branch or "")
     now = time.time()
     with _DEFAULT_PROMPTS_LOCK:
-        cached = _DEFAULT_PROMPTS_CACHE.get(sensor)
+        cached = _DEFAULT_PROMPTS_CACHE.get(key)
         if cached and (now - cached[0]) < _DEFAULT_PROMPTS_TTL:
             return cached[1]
     # Network fetch happens outside the lock so concurrent requests for
     # different sensors don't serialize on each other.
+    params = {"sensor": sensor}
+    if branch:
+        params["branch"] = branch
     resp = requests.get(
         f"{ONTOLOGY_BACKEND_URL}/api/ontology/default-prompts",
-        params={"sensor": sensor},
+        params=params,
         timeout=timeout,
     )
     resp.raise_for_status()
     prompts = [str(p) for p in (resp.json().get("prompts") or [])]
     with _DEFAULT_PROMPTS_LOCK:
-        _DEFAULT_PROMPTS_CACHE[sensor] = (time.time(), prompts)
+        _DEFAULT_PROMPTS_CACHE[key] = (time.time(), prompts)
     return prompts
 
 
@@ -446,12 +456,18 @@ def resolve_prompts(meta: dict[str, Any] | None) -> list[str]:
     }:
         return _precision_default_prompts(sensor)[: _prompt_limit(meta, str(meta.get("modality") or "rgb"))]
 
+    # Optional scene scope: when the request names an ontology branch, fetch
+    # only that branch's (much smaller) vocabulary. Running a scene-relevant
+    # subset instead of the whole ~130-class list is the primary lever against
+    # open-vocabulary false positives — see decisions/why-deconflicted-detection-prompts.md.
+    branch_raw = meta.get("ontology_branch")
+    branch = str(branch_raw).strip() or None if branch_raw else None
     try:
-        prompts = _fetch_default_prompts(sensor)
+        prompts = _fetch_default_prompts(sensor, branch)
     except Exception as exc:
         raise OntologyBackendUnavailable(
             f"No text_prompts provided and ontology backend unavailable "
-            f"(sensor={sensor}): {exc}"
+            f"(sensor={sensor}, branch={branch}): {exc}"
         ) from exc
 
     out2 = _dedupe_prompt_list(prompts)

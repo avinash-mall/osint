@@ -36,6 +36,7 @@ import {
 import type { OntologyBranch } from '../../utils/useOntology';
 import { threatClass, type DetectionClassStat } from './_helpers';
 import { BasemapThumb, CategoryIcon, DetectionSubclassIcon } from './_icons';
+import { BASEMAP_OVERLAY_MAX_ZOOM } from './MapStage';
 
 export type ActiveLayerMap = {
   satellite: boolean;
@@ -70,6 +71,8 @@ type Props = {
   setActiveBaseLayer: (l: BaseLayer) => void;
   layerOpacities: Record<'base' | 'terrain', number>;
   setLayerOpacities: React.Dispatch<React.SetStateAction<Record<'base' | 'terrain', number>>>;
+  /** Current Leaflet zoom — used to autohide the BASE/TERRAIN overlay past the offline bake ceiling. */
+  mapZoom: number;
 
   /* Overlays section */
   overlaysOpen: boolean;
@@ -166,6 +169,7 @@ export default function LayerPanel({
   setActiveBaseLayer,
   layerOpacities,
   setLayerOpacities,
+  mapZoom,
   overlaysOpen,
   setOverlaysOpen,
   activeLayers,
@@ -217,6 +221,11 @@ export default function LayerPanel({
   // no fade-able overlay (imagery always renders at 100%), so the slider is
   // disabled there and falls back to the BASE value for display.
   const opacityLayer = activeBaseLayer === 'terrain' ? 'terrain' : 'base';
+
+  // The overlay autohides past BASEMAP_OVERLAY_MAX_ZOOM. Tell the user why the
+  // slider went dead and the layer vanished — see docs/decisions/why-basemap-z14-cap.md.
+  const overlayAutohidden =
+    activeBaseLayer !== 'sat' && mapZoom > BASEMAP_OVERLAY_MAX_ZOOM;
 
   return (
     <section
@@ -287,7 +296,7 @@ export default function LayerPanel({
             </span>
             <input
               type="range" min="0" max="1" step="0.05"
-              disabled={activeBaseLayer === 'sat'}
+              disabled={activeBaseLayer === 'sat' || overlayAutohidden}
               value={layerOpacities[opacityLayer]}
               onChange={(event) => {
                 const next = parseFloat(event.target.value);
@@ -299,6 +308,11 @@ export default function LayerPanel({
               {Math.round(layerOpacities[opacityLayer] * 100)}%
             </span>
           </div>
+          {overlayAutohidden && (
+            <div className="px-2 pt-1 font-mono text-[10px] text-sentinel-muted">
+              Reference hidden past zoom {BASEMAP_OVERLAY_MAX_ZOOM} · imagery only
+            </div>
+          )}
         </div>
 
         {/* Overlays section header */}

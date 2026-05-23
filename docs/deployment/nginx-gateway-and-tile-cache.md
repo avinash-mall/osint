@@ -15,7 +15,8 @@ Single TLS-terminating reverse proxy routing every path. Single tile cache for a
 | `/ws` | `backend:8080` | WebSocket upgrade |
 | `/tiles/` | `titiler:8080` | 24 h `proxy_cache` |
 | `/maps/` | `martin:3000` | 24 h `proxy_cache` |
-| `/basemap/` | `assets:80` | offline Carto Dark, z=0..10 |
+| `/basemap/` | `assets:80` | offline Carto Dark, z=0..14 |
+| `/terrain/` | `assets:80` | offline OpenTopoMap, z=0..14 |
 | `/assets/` | `assets:80` | IBM Plex webfonts, basemap attribution, license bundle |
 | `/fmv/` | filesystem (HLS segments under `/data/fmv/<clip_id>/`) | served from the mounted FMV volume directly |
 

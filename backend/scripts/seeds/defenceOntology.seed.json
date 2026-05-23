@@ -1,6 +1,6 @@
 {
-  "version": "2026-05-09b",
-  "description": "Defence-IMINT ontology. Prompts aligned to SAM 3's satellite_v1_full corpus (xView/DOTA/DIOR/fMoW/FAIR1M/HRSC2016/RarePlanes) with light defence overlay. UI labels are defence-flavoured; prompts are what SAM3 actually understands. Sentinel prompts (`__prithvi_*`) are ignored by SAM 3 and surface Prithvi-EO outputs in the legend.",
+  "version": "2026-05-22a",
+  "description": "Defence-IMINT ontology. One ontology object per unique detection prompt; UI label IS the prompt sent to the model (no separate defence-terminology layer). Prompts are plain noun phrases the models recognise (SAM 3 satellite corpus / DOTA / xView). Sentinel prompts (`__prithvi_*`) are ignored by SAM 3 and surface Prithvi-EO outputs in the legend.",
   "defaults": {
     "sensors": [
       "optical",
@@ -38,43 +38,23 @@
               "prompt": "main battle tank"
             },
             {
-              "id": "APC_Wheeled",
-              "label": "APC Wheeled",
+              "id": "Armored_Personnel_Carrier",
+              "label": "Armored Personnel Carrier",
               "prompt": "armored personnel carrier"
             },
             {
-              "id": "APC_Tracked",
-              "label": "APC Tracked",
-              "prompt": "armored personnel carrier"
-            },
-            {
-              "id": "IFV",
-              "label": "IFV",
+              "id": "Infantry_Fighting_Vehicle",
+              "label": "Infantry Fighting Vehicle",
               "prompt": "infantry fighting vehicle"
             },
             {
-              "id": "MRAP",
-              "label": "MRAP",
-              "prompt": "armored vehicle"
-            },
-            {
-              "id": "Reconnaissance_Vehicle",
-              "label": "Reconnaissance Vehicle",
+              "id": "Armored_Vehicle",
+              "label": "Armored Vehicle",
               "prompt": "armored vehicle"
             },
             {
               "id": "Engineering_Vehicle",
               "label": "Engineering Vehicle",
-              "prompt": "engineering vehicle"
-            },
-            {
-              "id": "Bridging_Vehicle",
-              "label": "Bridging Vehicle",
-              "prompt": "engineering vehicle"
-            },
-            {
-              "id": "Recovery_Vehicle",
-              "label": "Recovery Vehicle",
               "prompt": "engineering vehicle"
             }
           ]
@@ -93,18 +73,18 @@
               "prompt": "self-propelled artillery"
             },
             {
-              "id": "Towed_Artillery",
-              "label": "Towed Artillery",
+              "id": "Artillery",
+              "label": "Artillery",
               "prompt": "artillery"
             },
             {
-              "id": "Multiple_Rocket_Launcher",
-              "label": "Multiple Rocket Launcher",
+              "id": "Rocket_Launcher",
+              "label": "Rocket Launcher",
               "prompt": "rocket launcher"
             },
             {
-              "id": "Mortar_Carrier",
-              "label": "Mortar Carrier",
+              "id": "Military_Vehicle",
+              "label": "Military Vehicle",
               "prompt": "military vehicle"
             }
           ]
@@ -123,8 +103,8 @@
               "prompt": "cargo truck"
             },
             {
-              "id": "Fuel_Truck",
-              "label": "Fuel Truck",
+              "id": "Fuel_Tanker_Truck",
+              "label": "Fuel Tanker Truck",
               "prompt": "fuel tanker truck"
             },
             {
@@ -133,13 +113,13 @@
               "prompt": "command vehicle"
             },
             {
-              "id": "Ambulance",
-              "label": "Ambulance",
+              "id": "Military_Ambulance",
+              "label": "Military Ambulance",
               "prompt": "military ambulance"
             },
             {
-              "id": "Convoy",
-              "label": "Convoy",
+              "id": "Military_Vehicle_Convoy",
+              "label": "Military Vehicle Convoy",
               "prompt": "military vehicle convoy"
             }
           ]
@@ -165,23 +145,8 @@
           "matchers": [],
           "objects": [
             {
-              "id": "TEL",
-              "label": "TEL",
-              "prompt": "missile launcher vehicle"
-            },
-            {
-              "id": "TELAR",
-              "label": "TELAR",
-              "prompt": "missile launcher vehicle"
-            },
-            {
-              "id": "Long_Range_SAM",
-              "label": "Long Range SAM",
-              "prompt": "missile launcher vehicle"
-            },
-            {
-              "id": "Short_Range_SAM",
-              "label": "Short Range SAM",
+              "id": "Missile_Launcher_Vehicle",
+              "label": "Missile Launcher Vehicle",
               "prompt": "missile launcher vehicle"
             }
           ]
@@ -195,39 +160,9 @@
           "matchers": [],
           "objects": [
             {
-              "id": "Surveillance_Radar",
-              "label": "Surveillance Radar",
+              "id": "Antenna_Farm",
+              "label": "Antenna Farm",
               "prompt": "antenna farm"
-            },
-            {
-              "id": "Phased_Array_Radar",
-              "label": "Phased Array Radar",
-              "prompt": "antenna farm"
-            },
-            {
-              "id": "Mobile_Radar",
-              "label": "Mobile Radar",
-              "prompt": "military vehicle"
-            }
-          ]
-        },
-        {
-          "id": "AAA",
-          "label": "Anti-Aircraft Artillery",
-          "color": "#f5b400",
-          "short": "AAA",
-          "iconKey": "airDefense",
-          "matchers": [],
-          "objects": [
-            {
-              "id": "Towed_AAA",
-              "label": "Towed AAA",
-              "prompt": "artillery"
-            },
-            {
-              "id": "Self_Propelled_AAA",
-              "label": "Self-Propelled AAA",
-              "prompt": "self-propelled artillery"
             }
           ]
         },
@@ -240,13 +175,8 @@
           "matchers": [],
           "objects": [
             {
-              "id": "Antenna_Farm",
-              "label": "Antenna Farm",
-              "prompt": "antenna farm"
-            },
-            {
-              "id": "Communications_Mast",
-              "label": "Communications Mast",
+              "id": "Tower",
+              "label": "Tower",
               "prompt": "tower"
             }
           ]
@@ -264,53 +194,13 @@
       ],
       "objects": [
         {
-          "id": "Ballistic_Missile_TEL",
-          "label": "Ballistic Missile TEL",
-          "prompt": "missile launcher vehicle"
-        },
-        {
-          "id": "ICBM_Launcher",
-          "label": "ICBM Launcher",
-          "prompt": "missile launcher vehicle"
-        },
-        {
-          "id": "IRBM_Launcher",
-          "label": "IRBM Launcher",
-          "prompt": "missile launcher vehicle"
-        },
-        {
-          "id": "Cruise_Missile_Launcher",
-          "label": "Cruise Missile Launcher",
-          "prompt": "missile launcher vehicle"
-        },
-        {
-          "id": "Launch_Pad",
-          "label": "Launch Pad",
+          "id": "Facility",
+          "label": "Facility",
           "prompt": "facility"
         },
         {
-          "id": "Service_Tower",
-          "label": "Service Tower",
-          "prompt": "tower"
-        },
-        {
-          "id": "Gantry_Tower",
-          "label": "Gantry Tower",
-          "prompt": "tower"
-        },
-        {
-          "id": "Underground_Silo",
-          "label": "Underground Silo",
-          "prompt": "facility"
-        },
-        {
-          "id": "Missile_Storage_Bunker",
-          "label": "Missile Storage Bunker",
-          "prompt": "facility"
-        },
-        {
-          "id": "Tunnel_Portal",
-          "label": "Tunnel Portal",
+          "id": "Tunnel_Opening",
+          "label": "Tunnel Opening",
           "prompt": "tunnel opening"
         }
       ]
@@ -326,103 +216,33 @@
       ],
       "objects": [
         {
-          "id": "Military_Base",
-          "label": "Military Base",
+          "id": "Military_Facility",
+          "label": "Military Facility",
           "prompt": "military facility"
         },
         {
-          "id": "Forward_Operating_Base",
-          "label": "Forward Operating Base",
-          "prompt": "military facility"
-        },
-        {
-          "id": "Combat_Outpost",
-          "label": "Combat Outpost",
-          "prompt": "military facility"
-        },
-        {
-          "id": "Garrison",
-          "label": "Garrison",
-          "prompt": "military facility"
-        },
-        {
-          "id": "Military_Headquarters",
-          "label": "Military Headquarters",
-          "prompt": "military facility"
-        },
-        {
-          "id": "Barracks",
-          "label": "Barracks",
+          "id": "Single_Unit_Residential",
+          "label": "Single-Unit Residential",
           "prompt": "single-unit residential"
         },
         {
-          "id": "Officer_Quarters",
-          "label": "Officer Quarters",
-          "prompt": "single-unit residential"
-        },
-        {
-          "id": "Vehicle_Shed",
-          "label": "Vehicle Shed",
+          "id": "Shed",
+          "label": "Shed",
           "prompt": "shed"
         },
         {
-          "id": "Motor_Pool",
-          "label": "Motor Pool",
+          "id": "Vehicle_Lot",
+          "label": "Vehicle Lot",
           "prompt": "vehicle lot"
         },
         {
-          "id": "Training_Area",
-          "label": "Training Area",
-          "prompt": "military facility"
-        },
-        {
-          "id": "Firing_Range",
-          "label": "Firing Range",
-          "prompt": "military facility"
-        },
-        {
-          "id": "Drone_Range",
-          "label": "Drone Range",
-          "prompt": "military facility"
-        },
-        {
-          "id": "Command_Bunker",
-          "label": "Command Bunker",
-          "prompt": "facility"
-        },
-        {
-          "id": "Hardened_Command_Post",
-          "label": "Hardened Command Post",
-          "prompt": "facility"
-        },
-        {
-          "id": "Communications_Node",
-          "label": "Communications Node",
-          "prompt": "facility"
-        },
-        {
-          "id": "Microwave_Tower",
-          "label": "Microwave Tower",
-          "prompt": "tower"
-        },
-        {
-          "id": "Satellite_Ground_Station",
-          "label": "Satellite Ground Station",
-          "prompt": "facility"
-        },
-        {
-          "id": "Tent_City",
-          "label": "Tent City",
+          "id": "Hut_or_Tent",
+          "label": "Hut or Tent",
           "prompt": "hut or tent"
         },
         {
-          "id": "Bivouac",
-          "label": "Bivouac",
-          "prompt": "hut or tent"
-        },
-        {
-          "id": "Garrison_Helipad",
-          "label": "Garrison Helipad",
+          "id": "Helipad",
+          "label": "Helipad",
           "prompt": "helipad"
         }
       ]
@@ -438,8 +258,8 @@
       ],
       "objects": [
         {
-          "id": "Supply_Depot",
-          "label": "Supply Depot",
+          "id": "Military_Supply_Depot",
+          "label": "Military Supply Depot",
           "prompt": "military supply depot"
         },
         {
@@ -453,53 +273,38 @@
           "prompt": "fuel depot"
         },
         {
-          "id": "POL_Depot",
-          "label": "POL Depot",
+          "id": "Petroleum_Oil_Lubricants_Depot",
+          "label": "Petroleum Oil Lubricants Depot",
           "prompt": "petroleum oil lubricants depot"
         },
         {
-          "id": "Cold_Storage_Facility",
-          "label": "Cold Storage Facility",
+          "id": "Refrigerated_Storage_Building",
+          "label": "Refrigerated Storage Building",
           "prompt": "refrigerated storage building"
         },
         {
-          "id": "Maintenance_Area",
-          "label": "Maintenance Area",
+          "id": "Vehicle_Maintenance_Yard",
+          "label": "Vehicle Maintenance Yard",
           "prompt": "vehicle maintenance yard"
         },
         {
-          "id": "Vehicle_Park",
-          "label": "Vehicle Park",
+          "id": "Military_Vehicle_Park",
+          "label": "Military Vehicle Park",
           "prompt": "military vehicle park"
         },
         {
-          "id": "Truck_Park",
-          "label": "Truck Park",
+          "id": "Military_Truck_Park",
+          "label": "Military Truck Park",
           "prompt": "military truck park"
         },
         {
-          "id": "Container_Yard",
-          "label": "Container Yard",
+          "id": "Shipping_Container_Lot",
+          "label": "Shipping Container Lot",
           "prompt": "shipping container lot"
         },
         {
-          "id": "Stacked_Shipping_Containers",
-          "label": "Stacked Shipping Containers",
-          "prompt": "shipping container lot"
-        },
-        {
-          "id": "Open_Storage_Yard",
-          "label": "Open Storage Yard",
-          "prompt": "shipping container lot"
-        },
-        {
-          "id": "Railhead",
-          "label": "Railhead",
-          "prompt": "train station"
-        },
-        {
-          "id": "Loading_Ramp",
-          "label": "Loading Ramp",
+          "id": "Train_Station",
+          "label": "Train Station",
           "prompt": "train station"
         },
         {
@@ -513,13 +318,13 @@
           "prompt": "tank car"
         },
         {
-          "id": "Flatbed_Car",
-          "label": "Flatbed Car",
+          "id": "Flat_Car",
+          "label": "Flat Car",
           "prompt": "flat car"
         },
         {
-          "id": "Boxcar",
-          "label": "Boxcar",
+          "id": "Cargo_Car",
+          "label": "Cargo Car",
           "prompt": "cargo car"
         },
         {
@@ -528,8 +333,8 @@
           "prompt": "crane truck"
         },
         {
-          "id": "Heavy_Equipment_Trailer",
-          "label": "Heavy Equipment Trailer",
+          "id": "Trailer",
+          "label": "Trailer",
           "prompt": "trailer"
         },
         {
@@ -543,18 +348,18 @@
           "prompt": "fuel bowser"
         },
         {
-          "id": "Field_Tent",
-          "label": "Field Tent",
+          "id": "Military_Field_Tent",
+          "label": "Military Field Tent",
           "prompt": "military field tent"
         },
         {
-          "id": "Tent_Camp",
-          "label": "Tent Camp",
+          "id": "Tented_Camp",
+          "label": "Tented Camp",
           "prompt": "tented camp"
         },
         {
-          "id": "Generator_Set",
-          "label": "Generator Set",
+          "id": "Mobile_Generator",
+          "label": "Mobile Generator",
           "prompt": "mobile generator"
         }
       ]
@@ -575,124 +380,39 @@
           "prompt": "runway"
         },
         {
-          "id": "Taxiway",
-          "label": "Taxiway",
-          "prompt": "runway"
-        },
-        {
-          "id": "Apron",
-          "label": "Apron",
+          "id": "Airport",
+          "label": "Airport",
           "prompt": "airport"
         },
         {
-          "id": "Tarmac",
-          "label": "Tarmac",
-          "prompt": "airport"
-        },
-        {
-          "id": "Hardstand",
-          "label": "Hardstand",
-          "prompt": "airport"
-        },
-        {
-          "id": "Dispersal_Area",
-          "label": "Dispersal Area",
-          "prompt": "airport"
-        },
-        {
-          "id": "Aircraft_Revetment",
-          "label": "Aircraft Revetment",
+          "id": "Aircraft_Hangar",
+          "label": "Aircraft Hangar",
           "prompt": "aircraft hangar"
         },
         {
-          "id": "Helipad",
-          "label": "Helipad",
-          "prompt": "helipad"
-        },
-        {
-          "id": "Hangar",
-          "label": "Hangar",
-          "prompt": "aircraft hangar"
-        },
-        {
-          "id": "Maintenance_Hangar",
-          "label": "Maintenance Hangar",
-          "prompt": "aircraft hangar"
-        },
-        {
-          "id": "Hardened_Aircraft_Shelter",
-          "label": "Hardened Aircraft Shelter",
-          "prompt": "aircraft hangar"
-        },
-        {
-          "id": "Aircraft_Bunker",
-          "label": "Aircraft Bunker",
-          "prompt": "aircraft hangar"
-        },
-        {
-          "id": "Control_Tower",
-          "label": "Control Tower",
+          "id": "Airport_Terminal",
+          "label": "Airport Terminal",
           "prompt": "airport terminal"
         },
         {
-          "id": "Aviation_Fuel_Farm",
-          "label": "Aviation Fuel Farm",
+          "id": "Storage_Tank",
+          "label": "Storage Tank",
           "prompt": "storage tank"
         },
         {
-          "id": "Munitions_Pad",
-          "label": "Munitions Pad",
-          "prompt": "facility"
-        },
-        {
-          "id": "Fighter_Aircraft",
-          "label": "Fighter Aircraft",
+          "id": "Fixed_Wing_Aircraft",
+          "label": "Fixed-Wing Aircraft",
           "prompt": "fixed-wing aircraft"
         },
         {
-          "id": "Bomber",
-          "label": "Bomber",
-          "prompt": "fixed-wing aircraft"
-        },
-        {
-          "id": "Tanker_Aircraft",
-          "label": "Tanker Aircraft",
-          "prompt": "fixed-wing aircraft"
-        },
-        {
-          "id": "Cargo_Aircraft",
-          "label": "Cargo Aircraft",
+          "id": "Cargo_Plane",
+          "label": "Cargo Plane",
           "prompt": "cargo plane"
         },
         {
-          "id": "Transport_Aircraft",
-          "label": "Transport Aircraft",
-          "prompt": "cargo plane"
-        },
-        {
-          "id": "AWACS_Aircraft",
-          "label": "AWACS Aircraft",
-          "prompt": "fixed-wing aircraft"
-        },
-        {
-          "id": "Reconnaissance_Aircraft",
-          "label": "Reconnaissance Aircraft",
-          "prompt": "fixed-wing aircraft"
-        },
-        {
-          "id": "Maritime_Patrol_Aircraft",
-          "label": "Maritime Patrol Aircraft",
-          "prompt": "fixed-wing aircraft"
-        },
-        {
-          "id": "Trainer_Aircraft",
-          "label": "Trainer Aircraft",
+          "id": "Trainer",
+          "label": "Trainer",
           "prompt": "trainer"
-        },
-        {
-          "id": "Civilian_Airliner",
-          "label": "Civilian Airliner",
-          "prompt": "fixed-wing aircraft"
         },
         {
           "id": "Boeing_737",
@@ -740,28 +460,13 @@
           "prompt": "helicopter"
         },
         {
-          "id": "Attack_Helicopter",
-          "label": "Attack Helicopter",
-          "prompt": "helicopter"
-        },
-        {
-          "id": "Heavy_Lift_Helicopter",
-          "label": "Heavy-Lift Helicopter",
-          "prompt": "helicopter"
-        },
-        {
-          "id": "Drone",
-          "label": "Drone",
+          "id": "Small_Aircraft",
+          "label": "Small Aircraft",
           "prompt": "small aircraft"
         },
         {
-          "id": "Refueling_Truck",
-          "label": "Refueling Truck",
-          "prompt": "truck w or liquid"
-        },
-        {
-          "id": "Tow_Tractor",
-          "label": "Tow Tractor",
+          "id": "Tractor",
+          "label": "Tractor",
           "prompt": "tractor"
         }
       ]
@@ -782,13 +487,8 @@
           "prompt": "aircraft carrier"
         },
         {
-          "id": "Helicopter_Carrier",
-          "label": "Helicopter Carrier",
-          "prompt": "warship"
-        },
-        {
-          "id": "Cruiser",
-          "label": "Cruiser",
+          "id": "Warship",
+          "label": "Warship",
           "prompt": "warship"
         },
         {
@@ -807,73 +507,33 @@
           "prompt": "corvette"
         },
         {
-          "id": "Patrol_Boat",
-          "label": "Patrol Boat",
+          "id": "Patrol",
+          "label": "Patrol",
           "prompt": "patrol"
         },
         {
-          "id": "Missile_Boat",
-          "label": "Missile Boat",
-          "prompt": "warship"
-        },
-        {
-          "id": "Fast_Attack_Craft",
-          "label": "Fast Attack Craft",
-          "prompt": "warship"
-        },
-        {
-          "id": "Mine_Warfare_Vessel",
-          "label": "Mine Warfare Vessel",
-          "prompt": "warship"
-        },
-        {
-          "id": "Surfaced_Submarine",
-          "label": "Surfaced Submarine",
+          "id": "Submarine",
+          "label": "Submarine",
           "prompt": "submarine"
         },
         {
-          "id": "Submarine_Pen",
-          "label": "Submarine Pen",
+          "id": "Shipyard",
+          "label": "Shipyard",
           "prompt": "shipyard"
         },
         {
-          "id": "Replenishment_Ship",
-          "label": "Replenishment Ship",
+          "id": "Merchant_Ship",
+          "label": "Merchant Ship",
           "prompt": "merchant ship"
         },
         {
-          "id": "Hospital_Ship",
-          "label": "Hospital Ship",
-          "prompt": "merchant ship"
-        },
-        {
-          "id": "Survey_Vessel",
-          "label": "Survey Vessel",
+          "id": "Research_Vessel",
+          "label": "Research Vessel",
           "prompt": "research vessel"
         },
         {
-          "id": "Intelligence_Ship",
-          "label": "Intelligence Ship",
-          "prompt": "research vessel"
-        },
-        {
-          "id": "Amphibious_Assault_Ship",
-          "label": "Amphibious Assault Ship",
-          "prompt": "warship"
-        },
-        {
-          "id": "Landing_Ship_Tank",
-          "label": "Landing Ship Tank",
-          "prompt": "warship"
-        },
-        {
-          "id": "Air_Cushion_Landing_Craft",
-          "label": "Air-Cushion Landing Craft",
-          "prompt": "warcraft"
-        },
-        {
-          "id": "Landing_Craft",
-          "label": "Landing Craft",
+          "id": "Warcraft",
+          "label": "Warcraft",
           "prompt": "warcraft"
         },
         {
@@ -882,8 +542,8 @@
           "prompt": "container ship"
         },
         {
-          "id": "Bulk_Carrier",
-          "label": "Bulk Carrier",
+          "id": "Dry_Cargo_Ship",
+          "label": "Dry Cargo Ship",
           "prompt": "dry cargo ship"
         },
         {
@@ -897,8 +557,8 @@
           "prompt": "lng tanker"
         },
         {
-          "id": "Roll_On_Roll_Off_Ferry",
-          "label": "Roll-On Roll-Off Ferry",
+          "id": "Ro_Ro_Ship",
+          "label": "Ro-Ro Ship",
           "prompt": "ro-ro ship"
         },
         {
@@ -907,8 +567,8 @@
           "prompt": "fishing vessel"
         },
         {
-          "id": "Cruise_Ship",
-          "label": "Cruise Ship",
+          "id": "Passenger_Ship",
+          "label": "Passenger Ship",
           "prompt": "passenger ship"
         },
         {
@@ -917,43 +577,13 @@
           "prompt": "yacht"
         },
         {
-          "id": "Hovercraft",
-          "label": "Hovercraft",
-          "prompt": "warcraft"
-        },
-        {
-          "id": "Tug_Boat",
-          "label": "Tug Boat",
+          "id": "Tugboat",
+          "label": "Tugboat",
           "prompt": "tugboat"
         },
         {
-          "id": "Naval_Base",
-          "label": "Naval Base",
-          "prompt": "harbor"
-        },
-        {
-          "id": "Naval_Pier",
-          "label": "Naval Pier",
-          "prompt": "harbor"
-        },
-        {
-          "id": "Dry_Dock",
-          "label": "Dry Dock",
-          "prompt": "shipyard"
-        },
-        {
-          "id": "Floating_Dock",
-          "label": "Floating Dock",
-          "prompt": "shipyard"
-        },
-        {
-          "id": "Wharf",
-          "label": "Wharf",
-          "prompt": "harbor"
-        },
-        {
-          "id": "Quay",
-          "label": "Quay",
+          "id": "Harbor",
+          "label": "Harbor",
           "prompt": "harbor"
         },
         {
@@ -979,34 +609,9 @@
       ],
       "objects": [
         {
-          "id": "Trench",
-          "label": "Trench",
+          "id": "Construction_Site",
+          "label": "Construction Site",
           "prompt": "construction site"
-        },
-        {
-          "id": "Bunker",
-          "label": "Bunker",
-          "prompt": "facility"
-        },
-        {
-          "id": "Anti_Tank_Ditch",
-          "label": "Anti-Tank Ditch",
-          "prompt": "construction site"
-        },
-        {
-          "id": "Dragons_Teeth_Obstacles",
-          "label": "Dragon's Teeth Obstacles",
-          "prompt": "facility"
-        },
-        {
-          "id": "Hesco_Barrier_Wall",
-          "label": "Hesco Barrier Wall",
-          "prompt": "facility"
-        },
-        {
-          "id": "Roadblock",
-          "label": "Roadblock",
-          "prompt": "vehicle lot"
         }
       ]
     },
@@ -1021,8 +626,8 @@
       ],
       "objects": [
         {
-          "id": "Smoke_Plume",
-          "label": "Smoke Plume",
+          "id": "Smokestack",
+          "label": "Smokestack",
           "prompt": "smokestack",
           "sensors": [
             "optical",
@@ -1031,18 +636,8 @@
           ]
         },
         {
-          "id": "Active_Fire",
-          "label": "Active Fire",
-          "prompt": "smokestack",
-          "sensors": [
-            "optical",
-            "thermal",
-            "multispectral"
-          ]
-        },
-        {
-          "id": "Burn_Patch",
-          "label": "Burn Patch",
+          "id": "Burn_Scar_2",
+          "label": "Burn Scar",
           "prompt": "burn scar",
           "sensors": [
             "optical",
@@ -1050,18 +645,9 @@
           ]
         },
         {
-          "id": "Debris_Rubble",
-          "label": "Debris / Rubble",
+          "id": "Debris_or_Rubble",
+          "label": "Debris or Rubble",
           "prompt": "debris or rubble"
-        },
-        {
-          "id": "Charred_Vegetation",
-          "label": "Charred Vegetation",
-          "prompt": "burn scar",
-          "sensors": [
-            "optical",
-            "multispectral"
-          ]
         }
       ]
     },
@@ -1076,53 +662,18 @@
       ],
       "objects": [
         {
-          "id": "Factory",
-          "label": "Factory",
+          "id": "Factory_or_Powerplant",
+          "label": "Factory or Powerplant",
           "prompt": "factory or powerplant"
         },
         {
-          "id": "Refinery",
-          "label": "Refinery",
+          "id": "Oil_or_Gas_Facility",
+          "label": "Oil or Gas Facility",
           "prompt": "oil or gas facility"
         },
         {
-          "id": "Chemical_Plant",
-          "label": "Chemical Plant",
-          "prompt": "factory or powerplant"
-        },
-        {
-          "id": "Cement_Plant",
-          "label": "Cement Plant",
-          "prompt": "factory or powerplant"
-        },
-        {
-          "id": "Steel_Mill",
-          "label": "Steel Mill",
-          "prompt": "factory or powerplant"
-        },
-        {
-          "id": "Smelter",
-          "label": "Smelter",
-          "prompt": "factory or powerplant"
-        },
-        {
-          "id": "Foundry",
-          "label": "Foundry",
-          "prompt": "factory or powerplant"
-        },
-        {
-          "id": "Coal_Fired_Power_Plant",
-          "label": "Coal-Fired Power Plant",
-          "prompt": "factory or powerplant"
-        },
-        {
-          "id": "Gas_Fired_Power_Plant",
-          "label": "Gas-Fired Power Plant",
-          "prompt": "factory or powerplant"
-        },
-        {
-          "id": "Nuclear_Power_Plant",
-          "label": "Nuclear Power Plant",
+          "id": "Nuclear_Powerplant",
+          "label": "Nuclear Powerplant",
           "prompt": "nuclear powerplant"
         },
         {
@@ -1140,63 +691,23 @@
           "prompt": "wind farm"
         },
         {
-          "id": "Hydroelectric_Dam",
-          "label": "Hydroelectric Dam",
+          "id": "Dam",
+          "label": "Dam",
           "prompt": "dam"
         },
         {
-          "id": "Substation",
-          "label": "Substation",
+          "id": "Electric_Substation",
+          "label": "Electric Substation",
           "prompt": "electric substation"
         },
         {
-          "id": "Transmission_Tower",
-          "label": "Transmission Tower",
+          "id": "Pylon",
+          "label": "Pylon",
           "prompt": "pylon"
         },
         {
-          "id": "High_Voltage_Pylon",
-          "label": "High-Voltage Pylon",
-          "prompt": "pylon"
-        },
-        {
-          "id": "Storage_Tank",
-          "label": "Storage Tank",
-          "prompt": "storage tank"
-        },
-        {
-          "id": "LNG_Tank",
-          "label": "LNG Tank",
-          "prompt": "storage tank"
-        },
-        {
-          "id": "Cryogenic_Tank",
-          "label": "Cryogenic Tank",
-          "prompt": "storage tank"
-        },
-        {
-          "id": "Grain_Silo",
-          "label": "Grain Silo",
-          "prompt": "storage tank"
-        },
-        {
-          "id": "Bulk_Storage_Silo",
-          "label": "Bulk Storage Silo",
-          "prompt": "storage tank"
-        },
-        {
-          "id": "Open_Pit_Mine",
-          "label": "Open-Pit Mine",
-          "prompt": "surface mine"
-        },
-        {
-          "id": "Mine_Tailings_Pile",
-          "label": "Mine Tailings Pile",
-          "prompt": "surface mine"
-        },
-        {
-          "id": "Quarry",
-          "label": "Quarry",
+          "id": "Surface_Mine",
+          "label": "Surface Mine",
           "prompt": "surface mine"
         },
         {
@@ -1210,43 +721,18 @@
           "prompt": "mobile crane"
         },
         {
-          "id": "Heavy_Crane",
-          "label": "Heavy Crane",
+          "id": "Container_Crane",
+          "label": "Container Crane",
           "prompt": "container crane"
         },
         {
-          "id": "Concrete_Plant",
-          "label": "Concrete Plant",
-          "prompt": "construction site"
-        },
-        {
-          "id": "Asphalt_Plant",
-          "label": "Asphalt Plant",
-          "prompt": "construction site"
-        },
-        {
-          "id": "Smokestack",
-          "label": "Smokestack",
-          "prompt": "smokestack"
-        },
-        {
-          "id": "Cooling_Tower",
-          "label": "Cooling Tower",
-          "prompt": "tower"
-        },
-        {
-          "id": "Flare_Stack",
-          "label": "Flare Stack",
+          "id": "Chimney",
+          "label": "Chimney",
           "prompt": "chimney"
         },
         {
-          "id": "Pumping_Station",
-          "label": "Pumping Station",
-          "prompt": "facility"
-        },
-        {
-          "id": "Water_Treatment_Plant",
-          "label": "Water Treatment Plant",
+          "id": "Water_Treatment_Facility",
+          "label": "Water Treatment Facility",
           "prompt": "water treatment facility"
         }
       ]
@@ -1262,38 +748,23 @@
       ],
       "objects": [
         {
-          "id": "Highway",
-          "label": "Highway",
+          "id": "Expressway_Service_Area",
+          "label": "Expressway Service Area",
           "prompt": "expressway service area"
         },
         {
-          "id": "Highway_Bridge",
-          "label": "Highway Bridge",
+          "id": "Road_Bridge",
+          "label": "Road Bridge",
           "prompt": "road bridge"
         },
         {
-          "id": "Rail_Bridge",
-          "label": "Rail Bridge",
+          "id": "Railway_Bridge",
+          "label": "Railway Bridge",
           "prompt": "railway bridge"
         },
         {
-          "id": "Pedestrian_Bridge",
-          "label": "Pedestrian Bridge",
-          "prompt": "bridge"
-        },
-        {
-          "id": "Cable_Bridge",
-          "label": "Cable Bridge",
-          "prompt": "bridge"
-        },
-        {
-          "id": "Truss_Bridge",
-          "label": "Truss Bridge",
-          "prompt": "bridge"
-        },
-        {
-          "id": "Arch_Bridge",
-          "label": "Arch Bridge",
+          "id": "Bridge",
+          "label": "Bridge",
           "prompt": "bridge"
         },
         {
@@ -1302,43 +773,13 @@
           "prompt": "overpass"
         },
         {
-          "id": "Rail_Yard",
-          "label": "Rail Yard",
-          "prompt": "train station"
-        },
-        {
-          "id": "Rail_Junction",
-          "label": "Rail Junction",
-          "prompt": "train station"
-        },
-        {
-          "id": "Rail_Tunnel",
-          "label": "Rail Tunnel",
-          "prompt": "tunnel opening"
-        },
-        {
-          "id": "Ferry_Terminal",
-          "label": "Ferry Terminal",
-          "prompt": "harbor"
-        },
-        {
-          "id": "Canal_Lock",
-          "label": "Canal Lock",
-          "prompt": "dam"
-        },
-        {
           "id": "Port",
           "label": "Port",
           "prompt": "port"
         },
         {
-          "id": "Marina",
-          "label": "Marina",
-          "prompt": "harbor"
-        },
-        {
-          "id": "Highway_Interchange",
-          "label": "Highway Interchange",
+          "id": "Interchange",
+          "label": "Interchange",
           "prompt": "interchange"
         },
         {
@@ -1347,13 +788,13 @@
           "prompt": "roundabout"
         },
         {
-          "id": "Toll_Plaza",
-          "label": "Toll Plaza",
+          "id": "Toll_Booth",
+          "label": "Toll Booth",
           "prompt": "toll booth"
         },
         {
-          "id": "Border_Crossing",
-          "label": "Border Crossing",
+          "id": "Border_Checkpoint",
+          "label": "Border Checkpoint",
           "prompt": "border checkpoint"
         }
       ]
@@ -1374,48 +815,23 @@
           "prompt": "building"
         },
         {
-          "id": "Multi_Story_Building",
-          "label": "Multi-Story Building",
+          "id": "Office_Building",
+          "label": "Office Building",
           "prompt": "office building"
         },
         {
-          "id": "Single_Story_Building",
-          "label": "Single-Story Building",
-          "prompt": "single-unit residential"
-        },
-        {
-          "id": "Industrial_Building",
-          "label": "Industrial Building",
-          "prompt": "factory or powerplant"
-        },
-        {
-          "id": "Office_Tower",
-          "label": "Office Tower",
-          "prompt": "office building"
-        },
-        {
-          "id": "Apartment_Block",
-          "label": "Apartment Block",
+          "id": "Multi_Unit_Residential",
+          "label": "Multi-Unit Residential",
           "prompt": "multi-unit residential"
         },
         {
-          "id": "Mosque",
-          "label": "Mosque",
+          "id": "Place_of_Worship",
+          "label": "Place of Worship",
           "prompt": "place of worship"
         },
         {
-          "id": "Church",
-          "label": "Church",
-          "prompt": "place of worship"
-        },
-        {
-          "id": "Temple",
-          "label": "Temple",
-          "prompt": "place of worship"
-        },
-        {
-          "id": "School",
-          "label": "School",
+          "id": "Educational_Institution",
+          "label": "Educational Institution",
           "prompt": "educational institution"
         },
         {
@@ -1424,39 +840,14 @@
           "prompt": "hospital"
         },
         {
-          "id": "Government_Building",
-          "label": "Government Building",
-          "prompt": "office building"
-        },
-        {
-          "id": "Embassy_Compound",
-          "label": "Embassy Compound",
-          "prompt": "office building"
-        },
-        {
-          "id": "Compound_Wall",
-          "label": "Compound Wall",
-          "prompt": "facility"
-        },
-        {
-          "id": "Marketplace",
-          "label": "Marketplace",
+          "id": "Shopping_Mall",
+          "label": "Shopping Mall",
           "prompt": "shopping mall"
         },
         {
-          "id": "Bus_Terminal",
-          "label": "Bus Terminal",
+          "id": "Ground_Transportation_Station",
+          "label": "Ground Transportation Station",
           "prompt": "ground transportation station"
-        },
-        {
-          "id": "Train_Station_Terminal",
-          "label": "Train Station Terminal",
-          "prompt": "train station"
-        },
-        {
-          "id": "Checkpoint",
-          "label": "Checkpoint",
-          "prompt": "border checkpoint"
         },
         {
           "id": "Police_Station",
@@ -1486,74 +877,19 @@
       ],
       "objects": [
         {
-          "id": "Crater",
-          "label": "Crater",
-          "prompt": "debris or rubble"
-        },
-        {
           "id": "Damaged_Building",
           "label": "Damaged Building",
           "prompt": "damaged building"
         },
         {
-          "id": "Charred_Building",
-          "label": "Charred Building",
-          "prompt": "damaged building",
-          "sensors": [
-            "optical",
-            "thermal",
-            "multispectral"
-          ]
-        },
-        {
-          "id": "Demolished_Structure",
-          "label": "Demolished Structure",
-          "prompt": "damaged building"
-        },
-        {
-          "id": "Vehicle_Wreckage",
-          "label": "Vehicle Wreckage",
+          "id": "Vehicle",
+          "label": "Vehicle",
           "prompt": "vehicle"
         },
         {
-          "id": "Burned_Vehicle",
-          "label": "Burned Vehicle",
-          "prompt": "vehicle"
-        },
-        {
-          "id": "Damaged_Runway",
-          "label": "Damaged Runway",
-          "prompt": "runway"
-        },
-        {
-          "id": "Damaged_Hangar",
-          "label": "Damaged Hangar",
-          "prompt": "aircraft hangar"
-        },
-        {
-          "id": "Damaged_Bridge",
-          "label": "Damaged Bridge",
-          "prompt": "bridge"
-        },
-        {
-          "id": "Damaged_Pier",
-          "label": "Damaged Pier",
-          "prompt": "harbor"
-        },
-        {
-          "id": "Sunk_Ship",
-          "label": "Sunk Ship",
+          "id": "Ship",
+          "label": "Ship",
           "prompt": "ship"
-        },
-        {
-          "id": "Active_Fire_Site",
-          "label": "Active Fire Site",
-          "prompt": "smokestack",
-          "sensors": [
-            "optical",
-            "thermal",
-            "multispectral"
-          ]
         }
       ]
     },

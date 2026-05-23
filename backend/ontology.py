@@ -190,6 +190,24 @@ def _build_tree() -> dict[str, Any]:
 
     branch_matchers.sort(key=lambda t: (t[0], t[1].get("id") or ""))
 
+    # Branch-scoped prompt lists: each object's prompt rolls up to its own
+    # branch and every ancestor branch, so a top-level branch yields the
+    # prompts of its entire subtree. Enables scene-scoped vocabularies — the
+    # main lever for keeping open-vocabulary detectors precise.
+    prompts_by_branch: dict[str, list[str]] = {}
+    for o in objects_by_id.values():
+        prompt = (o.get("prompt") or "").strip()
+        if not prompt:
+            continue
+        bid = o.get("branch_id")
+        guard = 0
+        while bid and guard < 32:
+            lst = prompts_by_branch.setdefault(bid, [])
+            if prompt not in lst:
+                lst.append(prompt)
+            bid = (branches.get(bid) or {}).get("parent_id")
+            guard += 1
+
     new_cache: dict[str, Any] = {
         "version_id": version_id,
         "branches": branches,
@@ -198,6 +216,7 @@ def _build_tree() -> dict[str, Any]:
         "objects_by_prompt": objects_by_prompt,
         "branch_matchers": branch_matchers,
         "prompts_by_sensor": prompts_by_sensor,
+        "prompts_by_branch": prompts_by_branch,
         "all_prompts": all_prompts,
     }
     logger.info(
@@ -388,16 +407,25 @@ def _branch_icon(branches: dict[str, dict[str, Any]], branch_id: Any) -> str | N
     return b.get("icon_key")
 
 
-def default_prompts(sensor: str | None = None) -> list[str]:
-    """Return distinct prompts for objects whose ``sensors`` array contains ``sensor``.
+def default_prompts(sensor: str | None = None, branch: str | None = None) -> list[str]:
+    """Return distinct prompts, optionally scoped to a sensor and/or branch.
 
-    If ``sensor`` is None or empty, return ALL distinct prompts.
+    ``branch`` scopes to one branch and all its descendant branches — the
+    smaller, scene-relevant vocabulary that keeps open-vocabulary detectors
+    precise. ``sensor`` keeps only prompts whose object lists that sensor.
+    If both are None/empty, return ALL distinct prompts.
     """
     tree = _get_tree()
-    if not sensor:
+    if branch:
+        prompts = list((tree.get("prompts_by_branch") or {}).get(str(branch), []))
+    elif sensor:
+        prompts = list((tree.get("prompts_by_sensor") or {}).get(str(sensor).lower(), []))
+    else:
         return list(tree.get("all_prompts") or [])
-    by_sensor = tree.get("prompts_by_sensor") or {}
-    return list(by_sensor.get(str(sensor).lower(), []))
+    if branch and sensor:
+        allowed = set((tree.get("prompts_by_sensor") or {}).get(str(sensor).lower(), []))
+        prompts = [p for p in prompts if p in allowed]
+    return prompts
 
 
 def all_prompts() -> list[str]:

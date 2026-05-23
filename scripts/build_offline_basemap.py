@@ -7,14 +7,17 @@ Run this on a connected host before `docker compose build`. Tiles land at
 The script is idempotent: re-running fills only missing tiles, so a
 crashed run can be resumed with the same command.
 
-    python scripts/build_offline_basemap.py --zoom 0-10
+    python scripts/build_offline_basemap.py --zoom 0-14
 
 Notes
 -----
 * Carto's free tile service is rate-limited. We round-robin across the
   ``{a,b,c,d}`` subdomains and back off exponentially on 429/5xx.
-* World coverage at z=0..10 is ~1.4 M tiles / ~3 GB. Expect 4-8 h on a
-  fast connection.
+* World coverage at z=0..14 is ~358 M tiles / ~13 GB Carto Dark. Expect
+  overnight on a fast connection; the bake is idempotent so it resumes on
+  retry. z=14 matches the frontend overlay autohide threshold — see
+  ``docs/decisions/why-basemap-z14-cap.md``. Use ``--zoom 0-10`` (~50 MB,
+  minutes) for smoke runs.
 * Attribution is mandatory under Carto/OSM's CC-BY: an ``ATTRIBUTION.txt``
   is dropped next to the tile tree.
 """
@@ -96,7 +99,7 @@ def fetch_one(root: Path, z: int, x: int, y: int) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--zoom", default="0-10", help="zoom range, e.g. 0-10 or 6")
+    parser.add_argument("--zoom", default="0-14", help="zoom range, e.g. 0-14 or 6")
     parser.add_argument("--out", default="assets/static/basemap", help="output directory")
     parser.add_argument("--concurrency", type=int, default=16, help="parallel HTTP workers")
     args = parser.parse_args()

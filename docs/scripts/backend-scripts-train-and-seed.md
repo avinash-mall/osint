@@ -5,7 +5,7 @@
 | Script | Purpose |
 |---|---|
 | [train.py](../../backend/scripts/train.py) | Training-job orchestrator. POSTs to `inference-sam3:/train`, polls status, persists metrics. Invoked by `worker.train_model`. |
-| [seed_ontology.py](../../backend/scripts/seed_ontology.py) | Idempotent seeder from the bundled defence-ontology JSON. Auto-runs on first boot (empty tables); `--force` to re-seed (destructive). |
+| [seed_ontology.py](../../backend/scripts/seed_ontology.py) | Idempotent seeder from the bundled defence-ontology JSON. Auto-runs on first boot (empty tables); `--reseed` upserts every branch/object AND prunes objects absent from the JSON (so a wholesale taxonomy revision fully applies); `--check` for a dry-run count compare. |
 | [refmv.py](../../backend/scripts/refmv.py) | One-shot telemetry re-extraction for a clip — deletes existing `fmv_frames`, re-runs `video_metadata.extract_telemetry`. |
 | [backfill_detection_branch.py](../../backend/scripts/backfill_detection_branch.py) | Backfill `detections.metadata` with normalized `branch_id`, `icon_key`, `canonical_label`, `ontology_object_id`. Supports `--dry-run`, `--batch-size`, `--where` for safe partial runs. |
 | [seeds/](../../backend/scripts/seeds/) | Static seed JSON consumed by `seed_ontology.py` |
@@ -17,7 +17,7 @@ Anything importing backend modules (`backend.ontology`, `backend.database`, etc.
 ## Usage notes
 
 - `train.py` is **not** for direct invocation in production — the Celery task wraps it. Direct run = debugging.
-- `seed_ontology.py --force` is destructive: overwrites the live ontology. Use only on a clean target.
+- `seed_ontology.py --reseed` overwrites the live ontology and deletes objects no longer in the JSON. Use for a taxonomy revision; it bumps `ontology_version` so the inference prompt cache refreshes.
 - `backfill_detection_branch.py` is **idempotent and resumable** — always run `--dry-run` first to preview affected rows.
 
 ## Cross-references

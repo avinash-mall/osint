@@ -72,6 +72,11 @@ const CARTO_BASEMAP_URL = '/basemap/{z}/{x}/{y}.png';
 const TERRAIN_BASEMAP_URL = '/terrain/{z}/{x}/{y}.png';
 const TILE_PROXY_URL = (import.meta as any).env?.VITE_TILE_PROXY_URL || '/tiles';
 
+// The offline basemap + terrain bake stops at z=14 (see scripts/build_offline_basemap.py
+// and docs/decisions/why-basemap-z14-cap.md). Past this zoom the overlay would stretch
+// one tile across the viewport — unmount it; imagery is the source of truth at high zoom.
+export const BASEMAP_OVERLAY_MAX_ZOOM = 14;
+
 export type MapHandle = {
   /** Imperatively pan the map to a detection feature's bounds. */
   panToDetection: (feature: any) => void;
@@ -322,25 +327,28 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
 
           {/* 3. Reference overlay — Carto/Terrain ABOVE the imagery (zIndex 300
                  > SAT zIndex 200) when the analyst picks BASE/TERRAIN. The
-                 opacity slider drives how much of the imagery shows through. */}
-          {selectedImageryData && activeBaseLayer === 'base' && (
+                 opacity slider drives how much of the imagery shows through.
+                 Unmounted past z=BASEMAP_OVERLAY_MAX_ZOOM (the offline bake
+                 ceiling) so the overlay never stretches one tile across the
+                 viewport. */}
+          {selectedImageryData && mapZoom <= BASEMAP_OVERLAY_MAX_ZOOM && activeBaseLayer === 'base' && (
             <TileLayer
               key="overlay-carto"
               url={CARTO_BASEMAP_URL}
               subdomains="abcd"
-              maxZoom={20}
-              maxNativeZoom={10}
+              maxZoom={BASEMAP_OVERLAY_MAX_ZOOM}
+              maxNativeZoom={BASEMAP_OVERLAY_MAX_ZOOM}
               opacity={layerOpacities.base}
               zIndex={300}
               attribution="&copy; OpenStreetMap &copy; CARTO"
             />
           )}
-          {selectedImageryData && activeBaseLayer === 'terrain' && (
+          {selectedImageryData && mapZoom <= BASEMAP_OVERLAY_MAX_ZOOM && activeBaseLayer === 'terrain' && (
             <TileLayer
               key="overlay-terrain"
               url={TERRAIN_BASEMAP_URL}
-              maxZoom={20}
-              maxNativeZoom={10}
+              maxZoom={BASEMAP_OVERLAY_MAX_ZOOM}
+              maxNativeZoom={BASEMAP_OVERLAY_MAX_ZOOM}
               opacity={layerOpacities.terrain}
               zIndex={300}
               attribution="&copy; OpenStreetMap &copy; OpenTopoMap (CC-BY-SA)"

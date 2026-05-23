@@ -305,6 +305,19 @@ def seed(reseed: bool = False) -> tuple[int, int, int, int]:
                 object_writes += cur.rowcount
             icon_log_rows.append((row["id"], source, regex_hit, icon_key))
 
+        # Pass 2b: prune objects removed from the JSON (reseed only). The seed
+        # JSON is the source of truth for a wholesale taxonomy revision;
+        # without this, collapsed/renamed objects linger as orphan rows and
+        # keep surfacing stale prompts through default_prompts().
+        if reseed:
+            json_ids = [row["id"] for row in objects]
+            cur.execute(
+                "DELETE FROM ontology_objects WHERE id <> ALL(%s)", (json_ids,)
+            )
+            if cur.rowcount and cur.rowcount > 0:
+                object_writes += cur.rowcount
+                logger.info("pruned %d object(s) absent from seed JSON", cur.rowcount)
+
         # Pass 3: only bump version if at least one branch or object row was
         # actually written. Avoids cache-invalidation thrash on no-op runs.
         if branch_writes > 0 or object_writes > 0:

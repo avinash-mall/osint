@@ -3519,6 +3519,12 @@ def process_satellite_imagery(
         prompt_override = _parse_prompt_override(upload_meta.get("text_prompts"))
         if prompt_override:
             inference_metadata["text_prompts"] = prompt_override
+        # Scene scope: an ontology branch id from the upload narrows the
+        # ontology-mode vocabulary to that branch's prompts — the false-positive
+        # lever. Ignored when explicit text_prompts are supplied.
+        ontology_branch = upload_meta.get("ontology_branch")
+        if isinstance(ontology_branch, str) and ontology_branch.strip():
+            inference_metadata["ontology_branch"] = ontology_branch.strip()
         # Honor enabled_layers from the upload form. Two channels: explicit
         # task arg (already parsed) takes precedence; otherwise read from the
         # stored upload_meta which may carry a JSON-encoded list.

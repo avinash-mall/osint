@@ -1354,6 +1354,35 @@ def _restart_service(restart_cmd: str | None, url: str, wait_timeout: int) -> bo
     return False
 
 
+def _fetch_ontology_prompts(ontology_url: str, branch: str | None = None) -> list[str]:
+    """Fetch the live ontology default-prompt vocabulary for an ontology-mode run.
+
+    ``branch`` is None (full vocabulary) or a comma-separated list of branch
+    ids — the union of those branches' scoped subsets is returned, modelling a
+    scene-relevant vocabulary. Prithvi sentinel prompts (``__prithvi_*``) are
+    dropped — they drive segmenter heads, not the box detectors this measures.
+    """
+    branches: list[str | None] = (
+        [b.strip() for b in branch.split(",") if b.strip()] if branch else [None]
+    )
+    seen: set[str] = set()
+    out: list[str] = []
+    for b in branches:
+        params = {"branch": b} if b else {}
+        resp = requests.get(
+            f"{ontology_url.rstrip('/')}/api/ontology/default-prompts",
+            params=params,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        for p in (resp.json().get("prompts") or []):
+            p = str(p)
+            if p and not p.startswith("__") and p not in seen:
+                seen.add(p)
+                out.append(p)
+    return out
+
+
 def run(args: argparse.Namespace) -> int:
     """Execute the comparison. Returns exit code."""
     url: str = args.url
@@ -1408,6 +1437,10 @@ def run(args: argparse.Namespace) -> int:
             _iter_slice("dota", max_chips, layers_path)
         )
         log.info("Loaded %d dota chip(s).", len(dota_chips_all))
+        if getattr(args, "ontology_mode", False):
+            onto_prompts = _fetch_ontology_prompts(args.ontology_url, args.ontology_branch)
+            log.info("Ontology mode: %d ontology prompt(s) for dota sub-slice", len(onto_prompts))
+            dota_chips_all = [(cb, mod, onto_prompts, gt) for cb, mod, _p, gt in dota_chips_all]
 
         all_results_sl: list[dict] = []
         # Always restart at the start of the slice (in case the GPU was left
@@ -1651,6 +1684,18 @@ def run(args: argparse.Namespace) -> int:
         log.warning("No chips loaded — check dataset path.")
 
     log.info("Loaded %d chip(s).", len(chips))
+
+    # Ontology-mode: swap each chip's oracle GT prompts for the real ontology
+    # vocabulary, so the run measures detection quality without the per-chip
+    # class hint the operator never has.
+    if getattr(args, "ontology_mode", False) and slice_name in ("dota", "embedding"):
+        onto_prompts = _fetch_ontology_prompts(args.ontology_url, args.ontology_branch)
+        log.info(
+            "Ontology mode: replaced per-chip GT prompts with %d ontology prompt(s)%s",
+            len(onto_prompts),
+            f" (branch={args.ontology_branch})" if args.ontology_branch else "",
+        )
+        chips = [(cb, mod, onto_prompts, gt) for cb, mod, _p, gt in chips]
 
     # ------------------------------------------------------------------
     # Evaluate each layer configuration
@@ -1944,6 +1989,32 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.05,
         help="Allowable per-class recall drop vs --regression-baseline (default 0.05).",
+    )
+    # Ontology-mode evaluation: instead of feeding each chip its own ground-truth
+    # class names (an oracle the operator never has), feed every chip the real
+    # ontology vocabulary fetched from the backend. Measures detection quality
+    # the way an analyst actually experiences it.
+    parser.add_argument(
+        "--ontology-mode",
+        dest="ontology_mode",
+        action="store_true",
+        help=(
+            "Replace per-chip ground-truth prompts with the live ontology "
+            "default-prompt vocabulary (fetched from --ontology-url). Applies "
+            "to the dota box-detector slice."
+        ),
+    )
+    parser.add_argument(
+        "--ontology-url",
+        dest="ontology_url",
+        default="http://localhost:3000",
+        help="Backend base URL for --ontology-mode prompt fetch (default: http://localhost:3000).",
+    )
+    parser.add_argument(
+        "--ontology-branch",
+        dest="ontology_branch",
+        default=None,
+        help="Optional ontology branch id to scope the --ontology-mode vocabulary.",
     )
     return parser
 

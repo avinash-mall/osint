@@ -164,7 +164,7 @@ def _load_db_overrides() -> tuple[dict[str, float], float | None, float | None]:
 def active_detection_policy() -> dict[str, Any]:
     """Open-vocab policy: DB-backed overrides win, env values are the fallback."""
     profile_name = os.getenv("DETECTION_THRESHOLD_PROFILE", "defence_precision").strip() or "defence_precision"
-    global_floor = float(os.getenv("GLOBAL_CONFIDENCE_FLOOR", "0.35"))
+    global_floor = float(os.getenv("GLOBAL_CONFIDENCE_FLOOR", "0.40"))
     high_threshold = float(os.getenv("HIGH_CONFIDENCE_THRESHOLD", "0.65"))
     env_overrides = _load_json_thresholds("PER_CLASS_CONFIDENCE_OVERRIDES")
     db_overrides, db_global, db_high = _load_db_overrides()
