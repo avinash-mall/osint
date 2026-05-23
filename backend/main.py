@@ -179,6 +179,7 @@ from routers import inference as _inference_router
 from routers import ingest as _ingest_router
 from routers import models_training as _models_training_router
 from routers import ontology as _ontology_router
+from routers import reports as _reports_router
 from routers import system as _system_router
 from routers import ws as _ws_router
 app.include_router(_ai_router.router)
@@ -193,6 +194,7 @@ app.include_router(_inference_router.router)
 app.include_router(_ingest_router.router)
 app.include_router(_models_training_router.router)
 app.include_router(_ontology_router.router)
+app.include_router(_reports_router.router)
 app.include_router(_system_router.router)
 app.include_router(_ws_router.router)
 

@@ -1401,6 +1401,22 @@ img, svg, video, canvas { max-inline-size: 100%; }
   transform: translateX(0);
 }
 
+/* MgrsGraticule — degree-label chips at grid intersections. */
+.graticule-label {
+  pointer-events: none;
+  background: transparent;
+}
+.graticule-label > span {
+  display: inline-block;
+  padding: 1px 3px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--color-sentinel-muted, #6f8aa3);
+  background: color-mix(in oklab, var(--bg-0, #0e1620) 70%, transparent);
+  border: 1px solid var(--line-2, #233241);
+  white-space: nowrap;
+}
+
 /* F15 — timeline scrubber ISO-timestamp tooltip. */
 .timeline-tip {
   position: absolute; bottom: calc(100% + 6px); left: 50%;

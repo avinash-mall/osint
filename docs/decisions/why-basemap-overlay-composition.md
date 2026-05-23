@@ -26,6 +26,16 @@ The previous logic was inverted relative to the analyst's mental model:
 - **BASE / TERRAIN mode** rendered the cartographic basemap *alone* — the SAT
   `TileLayer` was gated by `activeBaseLayer === 'sat'`, so picking BASE hid the
   imagery entirely.
+- **Initial mount with the default basemap selector also hid the imagery.**
+  `activeBaseLayer` defaults to `'base'`, so the SAT `TileLayer`'s
+  `activeBaseLayer === 'sat'` gate evaluated false on first paint even when
+  `selectedImageryData` was populated by `GaiaMap.tsx`'s auto-select. The
+  analyst saw detection boxes floating over the dark vector basemap with no
+  imagery underneath, and the bug "fixed itself" when they clicked SAT → BASE
+  (the toggle round-trip mounted the layer and Leaflet's tile cache kept it on
+  screen). Inverting the composition removes the gate entirely; the imagery
+  renders whenever it is loaded, regardless of which basemap the picker is on
+  at mount time.
 
 `lastNonSatBaseRef` was a patch for a symptom: someone noticed SAT-alone was
 empty when no imagery was loaded and kept a basemap underneath instead of

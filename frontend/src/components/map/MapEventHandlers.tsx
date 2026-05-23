@@ -54,6 +54,26 @@ export function geojsonFeatureBounds(geojson: any): L.LatLngBounds | null {
 
 /* ── handlers ────────────────────────────────────────────────────────── */
 
+/** One-shot click handler — when ``enabled``, the next map click fires
+ *  ``onPicked(lat, lon)`` and is meant to be deactivated by the caller.
+ *  Used for the Range Ring placement tool.
+ */
+export function MapClickPicker({
+  enabled,
+  onPicked,
+}: {
+  enabled: boolean;
+  onPicked: (lat: number, lon: number) => void;
+}) {
+  useMapEvents({
+    click(e) {
+      if (!enabled) return;
+      onPicked(e.latlng.lat, e.latlng.lng);
+    },
+  });
+  return null;
+}
+
 export function MapBoundsUpdater({ onBoundsChange }: { onBoundsChange: (bounds: string) => void }) {
   const map = useMap();
   useEffect(() => {

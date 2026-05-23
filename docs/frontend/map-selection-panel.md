@@ -22,6 +22,8 @@ Four-tab right rail that appears when a detection is selected on the map.
 - `GET /api/detections/{id}/similar` (Similar tab)
 - `GET /api/detections/{id}/candidate-links` and `POST /api/detection-target-candidates/{id}/approve` (Actions tab)
 - `POST /api/analytics/*` (Analytics tab)
+- `GET /api/analytics/elevation?lat=&lon=` (Details tab — populates the `ELEV` row in the Geolocation section using the DEM at the detection centroid; falls back to `—` when the DEM is not configured)
+- `POST /api/reports/target-package/{id}` (Details tab — the "Generate Target Package" button streams a PDF compiled from already-persisted detection state; see [backend-routers/reports-router.md](../backend-routers/reports-router.md))
 
 ## Cross-references
 

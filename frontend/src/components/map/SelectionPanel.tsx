@@ -17,11 +17,13 @@
  */
 
 import { forward as mgrsForward } from 'mgrs';
+import { useEffect, useState } from 'react';
 import {
   Activity,
   ChevronRight,
   CircleHelp,
   Crosshair,
+  FileDown,
   GitBranch,
   Navigation,
   Send,
@@ -161,6 +163,57 @@ export default function SelectionPanel(props: Props) {
     onOpenFmv,
     actions,
   } = props;
+
+  // Sample DEM elevation at the selected detection centroid. Triggered on
+  // detection change; falls back to "—" when the DEM endpoint is unavailable.
+  // See docs/backend-routers/analytics-router.md /api/analytics/elevation.
+  const detCentroid = selectedDetection ? featureCentroid(selectedDetection) : null;
+  const [elevation, setElevation] = useState<{ value: number | null; status: 'idle' | 'loading' | 'unavailable' }>(
+    { value: null, status: 'idle' },
+  );
+  useEffect(() => {
+    if (!detCentroid) {
+      setElevation({ value: null, status: 'idle' });
+      return;
+    }
+    const [lat, lon] = detCentroid;
+    let cancelled = false;
+    setElevation({ value: null, status: 'loading' });
+    fetch(`/api/analytics/elevation?lat=${lat}&lon=${lon}`)
+      .then((r) => r.ok ? r.json() : Promise.reject(r.status))
+      .then((data) => {
+        if (cancelled) return;
+        const v = typeof data?.elevation_m === 'number' ? data.elevation_m : null;
+        setElevation({ value: v, status: v == null ? 'unavailable' : 'idle' });
+      })
+      .catch(() => { if (!cancelled) setElevation({ value: null, status: 'unavailable' }); });
+    return () => { cancelled = true; };
+  }, [detCentroid?.[0], detCentroid?.[1]]);
+
+  const [exportingPkg, setExportingPkg] = useState(false);
+  const exportTargetPackage = async () => {
+    if (!selectedDetection || exportingPkg) return;
+    const id = selectedDetection.properties?.id;
+    if (id == null) return;
+    setExportingPkg(true);
+    try {
+      const r = await fetch(`/api/reports/target-package/${id}`, { method: 'POST' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `target-${id}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.warn('Target package export failed', err);
+    } finally {
+      setExportingPkg(false);
+    }
+  };
 
   const rightHeader =
     rightTab === 'analytics' ? { Icon: Sparkles,    label: 'Analytics',     tag: 'ANALYTICS' } :
@@ -323,8 +376,26 @@ export default function SelectionPanel(props: Props) {
                   <span className="text-sentinel-muted">WGS84</span>
                   <span>{centroid ? `${centroid[0].toFixed(4)}° N, ${centroid[1].toFixed(4)}° E` : 'n/a'}</span>
                   <span className="text-sentinel-muted">MGRS</span><span>{mgrsString || 'n/a'}</span>
+                  <span className="text-sentinel-muted">ELEV</span>
+                  <span>
+                    {elevation.status === 'loading'
+                      ? '…'
+                      : elevation.status === 'unavailable' || elevation.value == null
+                        ? '—'
+                        : `${elevation.value.toFixed(0)} m MSL`}
+                  </span>
                   <span className="text-sentinel-muted">MOTION</span><span>{motion || 'static'}</span>
                 </div>
+                <button
+                  type="button"
+                  onClick={exportTargetPackage}
+                  disabled={exportingPkg}
+                  className="mt-3 inline-flex w-full items-center justify-center gap-2 border border-sentinel-line bg-sentinel-bg px-2 py-1.5 font-mono text-[10.5px] uppercase tracking-[.08em] text-slate-200 hover:bg-sentinel-panel disabled:opacity-50"
+                  title="Generate a PDF Target Package for this detection"
+                >
+                  <FileDown size={12} />
+                  {exportingPkg ? 'Generating…' : 'Generate Target Package'}
+                </button>
               </div>
 
               {sizeEstimate && (

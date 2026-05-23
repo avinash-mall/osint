@@ -6,7 +6,7 @@
  * caller maps that back to ISO timestamps for the imagery filter.
  */
 
-import { Pause, Play, RotateCcw } from 'lucide-react';
+import { Pause, Play, RotateCcw, SplitSquareHorizontal, X } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { ModalityBadge, Panel } from '../atoms';
 
@@ -42,6 +42,10 @@ export default function TimeMachineBar({
   isoNow,
   confidence,
   onConfidenceChange,
+  activePassId = null,
+  comparePassId = null,
+  onPassPin,
+  onClearCompare,
 }: {
   passes: ImageryPass[];
   range: Range;
@@ -54,7 +58,16 @@ export default function TimeMachineBar({
   isoNow: string;
   confidence: number; // 0..1 — hide detections below this floor
   onConfidenceChange: (v: number) => void;
+  /** ID of the imagery pass currently rendered as the primary layer. */
+  activePassId?: number | null;
+  /** ID of the imagery pass pinned for side-by-side comparison. */
+  comparePassId?: number | null;
+  /** Alt-click on a pass diamond, or click the chip's pin button. Toggles a pass into the compare slot. */
+  onPassPin?: (id: number) => void;
+  /** Clear the compare slot. */
+  onClearCompare?: () => void;
 }) {
+  const comparePass = comparePassId != null ? passes.find((p) => p.id === comparePassId) : null;
   const ms = RANGE_HOURS[range] * 3600_000;
   const end = Date.parse(isoNow);
   const start = end - ms;
@@ -145,6 +158,67 @@ export default function TimeMachineBar({
         <span className="mono" style={{ fontSize: 10.5, color: 'var(--accent)' }}>
           {dots.length} passes
         </span>
+        {(() => {
+          if (comparePass) {
+            return (
+              <span
+                title="Side-by-side compare active — drag the divider on the map"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  padding: '2px 6px',
+                  border: '1px solid var(--accent)',
+                  color: 'var(--accent)',
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 10,
+                  textTransform: 'uppercase',
+                  letterSpacing: '.06em',
+                }}
+              >
+                <SplitSquareHorizontal size={10} />
+                vs Pass {comparePass.id}
+                <button
+                  type="button"
+                  onClick={() => onClearCompare?.()}
+                  title="Exit compare"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    padding: 0,
+                    background: 'transparent',
+                    color: 'inherit',
+                    border: 'none',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <X size={10} />
+                </button>
+              </span>
+            );
+          }
+          if (activePassId == null || !onPassPin) return null;
+          // Offer a one-click "compare previous" button: pick the closest
+          // pass earlier in time than the active one and pin it.
+          const ordered = passes
+            .filter((p) => p.acquisition_time)
+            .sort((a, b) => Date.parse(b.acquisition_time as string) - Date.parse(a.acquisition_time as string));
+          const idx = ordered.findIndex((p) => p.id === activePassId);
+          const prev = idx >= 0 ? ordered[idx + 1] : null;
+          if (!prev) return null;
+          return (
+            <button
+              type="button"
+              onClick={() => onPassPin(prev.id)}
+              title={`Compare against Pass ${prev.id}`}
+              className="btn xs"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+            >
+              <SplitSquareHorizontal size={10} />
+              Compare
+            </button>
+          );
+        })()}
       </div>
 
       <div
@@ -206,7 +280,13 @@ export default function TimeMachineBar({
                 boxShadow: active ? `0 0 10px ${c}` : 'none',
                 cursor: 'pointer',
               }}
-              onClick={() => onValueChange(p.frac)}
+              onClick={(e) => {
+                if ((e.altKey || e.shiftKey) && onPassPin) {
+                  onPassPin(p.id);
+                  return;
+                }
+                onValueChange(p.frac);
+              }}
             />
           );
         })}

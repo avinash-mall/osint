@@ -26,3 +26,5 @@ klvdata
 construct>=2.10
 ldap3>=2.9
 itsdangerous>=2.1
+reportlab>=4.0
+mgrs>=1.4

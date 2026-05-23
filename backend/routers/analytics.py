@@ -13,7 +13,7 @@ import logging
 import math
 import os
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from change_detection import compute_change
 from database import postgis_db
@@ -21,7 +21,7 @@ from events import publish_event
 from geometry import make_square_feature
 from platform_schema import ensure_platform_tables
 from schemas import AnalyticsRequest
-from terrain import dem_available, line_of_sight, viewshed as compute_viewshed
+from terrain import dem_available, line_of_sight, sample_elevation, viewshed as compute_viewshed
 from routing import compute_routes, graph_available
 
 logger = logging.getLogger(__name__)
@@ -183,17 +183,44 @@ def run_los(req: AnalyticsRequest):
             },
         }
         features = [line_feature]
-        if real["blocking_points"]:
+        # Emit one Point feature per obstruction so the frontend can bind a
+        # per-point tooltip carrying elevation, clearance, and distance — see
+        # docs/decisions/los-obstruction-point-features.md. The legacy single
+        # MultiPoint with only `count` discarded per-sample DEM data.
+        for b in real["blocking_points"]:
             features.append({
                 "type": "Feature",
-                "geometry": {
-                    "type": "MultiPoint",
-                    "coordinates": [[b["lon"], b["lat"]] for b in real["blocking_points"]],
+                "geometry": {"type": "Point", "coordinates": [b["lon"], b["lat"]]},
+                "properties": {
+                    "role": "obstruction",
+                    "elevation_m": b["elevation_m"],
+                    "los_m": b["los_m"],
+                    "clearance_m": b["clearance_m"],
+                    "distance_m": b["distance_m"],
                 },
-                "properties": {"role": "obstruction", "count": len(real["blocking_points"])},
             })
         result = {"type": "FeatureCollection", "features": features, "mode": "dem"}
     return {"job": _store_analytics_result("los", req.dict(), result), "result": result}
+
+
+@router.get("/api/analytics/elevation")
+def get_elevation(
+    lat: float = Query(..., ge=-90.0, le=90.0),
+    lon: float = Query(..., ge=-180.0, le=180.0),
+):
+    """Sample the DEM at (lat, lon). Returns {elevation_m: float | null}.
+
+    503 when the DEM is not configured. ``elevation_m`` may be null when the
+    point falls in a nodata pixel even though a DEM is available.
+    """
+    if not dem_available():
+        raise HTTPException(status_code=503, detail="Elevation unavailable: DEM resource is not configured.")
+    try:
+        value = sample_elevation(lat, lon)
+    except Exception as exc:
+        logger.warning("elevation: DEM sample failed at %s,%s: %s", lat, lon, exc)
+        raise HTTPException(status_code=503, detail=f"Elevation unavailable: {exc}") from exc
+    return {"elevation_m": float(value) if value is not None else None}
 
 
 def _routes_fixture(obs: tuple[float, float], dst: tuple[float, float]) -> dict:

@@ -44,7 +44,8 @@ export type ActiveLayerMap = {
   tracks: boolean;
   detectionTracks: boolean;
   static: boolean;
-  grid: boolean;
+  borders: boolean;
+  graticule: boolean;
   viewshed: boolean;
   los: boolean;
   routes: boolean;
@@ -206,7 +207,8 @@ export default function LayerPanel({
     { key: 'detections', label: 'AI Detections',     metric: visibleDetectionCount, colorVar: 'var(--color-sentinel-accent)' },
     { key: 'tracks',     label: 'Active Tracks',     metric: tracksCount,           colorVar: 'var(--color-sentinel-info)'   },
     { key: 'static',     label: 'Static Features',   metric: staticCount,           colorVar: 'var(--color-sentinel-crit)'   },
-    { key: 'grid',       label: 'Tactical Grid',     metric: 'WGS84',               colorVar: 'var(--color-sentinel-muted)'  },
+    { key: 'borders',    label: 'Borders',           metric: 'ADMIN',               colorVar: 'var(--color-sentinel-muted)'  },
+    { key: 'graticule',  label: 'Graticule',         metric: 'MGRS',                colorVar: 'var(--color-sentinel-info)'   },
   ] as const;
   const analyticsToolRows = [
     { key: 'viewshed', label: 'Viewshed',      metric: analyticsCounts.viewshed, colorVar: 'var(--color-sentinel-accent)', available: analyticsCounts.viewshedAvailable },

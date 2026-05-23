@@ -177,6 +177,8 @@ export default function GaiaMap({
   const [tmRange, setTmRange] = useState<'24h' | '7d' | '30d'>('24h');
   const [tmValue, setTmValue] = useState(1);
   const [tmPlaying, setTmPlaying] = useState(false);
+  // Side-by-side imagery comparator — see SwipeControl.tsx.
+  const [compareImageryId, setCompareImageryId] = useState<number | null>(null);
   const [confidenceThreshold, setConfidenceThreshold] = useState(0);
   const [timeRange, setTimeRange] = useState<{ start: string; end: string }>(() => {
     const now = new Date();
@@ -193,7 +195,8 @@ export default function GaiaMap({
     tracks: true,
     detectionTracks: true,
     static: true,
-    grid: true,
+    borders: true,
+    graticule: false,
     viewshed: false,
     los: false,
     routes: false,
@@ -1163,6 +1166,12 @@ export default function GaiaMap({
         isLoading={isLoading}
         categories={DETECTION_CATEGORIES}
         branchById={branchById}
+        compareImagery={
+          compareImageryId
+            ? imagery.find((p: any) => Number(p.id) === compareImageryId) || null
+            : null
+        }
+        onClearCompare={() => setCompareImageryId(null)}
       />
 
       {/* Floating event-timeline panel, anchored to the bottom and inset
@@ -1220,6 +1229,10 @@ export default function GaiaMap({
                 isoNow={new Date().toISOString()}
                 confidence={confidenceThreshold}
                 onConfidenceChange={setConfidenceThreshold}
+                activePassId={selectedImagery ?? null}
+                comparePassId={compareImageryId}
+                onPassPin={(id) => setCompareImageryId(id === compareImageryId ? null : id)}
+                onClearCompare={() => setCompareImageryId(null)}
               />
             </div>
           )}

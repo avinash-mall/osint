@@ -14,7 +14,8 @@ Spatial analyses from the **Analytics Tools** panel. Each endpoint has a fixture
 |---|---|---|---|
 | `POST` | `/api/analytics/change` | [analytics.py#L56](../../backend/routers/analytics.py#L56) | Two-pass raster change polygons |
 | `POST` | `/api/analytics/viewshed` | [analytics.py#L101](../../backend/routers/analytics.py#L101) | DEM viewshed polygon around observer |
-| `POST` | `/api/analytics/los` | [analytics.py#L146](../../backend/routers/analytics.py#L146) | Line-of-sight result between two points |
+| `POST` | `/api/analytics/los` | [analytics.py#L146](../../backend/routers/analytics.py#L146) | Line-of-sight result between two points — each obstruction is its own `Point` feature with `elevation_m` / `clearance_m` / `distance_m`; see [decisions/los-obstruction-point-features.md](../decisions/los-obstruction-point-features.md) |
+| `GET`  | `/api/analytics/elevation` | [analytics.py#L210](../../backend/routers/analytics.py#L210) | DEM elevation at a single (lat, lon); used by the SelectionPanel ELEV row |
 | `POST` | `/api/analytics/routes` | [analytics.py#L218](../../backend/routers/analytics.py#L218) | Shortest routes on the pickled osmnx graph |
 | `POST` | `/api/analytics/pol` | [analytics.py#L243](../../backend/routers/analytics.py#L243) | Patterns-of-life over a time window in an AOI |
 | `GET` | `/api/analytics/capabilities` | [analytics.py#L264](../../backend/routers/analytics.py#L264) | Booleans: `dem_available`, `routing_graph_available` |

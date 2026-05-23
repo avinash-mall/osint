@@ -48,6 +48,7 @@ backend-routers/inference-router.md|router|/api/inference/load,unload,health,das
 backend-routers/ingest-router.md|router|/api/ingest/upload, url, ingest, uploads, jobs
 backend-routers/models-training-router.md|router|/api/models, /api/training, dataset registration, promotion
 backend-routers/ontology-router.md|router,ontology|/api/ontology branches/objects/prompts/profiles/unknown-labels/version-history
+backend-routers/reports-router.md|router|/api/reports/target-package/{id} — ReportLab PDF export for SelectionPanel
 backend-routers/system-router.md|router|/api/system/deployment-mode — env-driven login banner posture
 backend-routers/websocket-router.md|router|/ws Redis-bridged push channel
 inference/service-overview.md|inference,sam3|FastAPI service: SAM3+SAM3.1+YOLOE+DINOv3+Prithvi+TerraMind+DOTA+GDINO+RemoteCLIP
@@ -113,14 +114,19 @@ operations/change-detection-runbook.md|operations,imagery|launching a two-pass c
 operations/health-monitoring.md|operations|Health Dashboard, /api/health, replica chips, alert escalation
 operations/auth-and-ldap-setup.md|operations,auth|env-bootstrap admin, Admin->Auth LDAP form, test bind workflows
 operations/llm-ava-configuration.md|operations|OPENAI_API_BASE pointing at vLLM/Ollama, graceful degradation
+decisions/borders-vs-graticule-split.md|decision,frontend|LayerPanel "Tactical Grid" split into Borders (admin GeoJSON) and Graticule (coordinate grid)
 decisions/cached-forward-device-normalise.md|decision,sam3|multi-GPU _get_img_feats crash: pin thread-local CUDA device so SAM3 collator builds img_ids right
 decisions/disable-addmm-cuda-lt.md|decision,gpu|routes nn.Linear off cuBLAS-Lt to dodge A100/cu130 corruption bug
 decisions/implemented-ontology-updates-endpoint.md|decision|registers GET /api/ontology/updates to fix Link Graph bottom strip 404
+decisions/live-mgrs-cursor-readout.md|decision,frontend|cursor chip MGRS string now live via mgrs.forward; was hardcoded "AUTO" placeholder
+decisions/los-obstruction-point-features.md|decision,backend,frontend|LOS endpoint emits one Point per obstruction with elev/clearance/distance for per-point tooltips
+decisions/manual-draw-modal-replaces-prompt.md|decision,frontend|in-app ManualDetectionDialog replaces window.prompt; hardened browsers block native prompts
 decisions/merged-additions-responsive-css.md|decision,frontend|additions.responsive.css folded into index.css to kill duplicate/drifting rules
 decisions/removed-defence-yolo.md|decision|DEFENCE_YOLO emitted 1297 FPs / 0 TPs on DOTA val
 decisions/removed-dinov3-lvd.md|decision|DINOV3_LVD emitted NaN embeddings on drone-video crops
 decisions/removed-sam3-amg.md|decision,fmv|SAM3 AMG path removed in favor of YOLOE
 decisions/reset-db-pool-after-fork.md|decision,celery|worker_process_init resets PostGIS pool so prefork children don't share libpq sockets
+decisions/temporal-swipe-comparator.md|decision,frontend|side-by-side imagery comparator via custom Leaflet pane + clip-path; no plugin dependency
 decisions/why-basemap-overlay-composition.md|decision,frontend|imagery is bottom ground-truth; BASE/TERRAIN are reference overlays on top; opacity fades overlay
 decisions/why-basemap-z14-cap.md|decision,frontend,deployment|offline bake to z=14 + overlay unmounts above; imagery is source of truth past z=14
 decisions/why-bbox-toggle-removed.md|decision,frontend|BBOX toggle removed; detection boxes always render, GEOM toolbar defaults to OBB

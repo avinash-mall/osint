@@ -32,12 +32,24 @@ The basemap selector is a **thumbnail gallery** — three 56×40 hand-painted `B
   - tile URL uses the `.webp` format extension (~5× smaller than PNG for 3-band RGB).
   See [decisions/why-sat-tiles-cap-at-native-zoom.md](../decisions/why-sat-tiles-cap-at-native-zoom.md).
 - **Time filter** comes from `TimeMachineBar`'s `(start, end)` range.
-- **Cursor lat/lng** published up to Shell via `MapEventHandlers` for the topbar readout.
+- **Cursor lat/lng** published up to Shell via `MapEventHandlers` for the topbar readout. The bottom-left cursor chip also renders a live MGRS string via `mgrs.forward([cursor.lon, cursor.lat], 5)` (was previously a hardcoded "MGRS AUTO" placeholder) — see [decisions/live-mgrs-cursor-readout.md](../decisions/live-mgrs-cursor-readout.md).
+- **Manual detection class entry** — drawing a rectangle in Draw mode now opens an in-app `ManualDetectionDialog` (themed, focus-trapped) instead of `window.prompt`, because hardened defense browser profiles block native prompts; see [decisions/manual-draw-modal-replaces-prompt.md](../decisions/manual-draw-modal-replaces-prompt.md).
+- **Reference overlays in LayerPanel** are now split into two toggles:
+  - `borders` — admin/country GeoJSON (the layer formerly mislabeled "Tactical Grid"), rendered by `MapStage` when `activeLayers.borders` is true.
+  - `graticule` — a true coordinate graticule rendered by `MgrsGraticule.tsx`: degree lines at low zoom that switch to MGRS-aligned grid bands at higher zoom. Pure-Leaflet, uses the existing `mgrs` package; no new dependency. See [decisions/borders-vs-graticule-split.md](../decisions/borders-vs-graticule-split.md).
+- **Range rings** — a toolbar button activates one-shot click pick mode; the picked center opens `RangeRingsDialog` for comma-separated radii (km). The map renders one `Circle` per radius and a center dot whose right-click removes the ring set. Session state only — not persisted.
+- **Side-by-side imagery compare** — when GaiaMap supplies a `compareImagery` pass, `SwipeControl.tsx` mounts a second TileLayer in a custom `sentinel-compare` Leaflet pane and clips it with CSS `clip-path: inset(0 0 0 N%)` driven by a draggable divider chip. No external plugin — keeps the workstation offline-safe.
+- **LOS obstruction tooltips** — obstruction features are rendered as individual `CircleMarker`s (Point per obstruction), each carrying a sticky tooltip with `ELEV`, `BLOCKED clearance`, `distance` from observer.
 - **Focus mode** (UX-AUDIT F12) — `F` (or the eye button in the zoom cluster) collapses floating map chrome to the viewport edges via `.map-focus-on` / `.map-focus-collapsible` classes, leaving a 24 px hover lip. Floating zoom controls are 32×32 px, wired to the live Leaflet instance, with keyboard hints in tooltips (F14).
 
 ## Cross-references
 
 - [decisions/why-bbox-toggle-removed.md](../decisions/why-bbox-toggle-removed.md)
+- [decisions/live-mgrs-cursor-readout.md](../decisions/live-mgrs-cursor-readout.md)
+- [decisions/manual-draw-modal-replaces-prompt.md](../decisions/manual-draw-modal-replaces-prompt.md)
+- [decisions/borders-vs-graticule-split.md](../decisions/borders-vs-graticule-split.md)
+- [decisions/temporal-swipe-comparator.md](../decisions/temporal-swipe-comparator.md)
+- [decisions/los-obstruction-point-features.md](../decisions/los-obstruction-point-features.md)
 - [decisions/why-basemap-overlay-composition.md](../decisions/why-basemap-overlay-composition.md)
 - [decisions/why-basemap-z14-cap.md](../decisions/why-basemap-z14-cap.md)
 - [decisions/why-layerpanel-dot-toggle.md](../decisions/why-layerpanel-dot-toggle.md)

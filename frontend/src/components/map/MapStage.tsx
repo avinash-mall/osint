@@ -11,12 +11,14 @@
  */
 
 import L from 'leaflet';
+import { forward as mgrsForward } from 'mgrs';
 import {
   Crosshair,
   Eye,
   EyeOff,
   Minus,
   Plus,
+  Target,
 } from 'lucide-react';
 import {
   forwardRef,
@@ -55,17 +57,22 @@ import {
   type DetectionTrack,
 } from './_helpers';
 import { DetectionSubclassIcon, blueIcon, createIcon, emeraldIcon, redIcon } from './_icons';
+import ManualDetectionDialog from './ManualDetectionDialog';
+import MgrsGraticule from './MgrsGraticule';
+import SwipeControl from './SwipeControl';
 import type { AnalyticsPick } from './AnalyticsToolsPanel';
 import type { AnalyticsResponse } from '../../services/analytics';
 import {
   AnalyticsPickHandler,
   DrawRectHandler,
   MapBoundsUpdater,
+  MapClickPicker,
   MapCursorTracker,
   MapFitToDetections,
   MapFitToImagery,
   MapZoomTracker,
 } from './MapEventHandlers';
+import RangeRingsDialog from './RangeRingsDialog';
 import type { ActiveLayerMap, BaseLayer } from './LayerPanel';
 
 const CARTO_BASEMAP_URL = '/basemap/{z}/{x}/{y}.png';
@@ -146,6 +153,10 @@ export type Props = {
   /* ontology helpers */
   categories: DetectionCategoryMap;
   branchById: Map<string, OntologyBranch>;
+
+  /* side-by-side imagery compare (optional) */
+  compareImagery?: any | null;
+  onClearCompare?: () => void;
 };
 
 const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
@@ -192,9 +203,20 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
     isLoading,
     categories,
     branchById,
+    compareImagery,
+    onClearCompare,
   } = props;
 
   const mapInstance = useRef<L.Map | null>(null);
+  const [stagedManualBounds, setStagedManualBounds] = useState<L.LatLngBounds | null>(null);
+
+  // Range Rings — session-only tactical overlays. The first map click while
+  // `rangeRingMode` is true opens the dialog; the dialog returns a list of
+  // radii (km) which are persisted in `rangeRings` until the operator
+  // dismisses the page or right-clicks a ring centre.
+  const [rangeRingMode, setRangeRingMode] = useState(false);
+  const [stagedRingCenter, setStagedRingCenter] = useState<{ lat: number; lon: number } | null>(null);
+  const [rangeRings, setRangeRings] = useState<Array<{ id: string; lat: number; lon: number; radiiKm: number[] }>>([]);
 
   // UX-AUDIT F12 — focus mode collapses the floating map chrome to the
   // viewport edges (a 24 px hover lip remains). Toggled by `F` or the
@@ -259,17 +281,16 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
           />
           <DrawRectHandler
             enabled={drawMode}
-            onFinish={async (bounds) => {
-              const cls = window.prompt(
-                'Object class for this manual detection (e.g. tank, frigate, building):',
-                'unknown',
-              )?.trim();
-              if (cls === undefined) {
-                setDrawMode(false);
-                return;
-              }
-              await createManualDetection(bounds, { object_class: cls || 'unknown' });
+            onFinish={(bounds) => {
+              setStagedManualBounds(bounds);
               setDrawMode(false);
+            }}
+          />
+          <MapClickPicker
+            enabled={rangeRingMode && !stagedRingCenter}
+            onPicked={(lat, lon) => {
+              setStagedRingCenter({ lat, lon });
+              setRangeRingMode(false);
             }}
           />
           <MapFitToImagery imagery={selectedImageryData} />
@@ -283,6 +304,15 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
 
           {/* 1. SAT imagery — ground truth, bottom of the stack, full opacity.
                  Rendered whenever imagery is loaded, in every mode. */}
+          {compareImagery && compareImagery.file_path && (
+            <SwipeControl
+              url={`${TILE_PROXY_URL}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.webp?url=${encodeURIComponent(compareImagery.file_path)}`}
+              maxNativeZoom={compareImagery.native_max_zoom ?? 18}
+              label={compareImagery.name || `Pass ${compareImagery.id}`}
+              onClose={() => onClearCompare?.()}
+            />
+          )}
+
           {activeLayers.satellite && selectedImageryData && (
             <TileLayer
               key={`sat-${selectedImageryData.id}`}
@@ -380,7 +410,60 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
             );
           })}
 
-          {activeLayers.grid && (
+          {activeLayers.graticule && <MgrsGraticule />}
+
+          {rangeRings.flatMap((ring) => [
+            ...ring.radiiKm.map((rKm, idx) => {
+                const palette = ['#ffb14a', '#ff7a1a', '#ff5577'];
+                const color = palette[Math.min(idx, palette.length - 1)];
+              return (
+                <Circle
+                  key={`ring-${ring.id}-${rKm}`}
+                  center={[ring.lat, ring.lon]}
+                  radius={rKm * 1000}
+                  pathOptions={{
+                    color,
+                    weight: 1.5,
+                    opacity: 0.85,
+                    fill: false,
+                    dashArray: idx === 0 ? undefined : '4 4',
+                  }}
+                  eventHandlers={{
+                    add: (e) => {
+                      (e.target as L.Circle).bindTooltip(
+                        `Range ${rKm.toFixed(1)} km`,
+                        { sticky: true, opacity: 0.9 },
+                      );
+                    },
+                  }}
+                />
+              );
+            }),
+            <CircleMarker
+              key={`ring-center-${ring.id}`}
+              center={[ring.lat, ring.lon]}
+              radius={4}
+              pathOptions={{
+                color: '#ffb14a',
+                weight: 1,
+                fillColor: '#ffb14a',
+                fillOpacity: 1,
+              }}
+              eventHandlers={{
+                contextmenu: () => {
+                  setRangeRings((cur) => cur.filter((r) => r.id !== ring.id));
+                },
+                add: (e) => {
+                  (e.target as L.CircleMarker).bindTooltip(
+                    `Range ring center · right-click to remove`,
+                    { sticky: true, opacity: 0.9 },
+                  );
+                },
+              }}
+            />,
+          ])}
+
+          {activeLayers.borders && (
             <GeoJSON
               data={basemapGeoJSON}
               style={() => ({
@@ -656,32 +739,66 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
             />
           )}
 
-          {activeLayers.los && analyticsResults.los?.result && (
-            <GeoJSON
-              key={`los-${analyticsResults.los.job.id}`}
-              data={analyticsResults.los.result as any}
-              style={(feature) => {
-                const visible = !!feature?.properties?.visible;
-                const role = feature?.properties?.role;
-                if (role === 'obstruction') {
-                  return { color: '#ff5577', weight: 0, fillColor: '#ff5577', fillOpacity: 0.7 };
-                }
-                return {
-                  color: visible ? '#5ee0a0' : '#ff5577',
-                  weight: 3,
-                  opacity: 0.95,
-                  dashArray: visible ? undefined : '6 4',
-                };
-              }}
-              onEachFeature={(feature, layer) => {
-                const p = feature?.properties || {};
-                const tip = p.role === 'obstruction'
-                  ? `Obstructions · ${p.count} pts`
-                  : `LOS · ${p.visible ? 'visible' : 'blocked'} · clearance ${Number(p.clearance_m || 0).toFixed(1)} m`;
-                layer.bindTooltip(tip, { sticky: true, opacity: 0.92 });
-              }}
-            />
-          )}
+          {activeLayers.los && analyticsResults.los?.result && (() => {
+            const fc: any = analyticsResults.los.result;
+            const allFeatures: any[] = Array.isArray(fc?.features) ? fc.features : [];
+            const lineFeatures = allFeatures.filter((f) => f?.properties?.role !== 'obstruction');
+            const obstructionFeatures = allFeatures.filter((f) => f?.properties?.role === 'obstruction'
+              && f?.geometry?.type === 'Point');
+            const lineCollection = { type: 'FeatureCollection', features: lineFeatures };
+            return (
+              <>
+                <GeoJSON
+                  key={`los-line-${analyticsResults.los.job.id}`}
+                  data={lineCollection as any}
+                  style={(feature) => {
+                    const visible = !!feature?.properties?.visible;
+                    return {
+                      color: visible ? '#5ee0a0' : '#ff5577',
+                      weight: 3,
+                      opacity: 0.95,
+                      dashArray: visible ? undefined : '6 4',
+                    };
+                  }}
+                  onEachFeature={(feature, layer) => {
+                    const p = feature?.properties || {};
+                    const tip = `LOS · ${p.visible ? 'visible' : 'blocked'} · clearance ${Number(p.clearance_m || 0).toFixed(1)} m`;
+                    layer.bindTooltip(tip, { sticky: true, opacity: 0.92 });
+                  }}
+                />
+                {obstructionFeatures.map((feat, idx) => {
+                  const [lon, lat] = feat.geometry.coordinates || [0, 0];
+                  const p = feat.properties || {};
+                  const elev = typeof p.elevation_m === 'number' ? `${p.elevation_m.toFixed(0)} m` : '—';
+                  const clearance = typeof p.clearance_m === 'number' ? `${p.clearance_m.toFixed(1)} m` : '—';
+                  const dist = typeof p.distance_m === 'number'
+                    ? (p.distance_m >= 1000 ? `${(p.distance_m / 1000).toFixed(2)} km` : `${p.distance_m.toFixed(0)} m`)
+                    : '—';
+                  return (
+                    <CircleMarker
+                      key={`los-obs-${analyticsResults.los?.job.id}-${idx}`}
+                      center={[lat, lon]}
+                      radius={5}
+                      pathOptions={{
+                        color: '#ff5577',
+                        weight: 1,
+                        fillColor: '#ff5577',
+                        fillOpacity: 0.85,
+                      }}
+                      eventHandlers={{
+                        add: (e) => {
+                          (e.target as L.CircleMarker).bindTooltip(
+                            `OBSTRUCTION · ELEV ${elev} · BLOCKED ${clearance} · ${dist} out`,
+                            { sticky: true, opacity: 0.92, direction: 'top' },
+                          );
+                        },
+                      }}
+                    />
+                  );
+                })}
+              </>
+            );
+          })()}
 
           {activeLayers.routes && analyticsResults.routes?.result && (
             <GeoJSON
@@ -723,7 +840,14 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
             <div className="sentinel-label">cursor</div>
             <div>LAT {cursor.lat.toFixed(3).padStart(8, ' ')} deg</div>
             <div>LON {cursor.lon.toFixed(3).padStart(8, ' ')} deg</div>
-            <div className="mt-1 text-sentinel-muted">MGRS <span className="text-slate-200">AUTO</span></div>
+            <div className="mt-1 text-sentinel-muted">
+              MGRS <span className="text-slate-200 font-mono">
+                {(() => {
+                  try { return mgrsForward([cursor.lon, cursor.lat], 5); }
+                  catch { return 'n/a'; }
+                })()}
+              </span>
+            </div>
           </div>
           <div className="map-focus-collapsible map-focus-right absolute right-3 bottom-4 border border-sentinel-line-2 bg-sentinel-panel px-3 py-2 font-mono text-[11px]">
             <div className="sentinel-label">scale</div>
@@ -836,6 +960,19 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
               <Crosshair className="h-3.5 w-3.5" />
               {drawMode ? 'Cancel draw' : 'Draw object'}
             </button>
+            <button
+              type="button"
+              onClick={() => setRangeRingMode((v) => !v)}
+              title={rangeRingMode ? 'Cancel range-ring placement' : 'Place range rings around a point'}
+              className={`flex items-center gap-2 border px-3 py-1.5 font-mono text-[11px] uppercase tracking-widest transition ${
+                rangeRingMode
+                  ? 'border-sentinel-accent bg-sentinel-accent/15 text-sentinel-accent'
+                  : 'border-sentinel-line-2 bg-sentinel-panel text-sentinel-text hover:border-sentinel-accent/60'
+              }`}
+            >
+              <Target className="h-3.5 w-3.5" />
+              {rangeRingMode ? 'Cancel ring' : 'Range ring'}
+            </button>
             {drawError && (
               <div className="mt-1 border border-red-500 bg-red-500/10 px-2 py-1 font-mono text-[10px] text-red-300">
                 {drawError}
@@ -859,6 +996,28 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
           </div>
         )}
       </div>
+      <ManualDetectionDialog
+        bounds={stagedManualBounds}
+        onConfirm={async (cls) => {
+          const bounds = stagedManualBounds;
+          setStagedManualBounds(null);
+          if (bounds) {
+            await createManualDetection(bounds, { object_class: cls });
+          }
+        }}
+        onCancel={() => setStagedManualBounds(null)}
+      />
+      <RangeRingsDialog
+        center={stagedRingCenter}
+        onConfirm={(radiiKm) => {
+          if (stagedRingCenter) {
+            const id = `${stagedRingCenter.lat.toFixed(5)}-${stagedRingCenter.lon.toFixed(5)}-${Date.now()}`;
+            setRangeRings((cur) => [...cur, { id, lat: stagedRingCenter.lat, lon: stagedRingCenter.lon, radiiKm }]);
+          }
+          setStagedRingCenter(null);
+        }}
+        onCancel={() => setStagedRingCenter(null)}
+      />
     </section>
   );
 });
