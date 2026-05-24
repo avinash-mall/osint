@@ -261,6 +261,11 @@ celery_app.conf.beat_schedule = {
         "task": "worker.tick_repeat_detector",
         "schedule": float(env_int("REPEAT_DETECTOR_INTERVAL_S", 24 * 60 * 60)),
     },
+    # Phase 4.E: weekly name-match/embedding similarity → POSSIBLY_SAME_AS.
+    "tick-entity-resimilarity": {
+        "task": "worker.tick_entity_resimilarity",
+        "schedule": float(env_int("ENTITY_RESIMILARITY_INTERVAL_S", 7 * 24 * 60 * 60)),
+    },
 }
 celery_app.conf.timezone = "UTC"
 
@@ -3362,6 +3367,72 @@ def tick_near_builder() -> dict:
         "sites_skipped": sites_skipped,
         "near_edges_written": total_edges,
     }
+
+
+@celery_app.task(name="worker.tick_entity_resimilarity", queue="default")
+def tick_entity_resimilarity() -> dict:
+    """Phase 4 beat task: emit ``:POSSIBLY_SAME_AS`` candidate edges between
+    operational entities that might refer to the same real-world thing.
+
+    Phase 4 ships a cheap offline heuristic (case-insensitive name-prefix
+    overlap within the same ``kind``); the DINOv3-embedding similarity path
+    is the upgrade slot — when the embedding service is wired, swap the
+    `_proposals_for_kind` body for an O(N²) cosine pass over re-id
+    embeddings without changing the task's interface.
+
+    All candidates are bounded by ``ENTITY_RESIMILARITY_MAX_PAIRS`` per run
+    (default 500) so this never floods the analyst review queue.
+    """
+    from graph_writes import merge_possibly_same_as_batch
+
+    max_pairs = env_int("ENTITY_RESIMILARITY_MAX_PAIRS", 500)
+    rows: list[dict] = []
+
+    def _proposals_for_kind(kind: str) -> list[dict]:
+        with postgis_db.get_cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, name FROM operational_entities
+                WHERE kind = %s
+                ORDER BY id
+                """,
+                (kind,),
+            )
+            entities = [(r["id"], (r["name"] or "").strip().lower()) for r in cursor.fetchall()]
+        out: list[dict] = []
+        for i, (a_id, a_name) in enumerate(entities):
+            if not a_name:
+                continue
+            for b_id, b_name in entities[i + 1:]:
+                if not b_name or a_id == b_id:
+                    continue
+                # Cheap score: shared 4+ char prefix OR substring containment.
+                shared = 0
+                while shared < min(len(a_name), len(b_name)) and a_name[shared] == b_name[shared]:
+                    shared += 1
+                contained = a_name in b_name or b_name in a_name
+                score = 0.0
+                if contained:
+                    score = max(score, 0.8)
+                if shared >= 4:
+                    score = max(score, 0.5 + 0.05 * (shared - 4))
+                if score >= 0.5:
+                    out.append({"a_id": a_id, "b_id": b_id, "score": round(min(score, 0.99), 3), "source": "name_match"})
+                    if len(out) >= max_pairs:
+                        return out
+        return out
+
+    for kind in ("vessel", "aircraft", "vehicle", "facility", "unit"):
+        try:
+            rows.extend(_proposals_for_kind(kind))
+        except Exception:
+            logger.exception("tick_entity_resimilarity: kind=%s failed", kind)
+        if len(rows) >= max_pairs:
+            rows = rows[:max_pairs]
+            break
+
+    written = merge_possibly_same_as_batch(rows)
+    return {"proposals": len(rows), "edges_written": written, "max_pairs": max_pairs}
 
 
 @celery_app.task(name="worker.tick_repeat_detector", queue="default")
