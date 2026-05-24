@@ -124,6 +124,103 @@ def delete_candidate_detected_as(*, detection_id: int, target_id: str) -> int:
         return 0
 
 
+_SITE_KIND_TO_LABEL = {
+    "base": "Base",
+    "launchpoint": "LaunchPoint",
+    "launch_point": "LaunchPoint",
+    "facility": "Facility",
+}
+
+
+def merge_site_from_aoi(
+    *,
+    aoi_postgis_id: int,
+    kind: str,
+    name: str,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> str | None:
+    """MERGE a ``Base``/``LaunchPoint``/``Facility`` node mirroring an AOI row.
+
+    ``kind`` is matched case-insensitively against ``aoi_kind`` (``base``,
+    ``launchpoint``/``launch_point``, ``facility``). Returns the Neo4j
+    ``elementId`` of the merged node, or ``None`` if the kind is unrecognised
+    or the write fails (logged).
+
+    Identity: ``id = f"aoi-{aoi_postgis_id}"`` (the uniqueness constraint
+    is on ``n.id``); ``aoi_postgis_id`` is set as a property so PostGIS
+    joins can find the AOI polygon for spatial queries.
+    """
+    label = _SITE_KIND_TO_LABEL.get((kind or "").lower())
+    if label is None:
+        return None
+    site_id = f"aoi-{aoi_postgis_id}"
+    extras = {k: v for k, v in (metadata or {}).items() if k not in {"aoi_kind"}}
+    try:
+        with db.get_session() as session:
+            result = session.run(
+                f"""
+                MERGE (n:{label} {{id: $id}})
+                  ON CREATE SET n.created_at = datetime()
+                SET n.aoi_postgis_id = $aoi_postgis_id,
+                    n.name = $name,
+                    n.latitude = $latitude,
+                    n.longitude = $longitude,
+                    n.metadata = $metadata,
+                    n.updated_at = datetime()
+                RETURN elementId(n) AS element_id
+                """,
+                {
+                    "id": site_id,
+                    "aoi_postgis_id": aoi_postgis_id,
+                    "name": name,
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "metadata": extras,
+                },
+            )
+            record = result.single()
+            return record["element_id"] if record else None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "graph_writes: merge_site_from_aoi(aoi=%s, kind=%s) failed: %s",
+            aoi_postgis_id,
+            kind,
+            exc,
+        )
+        return None
+
+
+def delete_site_for_aoi(*, aoi_postgis_id: int) -> int:
+    """Remove any Base/LaunchPoint/Facility mirror tied to this AOI row.
+
+    Used when an AOI is deleted or its ``aoi_kind`` is cleared. Returns the
+    number of nodes detached + deleted (0 or 1 in practice).
+    """
+    try:
+        with db.get_session() as session:
+            result = session.run(
+                """
+                MATCH (n)
+                WHERE n.aoi_postgis_id = $aoi_postgis_id
+                  AND any(l IN labels(n) WHERE l IN ['Base', 'LaunchPoint', 'Facility'])
+                DETACH DELETE n
+                RETURN count(n) AS removed
+                """,
+                {"aoi_postgis_id": aoi_postgis_id},
+            )
+            record = result.single()
+            return int(record["removed"]) if record else 0
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "graph_writes: delete_site_for_aoi(aoi=%s) failed: %s",
+            aoi_postgis_id,
+            exc,
+        )
+        return 0
+
+
 def promote_candidate_to_detected_as(
     *,
     candidate_id: int,

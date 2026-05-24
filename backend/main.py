@@ -177,6 +177,7 @@ from fmv_helpers import (
 
 from routers import ai as _ai_router
 from routers import analytics as _analytics_router
+from routers import aois as _aois_router
 from routers import auth as _auth_router
 from routers import detections as _detections_router
 from routers import fmv as _fmv_router
@@ -192,6 +193,7 @@ from routers import system as _system_router
 from routers import ws as _ws_router
 app.include_router(_ai_router.router)
 app.include_router(_analytics_router.router)
+app.include_router(_aois_router.router)
 app.include_router(_auth_router.router)
 app.include_router(_detections_router.router)
 app.include_router(_fmv_router.router)

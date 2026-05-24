@@ -41,6 +41,7 @@ backend/worker-legacy-monolith.md|backend,celery|4110-line worker_legacy.py: ima
 backend/worker-package-facade.md|backend,celery|worker/__init__.py namespace re-exports preserving Celery task names
 backend-routers/ai-router.md|router|/api/ai/* — LLM analyze/extract/link/propose-actions
 backend-routers/analytics-router.md|router|/api/analytics/* — change/viewshed/los/routes with fixture fallbacks
+backend-routers/aois-router.md|router|/api/aois CRUD; projects Base/LaunchPoint/Facility into Neo4j on metadata.aoi_kind
 backend-routers/auth-router.md|router,auth|/api/auth/* + /api/admin/auth/* — login, LDAP CRUD, test-connection
 backend-routers/detections-router.md|router|/api/detections/* — filters, similar, queue, candidate-links, review
 backend-routers/fmv-router.md|router,fmv|/api/fmv/clips, klv, detections, similar
