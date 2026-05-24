@@ -175,6 +175,7 @@ from fmv_helpers import (
     transcode_hls,
 )
 
+from routers import admin_thresholds as _admin_thresholds_router
 from routers import ai as _ai_router
 from routers import analytics as _analytics_router
 from routers import aois as _aois_router
@@ -192,6 +193,7 @@ from routers import ontology as _ontology_router
 from routers import reports as _reports_router
 from routers import system as _system_router
 from routers import ws as _ws_router
+app.include_router(_admin_thresholds_router.router)
 app.include_router(_ai_router.router)
 app.include_router(_analytics_router.router)
 app.include_router(_aois_router.router)

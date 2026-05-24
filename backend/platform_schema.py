@@ -441,6 +441,30 @@ def ensure_platform_tables() -> None:
                     last_run_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                 )
             """)
+            # Phase 5.B: per-class admin-editable thresholds that replace the
+            # env-var defaults in worker.tick_near_builder + worker.tick_repeat_detector.
+            # Modelled on `prompt_profiles` — one row per (kind, version), with
+            # `current=TRUE` marking the active row for each kind. UNIQUE on
+            # (kind, current=TRUE) is enforced via the partial index below.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS repeat_detector_thresholds (
+                    id              BIGSERIAL PRIMARY KEY,
+                    kind            VARCHAR(40) NOT NULL,
+                    window_days     INTEGER NOT NULL DEFAULT 30,
+                    min_count       INTEGER NOT NULL DEFAULT 5,
+                    near_radius_m   REAL NOT NULL DEFAULT 5000,
+                    current         BOOLEAN NOT NULL DEFAULT FALSE,
+                    notes           TEXT,
+                    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    created_by      VARCHAR(100),
+                    CHECK (kind IN ('base', 'launchpoint', 'facility'))
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_repeat_thresholds_kind ON repeat_detector_thresholds(kind)")
+            cursor.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_repeat_thresholds_kind_current "
+                "ON repeat_detector_thresholds(kind) WHERE current = TRUE"
+            )
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS ontology_updates (
                     id SERIAL PRIMARY KEY,

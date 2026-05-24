@@ -30,12 +30,14 @@ import TaxonomyVersionView from './admin/TaxonomyVersionView';
 import ProcessingView from './admin/ProcessingView';
 import ModelsView from './admin/ModelsView';
 import OperationalEntitiesAdmin from './admin/OperationalEntitiesAdmin';
+import RepeatThresholdsView from './admin/RepeatThresholdsView';
 import ModelLoadingView from './admin/ModelLoadingView';
 import AlertsView from './admin/AlertsView';
 
 type AdminTab =
   | 'ontology'
   | 'entities'
+  | 'thresholds'
   | 'processing'
   | 'models'
   | 'modelload'
@@ -68,6 +70,7 @@ const NAV: NavItemDef[] = [
   { key: 'health',     label: 'Health dashboard', Icon: HeartPulse },
   { key: 'confidence', label: 'Conf overrides',   Icon: Filter },
   { key: 'prompts',    label: 'Prompt profiles',  Icon: Search },
+  { key: 'thresholds', label: 'NEAR thresholds',  Icon: Filter },
   { key: 'versions',   label: 'Version history',  Icon: History },
   { key: 'alerts',     label: 'Health alerts',    Icon: AlertTriangle, badgeKey: 'alerts' },
   // UX-AUDIT F29: 'Auth · LDAP' surfaced an implementation detail as the
@@ -180,6 +183,7 @@ export default function AdminScreen({
           />
         )}
         {tab === 'entities'   && <OperationalEntitiesAdmin />}
+        {tab === 'thresholds' && <RepeatThresholdsView />}
         {tab === 'processing' && (
           <ProcessingView
             onCount={setProcessingCount}

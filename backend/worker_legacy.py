@@ -3271,6 +3271,21 @@ _NEAR_RADIUS_M = {
 }
 
 
+def _near_radius_for_kind(kind: str) -> float | None:
+    """Phase 5.B: prefer admin-configured threshold; fall back to env default.
+
+    Lazy-imports the threshold helper to avoid a worker → routers cycle.
+    """
+    try:
+        from routers.admin_thresholds import get_current_threshold
+        row = get_current_threshold(kind)
+        if row and row.get("near_radius_m"):
+            return float(row["near_radius_m"])
+    except Exception:
+        logger.debug("near_radius_for_kind: threshold lookup failed for %s", kind, exc_info=True)
+    return _NEAR_RADIUS_M.get(kind.lower())
+
+
 @celery_app.task(name="worker.tick_near_builder", queue="default")
 def tick_near_builder() -> dict:
     """Phase 4 beat task: MERGE ``:NEAR`` edges from Detections to Base/
@@ -3309,7 +3324,8 @@ def tick_near_builder() -> dict:
             except json.JSONDecodeError:
                 meta = {}
         kind = (meta.get("aoi_kind") or "").lower()
-        radius_m = _NEAR_RADIUS_M.get(kind)
+        # Phase 5.B: thresholds may be admin-edited per site kind.
+        radius_m = _near_radius_for_kind(kind)
         if not radius_m:
             sites_skipped += 1
             continue
@@ -3545,8 +3561,26 @@ def tick_repeat_detector() -> dict:
     """
     from graph_writes import project_repeated_at_batch
 
-    window_days = env_int("REPEAT_DETECTOR_WINDOW_DAYS", 30)
-    min_count = env_int("REPEAT_DETECTOR_MIN_COUNT", 5)
+    # Phase 5.B: admin-configured threshold per kind overrides env defaults
+    # when present. The worker scans all three kinds at once, so we read the
+    # max window + min min_count across the configured rows so analyst-
+    # tightened settings flow through without per-kind beat dispatch.
+    env_window_days = env_int("REPEAT_DETECTOR_WINDOW_DAYS", 30)
+    env_min_count = env_int("REPEAT_DETECTOR_MIN_COUNT", 5)
+    window_days = env_window_days
+    min_count = env_min_count
+    try:
+        from routers.admin_thresholds import get_current_threshold
+        configured = [get_current_threshold(k) for k in ("base", "launchpoint", "facility")]
+        configured = [r for r in configured if r]
+        if configured:
+            # Use the most permissive admin-set window (analyst wants to see
+            # longer-running patterns) and the strictest min_count (analyst
+            # wants to suppress noise).
+            window_days = max(int(r["window_days"]) for r in configured) or env_window_days
+            min_count = max(int(r["min_count"]) for r in configured) or env_min_count
+    except Exception:
+        logger.debug("tick_repeat_detector: threshold lookup failed", exc_info=True)
     rows_to_write: list[dict] = []
     try:
         with db.get_session() as session:
