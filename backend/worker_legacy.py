@@ -266,6 +266,12 @@ celery_app.conf.beat_schedule = {
         "task": "worker.tick_entity_resimilarity",
         "schedule": float(env_int("ENTITY_RESIMILARITY_INTERVAL_S", 7 * 24 * 60 * 60)),
     },
+    # Phase 4.F: daily heuristic proposal of new operational entities from
+    # REPEATED_AT clusters that lack matching operational_entities rows.
+    "tick-propose-entities": {
+        "task": "worker.tick_propose_entities",
+        "schedule": float(env_int("ENTITY_PROPOSAL_INTERVAL_S", 24 * 60 * 60)),
+    },
 }
 celery_app.conf.timezone = "UTC"
 
@@ -3367,6 +3373,97 @@ def tick_near_builder() -> dict:
         "sites_skipped": sites_skipped,
         "near_edges_written": total_edges,
     }
+
+
+_CLASS_TO_ENTITY_KIND = {
+    "vessel": "vessel", "ship": "vessel", "boat": "vessel", "container_ship": "vessel",
+    "vehicle": "vehicle", "truck": "vehicle", "car": "vehicle", "tank": "vehicle",
+    "aircraft": "aircraft", "helicopter": "aircraft", "fighter": "aircraft", "plane": "aircraft",
+}
+
+
+@celery_app.task(name="worker.tick_propose_entities", queue="default")
+def tick_propose_entities() -> dict:
+    """Phase 4 beat task: heuristic-propose ``entity_candidates`` rows for
+    repeated-class Detections that don't yet have a matching operational entity.
+
+    Phase 4 ships a cheap heuristic (uses Phase 4.D's :REPEATED_AT clusters as
+    the seed for proposals); the LLM-proposer is the upgrade slot — when the
+    AI router gains a "propose_entities" tool, swap the inner loop without
+    changing the task interface or the analyst review flow.
+
+    For each :REPEATED_AT cluster whose class maps to a known operational kind:
+    - Skip if an entity with the same proposed_name already exists.
+    - Skip if a pending candidate with the same proposed_name + kind exists.
+    - Otherwise INSERT a candidate row.
+    """
+    import json as _json
+    proposed = 0
+    skipped = 0
+    try:
+        with db.get_session() as session:
+            repeats = list(session.run(
+                """
+                MATCH (d:Detection)-[r:REPEATED_AT]->(s)
+                WHERE any(l IN labels(s) WHERE l IN ['Base', 'LaunchPoint', 'Facility'])
+                RETURN r.detection_class AS detection_class,
+                       r.count AS cluster_count,
+                       s.id AS site_id,
+                       s.name AS site_name,
+                       d.postgis_id AS sample_detection_id
+                LIMIT 200
+                """
+            ))
+    except Exception as exc:
+        logger.exception("tick_propose_entities: REPEATED_AT walk failed")
+        return {"error": "repeated_at_walk_failed", "detail": str(exc)}
+
+    if not repeats:
+        return {"proposed": 0, "skipped": 0, "note": "no REPEATED_AT clusters to seed from"}
+
+    with postgis_db.get_cursor(commit=True) as cursor:
+        for row in repeats:
+            cls = (row["detection_class"] or "").lower()
+            kind = next((v for k, v in _CLASS_TO_ENTITY_KIND.items() if k in cls), None)
+            if not kind:
+                skipped += 1
+                continue
+            site_name = row.get("site_name") or row.get("site_id") or "site"
+            proposed_name = f"{cls} at {site_name}"
+            try:
+                cursor.execute(
+                    "SELECT 1 FROM operational_entities WHERE name = %s AND kind = %s LIMIT 1",
+                    (proposed_name, kind),
+                )
+                if cursor.fetchone():
+                    skipped += 1
+                    continue
+                cursor.execute(
+                    "SELECT 1 FROM entity_candidates WHERE proposed_name = %s AND entity_kind = %s AND status = 'pending' LIMIT 1",
+                    (proposed_name, kind),
+                )
+                if cursor.fetchone():
+                    skipped += 1
+                    continue
+                cursor.execute(
+                    """
+                    INSERT INTO entity_candidates (entity_kind, proposed_name, seed_detection_ids, score, reason, proposed_metadata)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        kind, proposed_name,
+                        [int(row["sample_detection_id"])] if row["sample_detection_id"] is not None else [],
+                        min(1.0, 0.5 + (int(row["cluster_count"]) - 5) * 0.05),
+                        f"{row['cluster_count']} {cls} detections clustered at {site_name}",
+                        _json.dumps({"site_id": row["site_id"], "detection_class": cls}),
+                    ),
+                )
+                proposed += 1
+            except Exception:
+                logger.exception("tick_propose_entities: insert failed for %s", proposed_name)
+                skipped += 1
+
+    return {"proposed": proposed, "skipped": skipped}
 
 
 @celery_app.task(name="worker.tick_entity_resimilarity", queue="default")

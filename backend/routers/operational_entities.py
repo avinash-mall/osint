@@ -298,6 +298,118 @@ def set_part_of(entity_id: str, unit_id: str):
     return {"success": True, "entity_id": entity_id, "unit_id": unit_id}
 
 
+# ---------------------------------------------------------------------------
+# Entity-candidate review (Phase 4.F)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/operational-entity-candidates")
+def list_entity_candidates(
+    status: str = Query("pending", description="pending|approved|rejected"),
+    kind: Optional[str] = Query(None),
+    limit: int = Query(200, ge=1, le=1000),
+):
+    ensure_platform_tables()
+    where = "WHERE status = %s"
+    params: list[Any] = [status]
+    if kind:
+        if kind.lower() not in _ALLOWED_KINDS:
+            raise HTTPException(status_code=400, detail=f"invalid kind: {kind}")
+        where += " AND entity_kind = %s"
+        params.append(kind.lower())
+    params.append(limit)
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute(
+            f"""
+            SELECT id, entity_kind, proposed_name, seed_detection_ids, score, reason,
+                   status, proposed_metadata, reviewed_by, reviewed_at,
+                   approved_entity_id, created_at
+            FROM entity_candidates {where}
+            ORDER BY score DESC NULLS LAST, created_at DESC
+            LIMIT %s
+            """,
+            tuple(params),
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+    return {"candidates": rows, "count": len(rows)}
+
+
+@router.post("/api/operational-entity-candidates/{candidate_id}/approve")
+def approve_entity_candidate(candidate_id: int, analyst: Optional[str] = None):
+    """Approve a proposed entity: create the operational_entities row + project."""
+    ensure_platform_tables()
+    analyst = (analyst or "analyst").strip() or "analyst"
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute(
+            "SELECT id, entity_kind, proposed_name, proposed_metadata FROM entity_candidates WHERE id = %s AND status = 'pending'",
+            (candidate_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="pending candidate not found")
+        candidate = dict(row)
+
+        entity_id = _slug(candidate["proposed_name"]) or uuid.uuid4().hex[:12]
+        metadata = candidate.get("proposed_metadata") or {}
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except json.JSONDecodeError:
+                metadata = {}
+
+        try:
+            cursor.execute(
+                """
+                INSERT INTO operational_entities (id, kind, name, metadata, created_by)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id, kind, name, callsign, hull, entity_class, unit_id,
+                          operates_from_base_id, metadata, created_by, created_at
+                """,
+                (entity_id, candidate["entity_kind"], candidate["proposed_name"], json.dumps(metadata), analyst),
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=409, detail=f"insert failed: {exc}") from exc
+        entity_row = cursor.fetchone()
+        if not entity_row:
+            raise HTTPException(status_code=500, detail="entity insert returned no row")
+
+        cursor.execute(
+            """
+            UPDATE entity_candidates
+            SET status = 'approved', reviewed_by = %s, reviewed_at = NOW(),
+                approved_entity_id = %s, updated_at = NOW()
+            WHERE id = %s
+            RETURNING id, entity_kind, proposed_name, status, reviewed_by, reviewed_at, approved_entity_id
+            """,
+            (analyst, entity_id, candidate_id),
+        )
+        updated = dict(cursor.fetchone())
+
+    record = _row_to_dict(entity_row)
+    _project_to_graph(record)
+    return {"success": True, "entity": record, "candidate": updated}
+
+
+@router.post("/api/operational-entity-candidates/{candidate_id}/reject")
+def reject_entity_candidate(candidate_id: int, analyst: Optional[str] = None):
+    ensure_platform_tables()
+    analyst = (analyst or "analyst").strip() or "analyst"
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute(
+            """
+            UPDATE entity_candidates
+            SET status = 'rejected', reviewed_by = %s, reviewed_at = NOW(), updated_at = NOW()
+            WHERE id = %s AND status = 'pending'
+            RETURNING id, entity_kind, proposed_name, status, reviewed_by, reviewed_at
+            """,
+            (analyst, candidate_id),
+        )
+        row = cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="pending candidate not found")
+    return {"success": True, "candidate": dict(row)}
+
+
 @router.post("/api/operational-entities/{entity_id}/same-as/{other_id}")
 def set_same_as(entity_id: str, other_id: str, body: SameAsRequest = SameAsRequest()):
     """Analyst approves: two operational entities are the same thing.

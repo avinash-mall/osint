@@ -39,6 +39,7 @@ from worker_legacy import (  # noqa: F401  — explicit names for IDE completion
     project_unknown_labels,
     tick_entity_resimilarity,
     tick_near_builder,
+    tick_propose_entities,
     tick_repeat_detector,
     run_prithvi_multitemporal,
     transcribe_audio,

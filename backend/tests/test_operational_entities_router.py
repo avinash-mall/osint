@@ -110,6 +110,43 @@ def test_same_as_writes_edge(monkeypatch):
     assert body == {"success": True, "a": "v-1", "b": "v-2", "merged_by": "alice"}
 
 
+def test_approve_candidate_creates_entity(monkeypatch):
+    candidate_row = {
+        "id": 5, "entity_kind": "vessel", "proposed_name": "Container Ship at Pier 7",
+        "proposed_metadata": {"site_id": "aoi-7", "detection_class": "container_ship"},
+    }
+    entity_row = {
+        "id": "container-ship-at-pier-7", "kind": "vessel",
+        "name": "Container Ship at Pier 7",
+        "callsign": None, "hull": None, "entity_class": None,
+        "unit_id": None, "operates_from_base_id": None,
+        "metadata": {"site_id": "aoi-7"}, "created_by": "alice",
+        "created_at": "2026-05-24T00:00:00Z",
+    }
+    updated = {
+        "id": 5, "entity_kind": "vessel", "proposed_name": "Container Ship at Pier 7",
+        "status": "approved", "reviewed_by": "alice",
+        "reviewed_at": "2026-05-24T00:00:00Z",
+        "approved_entity_id": "container-ship-at-pier-7",
+    }
+    client = _load(
+        monkeypatch,
+        postgis_fetchone=[candidate_row, entity_row, updated],
+        neo4j_records=[{"rel_id": "r1"}],
+    )
+    resp = client.post("/api/operational-entity-candidates/5/approve?analyst=alice")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["entity"]["id"] == "container-ship-at-pier-7"
+    assert body["candidate"]["status"] == "approved"
+
+
+def test_reject_candidate_returns_404_when_already_handled(monkeypatch):
+    client = _load(monkeypatch, postgis_fetchone=[None])
+    resp = client.post("/api/operational-entity-candidates/99/reject")
+    assert resp.status_code == 404
+
+
 def test_part_of_updates_unit_and_graph(monkeypatch):
     client = _load(
         monkeypatch,
