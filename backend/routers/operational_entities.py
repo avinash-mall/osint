@@ -21,9 +21,10 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from database import postgis_db
+from database import db, postgis_db
 from graph_writes import (
     delete_operational_entity,
+    delete_possibly_same_as,
     merge_observed_at_for_asset,
     merge_operates_from_edge,
     merge_operational_entity,
@@ -68,6 +69,11 @@ class OperationalEntityUpdate(BaseModel):
 
 class SameAsRequest(BaseModel):
     analyst: Optional[str] = None
+
+
+class PendingSameAsRejectRequest(BaseModel):
+    a_id: str
+    b_id: str
 
 
 class AttachObservationRequest(BaseModel):
@@ -141,6 +147,18 @@ def list_operational_entities(
         )
         rows = [_row_to_dict(r) for r in cursor.fetchall()]
     return {"entities": rows, "count": len(rows)}
+
+
+@router.get("/api/operational-entities/pending-same-as")
+def list_pending_same_as_proxy(limit: int = Query(100, ge=1, le=500)):
+    """Proxy declared above the parameterized {entity_id} route so FastAPI
+    matches the static path first. Body in the canonical definition below."""
+    return list_pending_same_as(limit=limit)
+
+
+@router.post("/api/operational-entities/pending-same-as/reject")
+def reject_pending_same_as_proxy(body: PendingSameAsRejectRequest):
+    return reject_pending_same_as(body=body)
 
 
 @router.get("/api/operational-entities/{entity_id}")
@@ -296,6 +314,75 @@ def set_part_of(entity_id: str, unit_id: str):
     if not ok:
         raise HTTPException(status_code=404, detail="unit not found in graph")
     return {"success": True, "entity_id": entity_id, "unit_id": unit_id}
+
+
+# ---------------------------------------------------------------------------
+# Pending SAME_AS review (Phase 5.F)
+# ---------------------------------------------------------------------------
+
+
+def list_pending_same_as(limit: int = Query(100, ge=1, le=500)):
+    """Return pending ``POSSIBLY_SAME_AS`` edges with both entities' headline
+    properties so the review UI can render side-by-side cards.
+
+    Sorted by edge score descending. Direction is preserved (a → b) so the
+    UI can label which entity is "A" and which is "B" consistently.
+
+    The router route binding is on the proxy declared above the
+    parameterized ``/{entity_id}`` GET so FastAPI's path matcher picks
+    `pending-same-as` first.
+    """
+    ensure_platform_tables()
+    pairs: list[dict[str, Any]] = []
+    try:
+        with db.get_session() as session:
+            result = session.run(
+                """
+                MATCH (a)-[r:POSSIBLY_SAME_AS]->(b)
+                WHERE coalesce(r.status, 'pending') = 'pending'
+                RETURN a.id AS a_id, b.id AS b_id,
+                       labels(a) AS a_labels, labels(b) AS b_labels,
+                       properties(a) AS a_props, properties(b) AS b_props,
+                       coalesce(r.score, 0.0) AS score,
+                       coalesce(r.source, 'unknown') AS source,
+                       r.created_at AS created_at
+                ORDER BY score DESC
+                LIMIT $limit
+                """,
+                {"limit": limit},
+            )
+            for row in result:
+                pairs.append({
+                    "a": {
+                        "id": row["a_id"],
+                        "labels": list(row["a_labels"] or []),
+                        "properties": dict(row["a_props"] or {}),
+                    },
+                    "b": {
+                        "id": row["b_id"],
+                        "labels": list(row["b_labels"] or []),
+                        "properties": dict(row["b_props"] or {}),
+                    },
+                    "score": float(row["score"]),
+                    "source": str(row["source"]),
+                    "created_at": str(row["created_at"]) if row["created_at"] else None,
+                })
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("pending-same-as: Cypher failed: %s", exc)
+    return {"pending": pairs, "count": len(pairs)}
+
+
+def reject_pending_same_as(body: PendingSameAsRejectRequest):
+    """Remove a pending POSSIBLY_SAME_AS edge between two entities.
+
+    Route binding lives on the proxy above the parameterized GET so
+    FastAPI matches the static path first.
+    """
+    ensure_platform_tables()
+    removed = delete_possibly_same_as(a_id=body.a_id, b_id=body.b_id)
+    if removed == 0:
+        raise HTTPException(status_code=404, detail="no pending POSSIBLY_SAME_AS edge found between these entities")
+    return {"success": True, "a_id": body.a_id, "b_id": body.b_id, "removed": removed}
 
 
 # ---------------------------------------------------------------------------

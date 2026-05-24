@@ -882,6 +882,30 @@ def merge_same_as(*, entity_a_id: str, entity_b_id: str, merged_by: str) -> bool
         return False
 
 
+def delete_possibly_same_as(*, a_id: str, b_id: str) -> int:
+    """Phase 5.F: remove pending POSSIBLY_SAME_AS edges between two entities.
+
+    Direction-agnostic (matches either A→B or B→A). Returns the count of edges
+    removed. Used by the SAME_AS review-screen reject action.
+    """
+    try:
+        with db.get_session() as session:
+            result = session.run(
+                """
+                MATCH (a)-[r:POSSIBLY_SAME_AS]-(b)
+                WHERE a.id = $a_id AND b.id = $b_id
+                DELETE r
+                RETURN count(r) AS removed
+                """,
+                {"a_id": a_id, "b_id": b_id},
+            )
+            record = result.single()
+            return int(record["removed"]) if record else 0
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("graph_writes: delete_possibly_same_as(%s ~ %s) failed: %s", a_id, b_id, exc)
+        return 0
+
+
 def merge_possibly_same_as_batch(rows: list[dict[str, Any]]) -> int:
     """MERGE many ``POSSIBLY_SAME_AS`` candidate edges in one UNWIND.
 

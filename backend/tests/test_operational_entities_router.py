@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 class _Result:
     def __init__(self, records): self._records = list(records)
     def single(self): return self._records[0] if self._records else None
+    def __iter__(self): return iter(self._records)
 
 
 def _install_stubs(monkeypatch, *, postgis_fetchone=None, postgis_fetchall=None, neo4j_records=None):
@@ -144,6 +145,45 @@ def test_approve_candidate_creates_entity(monkeypatch):
 def test_reject_candidate_returns_404_when_already_handled(monkeypatch):
     client = _load(monkeypatch, postgis_fetchone=[None])
     resp = client.post("/api/operational-entity-candidates/99/reject")
+    assert resp.status_code == 404
+
+
+def test_pending_same_as_lists_pairs(monkeypatch):
+    # Two pending pairs returned by the Cypher.
+    rows = [
+        {
+            "a_id": "vessel-1", "b_id": "vessel-2",
+            "a_labels": ["Vessel", "Asset"], "b_labels": ["Vessel", "Asset"],
+            "a_props": {"id": "vessel-1", "name": "Pearl"},
+            "b_props": {"id": "vessel-2", "name": "Pearl II"},
+            "score": 0.82, "source": "name_match", "created_at": "2026-05-24T00:00:00Z",
+        },
+    ]
+    client = _load(monkeypatch, neo4j_records=rows)
+    resp = client.get("/api/operational-entities/pending-same-as")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 1
+    assert body["pending"][0]["a"]["id"] == "vessel-1"
+    assert body["pending"][0]["score"] == 0.82
+
+
+def test_reject_pending_same_as_removes_edge(monkeypatch):
+    client = _load(monkeypatch, neo4j_records=[{"removed": 1}])
+    resp = client.post(
+        "/api/operational-entities/pending-same-as/reject",
+        json={"a_id": "vessel-1", "b_id": "vessel-2"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["removed"] == 1
+
+
+def test_reject_pending_same_as_returns_404_when_missing(monkeypatch):
+    client = _load(monkeypatch, neo4j_records=[{"removed": 0}])
+    resp = client.post(
+        "/api/operational-entities/pending-same-as/reject",
+        json={"a_id": "x", "b_id": "y"},
+    )
     assert resp.status_code == 404
 
 
