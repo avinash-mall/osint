@@ -29,6 +29,17 @@ The redesign needs operational entities as first-class graph entities so workflo
 | `POST` | `/api/operational-entity-candidates/{id}/approve` | [#L334](../../backend/routers/operational_entities.py#L334) | Mint the entity + mark candidate approved |
 | `POST` | `/api/operational-entity-candidates/{id}/reject` | [#L376](../../backend/routers/operational_entities.py#L376) | Mark dismissed |
 
+### Phase 5 — SAME_AS review + merge + embedding tracks
+
+| Method | Path | Behavior |
+|---|---|---|
+| `GET`  | `/api/operational-entities/pending-same-as` | List pending `POSSIBLY_SAME_AS` edges with both entities' headline properties + score + source. |
+| `POST` | `/api/operational-entities/pending-same-as/reject` | Body `{a_id, b_id}` — delete the pending edge. |
+| `POST` | `/api/operational-entities/{a_id}/merge-into/{b_id}` | Body `{resolutions: {column: "a"|"b"}}` for six mergeable columns. UPDATEs B + DELETEs A + removes A's Neo4j mirror. |
+| `POST` | `/api/operational-entities/{id}/attach-track/{track_id}` | Phase 5.J — analyst links a detection_track for re-ID centroid aggregation. Idempotent. |
+| `GET`  | `/api/operational-entities/{id}/tracks` | List attached detection_tracks for an entity. |
+| `DELETE` | `/api/operational-entities/{id}/tracks/{track_id}` | Detach. |
+
 ## Inputs / Outputs
 
 Local Pydantic models (not in [schemas.py](../../backend/schemas.py) since they're only used here): `OperationalEntityCreate`, `OperationalEntityUpdate`, `SameAsRequest`, `AttachObservationRequest`. Responses wrap rows in `{success, entity|candidate, ...}`.

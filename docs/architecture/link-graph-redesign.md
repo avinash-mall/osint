@@ -1,6 +1,6 @@
 # Link Graph Redesign — Defence-Analyst Reasoning Surface
 
-**Status:** approved roadmap, Phase 1 not yet started.
+**Status:** Phases 1–5 shipped (28 + 13 = 41 commits ahead of origin/main at time of Phase 5 close). Every deferred item from the original roll-up is now closed; see the "Phase 5 — deferred-items roll-up" section below.
 **Plan file:** [~/.claude/plans/the-useful-framing-is-replicated-crane.md](file:///home/avinash/.claude/plans/the-useful-framing-is-replicated-crane.md) (canonical source; this doc is the in-repo mirror).
 **Primary surfaces:** [backend/routers/graph.py](../../backend/routers/graph.py), [frontend/src/components/GraphExplorer.tsx](../../frontend/src/components/GraphExplorer.tsx).
 
@@ -334,6 +334,26 @@ End-to-end checks, all run in the docker-compose dev stack.
 - [frontend/workspace-link-graph.md](../frontend/workspace-link-graph.md) reflects the current state (modes, endpoints, predicates).
 
 ---
+
+## Phase 5 — deferred-items roll-up
+
+Closed every item left open across Phases 1–4. The user picked the most-thorough scope on three open scope questions: full DINOv3 entity-embedding aggregation, full per-class threshold CRUD + admin tab, both unit and integration tests. LLM features reuse the existing OpenAI-compatible client in [backend/ai.py](../../backend/ai.py) (env: `OPENAI_API_BASE` / `OPENAI_API_KEY` / `OPENAI_MODEL`).
+
+| Sub-phase | What |
+|---|---|
+| 5.A | Document projection gate — skip stub when `extracted_entities` empty. |
+| 5.B | Per-class REPEATED_AT thresholds: table + CRUD router + admin tab + worker reader with env fallback. See [decisions/why-postgis-to-neo4j-projectors.md](../decisions/why-postgis-to-neo4j-projectors.md) sibling recipe [conventions/adding-a-new-admin-config-table.md](../conventions/adding-a-new-admin-config-table.md). |
+| 5.C/D | `include_cooccurrence` on `/api/graph/ontology` + per-object chips in OntologyOrbit. |
+| 5.E | Canvas cluster collapse for ≥12 same-class neighbours in GraphExplorer. |
+| 5.F | `GET /api/operational-entities/pending-same-as` + reject endpoint. |
+| 5.G | SAME_AS side-by-side review sub-panel in the operational-entities admin tab. |
+| 5.H | PostGIS row property-merge endpoint + per-column resolution modal. |
+| 5.I | LLM-driven entity proposer with heuristic fallback. See [decisions/why-llm-replaces-heuristic-proposer.md](../decisions/why-llm-replaces-heuristic-proposer.md). |
+| 5.J | DINOv3-embedding cosine for POSSIBLY_SAME_AS: entity-level centroid + aggregator task + cosine branch. See [decisions/why-entity-embedding-aggregation.md](../decisions/why-entity-embedding-aggregation.md). |
+| 5.K | POSSIBLY_SAME_AS time + AOI scoping for both branches. |
+| 5.L | FMV + Reports buckets in `/api/graph/site-composition` (PostGIS spatial intersect for FMV; Neo4j-2-hop + PostGIS join for Reports). |
+| 5.M | Unit + integration tests for all four tick tasks (`tick_near_builder`, `tick_repeat_detector`, `tick_entity_resimilarity`, `tick_propose_entities`, `tick_aggregate_entity_embeddings`). |
+| 5.N | This documentation refresh. |
 
 ## Open questions for analyst sign-off before Phase 4
 

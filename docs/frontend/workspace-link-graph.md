@@ -45,9 +45,15 @@ Three modes are the minimum that cover the six analyst workflows the redesign ta
 
 Investigation mode is intentionally bounded: cap the default payload, expose drill-in via per-node expansion, and rely on the time + class lenses to scope further. Force-graph-2d degrades past ~150 useful nodes; the server-side `/investigation` endpoint enforces this so the client doesn't have to.
 
+## Phase 5 additions (deferred-items roll-up)
+
+- **Canvas cluster collapse** — same-class neighbour groups of ≥12 collapse into a virtual `:Cluster` node with a count badge. Clicking expands. Reduces visual noise when NEAR materialisation pushes density up. See [GraphExplorer.tsx](../../frontend/src/components/GraphExplorer.tsx) `graphData` useMemo.
+- **OntologyOrbit co-occurrence chips** — per-OntologyObject horizontal bars of the top-K co-classifying objects, fed by `/api/graph/ontology?include_cooccurrence=true`. Replaces the synthetic-bar placeholder.
+- **SAME_AS review sub-panel** in the AdminScreen "Operational entities" tab — side-by-side cards for pending `POSSIBLY_SAME_AS` pairs with Approve / Merge / Reject. Merge opens a modal with per-column radio resolutions; submit calls the merge-into endpoint.
+
 ## Cross-references
 
-- [architecture/link-graph-redesign.md](../architecture/link-graph-redesign.md) — full 4-phase roadmap; this doc is the Phase 1 status snapshot.
+- [architecture/link-graph-redesign.md](../architecture/link-graph-redesign.md) — full 5-phase roadmap; this doc covers the workspace surface in particular.
 - [backend-routers/graph-router.md](../backend-routers/graph-router.md) — backing routes.
 - [backend-routers/aois-router.md](../backend-routers/aois-router.md) — Base/LaunchPoint/Facility nodes are projected from `aois` tagged with `metadata.aoi_kind`.
 - [backend/graph-writes.md](../backend/graph-writes.md) — write helpers (used by the `/promote` endpoint).

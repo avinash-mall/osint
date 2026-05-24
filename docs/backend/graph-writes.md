@@ -46,6 +46,10 @@ Phase 4 helpers (operational entities + NEAR + SAME_AS):
 - `project_near_edges_batch` — UNWIND-MERGE `:NEAR {distance_m, computed_at}` edges from [`worker.tick_near_builder`](../../backend/worker_legacy.py).
 - `project_repeated_at_batch` — UNWIND-MERGE representative `:REPEATED_AT` edges from [`worker.tick_repeat_detector`](../../backend/worker_legacy.py).
 
+Phase 5 helpers:
+- `delete_possibly_same_as` — remove a pending POSSIBLY_SAME_AS edge between two entities (direction-agnostic); used by the SAME_AS review-screen reject action.
+- `cosine_similarity` — pure-Python cosine over two equal-length float vectors. Returns `None` for missing / zero-vec / length-mismatch. Used by the DINOv3 embedding branch of `worker.tick_entity_resimilarity`.
+
 ## Inputs / Outputs
 
 All helpers take keyword args (no positional) — the candidate creation flow has eight properties to thread through, positional args would be a footgun.

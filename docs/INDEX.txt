@@ -43,6 +43,7 @@ backend-routers/ai-router.md|router|/api/ai/* — LLM analyze/extract/link/propo
 backend-routers/analytics-router.md|router|/api/analytics/* — change/viewshed/los/routes with fixture fallbacks
 backend-routers/aois-router.md|router|/api/aois CRUD; projects Base/LaunchPoint/Facility into Neo4j on metadata.aoi_kind
 backend-routers/operational-entities-router.md|router|/api/operational-entities CRUD + entity-candidate review; projects Vessel/Aircraft/Vehicle/Facility/Unit/Asset
+backend-routers/admin-thresholds-router.md|router|/api/admin/repeat-thresholds CRUD; per-kind active row drives tick_near_builder + tick_repeat_detector
 backend-routers/auth-router.md|router,auth|/api/auth/* + /api/admin/auth/* — login, LDAP CRUD, test-connection
 backend-routers/detections-router.md|router|/api/detections/* — filters, similar, queue, candidate-links, review
 backend-routers/fmv-router.md|router,fmv|/api/fmv/clips, klv, detections, similar
@@ -140,6 +141,8 @@ decisions/why-category-presence-gate.md|decision,sam3|SegEarth-OV-3-style 0.40 f
 decisions/why-three-graph-modes.md|decision,frontend|Link Graph splits into Investigation/Evidence/Ontology sub-tabs; one workspace, shared state
 decisions/why-postgis-to-neo4j-projectors.md|decision,backend|one-way PostGIS→Neo4j mirroring of identity + headline props; backfill for catchup
 decisions/why-llm-proposed-entities.md|decision,backend|operational entities are analyst-asserted; LLM/heuristic only proposes via entity_candidates queue
+decisions/why-llm-replaces-heuristic-proposer.md|decision,backend|tick_propose_entities tries LLM first, falls back to heuristic; both feed entity_candidates
+decisions/why-entity-embedding-aggregation.md|decision,backend|per-entity DINOv3 centroid (analyst-attached tracks) drives the embedding branch of POSSIBLY_SAME_AS
 decisions/why-deconflicted-detection-prompts.md|decision,ontology|one object per unique prompt; label IS the prompt; collapses overloaded false-positive prompts
 decisions/why-detection-boxes-use-polygon-map.md|decision,frontend|box layer is per-feature <Polygon> map; <GeoJSON> canvas layer silently failed to paint
 decisions/why-dinov3-sat-only.md|decision|DINOv3 ViT-L SAT-493M keeps re-ID quality without DINOv3_LVD NaNs
@@ -188,3 +191,4 @@ conventions/adding-a-new-celery-task.md|conventions,celery|@celery_app.task(name
 conventions/adding-a-new-router.md|conventions,backend|mount in main.py, /api prefix, session middleware coverage
 conventions/adding-a-new-admin-tab.md|conventions,frontend|AdminScreen tab registry + admin/*View.tsx pattern
 conventions/adding-a-new-graph-projector.md|conventions,backend|recipe: identity-only MERGE helper + Celery task wrapper + on-write trigger + backfill
+conventions/adding-a-new-admin-config-table.md|conventions,backend|recipe: per-scope versioned config table + CRUD router + worker helper + admin tab
