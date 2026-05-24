@@ -515,6 +515,8 @@ def get_graph_ontology(
     include_unknown: bool = Query(True, description="Include :UnknownLabel orbit nodes"),
     since: str | None = Query(None, description="ISO-8601 lower bound on UnknownLabel.last_seen"),
     supports_per_unknown: int = Query(5, ge=0, le=25),
+    include_cooccurrence: bool = Query(False, description="Add per-OntologyObject co-occurrence count map"),
+    cooccurrence_top_k: int = Query(5, ge=1, le=20, description="Top-K adjacent classes per object"),
 ):
     """Ontology-mode feed: branches + objects + (optionally) UnknownLabel orbits.
 
@@ -599,11 +601,41 @@ def get_graph_ontology(
                     if s in nodes and t in nodes:
                         links.append(_serialise_relationship(r, source_id=s, target_id=t))
 
+    cooccurrence: dict[str, dict[str, int]] = {}
+    if include_cooccurrence:
+        # Phase 5.C: count how often each OntologyObject co-classifies the
+        # same Detection with another OntologyObject. Drives the per-object
+        # chips in OntologyOrbit.
+        try:
+            with db.get_session() as session:
+                rows = session.run(
+                    """
+                    MATCH (o:OntologyObject)<-[:LABEL_OF]-(d:Detection)-[:LABEL_OF]->(other:OntologyObject)
+                    WHERE o.id <> other.id
+                    WITH o.id AS object_id, other.label AS other_label, count(d) AS cnt
+                    ORDER BY object_id, cnt DESC
+                    RETURN object_id, other_label, cnt
+                    """
+                )
+                tally: dict[str, list[tuple[str, int]]] = {}
+                for r in rows:
+                    oid = r["object_id"]
+                    if not oid:
+                        continue
+                    tally.setdefault(oid, []).append((str(r["other_label"]), int(r["cnt"])))
+                for oid, pairs in tally.items():
+                    top = pairs[:cooccurrence_top_k]
+                    cooccurrence[oid] = {label: cnt for label, cnt in top}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ontology: cooccurrence computation failed: %s", exc)
+            cooccurrence = {}
+
     return {
         "nodes": list(nodes.values()),
         "links": links,
         "include_unknown": include_unknown,
         "supports_per_unknown": supports_per_unknown,
+        "cooccurrence": cooccurrence if include_cooccurrence else None,
     }
 
 
