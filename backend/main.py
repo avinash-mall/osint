@@ -60,6 +60,10 @@ async def lifespan(app: FastAPI):
     # imports below this point (e.g. _auto_seed_ontology_if_empty) are bound
     # by the time the ASGI server runs startup.
     _auto_seed_ontology_if_empty()
+    # Neo4j uniqueness constraints / indexes for the Link Graph redesign.
+    # Best-effort: failures are logged inside, never raised.
+    from graph_schema import ensure_graph_schema
+    ensure_graph_schema()
     try:
         yield
     finally:
