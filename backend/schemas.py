@@ -259,6 +259,15 @@ class GraphPromoteRequest(BaseModel):
     analyst: Optional[str] = None
 
 
+class GraphContradictRequest(BaseModel):
+    """Body for ``POST /api/graph/contradict`` — analyst flags evidence-against."""
+
+    actor_id: str = Field(..., description="elementId of the OntologyCandidate or Target being contradicted")
+    detection_postgis_id: int = Field(..., description="PostGIS detection_id that contradicts the actor")
+    reason: Optional[str] = None
+    analyst: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Analytics + training
 # ---------------------------------------------------------------------------

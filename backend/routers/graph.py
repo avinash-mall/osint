@@ -23,9 +23,15 @@ from fastapi import APIRouter, HTTPException, Query
 from database import db, postgis_db
 from graph_writes import (
     delete_candidate_detected_as,
+    merge_contradicted_by,
     promote_candidate_to_detected_as,
 )
-from schemas import GraphActionRequest, GraphPathRequest, GraphPromoteRequest
+from schemas import (
+    GraphActionRequest,
+    GraphContradictRequest,
+    GraphPathRequest,
+    GraphPromoteRequest,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -642,6 +648,36 @@ def get_graph_evidence(node_id: str, hops: int = Query(2, ge=1, le=3)):
         "links": links,
         "evidence_records": evidence,
         "hops": hops,
+    }
+
+
+@router.post("/api/graph/contradict")
+def post_graph_contradict(req: GraphContradictRequest):
+    """Analyst flags evidence-against: write ``(actor)-[:CONTRADICTED_BY]->(:Detection)``.
+
+    Workflow 4/5 — when the analyst opens a Detection in Evidence mode and
+    decides it contradicts a Target classification or an OntologyCandidate's
+    proposed class, they call this to attach the dissent as a first-class
+    graph relationship. Used by [decisions/why-three-graph-modes.md](../../docs/decisions/why-three-graph-modes.md)
+    to keep dissent traversable, not buried in a JSONB column.
+    """
+    analyst = (req.analyst or "analyst").strip() or "analyst"
+    ok = merge_contradicted_by(
+        actor_element_id=req.actor_id,
+        detection_postgis_id=req.detection_postgis_id,
+        reason=req.reason,
+        analyst=analyst,
+    )
+    if not ok:
+        raise HTTPException(
+            status_code=404,
+            detail="actor or detection not found in graph (Detection must already exist)",
+        )
+    return {
+        "success": True,
+        "actor_id": req.actor_id,
+        "detection_postgis_id": req.detection_postgis_id,
+        "analyst": analyst,
     }
 
 

@@ -246,6 +246,42 @@ def test_evidence_clamps_hops(monkeypatch):
     assert resp.status_code == 422
 
 
+# ---------------------------------------------------------------------------
+# /api/graph/contradict
+# ---------------------------------------------------------------------------
+
+
+def test_contradict_returns_404_when_actor_or_detection_missing(monkeypatch):
+    # merge_contradicted_by returns False (single() is None).
+    client = _client(monkeypatch, neo4j_runs=lambda *a, **kw: _Result([]))
+    resp = client.post(
+        "/api/graph/contradict",
+        json={"actor_id": "missing", "detection_postgis_id": 99},
+    )
+    assert resp.status_code == 404
+
+
+def test_contradict_writes_edge_and_returns_payload(monkeypatch):
+    client = _client(
+        monkeypatch,
+        neo4j_runs=lambda *a, **kw: _Result([{"rel_id": "rel-1"}]),
+    )
+    resp = client.post(
+        "/api/graph/contradict",
+        json={
+            "actor_id": "elem-target-1",
+            "detection_postgis_id": 42,
+            "reason": "wrong class",
+            "analyst": "alice",
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["analyst"] == "alice"
+    assert body["detection_postgis_id"] == 42
+
+
 def test_promote_returns_404_when_postgis_row_missing(monkeypatch):
     postgis_runs = {
         "execute": [None],

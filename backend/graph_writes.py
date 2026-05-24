@@ -482,6 +482,50 @@ def project_observation_batch(rows: list[dict[str, Any]]) -> int:
         return 0
 
 
+def merge_contradicted_by(
+    *,
+    actor_element_id: str,
+    detection_postgis_id: int,
+    reason: str | None,
+    analyst: str,
+) -> bool:
+    """MERGE ``(actor)-[:CONTRADICTED_BY {reason, analyst, created_at}]->(d:Detection)``.
+
+    The ``actor`` is the OntologyCandidate or Target the analyst is contradicting
+    *via* this Detection. Both sides must already exist in Neo4j: detection by
+    ``postgis_id``, actor by ``elementId``. Returns ``True`` on success.
+    """
+    try:
+        with db.get_session() as session:
+            result = session.run(
+                """
+                MATCH (a) WHERE elementId(a) = $actor
+                MATCH (d:Detection {postgis_id: $det_id})
+                MERGE (a)-[rel:CONTRADICTED_BY]->(d)
+                  ON CREATE SET rel.created_at = datetime()
+                SET rel.reason = $reason,
+                    rel.analyst = $analyst,
+                    rel.updated_at = datetime()
+                RETURN elementId(rel) AS rel_id
+                """,
+                {
+                    "actor": actor_element_id,
+                    "det_id": detection_postgis_id,
+                    "reason": reason,
+                    "analyst": analyst,
+                },
+            )
+            return result.single() is not None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "graph_writes: merge_contradicted_by(actor=%s, det=%s) failed: %s",
+            actor_element_id,
+            detection_postgis_id,
+            exc,
+        )
+        return False
+
+
 def promote_candidate_to_detected_as(
     *,
     candidate_id: int,
