@@ -42,6 +42,7 @@ backend/worker-package-facade.md|backend,celery|worker/__init__.py namespace re-
 backend-routers/ai-router.md|router|/api/ai/* — LLM analyze/extract/link/propose-actions
 backend-routers/analytics-router.md|router|/api/analytics/* — change/viewshed/los/routes with fixture fallbacks
 backend-routers/aois-router.md|router|/api/aois CRUD; projects Base/LaunchPoint/Facility into Neo4j on metadata.aoi_kind
+backend-routers/operational-entities-router.md|router|/api/operational-entities CRUD + entity-candidate review; projects Vessel/Aircraft/Vehicle/Facility/Unit/Asset
 backend-routers/auth-router.md|router,auth|/api/auth/* + /api/admin/auth/* — login, LDAP CRUD, test-connection
 backend-routers/detections-router.md|router|/api/detections/* — filters, similar, queue, candidate-links, review
 backend-routers/fmv-router.md|router,fmv|/api/fmv/clips, klv, detections, similar
@@ -138,6 +139,7 @@ decisions/why-candidate-edges-persisted.md|decision,backend|persist CANDIDATE_DE
 decisions/why-category-presence-gate.md|decision,sam3|SegEarth-OV-3-style 0.40 filter suppresses absent concepts
 decisions/why-three-graph-modes.md|decision,frontend|Link Graph splits into Investigation/Evidence/Ontology sub-tabs; one workspace, shared state
 decisions/why-postgis-to-neo4j-projectors.md|decision,backend|one-way PostGIS→Neo4j mirroring of identity + headline props; backfill for catchup
+decisions/why-llm-proposed-entities.md|decision,backend|operational entities are analyst-asserted; LLM/heuristic only proposes via entity_candidates queue
 decisions/why-deconflicted-detection-prompts.md|decision,ontology|one object per unique prompt; label IS the prompt; collapses overloaded false-positive prompts
 decisions/why-detection-boxes-use-polygon-map.md|decision,frontend|box layer is per-feature <Polygon> map; <GeoJSON> canvas layer silently failed to paint
 decisions/why-dinov3-sat-only.md|decision|DINOv3 ViT-L SAT-493M keeps re-ID quality without DINOv3_LVD NaNs

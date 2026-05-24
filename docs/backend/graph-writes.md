@@ -37,6 +37,15 @@ Phase 3 projector helpers (ontology):
 - `project_unknown_label` — MERGE `:UnknownLabel` + optional `SUGGESTED_BRANCH` and `LABEL_OF` orbit. Detections that aren't in Neo4j are silently skipped (orbit shrinks naturally).
 - `project_label_of_for_detection_class` — batch MERGE `(d:Detection)-[:LABEL_OF]->(o:OntologyObject)` for one normalized class.
 
+Phase 4 helpers (operational entities + NEAR + SAME_AS):
+- `merge_operational_entity` — MERGE Vessel/Aircraft/Vehicle/Facility/Unit (Vessel/Aircraft/Vehicle gain the secondary `:Asset` label).
+- `delete_operational_entity` — DETACH DELETE by id.
+- `merge_part_of_edge`, `merge_operates_from_edge`, `merge_observed_at_for_asset` — convenience edges.
+- `merge_same_as` — analyst-approved `:SAME_AS`; also deletes the matching `:POSSIBLY_SAME_AS` if present.
+- `merge_possibly_same_as_batch` — UNWIND-MERGE candidate identity edges from [`worker.tick_entity_resimilarity`](../../backend/worker_legacy.py).
+- `project_near_edges_batch` — UNWIND-MERGE `:NEAR {distance_m, computed_at}` edges from [`worker.tick_near_builder`](../../backend/worker_legacy.py).
+- `project_repeated_at_batch` — UNWIND-MERGE representative `:REPEATED_AT` edges from [`worker.tick_repeat_detector`](../../backend/worker_legacy.py).
+
 ## Inputs / Outputs
 
 All helpers take keyword args (no positional) — the candidate creation flow has eight properties to thread through, positional args would be a footgun.
