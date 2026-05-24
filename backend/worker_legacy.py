@@ -256,6 +256,11 @@ celery_app.conf.beat_schedule = {
         "task": "worker.tick_near_builder",
         "schedule": float(env_int("NEAR_BUILDER_INTERVAL_S", 60 * 60)),
     },
+    # Phase 4.D: detect classes that repeat at a site and write REPEATED_AT.
+    "tick-repeat-detector": {
+        "task": "worker.tick_repeat_detector",
+        "schedule": float(env_int("REPEAT_DETECTOR_INTERVAL_S", 24 * 60 * 60)),
+    },
 }
 celery_app.conf.timezone = "UTC"
 
@@ -3356,6 +3361,64 @@ def tick_near_builder() -> dict:
         "sites_processed": sites_processed,
         "sites_skipped": sites_skipped,
         "near_edges_written": total_edges,
+    }
+
+
+@celery_app.task(name="worker.tick_repeat_detector", queue="default")
+def tick_repeat_detector() -> dict:
+    """Phase 4 beat task: MERGE ``:REPEATED_AT`` edges.
+
+    For each Base/LaunchPoint/Facility node, walk its :NEAR-connected
+    Detections grouped by class, and when the class count over the last
+    ``REPEAT_DETECTOR_WINDOW_DAYS`` (default 30) days is ≥
+    ``REPEAT_DETECTOR_MIN_COUNT`` (default 5), MERGE a representative
+    ``:REPEATED_AT`` edge from the most-recent member detection. Built on
+    top of the NEAR edges laid down by ``worker.tick_near_builder``.
+    """
+    from graph_writes import project_repeated_at_batch
+
+    window_days = env_int("REPEAT_DETECTOR_WINDOW_DAYS", 30)
+    min_count = env_int("REPEAT_DETECTOR_MIN_COUNT", 5)
+    rows_to_write: list[dict] = []
+    try:
+        with db.get_session() as session:
+            result = session.run(
+                """
+                MATCH (s)<-[:NEAR]-(d:Detection)
+                WHERE any(l IN labels(s) WHERE l IN ['Base', 'LaunchPoint', 'Facility'])
+                  AND d.created_at IS NOT NULL
+                  AND d.created_at >= datetime() - duration({days: $window_days})
+                WITH s, d.class AS cls, collect(d) AS dets
+                WHERE size(dets) >= $min_count
+                WITH s, cls, size(dets) AS cnt,
+                     reduce(latest = head(dets), d IN dets |
+                            CASE WHEN d.created_at > latest.created_at THEN d ELSE latest END) AS sample
+                RETURN s.id AS site_id, cls AS detection_class,
+                       sample.postgis_id AS sample_detection_id, cnt AS count
+                """,
+                {"window_days": window_days, "min_count": min_count},
+            )
+            for r in result:
+                if r["site_id"] is None or r["sample_detection_id"] is None:
+                    continue
+                rows_to_write.append({
+                    "site_id": r["site_id"],
+                    "detection_class": r["detection_class"],
+                    "sample_detection_id": int(r["sample_detection_id"]),
+                    "count": int(r["count"]),
+                    "window_days": window_days,
+                    "radius_m": None,
+                })
+    except Exception as exc:
+        logger.exception("tick_repeat_detector: NEAR walk failed")
+        return {"error": "near_walk_failed", "detail": str(exc)}
+
+    written = project_repeated_at_batch(rows_to_write)
+    return {
+        "candidates_evaluated": len(rows_to_write),
+        "edges_written": written,
+        "window_days": window_days,
+        "min_count": min_count,
     }
 
 

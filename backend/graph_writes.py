@@ -946,6 +946,44 @@ def project_near_edges_batch(rows: list[dict[str, Any]]) -> int:
         return 0
 
 
+def project_repeated_at_batch(rows: list[dict[str, Any]]) -> int:
+    """MERGE ``(any:Detection)-[:REPEATED_AT {detection_class, count, window_days, radius_m}]->(site)``
+    representative edges.
+
+    Each row carries ``site_id, detection_class, sample_detection_id, count,
+    window_days, radius_m``. The relationship hangs off ONE sample detection
+    (not every detection in the cluster) — analysts see "TEL launcher seen
+    14 times at this LaunchPoint" via one edge instead of 14 edges.
+    Returns the number of edges written.
+    """
+    if not rows:
+        return 0
+    try:
+        with db.get_session() as session:
+            result = session.run(
+                """
+                UNWIND $rows AS row
+                MATCH (s) WHERE s.id = row.site_id
+                  AND any(l IN labels(s) WHERE l IN ['Base', 'LaunchPoint', 'Facility'])
+                MATCH (d:Detection {postgis_id: row.sample_detection_id})
+                MERGE (d)-[r:REPEATED_AT]->(s)
+                  ON CREATE SET r.created_at = datetime()
+                SET r.detection_class = row.detection_class,
+                    r.count = row.count,
+                    r.window_days = row.window_days,
+                    r.radius_m = row.radius_m,
+                    r.updated_at = datetime()
+                RETURN count(r) AS edges
+                """,
+                {"rows": rows},
+            )
+            record = result.single()
+            return int(record["edges"]) if record else 0
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("graph_writes: project_repeated_at_batch(%d) failed: %s", len(rows), exc)
+        return 0
+
+
 def promote_candidate_to_detected_as(
     *,
     candidate_id: int,
