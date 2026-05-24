@@ -185,6 +185,34 @@ def test_project_document_with_no_index_writes_only_stub(monkeypatch):
     assert "MENTIONS" not in cypher
 
 
+def test_project_observation_batch_writes_unwind_merge(monkeypatch):
+    run = _install_db_stub(monkeypatch, single_return={"observations": 3})
+    mod = _load_graph_writes()
+
+    rows = [
+        {"postgis_id": 1, "entity_id": "vessel-1", "event_type": "ais",
+         "title": "AIS ping", "confidence": 0.9, "latitude": 1.0, "longitude": 2.0,
+         "observed_at": "2026-05-24T10:00:00Z"},
+        {"postgis_id": 2, "entity_id": None, "event_type": "ais",
+         "title": "AIS ping", "confidence": 0.9, "latitude": 1.0, "longitude": 2.0,
+         "observed_at": "2026-05-24T10:01:00Z"},
+    ]
+    n = mod.project_observation_batch(rows)
+    assert n == 3
+    cypher, params = run.call_args.args
+    assert "UNWIND $rows AS row" in cypher
+    assert "MERGE (o:Observation {postgis_id: row.postgis_id})" in cypher
+    assert "MERGE (op)-[:OBSERVED_AT]->(o)" in cypher
+    assert params["rows"] == rows
+
+
+def test_project_observation_batch_empty_is_noop(monkeypatch):
+    run = _install_db_stub(monkeypatch, single_return=None)
+    mod = _load_graph_writes()
+    assert mod.project_observation_batch([]) == 0
+    run.assert_not_called()
+
+
 def test_project_document_writes_mentions_for_matched_entities(monkeypatch):
     # Two run calls: one MERGE for the doc stub, one UNWIND for MENTIONS.
     calls: list = []

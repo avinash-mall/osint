@@ -433,6 +433,55 @@ def load_entity_label_index() -> dict[str, list[dict[str, Any]]]:
     return index
 
 
+def project_observation_batch(rows: list[dict[str, Any]]) -> int:
+    """MERGE one ``:Observation {postgis_id}`` per row and an ``:OBSERVED_AT``
+    edge from any analyst-asserted operational node whose ``id`` matches
+    ``entity_id``.
+
+    Each row is expected to carry ``postgis_id``, ``entity_id``,
+    ``observed_at`` (ISO string), and optional ``latitude``/``longitude``.
+    Observations whose ``entity_id`` does not resolve still create the
+    ``:Observation`` node — they appear in Evidence-mode as orphan events;
+    a later analyst can attach them.
+
+    Returns the number of observation nodes touched.
+    """
+    if not rows:
+        return 0
+    try:
+        with db.get_session() as session:
+            result = session.run(
+                """
+                UNWIND $rows AS row
+                MERGE (o:Observation {postgis_id: row.postgis_id})
+                  ON CREATE SET o.created_at = datetime()
+                SET o.entity_id = row.entity_id,
+                    o.event_type = row.event_type,
+                    o.title = row.title,
+                    o.confidence = row.confidence,
+                    o.latitude = row.latitude,
+                    o.longitude = row.longitude,
+                    o.timestamp = row.observed_at,
+                    o.updated_at = datetime()
+                WITH o, row
+                OPTIONAL MATCH (op)
+                  WHERE op.id IS NOT NULL
+                    AND op.id = row.entity_id
+                    AND any(l IN labels(op) WHERE l IN ['Target', 'Asset', 'Vessel', 'Aircraft', 'Vehicle', 'Unit'])
+                FOREACH (_ IN CASE WHEN op IS NOT NULL THEN [1] ELSE [] END |
+                    MERGE (op)-[:OBSERVED_AT]->(o)
+                )
+                RETURN count(DISTINCT o) AS observations
+                """,
+                {"rows": rows},
+            )
+            record = result.single()
+            return int(record["observations"]) if record else 0
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("graph_writes: project_observation_batch(%d rows) failed: %s", len(rows), exc)
+        return 0
+
+
 def promote_candidate_to_detected_as(
     *,
     candidate_id: int,

@@ -108,7 +108,14 @@ def record_observation(
     confidence: Optional[float] = None,
     observed_at: Optional[str] = None,
     provenance: Optional[dict] = None,
-) -> None:
+) -> Optional[int]:
+    """Insert an ``observations`` row. Returns the new id or ``None`` on failure.
+
+    When ``entity_id`` is set, queues the Phase 2.D Neo4j projector so the
+    observation arrives in Evidence mode without operator action. Best-effort —
+    queue failures log and proceed.
+    """
+    new_id: Optional[int] = None
     try:
         with postgis_db.get_cursor(commit=True) as cursor:
             if latitude is not None and longitude is not None:
@@ -116,6 +123,7 @@ def record_observation(
                     """
                     INSERT INTO observations (domain, source_id, entity_id, event_type, title, confidence, geom, payload, provenance, observed_at)
                     VALUES (%s, %s, %s, %s, %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326), %s, %s, COALESCE(%s::timestamptz, NOW()))
+                    RETURNING id
                     """,
                     (
                         normalize_domain(domain),
@@ -136,6 +144,7 @@ def record_observation(
                     """
                     INSERT INTO observations (domain, source_id, entity_id, event_type, title, confidence, payload, provenance, observed_at)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, COALESCE(%s::timestamptz, NOW()))
+                    RETURNING id
                     """,
                     (
                         normalize_domain(domain),
@@ -149,5 +158,23 @@ def record_observation(
                         observed_at,
                     ),
                 )
+            row = cursor.fetchone()
+            if row is not None:
+                new_id = int(row["id"] if isinstance(row, dict) else row[0])
     except Exception:
         logger.warning("Failed to record observation type=%s domain=%s", event_type, domain, exc_info=True)
+        return None
+
+    # Phase 2.D: queue the Neo4j observation projector when entity_id is set.
+    # Lazy import avoids a worker → events → worker cycle at module load.
+    if new_id is not None and entity_id:
+        try:
+            from worker import project_observations_to_graph
+            project_observations_to_graph.delay(new_id)
+        except Exception:
+            logger.warning(
+                "Failed to queue worker.project_observations_to_graph for observation %s",
+                new_id,
+                exc_info=True,
+            )
+    return new_id

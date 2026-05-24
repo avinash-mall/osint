@@ -3242,6 +3242,72 @@ def consolidate_fmv(clip_id: int) -> dict:
     return result
 
 
+@celery_app.task(name="worker.project_observations_to_graph", queue="default")
+def project_observations_to_graph(observation_id: int | None = None, batch_size: int = 200) -> dict:
+    """Mirror ``observations`` rows with ``entity_id`` into Neo4j.
+
+    Two call styles:
+    - ``project_observations_to_graph(observation_id=42)`` — project the
+      single row (used by the on-insert hook in ``events.record_observation``).
+    - ``project_observations_to_graph()`` — backfill mode: walks every
+      observation whose ``entity_id`` is set and whose ``postgis_id`` is not
+      yet present in Neo4j, in batches of ``batch_size``.
+    """
+    from graph_writes import project_observation_batch
+
+    def _select_single() -> list[dict]:
+        with postgis_db.get_cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id AS postgis_id, entity_id, event_type, title, confidence,
+                       observed_at::text AS observed_at,
+                       ST_Y(geom) AS latitude, ST_X(geom) AS longitude
+                FROM observations
+                WHERE id = %s AND entity_id IS NOT NULL
+                """,
+                (observation_id,),
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+    def _select_batch(offset: int) -> list[dict]:
+        with postgis_db.get_cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id AS postgis_id, entity_id, event_type, title, confidence,
+                       observed_at::text AS observed_at,
+                       ST_Y(geom) AS latitude, ST_X(geom) AS longitude
+                FROM observations
+                WHERE entity_id IS NOT NULL
+                ORDER BY id
+                OFFSET %s LIMIT %s
+                """,
+                (offset, batch_size),
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+    if observation_id is not None:
+        rows = _select_single()
+        if not rows:
+            return {"projected": 0, "mode": "single", "observation_id": observation_id}
+        return {"projected": project_observation_batch(rows), "mode": "single", "observation_id": observation_id}
+
+    total = 0
+    offset = 0
+    while True:
+        try:
+            rows = _select_batch(offset)
+        except Exception:
+            logger.exception("project_observations_to_graph: batch read failed at offset=%s", offset)
+            break
+        if not rows:
+            break
+        total += project_observation_batch(rows)
+        if len(rows) < batch_size:
+            break
+        offset += batch_size
+    return {"projected": total, "mode": "backfill"}
+
+
 @celery_app.task(name="worker.project_documents_to_graph", queue="default")
 def project_documents_to_graph(document_id: int) -> dict:
     """Mirror a ``documents`` row into Neo4j as a ``:Document`` stub.

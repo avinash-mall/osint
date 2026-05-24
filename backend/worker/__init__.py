@@ -33,6 +33,7 @@ from worker_legacy import (  # noqa: F401  — explicit names for IDE completion
     process_satellite_imagery,
     project_documents_to_graph,
     project_fmv_to_graph,
+    project_observations_to_graph,
     run_prithvi_multitemporal,
     transcribe_audio,
     train_model,
