@@ -3870,9 +3870,13 @@ def project_documents_to_graph(document_id: int) -> dict:
             extracted = json.loads(extracted)
         except json.JSONDecodeError:
             extracted = []
-    # Only load the (potentially expensive) entity index when there's
-    # something to resolve.
-    index = load_entity_label_index() if extracted else None
+    # Phase 5.A: skip projection entirely when the LLM extracted no entities —
+    # a :Document stub with zero MENTIONS adds graph noise without buying any
+    # analyst-visible link. The PostGIS row remains the source of truth and a
+    # later re-extraction can trigger the projector again.
+    if not extracted:
+        return {"document_id": doc["id"], "skipped": "no_extracted_entities"}
+    index = load_entity_label_index()
     counts = project_document_with_mentions(
         document_id=doc["id"],
         title=doc.get("title") or f"doc-{doc['id']}",
