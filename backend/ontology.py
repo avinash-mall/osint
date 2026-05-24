@@ -282,6 +282,18 @@ def _log_unknown(label: str, layer: str) -> None:
             )
     except Exception:
         logger.exception("ontology: failed to upsert unknown label %s", label)
+        return
+    # Phase 3.B: refresh the Neo4j :UnknownLabel mirror so Ontology mode shows
+    # the triage queue. Lazy import avoids the worker→ontology→worker cycle.
+    try:
+        from worker import project_unknown_labels
+        project_unknown_labels.delay(label)
+    except Exception:
+        logger.warning(
+            "ontology: failed to queue worker.project_unknown_labels for %s",
+            label,
+            exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -542,6 +554,16 @@ def bump_version(summary: str | None = None, changes: dict | None = None, by: st
             logger.warning("ontology version history write failed: %s", exc)
     invalidate_cache()
     logger.info("ontology: version bumped to %d", new_id)
+    # Phase 3.B: refresh the Neo4j ontology mirror so Ontology mode reflects
+    # the new branches/objects without a manual run. Best-effort.
+    try:
+        from worker import project_ontology_to_graph
+        project_ontology_to_graph.delay()
+    except Exception:
+        logger.warning(
+            "ontology: failed to queue worker.project_ontology_to_graph",
+            exc_info=True,
+        )
     return new_id
 
 

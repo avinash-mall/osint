@@ -206,6 +206,67 @@ def test_project_observation_batch_writes_unwind_merge(monkeypatch):
     assert params["rows"] == rows
 
 
+def test_project_ontology_branches_and_objects_runs_three_cyphers(monkeypatch):
+    calls: list = []
+
+    class _R:
+        def __init__(self, single): self._single = single
+        def single(self): return self._single
+
+    def neo_run(cypher, params=None):
+        calls.append((cypher, params))
+        if "RETURN count(DISTINCT n) AS objects" in cypher:
+            return _R({"objects": 3})
+        return _R(None)
+
+    _install_db_stub(monkeypatch, single_return=None)
+    import sys
+    sys.modules["database"].db.get_session.return_value.__enter__.return_value.run = neo_run
+    mod = _load_graph_writes()
+
+    branches = [{"id": "b1", "label": "Naval", "parent_id": None, "color": "#0f0", "short": "NAV"}]
+    objects = [{"id": "o1", "branch_id": "b1", "label": "ship", "prompt": "ship", "icon_key": "ship"}]
+    result = mod.project_ontology_branches_and_objects(branches=branches, objects=objects)
+    assert result == {"branches": 1, "objects": 3, "edges": 3}
+    # Three Cypher calls: branch MERGE, branch-parent edge UNWIND, object MERGE.
+    assert len(calls) == 3
+    assert "MERGE (n:OntologyBranch" in calls[0][0]
+    assert "HAS_CHILD" in calls[1][0]
+    assert "MERGE (n:OntologyObject" in calls[2][0]
+
+
+def test_project_unknown_label_writes_node_only_without_extras(monkeypatch):
+    run = _install_db_stub(monkeypatch, single_return=None)
+    mod = _load_graph_writes()
+
+    ok = mod.project_unknown_label(
+        label="unknown_thing", layer="optical", count=4,
+        first_seen=None, last_seen=None,
+        suggested_branch_id=None, supporting_detection_ids=None,
+    )
+    assert ok is True
+    # Only one Cypher call (the node MERGE) when no branch and no supports.
+    assert run.call_count == 1
+    cypher, params = run.call_args.args
+    assert "MERGE (u:UnknownLabel {label: $label})" in cypher
+    assert params["label"] == "unknown_thing"
+
+
+def test_project_label_of_for_detection_class_writes_unwind(monkeypatch):
+    run = _install_db_stub(monkeypatch, single_return={"edges": 4})
+    mod = _load_graph_writes()
+
+    n = mod.project_label_of_for_detection_class(
+        detection_class="container_ship",
+        ontology_object_id="ship",
+        detection_postgis_ids=[1, 2, 3, 4],
+    )
+    assert n == 4
+    cypher, params = run.call_args.args
+    assert "MERGE (d)-[r:LABEL_OF]->(o)" in cypher
+    assert params["object_id"] == "ship"
+
+
 def test_project_observation_batch_empty_is_noop(monkeypatch):
     run = _install_db_stub(monkeypatch, single_return=None)
     mod = _load_graph_writes()

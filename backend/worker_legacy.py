@@ -3242,6 +3242,109 @@ def consolidate_fmv(clip_id: int) -> dict:
     return result
 
 
+@celery_app.task(name="worker.project_ontology_to_graph", queue="default")
+def project_ontology_to_graph() -> dict:
+    """Mirror every ``ontology_branches`` + ``ontology_objects`` row into Neo4j.
+
+    Triggered on ``ontology.bump_version`` so the graph stays in sync with the
+    PostGIS canonical taxonomy. Idempotent (MERGE on row id). Returns counts.
+    """
+    from graph_writes import project_ontology_branches_and_objects
+    try:
+        with postgis_db.get_cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, parent_id, label, color, short, icon_key, order_index
+                FROM ontology_branches
+                ORDER BY order_index ASC, id ASC
+                """
+            )
+            branches = [dict(r) for r in cursor.fetchall()]
+            cursor.execute(
+                """
+                SELECT id, branch_id, label, prompt, icon_key, order_index
+                FROM ontology_objects
+                ORDER BY order_index ASC, id ASC
+                """
+            )
+            objects = [dict(r) for r in cursor.fetchall()]
+    except Exception as exc:
+        logger.exception("project_ontology_to_graph: PostGIS read failed")
+        return {"error": "postgis_read_failed", "detail": str(exc)}
+    return project_ontology_branches_and_objects(branches=branches, objects=objects)
+
+
+@celery_app.task(name="worker.project_unknown_labels", queue="default")
+def project_unknown_labels(label: str | None = None, supports_limit: int = 5) -> dict:
+    """Mirror ``ontology_unknown_labels`` rows into Neo4j ``:UnknownLabel`` nodes.
+
+    Two call styles:
+    - ``project_unknown_labels(label="something")`` — single-label refresh
+      (used by the on-write hook in ``ontology._log_unknown``).
+    - ``project_unknown_labels()`` — backfill: walks every row, projects each.
+
+    ``supports_limit`` caps how many recent detections per label are wired up
+    via ``:LABEL_OF`` so the Ontology mode orbit doesn't grow unbounded.
+    """
+    from graph_writes import project_unknown_label
+
+    def _fetch(where_label: str | None) -> list[dict]:
+        with postgis_db.get_cursor() as cursor:
+            if where_label is not None:
+                cursor.execute(
+                    """
+                    SELECT label, layer, count, first_seen::text AS first_seen,
+                           last_seen::text AS last_seen, suggested_branch_id
+                    FROM ontology_unknown_labels WHERE label = %s
+                    """,
+                    (where_label,),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT label, layer, count, first_seen::text AS first_seen,
+                           last_seen::text AS last_seen, suggested_branch_id
+                    FROM ontology_unknown_labels
+                    ORDER BY count DESC NULLS LAST, label
+                    LIMIT 1000
+                    """,
+                )
+            return [dict(r) for r in cursor.fetchall()]
+
+    def _recent_supports(label_value: str) -> list[int]:
+        try:
+            with postgis_db.get_cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id FROM detections
+                    WHERE class = %s AND deleted_at IS NULL
+                    ORDER BY created_at DESC LIMIT %s
+                    """,
+                    (label_value, supports_limit),
+                )
+                return [int(r["id"]) for r in cursor.fetchall()]
+        except Exception:
+            return []
+
+    rows = _fetch(label)
+    if not rows:
+        return {"projected": 0, "mode": "single" if label else "backfill"}
+    projected = 0
+    for row in rows:
+        ok = project_unknown_label(
+            label=row["label"],
+            layer=row.get("layer"),
+            count=int(row.get("count") or 0),
+            first_seen=row.get("first_seen"),
+            last_seen=row.get("last_seen"),
+            suggested_branch_id=row.get("suggested_branch_id"),
+            supporting_detection_ids=_recent_supports(row["label"]),
+        )
+        if ok:
+            projected += 1
+    return {"projected": projected, "mode": "single" if label else "backfill", "total_seen": len(rows)}
+
+
 @celery_app.task(name="worker.project_observations_to_graph", queue="default")
 def project_observations_to_graph(observation_id: int | None = None, batch_size: int = 200) -> dict:
     """Mirror ``observations`` rows with ``entity_id`` into Neo4j.

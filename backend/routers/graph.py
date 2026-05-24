@@ -464,6 +464,103 @@ def get_site_composition(
     }
 
 
+@router.get("/api/graph/ontology")
+def get_graph_ontology(
+    include_unknown: bool = Query(True, description="Include :UnknownLabel orbit nodes"),
+    since: str | None = Query(None, description="ISO-8601 lower bound on UnknownLabel.last_seen"),
+    supports_per_unknown: int = Query(5, ge=0, le=25),
+):
+    """Ontology-mode feed: branches + objects + (optionally) UnknownLabel orbits.
+
+    Workflow 4 — analyst triages "is this an ontology problem or an intelligence
+    problem?" The response carries:
+    - The OntologyBranch tree + OntologyObject children (via HAS_OBJECT edges).
+    - UnknownLabel nodes (when ``include_unknown=True``), each with a
+      SUGGESTED_BRANCH edge if one was assigned and LABEL_OF edges out to
+      recent supporting Detections (capped at ``supports_per_unknown``).
+    """
+    t_since = _parse_iso(since)
+
+    with db.get_session() as session:
+        ontology_record = session.run(
+            """
+            CALL {
+                MATCH (b:OntologyBranch)
+                RETURN collect(DISTINCT b) AS branches
+            }
+            CALL {
+                MATCH (o:OntologyObject)
+                RETURN collect(DISTINCT o) AS objects
+            }
+            CALL {
+                MATCH (b:OntologyBranch)-[r:HAS_OBJECT|HAS_CHILD]->(other)
+                RETURN collect(DISTINCT r) AS ontology_rels
+            }
+            RETURN branches, objects, ontology_rels
+            """
+        ).single()
+
+        nodes: dict[str, dict[str, Any]] = {}
+        links: list[dict[str, Any]] = []
+        if ontology_record:
+            for n in (ontology_record["branches"] or []) + (ontology_record["objects"] or []):
+                if n is not None:
+                    nodes[n.element_id] = _serialise_node(n)
+            for r in ontology_record["ontology_rels"] or []:
+                if r is not None:
+                    s, t = r.start_node.element_id, r.end_node.element_id
+                    if s in nodes and t in nodes:
+                        links.append(_serialise_relationship(r, source_id=s, target_id=t))
+
+        if include_unknown:
+            unknown_record = session.run(
+                """
+                MATCH (u:UnknownLabel)
+                WHERE $since IS NULL OR u.last_seen IS NULL OR u.last_seen >= $since
+                WITH u
+                OPTIONAL MATCH (u)-[r1:SUGGESTED_BRANCH]->(b:OntologyBranch)
+                OPTIONAL MATCH (d:Detection)-[r2:LABEL_OF]->(u)
+                WITH u, collect(DISTINCT b) AS branches,
+                     collect(DISTINCT r1) AS suggested,
+                     collect(DISTINCT d)[..$limit] AS support_dets,
+                     collect(DISTINCT r2)[..$limit] AS support_rels
+                RETURN collect({u: u, branches: branches, suggested: suggested,
+                                supports: support_dets, support_rels: support_rels}) AS rows
+                """,
+                {"since": t_since.isoformat() if t_since else None, "limit": supports_per_unknown},
+            ).single()
+            for row in (unknown_record["rows"] or []) if unknown_record else []:
+                u = row["u"]
+                if u is None:
+                    continue
+                nodes[u.element_id] = _serialise_node(u)
+                for b in row["branches"] or []:
+                    if b is not None and b.element_id not in nodes:
+                        nodes[b.element_id] = _serialise_node(b)
+                for r in row["suggested"] or []:
+                    if r is None:
+                        continue
+                    s, t = r.start_node.element_id, r.end_node.element_id
+                    if s in nodes and t in nodes:
+                        links.append(_serialise_relationship(r, source_id=s, target_id=t))
+                for d in row["supports"] or []:
+                    if d is not None and d.element_id not in nodes:
+                        nodes[d.element_id] = _serialise_node(d)
+                for r in row["support_rels"] or []:
+                    if r is None:
+                        continue
+                    s, t = r.start_node.element_id, r.end_node.element_id
+                    if s in nodes and t in nodes:
+                        links.append(_serialise_relationship(r, source_id=s, target_id=t))
+
+    return {
+        "nodes": list(nodes.values()),
+        "links": links,
+        "include_unknown": include_unknown,
+        "supports_per_unknown": supports_per_unknown,
+    }
+
+
 @router.get("/api/graph/evidence/{node_id}")
 def get_graph_evidence(node_id: str, hops: int = Query(2, ge=1, le=3)):
     """Workflow 5: chain of evidence for one Target/Detection/Asset.

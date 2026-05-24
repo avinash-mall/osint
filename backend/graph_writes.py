@@ -526,6 +526,185 @@ def merge_contradicted_by(
         return False
 
 
+def project_ontology_branches_and_objects(
+    *,
+    branches: list[dict[str, Any]],
+    objects: list[dict[str, Any]],
+) -> dict[str, int]:
+    """MERGE every ``OntologyBranch`` and ``OntologyObject`` + their ``HAS_OBJECT`` edges.
+
+    Each branch dict carries ``id, label, parent_id, color, short``. Each
+    object dict carries ``id, branch_id, label, prompt, icon_key``. Identity
+    is the row ``id`` (matches the constraint registered in
+    [graph_schema.py](graph_schema.py)).
+
+    Returns ``{branches: N, objects: M, edges: K}``. Best-effort; failures
+    log and return zero.
+    """
+    if not branches and not objects:
+        return {"branches": 0, "objects": 0, "edges": 0}
+    try:
+        with db.get_session() as session:
+            session.run(
+                """
+                UNWIND $branches AS b
+                MERGE (n:OntologyBranch {id: b.id})
+                  ON CREATE SET n.created_at = datetime()
+                SET n.label = b.label,
+                    n.parent_id = b.parent_id,
+                    n.color = b.color,
+                    n.short = b.short,
+                    n.updated_at = datetime()
+                """,
+                {"branches": branches},
+            )
+            # Branch parent edges (for branches that have a parent).
+            session.run(
+                """
+                UNWIND $branches AS b
+                WITH b WHERE b.parent_id IS NOT NULL
+                MATCH (child:OntologyBranch {id: b.id})
+                MATCH (parent:OntologyBranch {id: b.parent_id})
+                MERGE (parent)-[:HAS_CHILD]->(child)
+                """,
+                {"branches": branches},
+            )
+            result = session.run(
+                """
+                UNWIND $objects AS o
+                MERGE (n:OntologyObject {id: o.id})
+                  ON CREATE SET n.created_at = datetime()
+                SET n.label = o.label,
+                    n.prompt = o.prompt,
+                    n.icon_key = o.icon_key,
+                    n.branch_id = o.branch_id,
+                    n.updated_at = datetime()
+                WITH n, o
+                MATCH (b:OntologyBranch {id: o.branch_id})
+                MERGE (b)-[:HAS_OBJECT]->(n)
+                RETURN count(DISTINCT n) AS objects
+                """,
+                {"objects": objects},
+            )
+            obj_count = int(result.single()["objects"]) if objects else 0
+            return {"branches": len(branches), "objects": obj_count, "edges": obj_count}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "graph_writes: project_ontology_branches_and_objects(b=%d, o=%d) failed: %s",
+            len(branches), len(objects), exc,
+        )
+        return {"branches": 0, "objects": 0, "edges": 0}
+
+
+def project_unknown_label(
+    *,
+    label: str,
+    layer: str | None,
+    count: int,
+    first_seen: str | None,
+    last_seen: str | None,
+    suggested_branch_id: str | None,
+    supporting_detection_ids: list[int] | None = None,
+) -> bool:
+    """MERGE ``:UnknownLabel`` + ``:SUGGESTED_BRANCH`` + ``:LABEL_OF`` edges.
+
+    ``supporting_detection_ids`` is an optional list of recent PostGIS detection
+    ids whose class equals ``label`` — used to wire ``(d:Detection)-[:LABEL_OF]->(u:UnknownLabel)``
+    so analysts in Ontology mode can see "where this label came from."
+    Detections that aren't already in Neo4j are skipped (we don't lazily MERGE
+    them — that's the satellite worker's job).
+    """
+    try:
+        with db.get_session() as session:
+            session.run(
+                """
+                MERGE (u:UnknownLabel {label: $label})
+                  ON CREATE SET u.created_at = datetime()
+                SET u.layer = $layer,
+                    u.count = $count,
+                    u.first_seen = $first_seen,
+                    u.last_seen = $last_seen,
+                    u.updated_at = datetime()
+                """,
+                {
+                    "label": label, "layer": layer, "count": count,
+                    "first_seen": first_seen, "last_seen": last_seen,
+                },
+            )
+            if suggested_branch_id:
+                session.run(
+                    """
+                    MATCH (u:UnknownLabel {label: $label})
+                    OPTIONAL MATCH (b:OntologyBranch {id: $branch_id})
+                    FOREACH (_ IN CASE WHEN b IS NOT NULL THEN [1] ELSE [] END |
+                        MERGE (u)-[:SUGGESTED_BRANCH]->(b)
+                    )
+                    """,
+                    {"label": label, "branch_id": suggested_branch_id},
+                )
+            if supporting_detection_ids:
+                session.run(
+                    """
+                    MATCH (u:UnknownLabel {label: $label})
+                    UNWIND $det_ids AS det_id
+                    OPTIONAL MATCH (d:Detection {postgis_id: det_id})
+                    FOREACH (_ IN CASE WHEN d IS NOT NULL THEN [1] ELSE [] END |
+                        MERGE (d)-[:LABEL_OF]->(u)
+                    )
+                    """,
+                    {"label": label, "det_ids": supporting_detection_ids},
+                )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "graph_writes: project_unknown_label(label=%s) failed: %s", label, exc,
+        )
+        return False
+
+
+def project_label_of_for_detection_class(
+    *,
+    detection_class: str,
+    ontology_object_id: str,
+    detection_postgis_ids: list[int],
+) -> int:
+    """MERGE ``(d:Detection)-[:LABEL_OF]->(o:OntologyObject)`` for a batch of
+    detections sharing the same normalized class.
+
+    Returns the number of edges written. Both sides must already exist —
+    Detection is MERGEd by the satellite worker, OntologyObject by
+    ``project_ontology_branches_and_objects``.
+    """
+    if not detection_postgis_ids:
+        return 0
+    try:
+        with db.get_session() as session:
+            result = session.run(
+                """
+                MATCH (o:OntologyObject {id: $object_id})
+                UNWIND $det_ids AS det_id
+                MATCH (d:Detection {postgis_id: det_id})
+                MERGE (d)-[r:LABEL_OF]->(o)
+                  ON CREATE SET r.created_at = datetime()
+                SET r.detection_class = $detection_class
+                RETURN count(r) AS edges
+                """,
+                {
+                    "object_id": ontology_object_id,
+                    "det_ids": detection_postgis_ids,
+                    "detection_class": detection_class,
+                },
+            )
+            record = result.single()
+            return int(record["edges"]) if record else 0
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "graph_writes: project_label_of_for_detection_class(class=%s, obj=%s) failed: %s",
+            detection_class, ontology_object_id, exc,
+        )
+        return 0
+
+
 def promote_candidate_to_detected_as(
     *,
     candidate_id: int,
