@@ -167,6 +167,85 @@ def test_site_composition_returns_payload_for_valid_base(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# /api/graph/evidence/{node_id}
+# ---------------------------------------------------------------------------
+
+
+def test_evidence_returns_404_when_seed_missing(monkeypatch):
+    client = _client(monkeypatch, neo4j_runs=lambda *a, **kw: _Result([]))
+    resp = client.get("/api/graph/evidence/missing")
+    assert resp.status_code == 404
+
+
+def test_evidence_returns_focus_plus_records_for_detection(monkeypatch):
+    # The neighborhood Cypher returns one record with `nodes` list (seed +
+    # neighbors) and `rels` list. We fake a Detection mirror so the PostGIS
+    # detection fetch path runs.
+    seed = MagicMock()
+    seed.element_id = "seed-1"
+    seed.labels = ["Detection"]
+    seed.__iter__ = lambda self: iter([])
+    seed.keys = MagicMock(return_value=[])
+    # neo4j Node-like dict access:
+    detection_node = MagicMock()
+    detection_node.element_id = "det-1"
+    detection_node.labels = {"Detection"}
+
+    # Build a Node stand-in that dict()-converts to its properties.
+    class _FakeNode:
+        def __init__(self, eid, labels, props):
+            self.element_id = eid
+            self.labels = set(labels)
+            self._props = props
+        def __iter__(self):
+            return iter(self._props)
+        def keys(self):
+            return list(self._props.keys())
+        def __getitem__(self, k):
+            return self._props[k]
+        def values(self):
+            return list(self._props.values())
+
+    fake_seed = _FakeNode("det-1", ["Detection"], {"postgis_id": 42, "class": "container_ship"})
+    record = {"nodes": [fake_seed], "rels": []}
+
+    postgis_runs = {
+        "execute": [None, None, None],  # one per _safe_fetch call we hit
+        "fetchall": [
+            [{"id": 42, "class": "container_ship", "confidence": 0.9, "created_at": None,
+              "metadata": {}, "pass_id": 7, "pass_name": "p7", "sensor_type": "EO",
+              "acquisition_time": None, "lon": 0.0, "lat": 0.0}],
+        ],
+        "fetchone": [],
+    }
+
+    client = _client(
+        monkeypatch,
+        neo4j_runs=lambda *a, **kw: _Result([record]),
+        postgis_runs=postgis_runs,
+    )
+    resp = client.get("/api/graph/evidence/det-1")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["focus"]["id"] == "det-1"
+    assert body["focus"]["label"] == "Detection"
+    assert body["hops"] == 2
+    # PostGIS detection row landed in evidence_records.detections.
+    assert len(body["evidence_records"]["detections"]) == 1
+    assert body["evidence_records"]["detections"][0]["id"] == 42
+    # Buckets for not-yet-projected evidence types are empty arrays.
+    assert body["evidence_records"]["fmv_clips"] == []
+    assert body["evidence_records"]["documents"] == []
+
+
+def test_evidence_clamps_hops(monkeypatch):
+    client = _client(monkeypatch, neo4j_runs=lambda *a, **kw: _Result([]))
+    # hops=5 > max=3
+    resp = client.get("/api/graph/evidence/seed?hops=5")
+    assert resp.status_code == 422
+
+
 def test_promote_returns_404_when_postgis_row_missing(monkeypatch):
     postgis_runs = {
         "execute": [None],

@@ -458,6 +458,193 @@ def get_site_composition(
     }
 
 
+@router.get("/api/graph/evidence/{node_id}")
+def get_graph_evidence(node_id: str, hops: int = Query(2, ge=1, le=3)):
+    """Workflow 5: chain of evidence for one Target/Detection/Asset.
+
+    Returns the Neo4j ``hops``-hop neighborhood of the seed node plus a
+    parallel PostGIS pull of related rows (raw image paths, model versions,
+    transcripts, fmv frames, feed payloads) keyed by ``postgis_id`` carried on
+    the mirror nodes.
+
+    Response shape: ``{focus, nodes, links, evidence_records: {detections, satellite_passes, fmv_clips, documents, reports, feed_events, observations, transcripts}}``.
+
+    Evidence types whose Neo4j projectors haven't shipped yet (FMVClip,
+    Document, Report, FeedEvent, Observation arrive in Phase 2) simply
+    return as empty arrays. The endpoint is forward-compatible: as projectors
+    land, more buckets light up without API changes.
+    """
+    with db.get_session() as session:
+        # Pull the seed + 2-hop neighborhood.
+        result = session.run(
+            f"""
+            MATCH (seed)
+            WHERE elementId(seed) = $seed
+            CALL {{
+                WITH seed
+                MATCH (seed)-[*1..{hops}]-(n)
+                RETURN DISTINCT n LIMIT 200
+            }}
+            WITH seed, collect(DISTINCT n) AS neighbors
+            WITH [seed] + neighbors AS all_nodes
+            UNWIND all_nodes AS node
+            OPTIONAL MATCH (node)-[r]-(other)
+            WHERE other IN all_nodes
+            RETURN collect(DISTINCT node) AS nodes,
+                   collect(DISTINCT r) AS rels
+            """,
+            {"seed": node_id},
+        ).single()
+    if result is None:
+        raise HTTPException(status_code=404, detail="Node not found")
+
+    raw_nodes = [n for n in (result["nodes"] or []) if n is not None]
+    raw_rels = [r for r in (result["rels"] or []) if r is not None]
+    if not raw_nodes:
+        raise HTTPException(status_code=404, detail="Node not found")
+
+    nodes = [_serialise_node(n) for n in raw_nodes]
+    links = [
+        _serialise_relationship(r, source_id=r.start_node.element_id, target_id=r.end_node.element_id)
+        for r in raw_rels
+    ]
+    focus = nodes[0]
+
+    # Group postgis_ids by label so each PostGIS table is queried once.
+    by_label: dict[str, list[int]] = {}
+    for node in nodes:
+        labels = node.get("labels") or []
+        pid = node.get("properties", {}).get("postgis_id")
+        if not isinstance(pid, int):
+            continue
+        for label in labels:
+            by_label.setdefault(label, []).append(pid)
+
+    evidence: dict[str, list[dict[str, Any]]] = {
+        "detections": [],
+        "satellite_passes": [],
+        "fmv_clips": [],
+        "fmv_frames": [],
+        "documents": [],
+        "reports": [],
+        "feed_events": [],
+        "observations": [],
+        "transcripts": [],
+    }
+
+    def _safe_fetch(sql: str, params: tuple) -> list[dict[str, Any]]:
+        try:
+            with postgis_db.get_cursor() as cursor:
+                cursor.execute(sql, params)
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("evidence: PostGIS fetch failed (%s): %s", sql[:60], exc)
+            return []
+
+    detection_ids = by_label.get("Detection", [])
+    if detection_ids:
+        evidence["detections"] = _safe_fetch(
+            """
+            SELECT d.id, d.class, d.confidence, d.created_at, d.metadata,
+                   d.pass_id, sp.name AS pass_name, sp.sensor_type,
+                   sp.acquisition_time,
+                   ST_X(d.centroid) AS lon, ST_Y(d.centroid) AS lat
+            FROM detections d
+            LEFT JOIN satellite_passes sp ON sp.id = d.pass_id
+            WHERE d.id = ANY(%s) AND d.deleted_at IS NULL
+            """,
+            (detection_ids,),
+        )
+
+    pass_ids = by_label.get("SatellitePass", [])
+    if pass_ids:
+        evidence["satellite_passes"] = _safe_fetch(
+            """
+            SELECT id, name, file_path, sensor_type, acquisition_time, cloud_cover, metadata
+            FROM satellite_passes
+            WHERE id = ANY(%s)
+            """,
+            (pass_ids,),
+        )
+
+    fmv_clip_ids = by_label.get("FMVClip", [])
+    if fmv_clip_ids:
+        evidence["fmv_clips"] = _safe_fetch(
+            """
+            SELECT id, name, file_path, hls_path, duration_seconds, fps, width, height, status, metadata
+            FROM fmv_clips WHERE id = ANY(%s)
+            """,
+            (fmv_clip_ids,),
+        )
+        # Pull a sample of frames per clip so the analyst can preview without
+        # a follow-up fetch. Cap at 8 frames per clip.
+        evidence["fmv_frames"] = _safe_fetch(
+            """
+            SELECT clip_id, frame_index, timestamp_seconds, telemetry
+            FROM fmv_frames
+            WHERE clip_id = ANY(%s)
+            ORDER BY clip_id, frame_index
+            LIMIT 8 * (1 + array_length(%s, 1))
+            """,
+            (fmv_clip_ids, fmv_clip_ids),
+        )
+
+    document_ids = by_label.get("Document", [])
+    if document_ids:
+        evidence["documents"] = _safe_fetch(
+            """
+            SELECT id, upload_id, domain, title, file_path, source_url, media_type,
+                   status, summary, extracted_entities, metadata, created_at
+            FROM documents WHERE id = ANY(%s)
+            """,
+            (document_ids,),
+        )
+        evidence["transcripts"] = _safe_fetch(
+            """
+            SELECT id, document_id, language, confidence, segments, created_at
+            FROM transcripts WHERE document_id = ANY(%s)
+            """,
+            (document_ids,),
+        )
+
+    report_ids = by_label.get("Report", [])
+    if report_ids:
+        evidence["reports"] = _safe_fetch(
+            "SELECT id, title, target_id, report_type, status, content, created_at FROM reports WHERE id = ANY(%s)",
+            (report_ids,),
+        )
+
+    feed_event_ids = by_label.get("FeedEvent", [])
+    if feed_event_ids:
+        evidence["feed_events"] = _safe_fetch(
+            """
+            SELECT id, source_id, event_type, payload, observed_at, created_at,
+                   ST_AsGeoJSON(geom) AS geom
+            FROM feed_events WHERE id = ANY(%s)
+            """,
+            (feed_event_ids,),
+        )
+
+    observation_ids = by_label.get("Observation", [])
+    if observation_ids:
+        evidence["observations"] = _safe_fetch(
+            """
+            SELECT id, domain, source_id, entity_id, event_type, title, confidence,
+                   ST_AsGeoJSON(geom) AS geom, payload, provenance, observed_at
+            FROM observations WHERE id = ANY(%s)
+            """,
+            (observation_ids,),
+        )
+
+    return {
+        "focus": focus,
+        "nodes": nodes,
+        "links": links,
+        "evidence_records": evidence,
+        "hops": hops,
+    }
+
+
 @router.post("/api/graph/candidate-edges/{candidate_id}/promote")
 def promote_candidate_edge(candidate_id: int, req: GraphPromoteRequest = GraphPromoteRequest()):
     """Graph-side promotion: a pending `CANDIDATE_DETECTED_AS` becomes `DETECTED_AS`.
