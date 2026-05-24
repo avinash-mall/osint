@@ -906,6 +906,27 @@ def delete_possibly_same_as(*, a_id: str, b_id: str) -> int:
         return 0
 
 
+def cosine_similarity(a: list[float] | None, b: list[float] | None) -> float | None:
+    """Pure-Python cosine similarity for two equal-length float vectors.
+
+    Returns a float in [-1.0, 1.0] or ``None`` when either vector is missing,
+    empty, has mismatched length, or is all-zero (cosine undefined).
+    """
+    if not a or not b or len(a) != len(b):
+        return None
+    dot = 0.0
+    norm_a = 0.0
+    norm_b = 0.0
+    for x, y in zip(a, b):
+        dot += x * y
+        norm_a += x * x
+        norm_b += y * y
+    if norm_a <= 0.0 or norm_b <= 0.0:
+        return None
+    import math
+    return dot / (math.sqrt(norm_a) * math.sqrt(norm_b))
+
+
 def merge_possibly_same_as_batch(rows: list[dict[str, Any]]) -> int:
     """MERGE many ``POSSIBLY_SAME_AS`` candidate edges in one UNWIND.
 

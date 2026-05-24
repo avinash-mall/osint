@@ -283,6 +283,55 @@ def delete_operational_entity_route(entity_id: str):
 # ---------------------------------------------------------------------------
 
 
+@router.post("/api/operational-entities/{entity_id}/attach-track/{track_id}")
+def attach_detection_track(entity_id: str, track_id: int, analyst: Optional[str] = None):
+    """Phase 5.J: analyst links a detection_track to an operational entity.
+
+    The next ``worker.tick_aggregate_entity_embeddings`` run will fold this
+    track's ``embedding_anchor`` into the entity's centroid for cosine
+    re-similarity. Idempotent (PK on the (entity_id, track_id) pair).
+    """
+    ensure_platform_tables()
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("SELECT 1 FROM operational_entities WHERE id = %s", (entity_id,))
+        if cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="entity not found")
+        cursor.execute(
+            """
+            INSERT INTO operational_entity_tracks (entity_id, track_id, attached_by)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (entity_id, track_id) DO NOTHING
+            """,
+            (entity_id, track_id, (analyst or "analyst").strip() or "analyst"),
+        )
+    return {"success": True, "entity_id": entity_id, "track_id": track_id}
+
+
+@router.get("/api/operational-entities/{entity_id}/tracks")
+def list_attached_tracks(entity_id: str):
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute(
+            "SELECT track_id, attached_by, attached_at FROM operational_entity_tracks WHERE entity_id = %s ORDER BY attached_at DESC",
+            (entity_id,),
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+    return {"entity_id": entity_id, "tracks": rows, "count": len(rows)}
+
+
+@router.delete("/api/operational-entities/{entity_id}/tracks/{track_id}")
+def detach_detection_track(entity_id: str, track_id: int):
+    ensure_platform_tables()
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute(
+            "DELETE FROM operational_entity_tracks WHERE entity_id = %s AND track_id = %s RETURNING entity_id",
+            (entity_id, track_id),
+        )
+        if cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="track not attached")
+    return {"success": True, "entity_id": entity_id, "track_id": track_id}
+
+
 @router.post("/api/operational-entities/{entity_id}/attach-observation")
 def attach_observation(entity_id: str, body: AttachObservationRequest):
     ensure_platform_tables()

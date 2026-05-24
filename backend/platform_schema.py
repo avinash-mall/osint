@@ -465,6 +465,26 @@ def ensure_platform_tables() -> None:
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_repeat_thresholds_kind_current "
                 "ON repeat_detector_thresholds(kind) WHERE current = TRUE"
             )
+            # Phase 5.J: entity-level DINOv3 re-ID embedding (centroid of
+            # attached detection_tracks.embedding_anchor). Used by the
+            # cosine branch in worker.tick_entity_resimilarity. Optional —
+            # entities without an attached track stay NULL and fall back to
+            # the name-match heuristic.
+            cursor.execute("ALTER TABLE operational_entities ADD COLUMN IF NOT EXISTS re_id_embedding JSONB")
+            cursor.execute("ALTER TABLE operational_entities ADD COLUMN IF NOT EXISTS re_id_dim INTEGER")
+            cursor.execute("ALTER TABLE operational_entities ADD COLUMN IF NOT EXISTS re_id_updated_at TIMESTAMPTZ")
+            # Association table: analyst-attached detection tracks per entity.
+            # Tracks are the unit aggregated for re-ID centroids.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS operational_entity_tracks (
+                    entity_id   VARCHAR(255) NOT NULL,
+                    track_id    INTEGER NOT NULL,
+                    attached_by VARCHAR(100),
+                    attached_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (entity_id, track_id)
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_oet_track ON operational_entity_tracks(track_id)")
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS ontology_updates (
                     id SERIAL PRIMARY KEY,

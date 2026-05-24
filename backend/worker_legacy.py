@@ -272,6 +272,13 @@ celery_app.conf.beat_schedule = {
         "task": "worker.tick_propose_entities",
         "schedule": float(env_int("ENTITY_PROPOSAL_INTERVAL_S", 24 * 60 * 60)),
     },
+    # Phase 5.J: twice-daily aggregation of detection_tracks.embedding_anchor
+    # into operational_entities.re_id_embedding so tick_entity_resimilarity
+    # can use cosine similarity.
+    "tick-aggregate-entity-embeddings": {
+        "task": "worker.tick_aggregate_entity_embeddings",
+        "schedule": float(env_int("ENTITY_EMBEDDING_AGGREGATION_INTERVAL_S", 12 * 60 * 60)),
+    },
 }
 celery_app.conf.timezone = "UTC"
 
@@ -3574,6 +3581,95 @@ def tick_propose_entities() -> dict:
     return {"proposed": proposed, "skipped": skipped, "source": source}
 
 
+def _parse_embedding_anchor(blob: Any) -> list[float] | None:
+    """Detection_tracks.embedding_anchor is either a raw float array or
+    a {"fp16_b64": ..., "dim": ...} packed struct. Return a plain list[float]
+    or None when the shape is unrecognised.
+    """
+    if blob is None:
+        return None
+    if isinstance(blob, str):
+        try:
+            blob = json.loads(blob)
+        except json.JSONDecodeError:
+            return None
+    if isinstance(blob, list):
+        try:
+            return [float(x) for x in blob]
+        except (TypeError, ValueError):
+            return None
+    if isinstance(blob, dict) and "fp16_b64" in blob and "dim" in blob:
+        try:
+            import base64 as _b64
+            import numpy as _np
+            raw = _b64.b64decode(blob["fp16_b64"])
+            arr = _np.frombuffer(raw, dtype=_np.float16).astype(_np.float32)
+            return arr.tolist()
+        except Exception:
+            return None
+    return None
+
+
+@celery_app.task(name="worker.tick_aggregate_entity_embeddings", queue="default")
+def tick_aggregate_entity_embeddings() -> dict:
+    """Phase 5.J: average ``detection_tracks.embedding_anchor`` per operational
+    entity (using the ``operational_entity_tracks`` association table) and
+    store the centroid in ``operational_entities.re_id_embedding``.
+
+    Entities with no attached tracks leave re_id_embedding NULL — the cosine
+    branch of tick_entity_resimilarity skips them gracefully and falls back
+    to the name-match heuristic.
+    """
+    aggregated = 0
+    skipped = 0
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("SELECT id FROM operational_entities")
+        entity_ids = [r["id"] for r in cursor.fetchall()]
+
+    for entity_id in entity_ids:
+        with postgis_db.get_cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT t.embedding_anchor
+                FROM operational_entity_tracks et
+                JOIN detection_tracks t ON t.id = et.track_id
+                WHERE et.entity_id = %s AND t.embedding_anchor IS NOT NULL
+                """,
+                (entity_id,),
+            )
+            anchors = [r["embedding_anchor"] for r in cursor.fetchall()]
+
+        vectors = [v for v in (_parse_embedding_anchor(a) for a in anchors) if v]
+        if not vectors:
+            skipped += 1
+            continue
+        dim = len(vectors[0])
+        if not all(len(v) == dim for v in vectors):
+            skipped += 1
+            continue
+        centroid = [sum(v[i] for v in vectors) / len(vectors) for i in range(dim)]
+
+        try:
+            with postgis_db.get_cursor(commit=True) as cursor:
+                cursor.execute(
+                    """
+                    UPDATE operational_entities
+                    SET re_id_embedding = %s::jsonb,
+                        re_id_dim = %s,
+                        re_id_updated_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (json.dumps(centroid), dim, entity_id),
+                )
+            aggregated += 1
+        except Exception:
+            logger.exception("tick_aggregate_entity_embeddings: update failed for %s", entity_id)
+            skipped += 1
+
+    return {"aggregated": aggregated, "skipped": skipped, "total": len(entity_ids)}
+
+
 @celery_app.task(name="worker.tick_entity_resimilarity", queue="default")
 def tick_entity_resimilarity() -> dict:
     """Phase 4 beat task: emit ``:POSSIBLY_SAME_AS`` candidate edges between
@@ -3627,17 +3723,85 @@ def tick_entity_resimilarity() -> dict:
                         return out
         return out
 
+    def _embedding_proposals_for_kind(kind: str) -> list[dict]:
+        """Phase 5.J: cosine over re_id_embedding for entities of the same kind.
+
+        Only entities with non-NULL re_id_embedding (populated by
+        worker.tick_aggregate_entity_embeddings) participate. Pairs whose
+        cosine ≥ threshold (default 0.85) are emitted with source='embedding'.
+        """
+        from graph_writes import cosine_similarity as _cos
+        threshold = env_float("ENTITY_RESIMILARITY_EMBEDDING_THRESHOLD", 0.85)
+        with postgis_db.get_cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, re_id_embedding, re_id_dim FROM operational_entities
+                WHERE kind = %s AND re_id_embedding IS NOT NULL
+                ORDER BY id
+                """,
+                (kind,),
+            )
+            entities = []
+            for r in cursor.fetchall():
+                emb = r["re_id_embedding"]
+                if isinstance(emb, str):
+                    try:
+                        emb = json.loads(emb)
+                    except json.JSONDecodeError:
+                        continue
+                if not isinstance(emb, list):
+                    continue
+                entities.append((r["id"], emb))
+        out: list[dict] = []
+        for i, (a_id, a_vec) in enumerate(entities):
+            for b_id, b_vec in entities[i + 1:]:
+                cos = _cos(a_vec, b_vec)
+                if cos is None or cos < threshold:
+                    continue
+                out.append({
+                    "a_id": a_id, "b_id": b_id,
+                    "score": round(float(cos), 3),
+                    "source": "embedding",
+                })
+                if len(out) >= max_pairs:
+                    return out
+        return out
+
+    seen_pairs: set[tuple[str, str]] = set()
     for kind in ("vessel", "aircraft", "vehicle", "facility", "unit"):
+        # Phase 5.J: prefer embedding cosine; fall back to name-match
+        # heuristic so entities without embeddings still get proposals.
         try:
-            rows.extend(_proposals_for_kind(kind))
+            emb_rows = _embedding_proposals_for_kind(kind)
+            for r in emb_rows:
+                key = tuple(sorted([r["a_id"], r["b_id"]]))
+                if key in seen_pairs:
+                    continue
+                seen_pairs.add(key)
+                rows.append(r)
         except Exception:
-            logger.exception("tick_entity_resimilarity: kind=%s failed", kind)
+            logger.exception("tick_entity_resimilarity: kind=%s embedding branch failed", kind)
+        try:
+            heuristic_rows = _proposals_for_kind(kind)
+            for r in heuristic_rows:
+                key = tuple(sorted([r["a_id"], r["b_id"]]))
+                if key in seen_pairs:
+                    continue
+                seen_pairs.add(key)
+                rows.append(r)
+        except Exception:
+            logger.exception("tick_entity_resimilarity: kind=%s heuristic branch failed", kind)
         if len(rows) >= max_pairs:
             rows = rows[:max_pairs]
             break
 
     written = merge_possibly_same_as_batch(rows)
-    return {"proposals": len(rows), "edges_written": written, "max_pairs": max_pairs}
+    return {
+        "proposals": len(rows),
+        "edges_written": written,
+        "max_pairs": max_pairs,
+        "by_source": {s: sum(1 for r in rows if r.get("source") == s) for s in {r.get("source", "unknown") for r in rows}},
+    }
 
 
 @celery_app.task(name="worker.tick_repeat_detector", queue="default")

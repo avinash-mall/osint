@@ -37,6 +37,7 @@ from worker_legacy import (  # noqa: F401  — explicit names for IDE completion
     project_observations_to_graph,
     project_ontology_to_graph,
     project_unknown_labels,
+    tick_aggregate_entity_embeddings,
     tick_entity_resimilarity,
     tick_near_builder,
     tick_propose_entities,
