@@ -26,6 +26,7 @@ interface OntologyPayload {
   links: OntologyLink[];
   include_unknown: boolean;
   supports_per_unknown: number;
+  cooccurrence?: Record<string, Record<string, number>> | null;
 }
 
 interface Branch { id: string; label: string }
@@ -68,7 +69,12 @@ export function OntologyOrbit({ onBack }: Props) {
     setError(null);
     try {
       const resp = await axios.get(`${API_URL}/api/graph/ontology`, {
-        params: { include_unknown: true, supports_per_unknown: 5 },
+        params: {
+          include_unknown: true,
+          supports_per_unknown: 5,
+          include_cooccurrence: true,
+          cooccurrence_top_k: 6,
+        },
       });
       setPayload(resp.data);
     } catch (err: any) {
@@ -252,6 +258,49 @@ export function OntologyOrbit({ onBack }: Props) {
               </div>
               <div className="text-sm font-semibold mb-1 break-words">{nodeTitle(selected)}</div>
               <div className="text-[10px] text-sentinel-muted font-mono mb-3">{String(selected.id).slice(0, 24)}</div>
+              {!selectedIsUnknown && selected.label === 'OntologyObject' && payload?.cooccurrence && (() => {
+                const objectId = String(selected.properties?.id || selected.id);
+                const chips = payload.cooccurrence?.[objectId];
+                if (!chips || Object.keys(chips).length === 0) {
+                  return (
+                    <div style={{ marginBottom: 12 }}>
+                      <div className="sentinel-label" style={{ marginBottom: 4 }}>Co-occurs with</div>
+                      <div style={{ fontSize: 10, color: 'var(--ink-3)', fontFamily: 'monospace' }}>
+                        no shared detections yet
+                      </div>
+                    </div>
+                  );
+                }
+                const entries = Object.entries(chips).sort((a, b) => b[1] - a[1]);
+                const max = entries[0][1];
+                return (
+                  <div style={{ marginBottom: 12 }}>
+                    <div className="sentinel-label" style={{ marginBottom: 4 }}>Co-occurs with</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      {entries.map(([label, count]) => (
+                        <div key={label} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 40px', alignItems: 'center', gap: 4 }}>
+                          <div style={{ position: 'relative', height: 14, background: 'var(--bg-1)', border: '1px solid var(--line)' }}>
+                            <div style={{
+                              position: 'absolute', top: 0, left: 0, bottom: 0,
+                              width: `${Math.max(8, Math.round((count / max) * 100))}%`,
+                              background: 'var(--accent)', opacity: 0.6,
+                            }} />
+                            <div style={{
+                              position: 'absolute', top: 0, left: 4, bottom: 0,
+                              display: 'flex', alignItems: 'center',
+                              fontSize: 10, fontFamily: 'monospace',
+                              color: 'var(--ink-0)',
+                            }}>
+                              {label}
+                            </div>
+                          </div>
+                          <div style={{ fontSize: 10, fontFamily: 'monospace', color: 'var(--ink-2)', textAlign: 'right' }}>{count}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
               {selectedIsUnknown ? (
                 <div className="space-y-3">
                   <div className="text-xs text-sentinel-muted">
