@@ -3242,6 +3242,83 @@ def consolidate_fmv(clip_id: int) -> dict:
     return result
 
 
+@celery_app.task(name="worker.project_label_of_edges", queue="default")
+def project_label_of_edges(detection_ids: list[int] | None = None, batch_size: int = 500) -> dict:
+    """MERGE ``(d:Detection)-[:LABEL_OF]->(o:OntologyObject)`` for Detections
+    whose ``class`` normalizes to a known ontology object.
+
+    Two call styles:
+    - ``project_label_of_edges(detection_ids=[1,2,3])`` — targeted refresh
+      (e.g. after a satellite pass writes new detections).
+    - ``project_label_of_edges()`` — backfill mode: walks every Detection in
+      PostGIS, batched, calling ``ontology.normalize`` to resolve each class
+      to an OntologyObject id.
+    """
+    from graph_writes import project_label_of_for_detection_class
+    import ontology as ontology_module
+
+    def _select(ids: list[int] | None, offset: int) -> list[dict]:
+        with postgis_db.get_cursor() as cursor:
+            if ids:
+                cursor.execute(
+                    "SELECT id, class FROM detections WHERE id = ANY(%s) AND deleted_at IS NULL",
+                    (ids,),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT id, class FROM detections
+                    WHERE deleted_at IS NULL
+                    ORDER BY id OFFSET %s LIMIT %s
+                    """,
+                    (offset, batch_size),
+                )
+            return [dict(r) for r in cursor.fetchall()]
+
+    def _project(rows: list[dict]) -> int:
+        # Group detection ids by normalized OntologyObject id.
+        by_object: dict[str, list[int]] = {}
+        by_object_class: dict[str, str] = {}
+        for row in rows:
+            try:
+                norm = ontology_module.normalize(row["class"])
+            except Exception:
+                continue
+            object_id = getattr(norm, "object_id", None) if norm else None
+            if not object_id:
+                continue
+            by_object.setdefault(object_id, []).append(int(row["id"]))
+            by_object_class.setdefault(object_id, str(row["class"]))
+        total = 0
+        for object_id, det_ids in by_object.items():
+            total += project_label_of_for_detection_class(
+                detection_class=by_object_class[object_id],
+                ontology_object_id=object_id,
+                detection_postgis_ids=det_ids,
+            )
+        return total
+
+    if detection_ids is not None:
+        rows = _select(detection_ids, 0)
+        return {"projected": _project(rows), "mode": "targeted", "count": len(detection_ids)}
+
+    total = 0
+    offset = 0
+    while True:
+        try:
+            rows = _select(None, offset)
+        except Exception:
+            logger.exception("project_label_of_edges: batch read failed at offset=%s", offset)
+            break
+        if not rows:
+            break
+        total += _project(rows)
+        if len(rows) < batch_size:
+            break
+        offset += batch_size
+    return {"projected": total, "mode": "backfill"}
+
+
 @celery_app.task(name="worker.project_ontology_to_graph", queue="default")
 def project_ontology_to_graph() -> dict:
     """Mirror every ``ontology_branches`` + ``ontology_objects`` row into Neo4j.

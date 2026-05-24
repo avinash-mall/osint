@@ -33,6 +33,7 @@ from worker_legacy import (  # noqa: F401  — explicit names for IDE completion
     process_satellite_imagery,
     project_documents_to_graph,
     project_fmv_to_graph,
+    project_label_of_edges,
     project_observations_to_graph,
     project_ontology_to_graph,
     project_unknown_labels,
