@@ -126,3 +126,41 @@ def test_promote_candidate_returns_none_when_no_match(monkeypatch):
     _install_db_stub(monkeypatch, single_return=None)
     mod = _load_graph_writes()
     assert mod.promote_candidate_to_detected_as(candidate_id=999, reviewed_by="a") is None
+
+
+def test_project_fmv_with_tracks_runs_unwind_merge(monkeypatch):
+    run = _install_db_stub(monkeypatch, single_return=None)
+    mod = _load_graph_writes()
+
+    result = mod.project_fmv_clip_and_tracks(
+        clip_id=7, clip_name="clip-7",
+        duration_seconds=12.5, fps=30, width=1920, height=1080,
+        tracks=[
+            {"track_uid": "t-1", "cls": "car", "confidence": 0.91, "first_frame": 0, "last_frame": 50},
+            {"track_uid": "t-2", "cls": "person", "confidence": 0.6, "first_frame": 10, "last_frame": 70},
+        ],
+    )
+    assert result == {"clip": 1, "tracks": 2}
+    cypher, params = run.call_args.args
+    assert "MERGE (c:FMVClip {postgis_id: $clip_id})" in cypher
+    assert "UNWIND $tracks AS t" in cypher
+    assert "MERGE (d:FMVDetection {clip_id: $clip_id, track_uid: t.track_uid})" in cypher
+    assert "MERGE (c)-[:CONTAINS_DETECTION]->(d)" in cypher
+    assert params["clip_id"] == 7
+    assert len(params["tracks"]) == 2
+
+
+def test_project_fmv_without_tracks_still_merges_clip(monkeypatch):
+    run = _install_db_stub(monkeypatch, single_return=None)
+    mod = _load_graph_writes()
+
+    result = mod.project_fmv_clip_and_tracks(
+        clip_id=9, clip_name="empty-clip",
+        duration_seconds=None, fps=None, width=None, height=None,
+        tracks=[],
+    )
+    assert result == {"clip": 1, "tracks": 0}
+    cypher, _ = run.call_args.args
+    assert "MERGE (c:FMVClip {postgis_id: $clip_id})" in cypher
+    # No UNWIND when tracks empty.
+    assert "UNWIND" not in cypher

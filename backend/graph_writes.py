@@ -221,6 +221,101 @@ def delete_site_for_aoi(*, aoi_postgis_id: int) -> int:
         return 0
 
 
+def project_fmv_clip_and_tracks(
+    *,
+    clip_id: int,
+    clip_name: str,
+    duration_seconds: float | None,
+    fps: float | None,
+    width: int | None,
+    height: int | None,
+    tracks: list[dict[str, Any]],
+) -> dict[str, int]:
+    """MERGE one ``:FMVClip`` stub + one ``:FMVDetection`` per consolidated track.
+
+    Each ``tracks`` row is expected to carry ``track_uid`` (string), ``cls``,
+    ``confidence``, ``first_frame``, ``last_frame``. The clip-side node uses
+    ``postgis_id`` as identity (matches the constraint registered in
+    [graph_schema.py](graph_schema.py)). Per-track identity is the composite
+    ``(clip_id, track_uid)`` per the same schema.
+
+    Returns ``{clip: 0|1, tracks: N}`` reporting how many rows were touched.
+    Best-effort: Neo4j failures log and return zeros.
+    """
+    if not tracks:
+        # Still MERGE the clip stub so a clip with zero consolidated tracks
+        # still shows up in Evidence mode.
+        try:
+            with db.get_session() as session:
+                session.run(
+                    """
+                    MERGE (c:FMVClip {postgis_id: $clip_id})
+                      ON CREATE SET c.created_at = datetime()
+                    SET c.name = $clip_name,
+                        c.duration_seconds = $duration_seconds,
+                        c.fps = $fps,
+                        c.width = $width,
+                        c.height = $height,
+                        c.updated_at = datetime()
+                    """,
+                    {
+                        "clip_id": clip_id,
+                        "clip_name": clip_name,
+                        "duration_seconds": duration_seconds,
+                        "fps": fps,
+                        "width": width,
+                        "height": height,
+                    },
+                )
+            return {"clip": 1, "tracks": 0}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("graph_writes: project_fmv_clip(clip=%s) failed: %s", clip_id, exc)
+            return {"clip": 0, "tracks": 0}
+
+    try:
+        with db.get_session() as session:
+            session.run(
+                """
+                MERGE (c:FMVClip {postgis_id: $clip_id})
+                  ON CREATE SET c.created_at = datetime()
+                SET c.name = $clip_name,
+                    c.duration_seconds = $duration_seconds,
+                    c.fps = $fps,
+                    c.width = $width,
+                    c.height = $height,
+                    c.updated_at = datetime()
+                WITH c
+                UNWIND $tracks AS t
+                MERGE (d:FMVDetection {clip_id: $clip_id, track_uid: t.track_uid})
+                  ON CREATE SET d.created_at = datetime()
+                SET d.class = t.cls,
+                    d.confidence = t.confidence,
+                    d.first_frame = t.first_frame,
+                    d.last_frame = t.last_frame,
+                    d.updated_at = datetime()
+                MERGE (c)-[:CONTAINS_DETECTION]->(d)
+                """,
+                {
+                    "clip_id": clip_id,
+                    "clip_name": clip_name,
+                    "duration_seconds": duration_seconds,
+                    "fps": fps,
+                    "width": width,
+                    "height": height,
+                    "tracks": tracks,
+                },
+            )
+        return {"clip": 1, "tracks": len(tracks)}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "graph_writes: project_fmv_clip_and_tracks(clip=%s, tracks=%d) failed: %s",
+            clip_id,
+            len(tracks),
+            exc,
+        )
+        return {"clip": 0, "tracks": 0}
+
+
 def promote_candidate_to_detected_as(
     *,
     candidate_id: int,

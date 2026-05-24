@@ -3232,7 +3232,89 @@ def consolidate_fmv(clip_id: int) -> dict:
              "count": result.get("rows_rewritten", 0), "consolidated": True}
     publish_event(f"fmv:{clip_id}", event)
     publish_event("ops", event)
+    # Phase 2.B: queue the Neo4j projector so the clip + per-track nodes show
+    # up in Evidence mode without operator action. Errors here log + swallow:
+    # the consolidation result is already saved.
+    try:
+        project_fmv_to_graph.delay(clip_id)
+    except Exception:
+        logger.exception("failed to queue worker.project_fmv_to_graph for clip %s", clip_id)
     return result
+
+
+@celery_app.task(name="worker.project_fmv_to_graph", queue="default")
+def project_fmv_to_graph(clip_id: int) -> dict:
+    """Mirror an FMV clip + consolidated tracks into Neo4j (Phase 2 projector).
+
+    Reads the ``fmv_clips`` row and aggregates ``fmv_detections`` by the
+    consolidated ``metadata.track_id``, then MERGE-projects a ``:FMVClip``
+    stub + one ``:FMVDetection`` per track linked via ``CONTAINS_DETECTION``.
+
+    Source of truth stays in PostGIS (per
+    [decisions/why-postgis-and-neo4j-coexist.md](../docs/decisions/why-postgis-and-neo4j-coexist.md));
+    the Neo4j nodes carry only identity + a few headline properties so
+    Evidence-mode column DAGs can chase the chain without re-fetching
+    frame-level data.
+    """
+    from graph_writes import project_fmv_clip_and_tracks
+    try:
+        with postgis_db.get_cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, name, duration_seconds, fps, width, height
+                FROM fmv_clips WHERE id = %s
+                """,
+                (clip_id,),
+            )
+            clip_row = cursor.fetchone()
+            if not clip_row:
+                return {"clip_id": clip_id, "error": "clip_not_found"}
+            clip = dict(clip_row)
+
+            cursor.execute(
+                """
+                SELECT (metadata->>'track_id') AS track_uid,
+                       class AS cls,
+                       MAX(confidence)::float AS confidence,
+                       MIN(frame_index) AS first_frame,
+                       MAX(frame_index) AS last_frame
+                FROM fmv_detections
+                WHERE clip_id = %s
+                  AND deleted_at IS NULL
+                  AND (metadata->>'consolidated')::boolean IS TRUE
+                  AND metadata ? 'track_id'
+                GROUP BY (metadata->>'track_id'), class
+                ORDER BY (metadata->>'track_id'), class
+                """,
+                (clip_id,),
+            )
+            track_rows = [dict(r) for r in cursor.fetchall()]
+    except Exception as exc:
+        logger.exception("project_fmv_to_graph: PostGIS read failed for clip %s", clip_id)
+        return {"clip_id": clip_id, "error": "postgis_read_failed", "detail": str(exc)}
+
+    # If multiple class-votes survive per track_uid (rare under consolidation),
+    # keep the highest-confidence row per track to one FMVDetection node.
+    by_uid: dict[str, dict[str, Any]] = {}
+    for row in track_rows:
+        uid = row.get("track_uid")
+        if not uid:
+            continue
+        existing = by_uid.get(uid)
+        if existing is None or (row.get("confidence") or 0) > (existing.get("confidence") or 0):
+            by_uid[uid] = row
+    tracks = list(by_uid.values())
+
+    counts = project_fmv_clip_and_tracks(
+        clip_id=clip_id,
+        clip_name=clip.get("name") or f"clip-{clip_id}",
+        duration_seconds=clip.get("duration_seconds"),
+        fps=clip.get("fps"),
+        width=clip.get("width"),
+        height=clip.get("height"),
+        tracks=tracks,
+    )
+    return {"clip_id": clip_id, **counts}
 
 
 def _target_history_anchor(cursor, target_id: str) -> float:
