@@ -135,21 +135,31 @@ def test_site_composition_returns_payload_for_valid_base(monkeypatch):
         "labels": ["Base"],
         "props": {"aoi_postgis_id": 7, "name": "Test Base"},
     }
-    observed_records: list = []  # no OBSERVED_AT links yet (Phase 1)
-    # Phase 4.C added a NEAR-count query + (when zero) skips the NEAR-group
-    # query, then runs OBSERVED query. So: base, near_count, observed.
+    observed_records: list = []  # no OBSERVED_AT links yet
+    # Phase 4.C + 5.L call sequence:
+    #   1. base lookup
+    #   2. NEAR count
+    #   3. observed (vessels/vehicles/aircraft)
+    #   4. anchor_rows for Phase 5.L reports lookup
     calls = iter([
         _Result([base_record]),
-        _Result([{"edges": 0}]),  # near_count = 0 → falls back to PostGIS
+        _Result([{"edges": 0}]),     # near_count = 0 → falls back to PostGIS
         _Result(observed_records),
+        _Result([]),                  # anchor_rows empty → no reports query
     ])
 
     def neo4j_side_effect(*_a, **_kw):
         return next(calls)
 
+    # PostGIS calls (in order):
+    #   1. ST_DWithin recent_detections (execute + fetchall)
+    #   2. FMV spatial query (execute + fetchall)
     postgis_runs = {
-        "execute": [None],
-        "fetchall": [[{"class": "container_ship", "count": 12, "last_seen": "2026-05-01T00:00:00Z"}]],
+        "execute": [None, None],
+        "fetchall": [
+            [{"class": "container_ship", "count": 12, "last_seen": "2026-05-01T00:00:00Z"}],
+            [],  # FMV — no clips
+        ],
         "fetchone": [],
     }
     client = _client(monkeypatch, neo4j_runs=neo4j_side_effect, postgis_runs=postgis_runs)
@@ -164,8 +174,46 @@ def test_site_composition_returns_payload_for_valid_base(monkeypatch):
     ]
     assert body["recent_detections_source"] == "live_st_dwithin"
     assert body["vessels"] == []
-    assert body["fmv_clips"] == []
+    assert body["fmv_clips"] == []  # empty fetchall returned
     assert body["reports"] == []
+
+
+def test_site_composition_populates_fmv_and_reports(monkeypatch):
+    base_record = {
+        "b": MagicMock(),
+        "labels": ["Base"],
+        "props": {"aoi_postgis_id": 7, "name": "Test Base"},
+    }
+    observed_records: list = []
+    anchor_records = [{"asset_id": "vessel-1"}, {"asset_id": "vessel-2"}]
+    calls = iter([
+        _Result([base_record]),
+        _Result([{"edges": 0}]),
+        _Result(observed_records),
+        _Result(anchor_records),
+    ])
+    def neo4j_side_effect(*_a, **_kw):
+        return next(calls)
+    postgis_runs = {
+        "execute": [None, None, None],
+        "fetchall": [
+            [],                                                                  # recent_detections (empty)
+            [{"id": 11, "name": "clip-A", "duration_seconds": 60, "fps": 30,    # FMV bucket
+              "status": "ready", "first_overlap_t": 1.2, "overlapping_frames": 30}],
+            [{"id": 5, "title": "TARGET PACKAGE: Pearl-1", "target_id": "vessel-1",
+              "report_type": "target_package", "status": "draft",
+              "created_at": "2026-05-23T00:00:00Z"}],
+        ],
+        "fetchone": [],
+    }
+    client = _client(monkeypatch, neo4j_runs=neo4j_side_effect, postgis_runs=postgis_runs)
+    resp = client.get("/api/graph/site-composition/elem-2")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["fmv_clips"]) == 1
+    assert body["fmv_clips"][0]["id"] == 11
+    assert len(body["reports"]) == 1
+    assert body["reports"][0]["target_id"] == "vessel-1"
 
 
 def test_site_composition_prefers_near_edges_when_present(monkeypatch):
@@ -177,15 +225,20 @@ def test_site_composition_prefers_near_edges_when_present(monkeypatch):
     near_grouped = [
         {"class": "tank", "count": 5, "last_seen": "2026-05-15T00:00:00Z"},
     ]
+    # Phase 4.C + 5.L call sequence with NEAR present:
+    # base, near_count(>0), NEAR groupby, observed, anchor_rows
     calls = iter([
         _Result([base_record]),
-        _Result([{"edges": 17}]),       # near_count > 0
-        _Result(near_grouped),           # NEAR group-by results
-        _Result([]),                     # observed
+        _Result([{"edges": 17}]),
+        _Result(near_grouped),
+        _Result([]),
+        _Result([]),
     ])
     def neo4j_side_effect(*_a, **_kw):
         return next(calls)
-    client = _client(monkeypatch, neo4j_runs=neo4j_side_effect)
+    # Even with NEAR present we still hit PostGIS for FMV (one execute + one fetchall).
+    postgis_runs = {"execute": [None], "fetchall": [[]], "fetchone": []}
+    client = _client(monkeypatch, neo4j_runs=neo4j_side_effect, postgis_runs=postgis_runs)
     resp = client.get("/api/graph/site-composition/elem-9")
     assert resp.status_code == 200
     body = resp.json()

@@ -492,6 +492,70 @@ def get_site_composition(
             elif "Asset" in labels:
                 other_assets.append(payload)
 
+    fmv_clips: list[dict[str, Any]] = []
+    if aoi_postgis_id is not None:
+        # Phase 5.L: FMV clips whose frame footprints intersect the AOI
+        # polygon. No clip-level footprint table exists, so we DISTINCT by
+        # clip_id over the frames spatial index.
+        try:
+            with postgis_db.get_cursor() as cursor:
+                cursor.execute(
+                    """
+                    WITH aoi AS (SELECT geom FROM aois WHERE id = %s)
+                    SELECT c.id, c.name, c.duration_seconds, c.fps, c.status,
+                           MIN(f.timestamp_seconds) AS first_overlap_t,
+                           COUNT(DISTINCT f.frame_index)::int AS overlapping_frames
+                    FROM fmv_clips c
+                    JOIN fmv_frames f ON f.clip_id = c.id, aoi
+                    WHERE ST_Intersects(f.footprint, aoi.geom)
+                      AND c.created_at >= NOW() - (%s || ' days')::interval
+                    GROUP BY c.id, c.name, c.duration_seconds, c.fps, c.status
+                    ORDER BY MAX(f.timestamp_seconds) DESC NULLS LAST
+                    LIMIT 25
+                    """,
+                    (aoi_postgis_id, str(recent_days)),
+                )
+                fmv_clips = [dict(r) for r in cursor.fetchall()]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("site-composition: FMV spatial query failed for aoi=%s: %s", aoi_postgis_id, exc)
+            fmv_clips = []
+
+    # Phase 5.L: reports linked to operational entities anchored at this site.
+    # Path: (site)<-[:OPERATES_FROM|NEAR|OBSERVED_AT]-(asset) AND
+    # PostGIS reports.target_id == asset.id (we can't push the join into Cypher
+    # because Report identity lives in PostGIS as :Report stub, but reports
+    # may not be Neo4j-projected yet — so we fetch asset ids from Neo4j and
+    # query PostGIS reports.target_id IN (...) directly).
+    reports: list[dict[str, Any]] = []
+    try:
+        with db.get_session() as session:
+            anchor_rows = session.run(
+                """
+                MATCH (b)<-[:OPERATES_FROM|:NEAR|:OBSERVED_AT]-(a)
+                WHERE elementId(b) = $base_id
+                  AND a.id IS NOT NULL
+                RETURN DISTINCT a.id AS asset_id
+                LIMIT 200
+                """,
+                {"base_id": base_id},
+            )
+            asset_ids = [r["asset_id"] for r in anchor_rows if r["asset_id"]]
+        if asset_ids:
+            with postgis_db.get_cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT id, title, target_id, report_type, status, created_at
+                    FROM reports
+                    WHERE target_id = ANY(%s)
+                    ORDER BY created_at DESC LIMIT 25
+                    """,
+                    (asset_ids,),
+                )
+                reports = [dict(r) for r in cursor.fetchall()]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("site-composition: reports lookup failed for site=%s: %s", base_id, exc)
+        reports = []
+
     return {
         "base_id": base_id,
         "aoi_postgis_id": aoi_postgis_id,
@@ -505,8 +569,8 @@ def get_site_composition(
         "vehicles": vehicles,
         "aircraft": aircraft,
         "other_assets": other_assets,
-        "fmv_clips": [],
-        "reports": [],
+        "fmv_clips": fmv_clips,
+        "reports": reports,
     }
 
 
