@@ -187,6 +187,59 @@ def test_reject_pending_same_as_returns_404_when_missing(monkeypatch):
     assert resp.status_code == 404
 
 
+def test_merge_into_combines_rows(monkeypatch):
+    a_row = {
+        "id": "v1", "kind": "vessel", "name": "Black Pearl",
+        "callsign": "PEAR-1", "hull": None, "entity_class": None,
+        "unit_id": None, "operates_from_base_id": None,
+        "metadata": {"flag": "BB"},
+    }
+    b_row = {
+        "id": "v2", "kind": "vessel", "name": "Black Pearl II",
+        "callsign": None, "hull": "BP-002", "entity_class": "container_ship",
+        "unit_id": "unit-1", "operates_from_base_id": "aoi-7",
+        "metadata": {"flag": "BB", "extra": True},
+    }
+    updated = {
+        "id": "v2", "kind": "vessel", "name": "Black Pearl II",
+        "callsign": "PEAR-1", "hull": "BP-002", "entity_class": "container_ship",
+        "unit_id": "unit-1", "operates_from_base_id": "aoi-7",
+        "metadata": {"flag": "BB", "extra": True},
+        "created_by": None, "created_at": "2026-05-24T00:00:00Z",
+    }
+    # SELECT returns both rows via fetchall (one call), then UPDATE returns
+    # `updated` (fetchone), then DELETE returns {id: 'v1'} (fetchone).
+    client = _load(
+        monkeypatch,
+        postgis_fetchall=[[a_row, b_row]],
+        postgis_fetchone=[updated, {"id": "v1"}],
+        neo4j_records=[{"rel_id": "r1"}],
+    )
+    resp = client.post(
+        "/api/operational-entities/v1/merge-into/v2",
+        json={"resolutions": {"callsign": "a"}},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["merged_into"] == "v2"
+    assert body["deleted"] == "v1"
+    assert body["entity"]["callsign"] == "PEAR-1"
+
+
+def test_merge_into_rejects_different_kinds(monkeypatch):
+    a_row = {"id": "v1", "kind": "vessel", "name": "x", "callsign": None, "hull": None, "entity_class": None, "unit_id": None, "operates_from_base_id": None, "metadata": {}}
+    b_row = {"id": "a1", "kind": "aircraft", "name": "y", "callsign": None, "hull": None, "entity_class": None, "unit_id": None, "operates_from_base_id": None, "metadata": {}}
+    client = _load(monkeypatch, postgis_fetchall=[[a_row, b_row]])
+    resp = client.post("/api/operational-entities/v1/merge-into/a1", json={"resolutions": {}})
+    assert resp.status_code == 400
+
+
+def test_merge_into_rejects_self(monkeypatch):
+    client = _load(monkeypatch)
+    resp = client.post("/api/operational-entities/v1/merge-into/v1", json={"resolutions": {}})
+    assert resp.status_code == 400
+
+
 def test_part_of_updates_unit_and_graph(monkeypatch):
     client = _load(
         monkeypatch,

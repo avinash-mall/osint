@@ -76,6 +76,17 @@ class PendingSameAsRejectRequest(BaseModel):
     b_id: str
 
 
+class MergeIntoRequest(BaseModel):
+    """Phase 5.H — per-column conflict resolution when merging A into B.
+
+    Each value is "a" or "b" indicating which side's value to keep on the
+    merged (B) row. Defaults to "b" when a column isn't specified.
+    """
+
+    resolutions: dict[str, str] = Field(default_factory=dict)
+    analyst: Optional[str] = None
+
+
 class AttachObservationRequest(BaseModel):
     observation_postgis_id: int
 
@@ -495,6 +506,85 @@ def reject_entity_candidate(candidate_id: int, analyst: Optional[str] = None):
     if not row:
         raise HTTPException(status_code=404, detail="pending candidate not found")
     return {"success": True, "candidate": dict(row)}
+
+
+_MERGEABLE_COLUMNS = (
+    "callsign", "hull", "entity_class", "unit_id", "operates_from_base_id", "metadata",
+)
+
+
+@router.post("/api/operational-entities/{a_id}/merge-into/{b_id}")
+def merge_entity_into(a_id: str, b_id: str, body: MergeIntoRequest = MergeIntoRequest()):
+    """Phase 5.H: merge two operational_entities rows after a SAME_AS approval.
+
+    Reads both rows, applies the analyst's per-column resolution (default
+    "b" keeps the B-side value), UPDATEs B with the resolved values, then
+    DELETEs A and removes its Neo4j mirror. The Neo4j ``:SAME_AS`` edge
+    that linked A to B is implicitly gone once A is deleted.
+    """
+    ensure_platform_tables()
+    if a_id == b_id:
+        raise HTTPException(status_code=400, detail="cannot merge an entity into itself")
+    analyst = (body.analyst or "analyst").strip() or "analyst"
+
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute(
+            """
+            SELECT id, kind, name, callsign, hull, entity_class, unit_id,
+                   operates_from_base_id, metadata
+            FROM operational_entities WHERE id IN (%s, %s)
+            """,
+            (a_id, b_id),
+        )
+        rows = {r["id"]: dict(r) for r in cursor.fetchall()}
+        a_row = rows.get(a_id)
+        b_row = rows.get(b_id)
+        if not a_row or not b_row:
+            raise HTTPException(status_code=404, detail="one or both entities not found")
+        if a_row["kind"] != b_row["kind"]:
+            raise HTTPException(status_code=400, detail="cannot merge entities of different kinds")
+
+        merged: dict[str, Any] = {}
+        for column in _MERGEABLE_COLUMNS:
+            pick = body.resolutions.get(column, "b").lower()
+            if pick not in ("a", "b"):
+                raise HTTPException(status_code=400, detail=f"resolution for {column} must be 'a' or 'b'")
+            merged[column] = (a_row if pick == "a" else b_row)[column]
+
+        cursor.execute(
+            """
+            UPDATE operational_entities SET
+                callsign = %s, hull = %s, entity_class = %s,
+                unit_id = %s, operates_from_base_id = %s, metadata = %s,
+                updated_at = NOW()
+            WHERE id = %s
+            RETURNING id, kind, name, callsign, hull, entity_class, unit_id,
+                      operates_from_base_id, metadata, created_by, created_at
+            """,
+            (
+                merged["callsign"], merged["hull"], merged["entity_class"],
+                merged["unit_id"], merged["operates_from_base_id"],
+                json.dumps(merged["metadata"]) if not isinstance(merged["metadata"], str) else merged["metadata"],
+                b_id,
+            ),
+        )
+        b_updated = _row_to_dict(cursor.fetchone())
+
+        cursor.execute("DELETE FROM operational_entities WHERE id = %s RETURNING id", (a_id,))
+        if cursor.fetchone() is None:
+            raise HTTPException(status_code=500, detail="A row delete failed")
+
+    # Re-project B with the merged values; delete A's mirror.
+    _project_to_graph(b_updated)
+    removed = delete_operational_entity(entity_id=a_id)
+    return {
+        "success": True,
+        "merged_into": b_id,
+        "deleted": a_id,
+        "graph_nodes_removed": removed,
+        "entity": b_updated,
+        "analyst": analyst,
+    }
 
 
 @router.post("/api/operational-entities/{entity_id}/same-as/{other_id}")

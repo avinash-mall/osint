@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
-import { CheckCircle2, Plus, RefreshCw, Ship, Trash2, Triangle, Truck, Building2, Users, XCircle } from 'lucide-react';
+import { CheckCircle2, Plus, RefreshCw, Ship, Trash2, Triangle, Truck, Building2, Users, GitMerge, XCircle } from 'lucide-react';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -30,6 +30,17 @@ interface EntityCandidate {
   proposed_metadata?: any;
 }
 
+interface PendingSameAs {
+  a: { id: string; labels: string[]; properties: Record<string, any> };
+  b: { id: string; labels: string[]; properties: Record<string, any> };
+  score: number;
+  source: string;
+  created_at?: string | null;
+}
+
+const MERGEABLE_COLS = ['callsign', 'hull', 'entity_class', 'unit_id', 'operates_from_base_id', 'metadata'] as const;
+type MergeCol = typeof MERGEABLE_COLS[number];
+
 const KINDS: { value: EntityKind; label: string; Icon: any }[] = [
   { value: 'vessel', label: 'Vessel', Icon: Ship },
   { value: 'aircraft', label: 'Aircraft', Icon: Triangle },
@@ -41,9 +52,16 @@ const KINDS: { value: EntityKind; label: string; Icon: any }[] = [
 export default function OperationalEntitiesAdmin() {
   const [entities, setEntities] = useState<OperationalEntity[]>([]);
   const [candidates, setCandidates] = useState<EntityCandidate[]>([]);
+  const [pendingSameAs, setPendingSameAs] = useState<PendingSameAs[]>([]);
   const [filterKind, setFilterKind] = useState<EntityKind | ''>('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Phase 5.H merge-modal state: the pair currently being merged + per-column picks.
+  const [mergeTarget, setMergeTarget] = useState<PendingSameAs | null>(null);
+  const [mergePicks, setMergePicks] = useState<Record<MergeCol, 'a' | 'b'>>(() => ({
+    callsign: 'b', hull: 'b', entity_class: 'b',
+    unit_id: 'b', operates_from_base_id: 'b', metadata: 'b',
+  }));
 
   // Create-form state
   const [newKind, setNewKind] = useState<EntityKind>('vessel');
@@ -57,12 +75,14 @@ export default function OperationalEntitiesAdmin() {
     try {
       const params: Record<string, any> = { limit: 200 };
       if (filterKind) params.kind = filterKind;
-      const [entRes, candRes] = await Promise.all([
+      const [entRes, candRes, sameAsRes] = await Promise.all([
         axios.get(`${API_URL}/api/operational-entities`, { params }),
         axios.get(`${API_URL}/api/operational-entity-candidates`, { params: { status: 'pending', limit: 100 } }),
+        axios.get(`${API_URL}/api/operational-entities/pending-same-as`, { params: { limit: 100 } }),
       ]);
       setEntities(entRes.data.entities || []);
       setCandidates(candRes.data.candidates || []);
+      setPendingSameAs(sameAsRes.data.pending || []);
     } catch (err: any) {
       setError(err?.message || 'load failed');
     } finally {
@@ -128,6 +148,65 @@ export default function OperationalEntitiesAdmin() {
       setBusy(false);
     }
   }, [reload]);
+
+  const approveSameAs = useCallback(async (pair: PendingSameAs) => {
+    setBusy(true);
+    try {
+      await axios.post(
+        `${API_URL}/api/operational-entities/${encodeURIComponent(pair.a.id)}/same-as/${encodeURIComponent(pair.b.id)}`,
+        {},
+      );
+      await reload();
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || err?.message || 'same-as failed');
+    } finally {
+      setBusy(false);
+    }
+  }, [reload]);
+
+  const rejectSameAs = useCallback(async (pair: PendingSameAs) => {
+    setBusy(true);
+    try {
+      await axios.post(`${API_URL}/api/operational-entities/pending-same-as/reject`, {
+        a_id: pair.a.id, b_id: pair.b.id,
+      });
+      await reload();
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || err?.message || 'reject failed');
+    } finally {
+      setBusy(false);
+    }
+  }, [reload]);
+
+  const openMergeModal = useCallback((pair: PendingSameAs) => {
+    setMergeTarget(pair);
+    // Default each column to whichever side has a non-empty value
+    // (prefer A if A is non-empty and B is empty, otherwise B).
+    const picks: Record<MergeCol, 'a' | 'b'> = {} as any;
+    for (const col of MERGEABLE_COLS) {
+      const aVal = pair.a.properties?.[col];
+      const bVal = pair.b.properties?.[col];
+      picks[col] = (aVal && !bVal) ? 'a' : 'b';
+    }
+    setMergePicks(picks);
+  }, []);
+
+  const submitMerge = useCallback(async () => {
+    if (!mergeTarget) return;
+    setBusy(true);
+    try {
+      await axios.post(
+        `${API_URL}/api/operational-entities/${encodeURIComponent(mergeTarget.a.id)}/merge-into/${encodeURIComponent(mergeTarget.b.id)}`,
+        { resolutions: mergePicks },
+      );
+      setMergeTarget(null);
+      await reload();
+    } catch (err: any) {
+      setError(err?.response?.data?.detail || err?.message || 'merge failed');
+    } finally {
+      setBusy(false);
+    }
+  }, [mergeTarget, mergePicks, reload]);
 
   const groupedEntities = useMemo(() => {
     const groups: Record<EntityKind, OperationalEntity[]> = {
@@ -277,7 +356,101 @@ export default function OperationalEntitiesAdmin() {
             ))}
           </div>
         </div>
+
+        <div className="panel" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          <div className="panel-h">
+            <span className="h-title">Pending SAME_AS · {pendingSameAs.length}</span>
+          </div>
+          <div style={{ flex: 1, overflow: 'auto', padding: 6 }}>
+            {pendingSameAs.length === 0 ? (
+              <div style={{ padding: 8, color: 'var(--ink-3)', fontFamily: 'monospace', fontSize: 11 }}>no proposed identities pending</div>
+            ) : pendingSameAs.map((pair) => (
+              <div key={`${pair.a.id}::${pair.b.id}`} style={{ border: '1px solid var(--line)', padding: 8, marginBottom: 6, background: 'var(--bg-1)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--ink-3)', fontFamily: 'monospace' }}>
+                  <span>{pair.source}</span>
+                  <span style={{ marginLeft: 'auto' }}>score {Number(pair.score).toFixed(2)}</span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center', gap: 6, marginTop: 4 }}>
+                  <div style={{ background: 'var(--bg-0)', border: '1px solid var(--line)', padding: 4, minWidth: 0 }}>
+                    <div style={{ fontSize: 11, color: 'var(--ink-0)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {pair.a.properties?.name || pair.a.id}
+                    </div>
+                    <div style={{ fontSize: 9, color: 'var(--ink-3)', fontFamily: 'monospace' }}>{pair.a.id}</div>
+                  </div>
+                  <div style={{ fontSize: 10, color: 'var(--ink-3)', fontFamily: 'monospace' }}>≈</div>
+                  <div style={{ background: 'var(--bg-0)', border: '1px solid var(--line)', padding: 4, minWidth: 0 }}>
+                    <div style={{ fontSize: 11, color: 'var(--ink-0)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {pair.b.properties?.name || pair.b.id}
+                    </div>
+                    <div style={{ fontSize: 9, color: 'var(--ink-3)', fontFamily: 'monospace' }}>{pair.b.id}</div>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
+                  <button type="button" onClick={() => approveSameAs(pair)} className="sentinel-btn primary" style={{ flex: 1, justifyContent: 'center', padding: '4px 6px' }} disabled={busy}>
+                    <CheckCircle2 size={11} /> Approve
+                  </button>
+                  <button type="button" onClick={() => openMergeModal(pair)} className="sentinel-btn" style={{ flex: 1, justifyContent: 'center', padding: '4px 6px' }} disabled={busy} title="Merge PostGIS rows (Phase 5.H)">
+                    <GitMerge size={11} /> Merge
+                  </button>
+                  <button type="button" onClick={() => rejectSameAs(pair)} className="sentinel-btn" style={{ flex: 1, justifyContent: 'center', padding: '4px 6px' }} disabled={busy}>
+                    <XCircle size={11} /> Reject
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
+
+      {mergeTarget && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
+        }} onClick={() => setMergeTarget(null)}>
+          <div onClick={(e) => e.stopPropagation()} style={{
+            background: 'var(--bg-1)', border: '1px solid var(--line)', padding: 16,
+            minWidth: 520, maxWidth: 720, maxHeight: '80vh', overflow: 'auto',
+          }}>
+            <div className="h-title" style={{ marginBottom: 8 }}>
+              Merge {mergeTarget.a.id} → {mergeTarget.b.id}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--ink-3)', marginBottom: 12 }}>
+              For each column, pick which side's value to keep on the merged
+              ({mergeTarget.b.id}) row. The source ({mergeTarget.a.id}) row
+              and its Neo4j mirror are deleted on submit.
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr 1fr', gap: 6, alignItems: 'center', fontSize: 11 }}>
+              <div className="h-title" style={{ fontSize: 10 }}>Column</div>
+              <div className="h-title" style={{ fontSize: 10 }}>A ({mergeTarget.a.id})</div>
+              <div className="h-title" style={{ fontSize: 10 }}>B ({mergeTarget.b.id})</div>
+              {MERGEABLE_COLS.map((col) => {
+                const aVal = mergeTarget.a.properties?.[col];
+                const bVal = mergeTarget.b.properties?.[col];
+                const fmt = (v: any) => v == null ? '—' : (typeof v === 'object' ? JSON.stringify(v).slice(0, 40) : String(v));
+                return (
+                  <div key={col} style={{ display: 'contents' }}>
+                    <div style={{ color: 'var(--ink-1)', fontFamily: 'monospace' }}>{col}</div>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, padding: 4, background: mergePicks[col] === 'a' ? 'var(--bg-2)' : 'transparent', border: '1px solid var(--line)' }}>
+                      <input type="radio" checked={mergePicks[col] === 'a'} onChange={() => setMergePicks((p) => ({ ...p, [col]: 'a' }))} />
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fmt(aVal)}</span>
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, padding: 4, background: mergePicks[col] === 'b' ? 'var(--bg-2)' : 'transparent', border: '1px solid var(--line)' }}>
+                      <input type="radio" checked={mergePicks[col] === 'b'} onChange={() => setMergePicks((p) => ({ ...p, [col]: 'b' }))} />
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fmt(bVal)}</span>
+                    </label>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
+              <button type="button" onClick={() => setMergeTarget(null)} className="sentinel-btn" disabled={busy}>Cancel</button>
+              <button type="button" onClick={submitMerge} className="sentinel-btn primary" disabled={busy}>
+                <GitMerge size={13} /> Merge rows
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
