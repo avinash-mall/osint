@@ -498,6 +498,17 @@ def upload_imagery(
                     document["id"],
                 ),
             )
+        # Phase 2.C: mirror the document into Neo4j as a :Document stub with
+        # MENTIONS edges to any analyst-asserted entities its extracted_entities
+        # mention. Best-effort, queued async — failure does not block the upload.
+        try:
+            from worker import project_documents_to_graph  # facade re-export
+            project_documents_to_graph.delay(document["id"])
+        except Exception:
+            logger.exception(
+                "failed to queue worker.project_documents_to_graph for document %s",
+                document["id"],
+            )
         response["ontology_update"] = ontology_update
         response.update({
             "message": f"{media_type.title()} upload received; ontology extraction status is {document['status']}.",

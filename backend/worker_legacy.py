@@ -3242,6 +3242,54 @@ def consolidate_fmv(clip_id: int) -> dict:
     return result
 
 
+@celery_app.task(name="worker.project_documents_to_graph", queue="default")
+def project_documents_to_graph(document_id: int) -> dict:
+    """Mirror a ``documents`` row into Neo4j as a ``:Document`` stub.
+
+    Called after extraction populates ``extracted_entities``. Resolves each
+    entity to existing Target/Asset/Vessel/Aircraft/Vehicle/Unit nodes by
+    cheap case-insensitive substring match on ``n.name`` and writes
+    ``(:Document)-[:MENTIONS {confidence, source_label}]->(:Operational)``
+    edges. The PostGIS row keeps the full extraction; the graph only carries
+    the resolution.
+    """
+    from graph_writes import load_entity_label_index, project_document_with_mentions
+    try:
+        with postgis_db.get_cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, title, media_type, summary, extracted_entities
+                FROM documents WHERE id = %s
+                """,
+                (document_id,),
+            )
+            row = cursor.fetchone()
+    except Exception as exc:
+        logger.exception("project_documents_to_graph: PostGIS read failed for doc %s", document_id)
+        return {"document_id": document_id, "error": "postgis_read_failed", "detail": str(exc)}
+    if not row:
+        return {"document_id": document_id, "error": "document_not_found"}
+    doc = dict(row)
+    extracted = doc.get("extracted_entities") or []
+    if isinstance(extracted, str):
+        try:
+            extracted = json.loads(extracted)
+        except json.JSONDecodeError:
+            extracted = []
+    # Only load the (potentially expensive) entity index when there's
+    # something to resolve.
+    index = load_entity_label_index() if extracted else None
+    counts = project_document_with_mentions(
+        document_id=doc["id"],
+        title=doc.get("title") or f"doc-{doc['id']}",
+        media_type=doc.get("media_type"),
+        summary=doc.get("summary"),
+        extracted_entities=extracted,
+        entity_label_index=index,
+    )
+    return {"document_id": doc["id"], **counts}
+
+
 @celery_app.task(name="worker.project_fmv_to_graph", queue="default")
 def project_fmv_to_graph(clip_id: int) -> dict:
     """Mirror an FMV clip + consolidated tracks into Neo4j (Phase 2 projector).

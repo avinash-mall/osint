@@ -164,3 +164,65 @@ def test_project_fmv_without_tracks_still_merges_clip(monkeypatch):
     assert "MERGE (c:FMVClip {postgis_id: $clip_id})" in cypher
     # No UNWIND when tracks empty.
     assert "UNWIND" not in cypher
+
+
+def test_project_document_with_no_index_writes_only_stub(monkeypatch):
+    run = _install_db_stub(monkeypatch, single_return=None)
+    mod = _load_graph_writes()
+
+    result = mod.project_document_with_mentions(
+        document_id=42,
+        title="Daily Sit Rep",
+        media_type="document",
+        summary="…",
+        extracted_entities=[{"label": "Some Vessel", "confidence": 0.7}],
+        entity_label_index=None,
+    )
+    assert result == {"document": 1, "mentions": 0}
+    cypher, _ = run.call_args.args
+    assert "MERGE (d:Document {postgis_id: $doc_id})" in cypher
+    # No MENTIONS edges when no index provided.
+    assert "MENTIONS" not in cypher
+
+
+def test_project_document_writes_mentions_for_matched_entities(monkeypatch):
+    # Two run calls: one MERGE for the doc stub, one UNWIND for MENTIONS.
+    calls: list = []
+
+    class _R:
+        def __init__(self, single): self._single = single
+        def single(self): return self._single
+
+    def neo_run(cypher, params=None):
+        calls.append((cypher, params))
+        if "RETURN count(m) AS mentions" in cypher:
+            return _R({"mentions": 2})
+        return _R(None)
+
+    _install_db_stub(monkeypatch, single_return=None)
+    # Replace .run after install to capture call sequence:
+    import sys
+    sys.modules["database"].db.get_session.return_value.__enter__.return_value.run = neo_run
+    mod = _load_graph_writes()
+
+    index = {
+        "alpha base": [{"element_id": "e1", "label": "Base", "id": "b1", "name": "Alpha Base"}],
+        "bravo vessel": [{"element_id": "e2", "label": "Vessel", "id": "v1", "name": "Bravo Vessel"}],
+    }
+    extracted = [
+        {"label": "alpha base near canal", "confidence": 0.8},   # matches alpha base
+        {"label": "bravo vessel", "confidence": 0.9},            # matches bravo vessel
+        {"label": "no match", "confidence": 0.4},                # no match
+    ]
+    result = mod.project_document_with_mentions(
+        document_id=7, title="Brief", media_type="document",
+        summary="x", extracted_entities=extracted, entity_label_index=index,
+    )
+    assert result == {"document": 1, "mentions": 2}
+    # Two Cypher calls: stub MERGE + MENTIONS UNWIND.
+    assert len(calls) == 2
+    assert "MENTIONS" in calls[1][0]
+    edges = calls[1][1]["edges"]
+    assert len(edges) == 2
+    target_ids = {e["target_element_id"] for e in edges}
+    assert target_ids == {"e1", "e2"}

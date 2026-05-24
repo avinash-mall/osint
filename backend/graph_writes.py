@@ -316,6 +316,123 @@ def project_fmv_clip_and_tracks(
         return {"clip": 0, "tracks": 0}
 
 
+def project_document_with_mentions(
+    *,
+    document_id: int,
+    title: str,
+    media_type: str | None,
+    summary: str | None,
+    extracted_entities: list[dict[str, Any]] | None,
+    entity_label_index: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict[str, int]:
+    """MERGE one ``:Document`` stub + ``:MENTIONS`` edges to resolvable entities.
+
+    ``entity_label_index`` is an optional preloaded ``{label_lowercased: [{element_id, label, id, name}, ...]}``
+    of analyst-asserted entities (Target / Asset / Vessel / Aircraft / Vehicle).
+    When provided, the projector resolves each ``extracted_entities[].label`` to
+    every node whose name contains the extracted label (case-insensitive
+    substring match — cheap, offline-safe). When ``None``, no edges are written
+    and only the Document stub is MERGEd.
+
+    Returns ``{document: 0|1, mentions: N}``. Best-effort.
+    """
+    entities = extracted_entities or []
+    edges_to_write: list[dict[str, Any]] = []
+    if entity_label_index:
+        for ent in entities:
+            label = str(ent.get("label") or "").strip().lower()
+            if not label:
+                continue
+            confidence = ent.get("confidence")
+            for needle, matches in entity_label_index.items():
+                if needle and (needle in label or label in needle):
+                    for m in matches:
+                        edges_to_write.append({
+                            "target_element_id": m["element_id"],
+                            "confidence": confidence,
+                            "source_label": label,
+                        })
+
+    try:
+        with db.get_session() as session:
+            session.run(
+                """
+                MERGE (d:Document {postgis_id: $doc_id})
+                  ON CREATE SET d.created_at = datetime()
+                SET d.title = $title,
+                    d.media_type = $media_type,
+                    d.summary = $summary,
+                    d.extracted_entity_count = $entity_count,
+                    d.updated_at = datetime()
+                """,
+                {
+                    "doc_id": document_id,
+                    "title": title,
+                    "media_type": media_type,
+                    "summary": summary,
+                    "entity_count": len(entities),
+                },
+            )
+            mentions = 0
+            if edges_to_write:
+                result = session.run(
+                    """
+                    MATCH (d:Document {postgis_id: $doc_id})
+                    UNWIND $edges AS e
+                    MATCH (other) WHERE elementId(other) = e.target_element_id
+                    MERGE (d)-[m:MENTIONS]->(other)
+                      ON CREATE SET m.created_at = datetime()
+                    SET m.confidence = e.confidence,
+                        m.source_label = e.source_label,
+                        m.updated_at = datetime()
+                    RETURN count(m) AS mentions
+                    """,
+                    {"doc_id": document_id, "edges": edges_to_write},
+                )
+                record = result.single()
+                mentions = int(record["mentions"]) if record else 0
+            return {"document": 1, "mentions": mentions}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "graph_writes: project_document_with_mentions(doc=%s) failed: %s",
+            document_id,
+            exc,
+        )
+        return {"document": 0, "mentions": 0}
+
+
+def load_entity_label_index() -> dict[str, list[dict[str, Any]]]:
+    """Build an index of analyst-asserted entity nodes keyed by lowercased name.
+
+    Used by ``project_document_with_mentions`` for cheap substring matching.
+    Returns ``{name_lower: [{element_id, label, id, name}, ...]}``.
+    """
+    index: dict[str, list[dict[str, Any]]] = {}
+    try:
+        with db.get_session() as session:
+            result = session.run(
+                """
+                MATCH (n)
+                WHERE any(l IN labels(n) WHERE l IN ['Target', 'Asset', 'Vessel', 'Aircraft', 'Vehicle', 'Unit'])
+                  AND n.name IS NOT NULL
+                RETURN elementId(n) AS element_id, labels(n) AS label_set, n.id AS id, n.name AS name
+                """,
+            )
+            for record in result:
+                name = (record["name"] or "").strip().lower()
+                if not name:
+                    continue
+                index.setdefault(name, []).append({
+                    "element_id": record["element_id"],
+                    "label": (record["label_set"] or ["Node"])[0],
+                    "id": record["id"],
+                    "name": record["name"],
+                })
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("graph_writes: load_entity_label_index failed: %s", exc)
+    return index
+
+
 def promote_candidate_to_detected_as(
     *,
     candidate_id: int,
