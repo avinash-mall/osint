@@ -705,6 +705,214 @@ def project_label_of_for_detection_class(
         return 0
 
 
+_OPERATIONAL_KIND_TO_LABEL = {
+    "vessel": "Vessel",
+    "aircraft": "Aircraft",
+    "vehicle": "Vehicle",
+    "facility": "Facility",
+    "unit": "Unit",
+    "asset": "Asset",
+}
+
+
+def merge_operational_entity(
+    *,
+    entity_id: str,
+    kind: str,
+    name: str,
+    properties: dict[str, Any] | None = None,
+) -> bool:
+    """MERGE a Vessel/Aircraft/Vehicle/Facility/Unit node.
+
+    All operational entities except Unit also carry the secondary ``:Asset``
+    label so generic ``MATCH (a:Asset)`` queries hit them. Identity is
+    ``n.id`` (matches the constraints registered in [graph_schema.py](graph_schema.py)).
+    """
+    label = _OPERATIONAL_KIND_TO_LABEL.get((kind or "").lower())
+    if label is None:
+        return False
+    secondary = ":Asset" if label in {"Vessel", "Aircraft", "Vehicle"} else ""
+    cypher = f"""
+        MERGE (n:{label}{secondary} {{id: $id}})
+          ON CREATE SET n.created_at = datetime()
+        SET n.kind = $kind,
+            n.name = $name,
+            n.metadata = $metadata,
+            n.updated_at = datetime()
+    """
+    try:
+        with db.get_session() as session:
+            session.run(
+                cypher,
+                {
+                    "id": entity_id,
+                    "kind": kind,
+                    "name": name,
+                    "metadata": properties or {},
+                },
+            )
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("graph_writes: merge_operational_entity(id=%s) failed: %s", entity_id, exc)
+        return False
+
+
+def delete_operational_entity(*, entity_id: str) -> int:
+    """DETACH DELETE the operational entity by id. Returns count removed."""
+    try:
+        with db.get_session() as session:
+            result = session.run(
+                """
+                MATCH (n) WHERE n.id = $id
+                  AND any(l IN labels(n) WHERE l IN ['Vessel', 'Aircraft', 'Vehicle', 'Facility', 'Unit', 'Asset'])
+                DETACH DELETE n
+                RETURN count(n) AS removed
+                """,
+                {"id": entity_id},
+            )
+            record = result.single()
+            return int(record["removed"]) if record else 0
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("graph_writes: delete_operational_entity(id=%s) failed: %s", entity_id, exc)
+        return 0
+
+
+def merge_part_of_edge(*, child_id: str, parent_id: str) -> bool:
+    """MERGE ``(child)-[:PART_OF]->(parent)``. Used by Asset→Unit and Unit→Unit."""
+    try:
+        with db.get_session() as session:
+            result = session.run(
+                """
+                MATCH (child) WHERE child.id = $child_id
+                MATCH (parent) WHERE parent.id = $parent_id
+                MERGE (child)-[r:PART_OF]->(parent)
+                  ON CREATE SET r.created_at = datetime()
+                RETURN elementId(r) AS rel_id
+                """,
+                {"child_id": child_id, "parent_id": parent_id},
+            )
+            return result.single() is not None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("graph_writes: merge_part_of_edge(%s -> %s) failed: %s", child_id, parent_id, exc)
+        return False
+
+
+def merge_operates_from_edge(
+    *,
+    asset_id: str,
+    base_id: str,
+    confidence: float | None = None,
+    source: str = "analyst",
+) -> bool:
+    """MERGE ``(asset)-[:OPERATES_FROM {confidence, source}]->(base)``."""
+    try:
+        with db.get_session() as session:
+            result = session.run(
+                """
+                MATCH (asset) WHERE asset.id = $asset_id
+                MATCH (base) WHERE base.id = $base_id
+                  AND any(l IN labels(base) WHERE l IN ['Base', 'LaunchPoint', 'Facility'])
+                MERGE (asset)-[r:OPERATES_FROM]->(base)
+                  ON CREATE SET r.created_at = datetime()
+                SET r.confidence = $confidence,
+                    r.source = $source,
+                    r.updated_at = datetime()
+                RETURN elementId(r) AS rel_id
+                """,
+                {
+                    "asset_id": asset_id, "base_id": base_id,
+                    "confidence": confidence, "source": source,
+                },
+            )
+            return result.single() is not None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("graph_writes: merge_operates_from_edge(%s -> %s) failed: %s", asset_id, base_id, exc)
+        return False
+
+
+def merge_observed_at_for_asset(*, asset_id: str, observation_postgis_id: int) -> bool:
+    """MERGE ``(asset)-[:OBSERVED_AT]->(:Observation)`` connecting an analyst-
+    asserted asset to an existing Observation node."""
+    try:
+        with db.get_session() as session:
+            result = session.run(
+                """
+                MATCH (a) WHERE a.id = $asset_id
+                MATCH (o:Observation {postgis_id: $obs_id})
+                MERGE (a)-[r:OBSERVED_AT]->(o)
+                  ON CREATE SET r.created_at = datetime()
+                RETURN elementId(r) AS rel_id
+                """,
+                {"asset_id": asset_id, "obs_id": observation_postgis_id},
+            )
+            return result.single() is not None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("graph_writes: merge_observed_at_for_asset(%s -> %s) failed: %s",
+                       asset_id, observation_postgis_id, exc)
+        return False
+
+
+def merge_same_as(*, entity_a_id: str, entity_b_id: str, merged_by: str) -> bool:
+    """MERGE the analyst-approved ``(a)-[:SAME_AS]->(b)`` edge.
+
+    Bidirectional in spirit, written one-directionally — graph queries can
+    `MATCH (a)-[:SAME_AS]-(b)` without the arrow. The matching POSSIBLY_SAME_AS
+    edge (if any) is removed by the caller.
+    """
+    try:
+        with db.get_session() as session:
+            result = session.run(
+                """
+                MATCH (a) WHERE a.id = $a_id
+                MATCH (b) WHERE b.id = $b_id
+                MERGE (a)-[r:SAME_AS]->(b)
+                  ON CREATE SET r.created_at = datetime()
+                SET r.merged_by = $merged_by,
+                    r.merged_at = datetime()
+                WITH a, b
+                OPTIONAL MATCH (a)-[p:POSSIBLY_SAME_AS]-(b)
+                DELETE p
+                RETURN 1
+                """,
+                {"a_id": entity_a_id, "b_id": entity_b_id, "merged_by": merged_by},
+            )
+            return result.single() is not None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("graph_writes: merge_same_as(%s ~ %s) failed: %s", entity_a_id, entity_b_id, exc)
+        return False
+
+
+def merge_possibly_same_as_batch(rows: list[dict[str, Any]]) -> int:
+    """MERGE many ``POSSIBLY_SAME_AS`` candidate edges in one UNWIND.
+
+    Each row carries ``a_id, b_id, score, source``. Used by
+    ``worker.tick_entity_resimilarity``.
+    """
+    if not rows:
+        return 0
+    try:
+        with db.get_session() as session:
+            result = session.run(
+                """
+                UNWIND $rows AS row
+                MATCH (a) WHERE a.id = row.a_id
+                MATCH (b) WHERE b.id = row.b_id
+                MERGE (a)-[r:POSSIBLY_SAME_AS {source: row.source}]->(b)
+                  ON CREATE SET r.created_at = datetime()
+                SET r.score = row.score,
+                    r.status = 'pending',
+                    r.updated_at = datetime()
+                RETURN count(r) AS edges
+                """,
+                {"rows": rows},
+            )
+            record = result.single()
+            return int(record["edges"]) if record else 0
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("graph_writes: merge_possibly_same_as_batch(%d) failed: %s", len(rows), exc)
+        return 0
+
+
 def promote_candidate_to_detected_as(
     *,
     candidate_id: int,
