@@ -41,7 +41,19 @@ def env_float(name: str, default: float) -> float:
 
 class Neo4jConnection:
     def __init__(self, uri, user, pwd):
-        self.driver = GraphDatabase.driver(uri, auth=(user, pwd))
+        # `notifications_disabled_classifications=["UNRECOGNIZED"]` silences
+        # the "property key does not exist" / "relationship type does not
+        # exist" warnings that the Link Graph emits when forward-compatible
+        # queries hit empty graphs (e.g. /api/operational-entities/pending-
+        # same-as on a fresh deployment with no POSSIBLY_SAME_AS edges yet).
+        # These are not errors — they're Neo4j's static analysis flagging
+        # references that haven't materialised yet. DEPRECATION warnings
+        # are intentionally still surfaced so we catch real syntax drift.
+        self.driver = GraphDatabase.driver(
+            uri,
+            auth=(user, pwd),
+            notifications_disabled_classifications=["UNRECOGNIZED"],
+        )
 
     def close(self):
         self.driver.close()

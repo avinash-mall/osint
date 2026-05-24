@@ -250,8 +250,7 @@ def get_graph_investigation(
                 """
                 MATCH (seed)
                 WHERE elementId(seed) = $seed
-                CALL {
-                    WITH seed
+                CALL (seed) {
                     MATCH (seed)-[*1..2]-(n)
                     RETURN DISTINCT n LIMIT $limit
                 }
@@ -269,7 +268,7 @@ def get_graph_investigation(
             # Global slice: operational nodes first, then 1-hop expansion.
             result = session.run(
                 """
-                CALL {
+                CALL () {
                     MATCH (op)
                     WHERE any(l IN labels(op) WHERE l IN $operational_labels)
                       AND (size($class_lens) = 0 OR any(l IN labels(op) WHERE l IN $class_lens))
@@ -596,15 +595,15 @@ def get_graph_ontology(
     with db.get_session() as session:
         ontology_record = session.run(
             """
-            CALL {
+            CALL () {
                 MATCH (b:OntologyBranch)
                 RETURN collect(DISTINCT b) AS branches
             }
-            CALL {
+            CALL () {
                 MATCH (o:OntologyObject)
                 RETURN collect(DISTINCT o) AS objects
             }
-            CALL {
+            CALL () {
                 MATCH (b:OntologyBranch)-[r:HAS_OBJECT|HAS_CHILD]->(other)
                 RETURN collect(DISTINCT r) AS ontology_rels
             }
@@ -725,8 +724,7 @@ def get_graph_evidence(node_id: str, hops: int = Query(2, ge=1, le=3)):
             f"""
             MATCH (seed)
             WHERE elementId(seed) = $seed
-            CALL {{
-                WITH seed
+            CALL (seed) {{
                 MATCH (seed)-[*1..{hops}]-(n)
                 RETURN DISTINCT n LIMIT 200
             }}
