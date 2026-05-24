@@ -222,6 +222,9 @@ export default function GraphExplorer() {
   const [evidenceFocusId, setEvidenceFocusId] = useState<string | null>(null);
   const [evidencePayload, setEvidencePayload] = useState<EvidencePayload | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Phase 5.E: cluster keys ("${parentId}::${class}") the analyst has
+  // manually expanded — those clusters render as their underlying nodes.
+  const [expandedClusters, setExpandedClusters] = useState<Set<string>>(new Set());
   const graphPaneRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<any>(null);
 
@@ -319,24 +322,129 @@ export default function GraphExplorer() {
     return out;
   }, [data.nodes]);
 
+  // Phase 5.E: collapse dense same-class neighbourhoods into a single
+  // :Cluster virtual node. Threshold matches the plan (≥12).
+  const CLUSTER_THRESHOLD = 12;
+
   const graphData = useMemo(() => {
     const base = filteredData || data;
+
+    // First pass: predicate + candidate filtering (unchanged from prior).
+    let nodes = base.nodes;
+    let links = base.links;
     if (!showCandidateLinks) {
-      // Filter out CANDIDATE_* edges entirely when toggle is off.
-      const links = base.links.filter((link: any) => !String(predicateOf(link)).startsWith('CANDIDATE_'));
-      const filtered = { nodes: base.nodes, links };
-      if (disabledPredicates.size === 0) return filtered;
-      return {
-        nodes: filtered.nodes,
-        links: filtered.links.filter((link: any) => !disabledPredicates.has(predicateOf(link))),
-      };
+      links = links.filter((link: any) => !String(predicateOf(link)).startsWith('CANDIDATE_'));
     }
-    if (disabledPredicates.size === 0) return base;
+    if (disabledPredicates.size > 0) {
+      links = links.filter((link: any) => !disabledPredicates.has(predicateOf(link)));
+    }
+
+    // Second pass (Phase 5.E): for each node, count same-class neighbours
+    // among the remaining edges. When count >= threshold AND the cluster
+    // isn't manually expanded, replace those neighbours with one virtual
+    // :Cluster node and the 12+ edges with one.
+    const idToLabel = new Map<string, string>();
+    for (const n of nodes) idToLabel.set(n.id, n.label || 'Node');
+
+    // adjacency[nodeId] = [{neighborId, link}]
+    const adjacency = new Map<string, { neighborId: string; link: any }[]>();
+    for (const link of links) {
+      const s = nodeId(link.source); const t = nodeId(link.target);
+      adjacency.set(s, [...(adjacency.get(s) || []), { neighborId: t, link }]);
+      adjacency.set(t, [...(adjacency.get(t) || []), { neighborId: s, link }]);
+    }
+
+    // Group neighbours of each node by their class label.
+    const clustersToBuild: Array<{
+      parentId: string; cls: string;
+      memberIds: Set<string>; memberLinks: any[];
+    }> = [];
+    const seenClusterKeys = new Set<string>();
+    for (const parent of nodes) {
+      const neighbours = adjacency.get(parent.id) || [];
+      const byClass = new Map<string, { neighborId: string; link: any }[]>();
+      for (const nb of neighbours) {
+        const cls = idToLabel.get(nb.neighborId) || 'Node';
+        byClass.set(cls, [...(byClass.get(cls) || []), nb]);
+      }
+      for (const [cls, members] of byClass) {
+        if (members.length < CLUSTER_THRESHOLD) continue;
+        const key = `${parent.id}::${cls}`;
+        if (expandedClusters.has(key) || seenClusterKeys.has(key)) continue;
+        seenClusterKeys.add(key);
+        clustersToBuild.push({
+          parentId: parent.id, cls,
+          memberIds: new Set(members.map((m) => m.neighborId)),
+          memberLinks: members.map((m) => m.link),
+        });
+      }
+    }
+
+    if (clustersToBuild.length === 0) {
+      return { nodes, links };
+    }
+
+    // Determine which member nodes are *only* held in by-this-cluster edges
+    // (i.e., they aren't simultaneously connected to other parents). Those
+    // can safely be hidden; nodes that anchor multiple clusters stay visible.
+    const memberToClusters = new Map<string, Set<string>>();
+    for (const c of clustersToBuild) {
+      for (const mid of c.memberIds) {
+        const key = `${c.parentId}::${c.cls}`;
+        memberToClusters.set(mid, new Set([...(memberToClusters.get(mid) || []), key]));
+      }
+    }
+    // A member is hideable only if every adjacency it has goes to the same
+    // parent via the same class. Otherwise leave the node visible.
+    const hiddenIds = new Set<string>();
+    for (const mid of memberToClusters.keys()) {
+      const nbs = adjacency.get(mid) || [];
+      const allAccounted = nbs.every(({ neighborId }) => {
+        // edge to the parent of one of this member's clusters?
+        for (const c of clustersToBuild) {
+          if (c.memberIds.has(mid) && (neighborId === c.parentId)) return true;
+        }
+        return false;
+      });
+      if (allAccounted) hiddenIds.add(mid);
+    }
+
+    // Build the virtual cluster nodes + replacement edges.
+    const clusterNodes: any[] = [];
+    const clusterLinks: any[] = [];
+    const collapsedLinkIds = new Set<any>();
+    for (const c of clustersToBuild) {
+      const clusterId = `${c.parentId}:cluster:${c.cls}`;
+      clusterNodes.push({
+        id: clusterId,
+        label: 'Cluster',
+        labels: ['Cluster'],
+        properties: {
+          parent_id: c.parentId,
+          class: c.cls,
+          count: c.memberIds.size,
+        },
+        __cluster: true,
+        __cluster_key: `${c.parentId}::${c.cls}`,
+      });
+      clusterLinks.push({
+        source: c.parentId,
+        target: clusterId,
+        type: 'CONTAINS_CLUSTER',
+        predicate: 'CONTAINS_CLUSTER',
+        properties: { count: c.memberIds.size },
+      });
+      for (const l of c.memberLinks) collapsedLinkIds.add(l);
+    }
+
+    const filteredNodes = nodes.filter((n: any) => !hiddenIds.has(n.id));
+    const filteredLinks = links.filter((l: any) => !collapsedLinkIds.has(l));
+
     return {
-      nodes: base.nodes,
-      links: base.links.filter((link: any) => !disabledPredicates.has(predicateOf(link))),
+      nodes: [...filteredNodes, ...clusterNodes],
+      links: [...filteredLinks, ...clusterLinks],
     };
-  }, [filteredData, data, disabledPredicates, showCandidateLinks]);
+  }, [filteredData, data, disabledPredicates, showCandidateLinks, expandedClusters]);
 
   const nodeMap = useMemo(() => new Map(data.nodes.map((node: any) => [node.id, node])), [data.nodes]);
 
@@ -388,6 +496,15 @@ export default function GraphExplorer() {
   }, [selectedNode?.id]);
 
   const handleNodeClick = useCallback((node: any) => {
+    // Phase 5.E: clicking a cluster expands it back into its member nodes.
+    if (node?.__cluster && node?.__cluster_key) {
+      setExpandedClusters((cur) => {
+        const next = new Set(cur);
+        next.add(String(node.__cluster_key));
+        return next;
+      });
+      return;
+    }
     setSelectedNode(node);
     setContextMenu(null);
     setPathResult(null);
@@ -767,6 +884,32 @@ export default function GraphExplorer() {
                 setContextMenu(null);
               }}
               nodeCanvasObject={(node: any, ctx, globalScale) => {
+                // Phase 5.E: cluster nodes get a distinct visual — larger
+                // hollow ring with the member count in the centre. Clicking
+                // expands.
+                if (node?.__cluster) {
+                  const count = Number(node?.properties?.count || 0);
+                  const cls = String(node?.properties?.class || 'Node');
+                  const color = kindColor(nodeKind({ label: cls, properties: {} }));
+                  const radius = 8 + Math.min(6, Math.log2(count + 1));
+                  ctx.beginPath();
+                  ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI, false);
+                  ctx.fillStyle = `${color}22`;
+                  ctx.fill();
+                  ctx.lineWidth = 1.4 / globalScale;
+                  ctx.strokeStyle = color;
+                  ctx.stroke();
+                  const fontSize = Math.max(9 / globalScale, 3.0);
+                  ctx.font = `bold ${fontSize}px JetBrains Mono, monospace`;
+                  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                  ctx.fillStyle = color;
+                  ctx.fillText(String(count), node.x, node.y);
+                  ctx.font = `${fontSize * 0.85}px JetBrains Mono, monospace`;
+                  ctx.fillStyle = '#aab2bb';
+                  ctx.fillText(`${cls} cluster`, node.x, node.y + radius + fontSize);
+                  node.__bckgDimensions = [radius * 2 + 4, radius * 2 + fontSize * 2];
+                  return;
+                }
                 const label = nodeTitle(node);
                 const kind = nodeKind(node);
                 const color = kindColor(kind);
