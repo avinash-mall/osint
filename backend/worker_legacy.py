@@ -3690,6 +3690,7 @@ def tick_entity_resimilarity() -> dict:
     rows: list[dict] = []
 
     def _proposals_for_kind(kind: str) -> list[dict]:
+        meta = scope_meta_cache.setdefault(kind, _load_entity_meta(kind))
         with postgis_db.get_cursor() as cursor:
             cursor.execute(
                 """
@@ -3707,6 +3708,9 @@ def tick_entity_resimilarity() -> dict:
             for b_id, b_name in entities[i + 1:]:
                 if not b_name or a_id == b_id:
                     continue
+                # Phase 5.K: skip pairs that fail the time / AOI scope.
+                if not _pair_passes_scope(a_id, b_id, meta):
+                    continue
                 # Cheap score: shared 4+ char prefix OR substring containment.
                 shared = 0
                 while shared < min(len(a_name), len(b_name)) and a_name[shared] == b_name[shared]:
@@ -3723,15 +3727,49 @@ def tick_entity_resimilarity() -> dict:
                         return out
         return out
 
-    def _embedding_proposals_for_kind(kind: str) -> list[dict]:
-        """Phase 5.J: cosine over re_id_embedding for entities of the same kind.
 
-        Only entities with non-NULL re_id_embedding (populated by
-        worker.tick_aggregate_entity_embeddings) participate. Pairs whose
-        cosine ≥ threshold (default 0.85) are emitted with source='embedding'.
-        """
+    # Phase 5.K: time + AOI scoping for both branches.
+    window_days = env_int("ENTITY_RESIMILARITY_WINDOW_DAYS", 30)
+    aoi_scoped = os.getenv("ENTITY_RESIMILARITY_AOI_SCOPED", "true").lower() not in ("0", "false", "no")
+
+    def _load_entity_meta(kind: str) -> dict[str, dict]:
+        """Per-entity metadata for scoping: last-activity timestamp + AOI."""
+        with postgis_db.get_cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, operates_from_base_id, COALESCE(updated_at, created_at) AS last_activity
+                FROM operational_entities WHERE kind = %s
+                """,
+                (kind,),
+            )
+            return {r["id"]: dict(r) for r in cursor.fetchall()}
+
+    def _pair_passes_scope(a_id: str, b_id: str, meta: dict[str, dict]) -> bool:
+        a_meta = meta.get(a_id); b_meta = meta.get(b_id)
+        if not a_meta or not b_meta:
+            return True  # missing metadata — don't block
+        # AOI scope: both entities have an operates_from_base_id and they differ → skip
+        if aoi_scoped:
+            a_aoi = a_meta.get("operates_from_base_id")
+            b_aoi = b_meta.get("operates_from_base_id")
+            if a_aoi and b_aoi and a_aoi != b_aoi:
+                return False
+        # Time scope: both have last_activity and they're >window_days apart → skip
+        a_t = a_meta.get("last_activity"); b_t = b_meta.get("last_activity")
+        if a_t and b_t:
+            try:
+                from datetime import timedelta
+                if abs((a_t - b_t).days) > window_days:
+                    return False
+            except Exception:
+                pass
+        return True
+
+    def _embedding_proposals_for_kind(kind: str) -> list[dict]:
+        """Phase 5.J + 5.K: cosine over re_id_embedding, scoped by AOI + time."""
         from graph_writes import cosine_similarity as _cos
         threshold = env_float("ENTITY_RESIMILARITY_EMBEDDING_THRESHOLD", 0.85)
+        meta = _load_entity_meta(kind)
         with postgis_db.get_cursor() as cursor:
             cursor.execute(
                 """
@@ -3755,6 +3793,8 @@ def tick_entity_resimilarity() -> dict:
         out: list[dict] = []
         for i, (a_id, a_vec) in enumerate(entities):
             for b_id, b_vec in entities[i + 1:]:
+                if not _pair_passes_scope(a_id, b_id, meta):
+                    continue
                 cos = _cos(a_vec, b_vec)
                 if cos is None or cos < threshold:
                     continue
@@ -3768,6 +3808,7 @@ def tick_entity_resimilarity() -> dict:
         return out
 
     seen_pairs: set[tuple[str, str]] = set()
+    scope_meta_cache: dict[str, dict[str, dict]] = {}
     for kind in ("vessel", "aircraft", "vehicle", "facility", "unit"):
         # Phase 5.J: prefer embedding cosine; fall back to name-match
         # heuristic so entities without embeddings still get proposals.
