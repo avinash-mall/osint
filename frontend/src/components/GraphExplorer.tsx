@@ -9,10 +9,13 @@ import {
   CircleDot,
   Database,
   Filter,
+  GitBranch,
   Hash,
   Info,
+  Layers,
   Maximize2,
   Plus,
+  Route,
   Search,
   Share2,
   Ship,
@@ -21,8 +24,28 @@ import {
   User,
   X,
 } from 'lucide-react';
+import { TimeScrubber, type TimeRange } from './graph/TimeScrubber';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
+
+type GraphMode = 'investigation' | 'evidence' | 'ontology';
+
+const MODE_TABS: { id: GraphMode; label: string }[] = [
+  { id: 'investigation', label: 'Investigation' },
+  { id: 'evidence', label: 'Evidence' },
+  { id: 'ontology', label: 'Ontology' },
+];
+
+// Labels available in the class lens. Operational labels first, then evidence.
+const CLASS_LENS_OPTIONS = [
+  'Target', 'Asset', 'Base', 'LaunchPoint', 'Facility', 'Unit',
+  'Vessel', 'Aircraft', 'Vehicle',
+  'Detection', 'Observation', 'SatellitePass',
+  'FMVClip', 'Document', 'Report', 'FeedEvent',
+];
+
+// Labels treated as "sites" — drives the "Roll up to site" context action.
+const SITE_LABELS = new Set(['Base', 'LaunchPoint', 'Facility']);
 
 function nodeId(value: any): string {
   return typeof value === 'object' ? value.id : value;
@@ -139,30 +162,100 @@ function PredicateChipBar({ predicates, enabled, onToggle }: {
   );
 }
 
+/** Class-lens chip-row: restrict the Investigation feed to specific node labels. */
+function ClassLensChipBar({ selected, onToggle, onClear }: {
+  selected: Set<string>;
+  onToggle: (label: string) => void;
+  onClear: () => void;
+}) {
+  const anySelected = selected.size > 0;
+  return (
+    <div className="predicate-chip-bar" role="group" aria-label="Filter nodes by class">
+      <span className="sentinel-label mr-1 self-center">Class lens</span>
+      {CLASS_LENS_OPTIONS.map((label) => {
+        const on = selected.has(label);
+        return (
+          <button
+            key={label}
+            type="button"
+            className={`predicate-chip ${on ? 'on' : ''}`}
+            aria-pressed={on}
+            onClick={() => onToggle(label)}
+          >
+            {label}
+          </button>
+        );
+      })}
+      {anySelected && (
+        <button type="button" className="predicate-chip" onClick={onClear} title="Clear class lens">
+          <X size={11} />
+        </button>
+      )}
+    </div>
+  );
+}
+
+function defaultTimeRange(): TimeRange {
+  const end = new Date();
+  // Plan default: 30 days. Matches POL window.
+  const start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
+  return { start: start.toISOString(), end: end.toISOString() };
+}
+
 export default function GraphExplorer() {
+  const [mode, setMode] = useState<GraphMode>('investigation');
   const [data, setData] = useState<any>({ nodes: [], links: [] });
   const [filteredData, setFilteredData] = useState<any | null>(null);
   const [selectedNode, setSelectedNode] = useState<any>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; node: any } | null>(null);
   const [showCandidateLinks, setShowCandidateLinks] = useState(false);
   const [disabledPredicates, setDisabledPredicates] = useState<Set<string>>(new Set());
+  const [classLens, setClassLens] = useState<Set<string>>(new Set());
+  const [timeRange, setTimeRange] = useState<TimeRange>(defaultTimeRange);
   const [query, setQuery] = useState('');
   const [updates, setUpdates] = useState<any[]>([]);
   const [dimensions, setDimensions] = useState({ width: 900, height: 600 });
+  const [pathPicker, setPathPicker] = useState<{ from: any } | null>(null);
+  const [pathResult, setPathResult] = useState<any | null>(null);
+  const [siteRollup, setSiteRollup] = useState<any | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const graphPaneRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<any>(null);
 
   const fetchData = useCallback(async () => {
-    const [graphResponse, updatesResponse] = await Promise.all([
-      axios.get(`${API_URL}/api/graph`, { params: { include_candidates: showCandidateLinks } }),
-      axios.get(`${API_URL}/api/ontology/updates`, { params: { limit: 8 } }).catch(() => ({ data: { updates: [] } })),
-    ]);
-    setData({
-      nodes: graphResponse.data.nodes || [],
-      links: (graphResponse.data.links || []).map((link: any) => ({ ...link, source: link.source, target: link.target })),
-    });
-    setUpdates(updatesResponse.data.updates || []);
-  }, [showCandidateLinks]);
+    setLoadError(null);
+    if (mode !== 'investigation') {
+      // Evidence + Ontology modes are stubs in Phase 1.
+      setData({ nodes: [], links: [] });
+      setUpdates([]);
+      return;
+    }
+    try {
+      const params: Record<string, any> = {
+        time_start: timeRange.start,
+        time_end: timeRange.end,
+        limit: 150,
+      };
+      if (classLens.size) {
+        params.class_lens = Array.from(classLens);
+      }
+      const [graphResponse, updatesResponse] = await Promise.all([
+        axios.get(`${API_URL}/api/graph/investigation`, {
+          params,
+          paramsSerializer: { indexes: null },  // class_lens=A&class_lens=B
+        }),
+        axios.get(`${API_URL}/api/ontology/updates`, { params: { limit: 8 } }).catch(() => ({ data: { updates: [] } })),
+      ]);
+      setData({
+        nodes: graphResponse.data.nodes || [],
+        links: (graphResponse.data.links || []).map((link: any) => ({ ...link, source: link.source, target: link.target })),
+      });
+      setUpdates(updatesResponse.data.updates || []);
+    } catch (err: any) {
+      console.error('Error fetching graph data:', err);
+      setLoadError(err?.message || 'Failed to load graph');
+    }
+  }, [mode, timeRange.start, timeRange.end, classLens]);
 
   useEffect(() => {
     fetchData().catch((error) => console.error('Error fetching graph data:', error));
@@ -201,14 +294,46 @@ export default function GraphExplorer() {
     });
   }, []);
 
+  const toggleClassLens = useCallback((label: string) => {
+    setClassLens((cur) => {
+      const next = new Set(cur);
+      if (next.has(label)) next.delete(label);
+      else next.add(label);
+      return next;
+    });
+  }, []);
+
+  // Histogram source for the time scrubber: every node with a `created_at`
+  // property (Detections, candidates, ontology updates).
+  const histogramTimestamps = useMemo(() => {
+    const out: number[] = [];
+    for (const node of data.nodes || []) {
+      const ts = node?.properties?.created_at;
+      if (!ts) continue;
+      const ms = Date.parse(ts);
+      if (Number.isFinite(ms)) out.push(ms);
+    }
+    return out;
+  }, [data.nodes]);
+
   const graphData = useMemo(() => {
     const base = filteredData || data;
+    if (!showCandidateLinks) {
+      // Filter out CANDIDATE_* edges entirely when toggle is off.
+      const links = base.links.filter((link: any) => !String(predicateOf(link)).startsWith('CANDIDATE_'));
+      const filtered = { nodes: base.nodes, links };
+      if (disabledPredicates.size === 0) return filtered;
+      return {
+        nodes: filtered.nodes,
+        links: filtered.links.filter((link: any) => !disabledPredicates.has(predicateOf(link))),
+      };
+    }
     if (disabledPredicates.size === 0) return base;
     return {
       nodes: base.nodes,
       links: base.links.filter((link: any) => !disabledPredicates.has(predicateOf(link))),
     };
-  }, [filteredData, data, disabledPredicates]);
+  }, [filteredData, data, disabledPredicates, showCandidateLinks]);
 
   const nodeMap = useMemo(() => new Map(data.nodes.map((node: any) => [node.id, node])), [data.nodes]);
 
@@ -252,6 +377,8 @@ export default function GraphExplorer() {
     return ids;
   }, [selectedConnections, selectedNode]);
 
+  // Stable per-node hash for the placeholder co-occurrence bars (Phase 3
+  // replaces with real ontology co-occurrence).
   const cooccurrenceBars = useMemo(() => {
     const seed = String(selectedNode?.id || 'graph').split('').reduce((sum, char) => sum + char.charCodeAt(0), 0);
     return Array.from({ length: 8 }, (_, index) => 24 + ((seed * (index + 3)) % 72));
@@ -260,6 +387,8 @@ export default function GraphExplorer() {
   const handleNodeClick = useCallback((node: any) => {
     setSelectedNode(node);
     setContextMenu(null);
+    setPathResult(null);
+    setSiteRollup(null);
   }, []);
 
   const handleNodeRightClick = useCallback((node: any, event: MouseEvent) => {
@@ -299,6 +428,57 @@ export default function GraphExplorer() {
     }
   }, [neighborhood]);
 
+  const startPathPick = useCallback((node: any) => {
+    setPathPicker({ from: node });
+    setContextMenu(null);
+    setPathResult(null);
+  }, []);
+
+  const completePath = useCallback(async (toNode: any) => {
+    if (!pathPicker?.from) return;
+    try {
+      const resp = await axios.post(`${API_URL}/api/graph/path`, {
+        from_id: pathPicker.from.id,
+        to_id: toNode.id,
+        max_depth: 4,
+      });
+      setPathResult({
+        from: pathPicker.from,
+        to: toNode,
+        ...resp.data,
+      });
+      // Replace the visible graph with the union of all paths returned.
+      const allNodes = new Map<string, any>();
+      const allLinks: any[] = [];
+      for (const p of resp.data.paths || []) {
+        for (const n of p.nodes || []) allNodes.set(n.id, n);
+        for (const l of p.links || []) allLinks.push(l);
+      }
+      if (allNodes.size > 0) {
+        setFilteredData({ nodes: Array.from(allNodes.values()), links: allLinks });
+      }
+    } catch (err) {
+      console.error('path query failed', err);
+      setPathResult({ from: pathPicker.from, to: toNode, paths: [], count: 0, error: 'request failed' });
+    } finally {
+      setPathPicker(null);
+    }
+  }, [pathPicker]);
+
+  const cancelPath = useCallback(() => setPathPicker(null), []);
+
+  const rollupSite = useCallback(async (node: any) => {
+    setContextMenu(null);
+    setPathResult(null);
+    try {
+      const resp = await axios.get(`${API_URL}/api/graph/site-composition/${encodeURIComponent(node.id)}`);
+      setSiteRollup(resp.data);
+    } catch (err) {
+      console.error('site-composition failed', err);
+      setSiteRollup({ error: 'request failed', base_id: node.id });
+    }
+  }, []);
+
   const exportSelected = useCallback(() => {
     const payload = selectedNode || graphData;
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -309,6 +489,15 @@ export default function GraphExplorer() {
     link.click();
     URL.revokeObjectURL(url);
   }, [graphData, selectedNode]);
+
+  const selectedIsSite = useMemo(() => {
+    if (!contextMenu?.node) return false;
+    const labels = new Set<string>([contextMenu.node.label, ...(contextMenu.node.labels || [])]);
+    for (const l of labels) if (SITE_LABELS.has(l)) return true;
+    return false;
+  }, [contextMenu]);
+
+  const isStubMode = mode !== 'investigation';
 
   return (
     <div className="graph-shell h-full min-h-0 bg-sentinel-bg text-sentinel-text overflow-hidden" onClick={() => setContextMenu(null)}>
@@ -349,8 +538,13 @@ export default function GraphExplorer() {
                     key={node.id}
                     onClick={(event) => {
                       event.stopPropagation();
-                      setSelectedNode(node);
-                      focusNode(node);
+                      // If we're picking the second node of a path, complete that.
+                      if (pathPicker) {
+                        completePath(node);
+                      } else {
+                        setSelectedNode(node);
+                        focusNode(node);
+                      }
                     }}
                     className={`sentinel-row w-full text-left grid-cols-[24px_minmax(0,1fr)_auto] ${selected ? 'selected' : ''}`}
                   >
@@ -370,12 +564,32 @@ export default function GraphExplorer() {
 
       <main className="graph-main-panel sentinel-panel border-y-0 min-w-0 min-h-0 flex flex-col">
         <div className="sentinel-panel-header">
-          <span>Link Graph · 2-hop neighborhood</span>
+          <span>Link Graph · {MODE_TABS.find((m) => m.id === mode)?.label}</span>
           <div className="ml-auto flex items-center gap-2">
-            <div className="flex border border-sentinel-line-2 h-6">
-              <button className="px-3 bg-sentinel-accent text-sentinel-bg text-[10px] font-mono uppercase whitespace-nowrap">Force</button>
-              <button className="px-3 text-sentinel-muted text-[10px] font-mono uppercase border-l border-sentinel-line-2 whitespace-nowrap">Hier</button>
-              <button className="px-3 text-sentinel-muted text-[10px] font-mono uppercase border-l border-sentinel-line-2 whitespace-nowrap">Geo</button>
+            <div className="flex border border-sentinel-line-2 h-6" role="tablist" aria-label="Graph mode">
+              {MODE_TABS.map((tab) => {
+                const on = mode === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={on}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setMode(tab.id);
+                      setFilteredData(null);
+                      setPathResult(null);
+                      setSiteRollup(null);
+                    }}
+                    className={`px-3 text-[10px] font-mono uppercase whitespace-nowrap border-l first:border-l-0 border-sentinel-line-2 ${
+                      on ? 'bg-sentinel-accent text-sentinel-bg' : 'text-sentinel-muted'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                );
+              })}
             </div>
             <button
               type="button"
@@ -389,7 +603,7 @@ export default function GraphExplorer() {
             </button>
             <span className="sentinel-tag acc">{showCandidateLinks ? 'review' : 'approved'}</span>
             {filteredData && (
-              <button type="button" onClick={() => setFilteredData(null)} className="sentinel-btn">
+              <button type="button" onClick={() => { setFilteredData(null); setPathResult(null); }} className="sentinel-btn">
                 <X size={13} /> Clear
               </button>
             )}
@@ -398,120 +612,181 @@ export default function GraphExplorer() {
             </button>
           </div>
         </div>
-        <PredicateChipBar
-          predicates={availablePredicates}
-          enabled={enabledPredicates}
-          onToggle={togglePredicate}
-        />
+
+        {mode === 'investigation' && (
+          <>
+            <div className="px-2 pt-2 grid grid-cols-[minmax(0,1fr)_minmax(220px,320px)] gap-2">
+              <ClassLensChipBar
+                selected={classLens}
+                onToggle={toggleClassLens}
+                onClear={() => setClassLens(new Set())}
+              />
+              <TimeScrubber
+                value={timeRange}
+                onChange={setTimeRange}
+                histogramTimestamps={histogramTimestamps}
+              />
+            </div>
+            <PredicateChipBar
+              predicates={availablePredicates}
+              enabled={enabledPredicates}
+              onToggle={togglePredicate}
+            />
+            {pathPicker && (
+              <div className="px-3 py-1.5 text-[11px] font-mono bg-sentinel-accent text-sentinel-bg flex items-center gap-2">
+                <Route size={13} />
+                Path from <strong>{nodeTitle(pathPicker.from)}</strong> to … click the second node.
+                <button type="button" onClick={cancelPath} className="ml-auto sentinel-btn">
+                  <X size={13} /> Cancel
+                </button>
+              </div>
+            )}
+            {loadError && (
+              <div className="px-3 py-1.5 text-[11px] font-mono bg-sentinel-warning/20 text-sentinel-warning">
+                {loadError}
+              </div>
+            )}
+          </>
+        )}
+
         <div ref={graphPaneRef} className="relative flex-1 min-h-0 overflow-hidden bg-[#0a0d10]">
           <div className="absolute inset-0 opacity-70" style={{ backgroundImage: 'radial-gradient(circle, #1d2227 1px, transparent 1px)', backgroundSize: '22px 22px' }} />
-          <ForceGraph2D
-            width={dimensions.width}
-            height={dimensions.height}
-            ref={graphRef}
-            graphData={graphData}
-            nodeId="id"
-            nodeLabel={nodeTitle}
-            linkLabel={(link: any) => `${link.type}${link.score ? ` ${Number(link.score).toFixed(2)}` : ''}`}
-            linkDirectionalArrowLength={3}
-            linkDirectionalArrowRelPos={1}
-            linkColor={(link: any) => {
-              const hot = selectedNode && (nodeId(link.source) === selectedNode.id || nodeId(link.target) === selectedNode.id);
-              if (hot) return '#ff7a1a';
-              if (link.candidate) return '#f5b400';
-              // UX-AUDIT F22: edges tinted by predicate so the semantic
-              // is legible at a glance, not just "lots of grey lines".
-              return predicateColor(predicateOf(link));
-            }}
-            linkLineDash={(link: any) => link.candidate ? [4, 4] : null}
-            linkCanvasObjectMode={() => 'after'}
-            linkCanvasObject={(link: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
-              // Only label edges once zoomed in enough to be readable.
-              if (globalScale < 1.4) return;
-              const s = link.source;
-              const t = link.target;
-              if (typeof s !== 'object' || typeof t !== 'object' || s.x == null || t.x == null) return;
-              const label = predicateText(predicateOf(link));
-              const mx = (s.x + t.x) / 2;
-              const my = (s.y + t.y) / 2;
-              const fontSize = Math.max(8 / globalScale, 2.6);
-              ctx.font = `${fontSize}px JetBrains Mono, monospace`;
-              ctx.textAlign = 'center';
-              ctx.textBaseline = 'middle';
-              const w = ctx.measureText(label).width;
-              ctx.fillStyle = 'rgba(10,13,16,0.78)';
-              ctx.fillRect(mx - w / 2 - 1.5, my - fontSize / 2 - 0.5, w + 3, fontSize + 1);
-              ctx.fillStyle = predicateColor(predicateOf(link));
-              ctx.fillText(label, mx, my);
-            }}
-            linkWidth={(link: any) => {
-              const hot = selectedNode && (nodeId(link.source) === selectedNode.id || nodeId(link.target) === selectedNode.id);
-              return (hot ? 1.25 : 0.45) + linkWeight(link) * 1.1;
-            }}
-            backgroundColor="rgba(0,0,0,0)"
-            onNodeClick={handleNodeClick}
-            onNodeRightClick={handleNodeRightClick as any}
-            onBackgroundClick={() => {
-              setSelectedNode(null);
-              setContextMenu(null);
-            }}
-            nodeCanvasObject={(node: any, ctx, globalScale) => {
-              const label = nodeTitle(node);
-              const kind = nodeKind(node);
-              const color = kindColor(kind);
-              const isSelected = selectedNode?.id === node.id;
-              const isNeighbor = selectedNeighborIds.has(node.id);
-              const radius = isSelected ? 5.2 : 3.8;
-              if (isSelected) {
-                ctx.beginPath();
-                ctx.setLineDash([2 / globalScale, 3 / globalScale]);
-                ctx.arc(node.x, node.y, radius + 8, 0, 2 * Math.PI, false);
-                ctx.strokeStyle = color;
-                ctx.lineWidth = 1 / globalScale;
-                ctx.stroke();
-                ctx.setLineDash([]);
-              }
-              ctx.beginPath();
-              ctx.arc(node.x, node.y, radius + (isSelected ? 4 : 2), 0, 2 * Math.PI, false);
-              ctx.fillStyle = isSelected ? `${color}33` : '#0b0d0f';
-              ctx.fill();
-              ctx.lineWidth = isSelected ? 1.4 / globalScale : isNeighbor ? 1 / globalScale : 0.6 / globalScale;
-              ctx.strokeStyle = color;
-              ctx.stroke();
-              ctx.beginPath();
-              ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI, false);
-              ctx.fillStyle = color;
-              ctx.fill();
-
-              const fontSize = Math.max(9 / globalScale, 2.8);
-              ctx.font = `${fontSize}px JetBrains Mono, monospace`;
-              ctx.textAlign = 'center';
-              ctx.textBaseline = 'middle';
-              ctx.fillStyle = isSelected ? '#e8ebee' : isNeighbor ? '#d7dde3' : '#aab2bb';
-              ctx.fillText(label.slice(0, 28), node.x, node.y - radius - fontSize);
-              node.__bckgDimensions = [Math.max(ctx.measureText(label).width, 14), fontSize + radius * 2];
-            }}
-            nodePointerAreaPaint={(node: any, color, ctx) => {
-              ctx.fillStyle = color;
-              const dims = node.__bckgDimensions || [50, 18];
-              ctx.fillRect(node.x - dims[0] / 2, node.y - dims[1], dims[0], dims[1] + 10);
-            }}
-          />
-          <div className="absolute left-3 top-3 border border-sentinel-line bg-sentinel-panel/90 p-3 font-mono text-[10px] text-sentinel-muted">
-            <div className="sentinel-label mb-2">Graph</div>
-            <div>NODES <span className="text-sentinel-accent">{graphData.nodes.length}</span></div>
-            <div>EDGES <span className="text-sentinel-accent">{graphData.links.length}</span></div>
-            <div>DENSITY <span className="text-sentinel-accent">{density}</span></div>
-          </div>
-          <div className="absolute right-3 bottom-3 border border-sentinel-line bg-sentinel-panel/90 p-3 text-[10px] text-sentinel-muted">
-            <div className="sentinel-label mb-2">Legend</div>
-            {['facility', 'person', 'vehicle', 'vessel', 'phone', 'account'].map((kind) => (
-              <div key={kind} className="flex items-center gap-2 h-5">
-                <span className="w-2 h-2 inline-block" style={{ background: kindColor(kind) }} />
-                <span className="font-mono uppercase">{kind}</span>
+          {isStubMode ? (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-sentinel-muted p-6 text-center">
+              {mode === 'evidence' ? (
+                <Layers size={28} className="text-sentinel-accent" />
+              ) : (
+                <GitBranch size={28} className="text-sentinel-accent" />
+              )}
+              <div className="text-sm font-semibold text-sentinel-text">
+                {mode === 'evidence' ? 'Evidence mode arrives in Phase 2.' : 'Ontology mode arrives in Phase 3.'}
               </div>
-            ))}
-          </div>
+              <div className="text-xs max-w-sm font-mono">
+                {mode === 'evidence'
+                  ? 'Per-Target provenance DAG (SatellitePass / FMVClip / Document / Report / FeedEvent → file / model / confidence / review status).'
+                  : 'Branch/object/prompt graph with UnknownLabel orbits and co-occurrence chips. The current Admin → Ontology tab remains the bulk-edit view.'}
+              </div>
+              <button type="button" onClick={() => setMode('investigation')} className="sentinel-btn">
+                ← Back to Investigation
+              </button>
+            </div>
+          ) : (
+            <ForceGraph2D
+              width={dimensions.width}
+              height={dimensions.height}
+              ref={graphRef}
+              graphData={graphData}
+              nodeId="id"
+              nodeLabel={nodeTitle}
+              linkLabel={(link: any) => `${link.type}${link.score ? ` ${Number(link.score).toFixed(2)}` : ''}`}
+              linkDirectionalArrowLength={3}
+              linkDirectionalArrowRelPos={1}
+              linkColor={(link: any) => {
+                const hot = selectedNode && (nodeId(link.source) === selectedNode.id || nodeId(link.target) === selectedNode.id);
+                if (hot) return '#ff7a1a';
+                if (link.candidate) return '#f5b400';
+                // UX-AUDIT F22: edges tinted by predicate so the semantic
+                // is legible at a glance, not just "lots of grey lines".
+                return predicateColor(predicateOf(link));
+              }}
+              linkLineDash={(link: any) => link.candidate ? [4, 4] : null}
+              linkCanvasObjectMode={() => 'after'}
+              linkCanvasObject={(link: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
+                // Only label edges once zoomed in enough to be readable.
+                if (globalScale < 1.4) return;
+                const s = link.source;
+                const t = link.target;
+                if (typeof s !== 'object' || typeof t !== 'object' || s.x == null || t.x == null) return;
+                const label = predicateText(predicateOf(link));
+                const mx = (s.x + t.x) / 2;
+                const my = (s.y + t.y) / 2;
+                const fontSize = Math.max(8 / globalScale, 2.6);
+                ctx.font = `${fontSize}px JetBrains Mono, monospace`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                const w = ctx.measureText(label).width;
+                ctx.fillStyle = 'rgba(10,13,16,0.78)';
+                ctx.fillRect(mx - w / 2 - 1.5, my - fontSize / 2 - 0.5, w + 3, fontSize + 1);
+                ctx.fillStyle = predicateColor(predicateOf(link));
+                ctx.fillText(label, mx, my);
+              }}
+              linkWidth={(link: any) => {
+                const hot = selectedNode && (nodeId(link.source) === selectedNode.id || nodeId(link.target) === selectedNode.id);
+                return (hot ? 1.25 : 0.45) + linkWeight(link) * 1.1;
+              }}
+              backgroundColor="rgba(0,0,0,0)"
+              onNodeClick={(node: any) => {
+                if (pathPicker) completePath(node);
+                else handleNodeClick(node);
+              }}
+              onNodeRightClick={handleNodeRightClick as any}
+              onBackgroundClick={() => {
+                if (pathPicker) cancelPath();
+                setSelectedNode(null);
+                setContextMenu(null);
+              }}
+              nodeCanvasObject={(node: any, ctx, globalScale) => {
+                const label = nodeTitle(node);
+                const kind = nodeKind(node);
+                const color = kindColor(kind);
+                const isSelected = selectedNode?.id === node.id;
+                const isNeighbor = selectedNeighborIds.has(node.id);
+                const radius = isSelected ? 5.2 : 3.8;
+                if (isSelected) {
+                  ctx.beginPath();
+                  ctx.setLineDash([2 / globalScale, 3 / globalScale]);
+                  ctx.arc(node.x, node.y, radius + 8, 0, 2 * Math.PI, false);
+                  ctx.strokeStyle = color;
+                  ctx.lineWidth = 1 / globalScale;
+                  ctx.stroke();
+                  ctx.setLineDash([]);
+                }
+                ctx.beginPath();
+                ctx.arc(node.x, node.y, radius + (isSelected ? 4 : 2), 0, 2 * Math.PI, false);
+                ctx.fillStyle = isSelected ? `${color}33` : '#0b0d0f';
+                ctx.fill();
+                ctx.lineWidth = isSelected ? 1.4 / globalScale : isNeighbor ? 1 / globalScale : 0.6 / globalScale;
+                ctx.strokeStyle = color;
+                ctx.stroke();
+                ctx.beginPath();
+                ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI, false);
+                ctx.fillStyle = color;
+                ctx.fill();
+
+                const fontSize = Math.max(9 / globalScale, 2.8);
+                ctx.font = `${fontSize}px JetBrains Mono, monospace`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillStyle = isSelected ? '#e8ebee' : isNeighbor ? '#d7dde3' : '#aab2bb';
+                ctx.fillText(label.slice(0, 28), node.x, node.y - radius - fontSize);
+                node.__bckgDimensions = [Math.max(ctx.measureText(label).width, 14), fontSize + radius * 2];
+              }}
+              nodePointerAreaPaint={(node: any, color, ctx) => {
+                ctx.fillStyle = color;
+                const dims = node.__bckgDimensions || [50, 18];
+                ctx.fillRect(node.x - dims[0] / 2, node.y - dims[1], dims[0], dims[1] + 10);
+              }}
+            />
+          )}
+          {!isStubMode && (
+            <>
+              <div className="absolute left-3 top-3 border border-sentinel-line bg-sentinel-panel/90 p-3 font-mono text-[10px] text-sentinel-muted">
+                <div className="sentinel-label mb-2">Graph</div>
+                <div>NODES <span className="text-sentinel-accent">{graphData.nodes.length}</span></div>
+                <div>EDGES <span className="text-sentinel-accent">{graphData.links.length}</span></div>
+                <div>DENSITY <span className="text-sentinel-accent">{density}</span></div>
+              </div>
+              <div className="absolute right-3 bottom-3 border border-sentinel-line bg-sentinel-panel/90 p-3 text-[10px] text-sentinel-muted">
+                <div className="sentinel-label mb-2">Legend</div>
+                {['facility', 'person', 'vehicle', 'vessel', 'phone', 'account'].map((kind) => (
+                  <div key={kind} className="flex items-center gap-2 h-5">
+                    <span className="w-2 h-2 inline-block" style={{ background: kindColor(kind) }} />
+                    <span className="font-mono uppercase">{kind}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
         <div className="graph-updates-strip border-t border-sentinel-line bg-sentinel-panel overflow-hidden">
           <div className="w-44 border-r border-sentinel-line p-3">
@@ -535,9 +810,95 @@ export default function GraphExplorer() {
       <aside className="graph-detail-panel sentinel-panel border-y-0 border-r-0 min-h-0 flex flex-col">
         <div className="sentinel-panel-header">
           <Info size={14} className="text-sentinel-accent" />
-          <span>Entity</span>
+          <span>{pathResult ? 'Path' : siteRollup ? 'Site rollup' : 'Entity'}</span>
+          {(pathResult || siteRollup) && (
+            <button
+              type="button"
+              onClick={() => { setPathResult(null); setSiteRollup(null); setFilteredData(null); }}
+              className="sentinel-icon-btn ml-auto h-6 w-6"
+              title="Close"
+            >
+              <X size={13} />
+            </button>
+          )}
         </div>
-        {selectedNode ? (
+
+        {pathResult ? (
+          <div className="sentinel-scroll flex-1 p-3">
+            <div className="sentinel-label mb-2">Paths from</div>
+            <div className="text-xs mb-1 truncate">{nodeTitle(pathResult.from)}</div>
+            <div className="sentinel-label mb-2">to</div>
+            <div className="text-xs mb-3 truncate">{nodeTitle(pathResult.to)}</div>
+            <div className="text-[10px] text-sentinel-muted font-mono mb-3">
+              {pathResult.count ?? 0} shortest path(s); max depth {pathResult.max_depth ?? 4}
+            </div>
+            {(pathResult.paths || []).map((p: any, i: number) => (
+              <div key={i} className="border border-sentinel-line bg-sentinel-bg p-2 mb-2">
+                <div className="text-[10px] text-sentinel-muted font-mono mb-1">length {p.length}</div>
+                <div className="flex flex-wrap items-center gap-x-1 gap-y-1 text-xs">
+                  {p.nodes.map((n: any, j: number) => (
+                    <span key={n.id}>
+                      <span className="text-sentinel-text">{nodeTitle(n)}</span>
+                      {j < (p.links || []).length && (
+                        <span className="text-[9px] text-sentinel-muted mx-1 uppercase">
+                          —{predicateText(predicateOf(p.links[j]))}→
+                        </span>
+                      )}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+            {(!pathResult.paths || pathResult.paths.length === 0) && (
+              <div className="text-xs text-sentinel-muted font-mono">No path within depth.</div>
+            )}
+          </div>
+        ) : siteRollup ? (
+          <div className="sentinel-scroll flex-1 p-3 space-y-3">
+            <div>
+              <div className="sentinel-label mb-1">Site</div>
+              <div className="text-sm font-semibold">{siteRollup.properties?.name || siteRollup.base_id}</div>
+              <div className="text-[10px] text-sentinel-muted font-mono">
+                radius {siteRollup.radius_m}m · last {siteRollup.recent_days}d
+              </div>
+            </div>
+            <section className="border border-sentinel-line bg-sentinel-bg p-2">
+              <div className="sentinel-label mb-2">Recent detections (by class)</div>
+              {siteRollup.recent_detections?.length ? (
+                <div className="space-y-1">
+                  {siteRollup.recent_detections.map((row: any) => (
+                    <div key={row.class} className="flex items-center text-xs">
+                      <span className="truncate flex-1">{row.class}</span>
+                      <span className="font-mono text-sentinel-accent">{row.count}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : <div className="text-xs text-sentinel-muted font-mono">none in window</div>}
+            </section>
+            {[
+              ['vessels', 'Vessels'],
+              ['vehicles', 'Vehicles'],
+              ['aircraft', 'Aircraft'],
+              ['other_assets', 'Other assets'],
+            ].map(([key, label]) => (
+              <section key={key} className="border border-sentinel-line bg-sentinel-bg p-2">
+                <div className="sentinel-label mb-1">{label}</div>
+                {(siteRollup[key as string] || []).length ? (
+                  <div className="space-y-1">
+                    {siteRollup[key as string].map((n: any) => (
+                      <div key={n.id} className="text-xs truncate">
+                        {n.properties?.name || n.id}
+                      </div>
+                    ))}
+                  </div>
+                ) : <div className="text-xs text-sentinel-muted font-mono">none</div>}
+              </section>
+            ))}
+            <div className="text-[10px] text-sentinel-muted font-mono">
+              FMV clips + reports populate in Phase 2.
+            </div>
+          </div>
+        ) : selectedNode ? (
           <>
             <div className="p-4 border-b border-sentinel-line flex gap-3">
               <NodeGlyph kind={nodeKind(selectedNode)} size={22} />
@@ -606,7 +967,7 @@ export default function GraphExplorer() {
 
       {contextMenu && (
         <div
-          className="fixed z-50 w-48 border border-sentinel-line-2 bg-sentinel-panel shadow-2xl py-1 text-xs"
+          className="fixed z-50 w-56 border border-sentinel-line-2 bg-sentinel-panel shadow-2xl py-1 text-xs"
           style={{ top: contextMenu.y, left: contextMenu.x }}
           onClick={(event) => event.stopPropagation()}
         >
@@ -619,11 +980,19 @@ export default function GraphExplorer() {
           <button type="button" onClick={() => expandNode(contextMenu.node)} className="w-full text-left px-3 py-2 hover:bg-sentinel-panel-2 flex items-center gap-2">
             <Maximize2 size={14} /> Expand Node
           </button>
+          <button type="button" onClick={() => startPathPick(contextMenu.node)} className="w-full text-left px-3 py-2 hover:bg-sentinel-panel-2 flex items-center gap-2">
+            <Route size={14} /> Find path to…
+          </button>
+          {selectedIsSite && (
+            <button type="button" onClick={() => rollupSite(contextMenu.node)} className="w-full text-left px-3 py-2 hover:bg-sentinel-panel-2 flex items-center gap-2">
+              <Layers size={14} /> Roll up to site
+            </button>
+          )}
           <button type="button" onClick={exportSelected} className="w-full text-left px-3 py-2 hover:bg-sentinel-panel-2 flex items-center gap-2">
             <Share2 size={14} /> Export Selection
           </button>
           {filteredData && (
-            <button type="button" onClick={() => setFilteredData(null)} className="w-full text-left px-3 py-2 hover:bg-sentinel-panel-2 text-sentinel-muted">
+            <button type="button" onClick={() => { setFilteredData(null); setPathResult(null); setSiteRollup(null); }} className="w-full text-left px-3 py-2 hover:bg-sentinel-panel-2 text-sentinel-muted">
               Clear Filter
             </button>
           )}
