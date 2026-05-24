@@ -1,7 +1,7 @@
 # `backend/worker_legacy.py` — Monolithic Celery Tasks
 
 **Path:** [backend/worker_legacy.py](../../backend/worker_legacy.py)
-**Lines:** ~4130 (largest file in the repo)
+**Lines:** ~4550 (largest file in the repo)
 **Depends on:** Most of the rest of `backend/` plus `celery`, `requests`, `numpy`, `rasterio`, `cv2`
 
 ## Purpose
@@ -18,13 +18,34 @@ See [decisions/why-worker-legacy-monolith-kept.md](../decisions/why-worker-legac
 |---|---|
 | `worker.process_satellite_imagery` | Imagery ingest: COG → chip → /detect → georef → persist |
 | `worker.process_fmv` | FMV ingest: HLS → KLV → /detect_video → persist raw tracks; dispatches `worker.consolidate_fmv` on completion |
-| `worker.consolidate_fmv` | Post-inference FMV track consolidation over `fmv_detections` (`default` queue) — see [fmv-track-consolidation.md](fmv-track-consolidation.md) |
+| `worker.consolidate_fmv` | Post-inference FMV track consolidation over `fmv_detections` (`default` queue) — see [fmv-track-consolidation.md](fmv-track-consolidation.md). Also dispatches `worker.project_fmv_to_graph` per Phase 2.B. |
 | `worker.train_model` | Forward training request to `inference-sam3:/train`, persist results |
 | `worker.transcribe_audio` | (When enabled) audio → text |
 | `worker.poll_http_feeds` | Periodic feed polling (Celery beat) |
 | `worker.cleanup_old_observations` | Periodic timeline pruning |
 
-`grep -nE "@celery_app.task" backend/worker_legacy.py` for the full live list.
+**Link Graph projectors** (Phases 2-3): mirror PostGIS rows into Neo4j identity nodes. See [conventions/adding-a-new-graph-projector.md](../conventions/adding-a-new-graph-projector.md).
+
+| Task name | Purpose |
+|---|---|
+| `worker.project_fmv_to_graph` | Phase 2.B — FMVClip + per-track FMVDetection nodes. Dispatched on consolidate completion. |
+| `worker.project_documents_to_graph` | Phase 2.C — :Document stub + :MENTIONS edges from `documents.extracted_entities`. Triggered after extraction; skips when extracted list empty (Phase 5.A). |
+| `worker.project_observations_to_graph` | Phase 2.D — :Observation + :OBSERVED_AT bridges for `observations` rows with `entity_id`. Single-row or full backfill mode. |
+| `worker.project_ontology_to_graph` | Phase 3.A — OntologyBranch + OntologyObject mirror; triggered on `bump_version`. |
+| `worker.project_unknown_labels` | Phase 3.A — :UnknownLabel mirror + SUGGESTED_BRANCH + LABEL_OF orbits; on-write hook in `_log_unknown`. |
+| `worker.project_label_of_edges` | Phase 3.C — `(d:Detection)-[:LABEL_OF]->(o:OntologyObject)` batch projector. |
+
+**Link Graph beat tasks** (Phase 4-5): periodic maintenance of derived edges + LLM-assisted proposals.
+
+| Task name | Default cadence | Purpose |
+|---|---|---|
+| `worker.tick_near_builder` | 60 min | Phase 4.C — :NEAR edges from Detection → Base/LaunchPoint/Facility via incremental ST_DWithin. Reads per-kind radius from `repeat_detector_thresholds` (Phase 5.B) with env fallback. |
+| `worker.tick_repeat_detector` | 24 h | Phase 4.D — representative :REPEATED_AT edges per class+site cluster. Thresholds from `repeat_detector_thresholds` with env fallback. |
+| `worker.tick_entity_resimilarity` | 7 d | Phase 4.E + 5.J + 5.K — POSSIBLY_SAME_AS candidate edges. Embedding cosine branch (when both entities have `re_id_embedding`) + name-match heuristic fallback. Time + AOI scoped. |
+| `worker.tick_propose_entities` | 24 h | Phase 4.F + 5.I — `entity_candidates` rows from REPEATED_AT clusters. LLM-first (via [ai.py](../../backend/ai.py)), heuristic fallback. |
+| `worker.tick_aggregate_entity_embeddings` | 12 h | Phase 5.J — average `detection_tracks.embedding_anchor` per entity into `operational_entities.re_id_embedding` centroid. |
+
+`grep -nE "@celery_app.task" backend/worker_legacy.py` for the full live list (≈25 tasks total as of Phase 5).
 
 ## Key shared helpers (referenced from elsewhere)
 

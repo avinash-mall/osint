@@ -1,7 +1,7 @@
 # `backend/platform_schema.py` — Idempotent Migrations
 
 **Path:** [backend/platform_schema.py](../../backend/platform_schema.py)
-**Lines:** ~559
+**Lines:** ~650
 **Depends on:** [backend/database.py](../../backend/database.py), PostgreSQL advisory locks
 
 ## Purpose
@@ -20,7 +20,14 @@
 - [`acquire_schema_xact_lock`](../../backend/platform_schema.py#L25).
 - [`ensure_feed_tables`](../../backend/platform_schema.py#L31) — `feed_sources`, `feed_events`.
 - [`ensure_collection_tables`](../../backend/platform_schema.py#L68) — `collection_tasks`, `reports`, `timeline_events`, `observations`.
-- [`ensure_platform_tables`](../../backend/platform_schema.py#L92) — umbrella call; safe to repeat.
+- [`ensure_platform_tables`](../../backend/platform_schema.py#L92) — umbrella call; safe to repeat. Owns these tables (in addition to the per-feature blocks above):
+  - `detection_target_candidates` — Phase 1.B candidate-link rows.
+  - `aois`, `documents`, `transcripts`, `prompt_profiles` and the ontology cluster.
+  - `operational_entities` + CHECK on `kind` — Phase 4 operational entity rows (Vessel/Aircraft/Vehicle/Facility/Unit/Asset). Phase 5.J adds `re_id_embedding JSONB`, `re_id_dim INT`, `re_id_updated_at TIMESTAMPTZ` via `ALTER … IF NOT EXISTS` for the DINOv3 centroid.
+  - `entity_candidates` — Phase 4.F LLM/heuristic-proposed entities awaiting analyst review (mirrors `detection_target_candidates` shape).
+  - `near_builder_state` — Phase 4.C cursor table for `worker.tick_near_builder` (one row per `site_id` with `last_detection_id` + `last_run_at`).
+  - `repeat_detector_thresholds` — Phase 5.B per-kind admin-editable config (window_days, min_count, near_radius_m, `current` flag). Unique partial index on `(kind) WHERE current = TRUE`.
+  - `operational_entity_tracks` — Phase 5.J association table linking entities to detection_tracks for embedding aggregation.
 - [`auto_seed_ontology_if_empty`](../../backend/platform_schema.py#L537).
 
 ## Failure modes

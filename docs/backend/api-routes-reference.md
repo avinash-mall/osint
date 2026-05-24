@@ -16,13 +16,35 @@ Complete route table. Routers in [backend/routers/](../../backend/routers/) own 
 
 ## Graph & Tracks
 
+Link Graph redesign added the bulk of these — see [architecture/link-graph-redesign.md](../architecture/link-graph-redesign.md) for the phasing.
+
 | Method | Path | Source |
 |---|---|---|
-| `GET` | `/api/graph` | [graph-router.md](../backend-routers/graph-router.md) |
+| `GET` | `/api/graph` | [graph-router.md](../backend-routers/graph-router.md) — back-compat slice |
 | `POST` | `/api/graph/neighborhood` | [graph-router.md](../backend-routers/graph-router.md) |
 | `GET` | `/api/geotime/features` | [graph-router.md](../backend-routers/graph-router.md) |
+| `GET` | `/api/graph/investigation` | [graph-router.md](../backend-routers/graph-router.md) — bounded operational + 1-hop |
+| `POST` | `/api/graph/path` | [graph-router.md](../backend-routers/graph-router.md) — allShortestPaths |
+| `GET` | `/api/graph/site-composition/{base_id}` | [graph-router.md](../backend-routers/graph-router.md) — workflow 3 rollup w/ FMV + Reports |
+| `GET` | `/api/graph/evidence/{node_id}` | [graph-router.md](../backend-routers/graph-router.md) — workflow 5 chain |
+| `GET` | `/api/graph/ontology` | [graph-router.md](../backend-routers/graph-router.md) — ontology mode + co-occurrence |
+| `POST` | `/api/graph/contradict` | [graph-router.md](../backend-routers/graph-router.md) — dissent edge |
+| `POST` | `/api/graph/candidate-edges/{candidate_id}/promote` | [graph-router.md](../backend-routers/graph-router.md) |
+| `GET` `POST` `PATCH` `DELETE` | `/api/aois[/{id}]` | [aois-router.md](../backend-routers/aois-router.md) — projects Base/LaunchPoint/Facility |
 | `GET` | `/api/tracks` · `/api/tracks/detections` | [backend/main.py](../../backend/main.py) |
 | `POST` | `/api/tracks/detections/reprocess` · `pin` · `DELETE pin` | [backend/main.py](../../backend/main.py) |
+
+## Operational entities · SAME_AS · Admin thresholds
+
+| Method | Path | Source |
+|---|---|---|
+| `GET` `POST` `PATCH` `DELETE` | `/api/operational-entities[/{id}]` | [operational-entities-router.md](../backend-routers/operational-entities-router.md) |
+| `POST` | `/api/operational-entities/{id}/attach-observation` · `operates-from/{base_id}` · `part-of/{unit_id}` · `same-as/{other_id}` | [operational-entities-router.md](../backend-routers/operational-entities-router.md) |
+| `POST` `GET` `DELETE` | `/api/operational-entities/{id}/attach-track/{track_id}` · `/tracks` · `/tracks/{track_id}` | [operational-entities-router.md](../backend-routers/operational-entities-router.md) — Phase 5.J |
+| `POST` | `/api/operational-entities/{a_id}/merge-into/{b_id}` | [operational-entities-router.md](../backend-routers/operational-entities-router.md) — Phase 5.H |
+| `GET` `POST` | `/api/operational-entities/pending-same-as[/reject]` | [operational-entities-router.md](../backend-routers/operational-entities-router.md) — Phase 5.F |
+| `GET` `POST` | `/api/operational-entity-candidates[/{id}/approve|/reject]` | [operational-entities-router.md](../backend-routers/operational-entities-router.md) — Phase 4.F |
+| `GET` `POST` `PUT` `DELETE` | `/api/admin/repeat-thresholds[/{id}/activate]` | [admin-thresholds-router.md](../backend-routers/admin-thresholds-router.md) — Phase 5.B |
 
 ## Imagery, FMV & Detections
 
