@@ -14,7 +14,7 @@ Three-mode force-directed view of the Neo4j entity graph for defence analysts. I
 |---|---|---|
 | **Investigation** (default) | Phase 1 | [`GET /api/graph/investigation`](../backend-routers/graph-router.md), [`POST /api/graph/path`](../backend-routers/graph-router.md), [`GET /api/graph/site-composition/{base_id}`](../backend-routers/graph-router.md) |
 | **Evidence** | Phase 2 | `EvidenceColumnDAG` ([frontend/src/components/graph/EvidenceColumnDAG.tsx](../../frontend/src/components/graph/EvidenceColumnDAG.tsx)) fed by `/api/graph/evidence/{node_id}`. Right-click "Evidence chain" on any node in Investigation triggers it. Contradict button on Detection/OntologyCandidate leaves POSTs `/api/graph/contradict`. |
-| **Ontology** | Phase 3 stub | placeholder card; reuses [OntologyAdmin's](ontology-admin-ui.md) unknown-label form as a popover when shipped |
+| **Ontology** | Phase 3 | `OntologyOrbit` ([frontend/src/components/graph/OntologyOrbit.tsx](../../frontend/src/components/graph/OntologyOrbit.tsx)) fed by `/api/graph/ontology`. Renders the branch/object tree + UnknownLabel orbits + their LABEL_OF supports. Clicking an UnknownLabel opens an inline triage popover (assign-to-existing or create-new), calling the same `assignUnknownLabel` API used by [OntologyAdmin](ontology-admin-ui.md). The OntologyAdmin list view stays as the bulk-edit surface. |
 
 Sub-tabs share selection state (current node, time range, class lens) — see [decisions/why-three-graph-modes.md](../decisions/why-three-graph-modes.md).
 

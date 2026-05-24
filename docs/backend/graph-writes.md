@@ -32,6 +32,11 @@ Phase 2 projector helpers:
 - `project_observation_batch` — single UNWIND-MERGE batch creating `:Observation` nodes and OPTIONAL-MATCH-then-FOREACH-MERGE `OBSERVED_AT` edges only when an operational entity resolves.
 - `merge_contradicted_by` — analyst-driven dissent edge: `(actor)-[:CONTRADICTED_BY {reason, analyst}]->(:Detection)`. Used by `/api/graph/contradict`.
 
+Phase 3 projector helpers (ontology):
+- `project_ontology_branches_and_objects` — UNWIND-MERGE the full taxonomy (branches + objects + HAS_CHILD + HAS_OBJECT). Three Cypher statements per call, single transaction.
+- `project_unknown_label` — MERGE `:UnknownLabel` + optional `SUGGESTED_BRANCH` and `LABEL_OF` orbit. Detections that aren't in Neo4j are silently skipped (orbit shrinks naturally).
+- `project_label_of_for_detection_class` — batch MERGE `(d:Detection)-[:LABEL_OF]->(o:OntologyObject)` for one normalized class.
+
 ## Inputs / Outputs
 
 All helpers take keyword args (no positional) — the candidate creation flow has eight properties to thread through, positional args would be a footgun.
