@@ -10,6 +10,7 @@ backend/api-routes-reference.md|backend,router|route table by tag: auth/graph/de
 backend/auth-and-sessions.md|backend,auth|itsdangerous signed cookies, env-bootstrap admin, optional LDAP via auth_config row
 backend/database-connections.md|backend|Neo4j + PostGIS dual stack: pool, advisory locks, docker DNS fallback
 backend/graph-schema.md|backend|Neo4j uniqueness constraints + indexes; idempotent bootstrap from FastAPI lifespan
+backend/graph-writes.md|backend|shared Neo4j MERGE/DELETE helpers: candidate edge persistence, promote, backfill
 backend/ontology-system.md|backend,ontology|DB-canonical branches/objects/prompts, normalize() with read-through cache
 backend/tracker-satellite.md|backend,tracker|satellite-pass Hungarian tracker, V_MAX state gates, 14-day age cap, 3-miss timeout
 backend/fmv-track-consolidation.md|backend,fmv,tracker|post-inference fmv_detections consolidation: cross-window/prompt stitch + class vote
@@ -132,6 +133,7 @@ decisions/temporal-swipe-comparator.md|decision,frontend|side-by-side imagery co
 decisions/why-basemap-overlay-composition.md|decision,frontend|imagery is bottom ground-truth; BASE/TERRAIN are reference overlays on top; opacity fades overlay
 decisions/why-basemap-z14-cap.md|decision,frontend,deployment|offline bake to z=14 + overlay unmounts above; imagery is source of truth past z=14
 decisions/why-bbox-toggle-removed.md|decision,frontend|BBOX toggle removed; detection boxes always render, GEOM toolbar defaults to OBB
+decisions/why-candidate-edges-persisted.md|decision,backend|persist CANDIDATE_DETECTED_AS in Neo4j on candidate creation; makes pending edges Cypher-traversable
 decisions/why-category-presence-gate.md|decision,sam3|SegEarth-OV-3-style 0.40 filter suppresses absent concepts
 decisions/why-deconflicted-detection-prompts.md|decision,ontology|one object per unique prompt; label IS the prompt; collapses overloaded false-positive prompts
 decisions/why-detection-boxes-use-polygon-map.md|decision,frontend|box layer is per-feature <Polygon> map; <GeoJSON> canvas layer silently failed to paint

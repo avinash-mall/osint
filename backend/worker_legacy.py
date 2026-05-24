@@ -3316,8 +3316,24 @@ def generate_candidate_links_for_pass(
                     item["reason"],
                     json.dumps(evidence, default=str),
                 ))
-                if cursor.fetchone():
+                row = cursor.fetchone()
+                if row:
                     created += 1
+                    # Persist the Neo4j edge so Cypher traversals can see
+                    # pending candidates without round-tripping to PostGIS.
+                    # Imported lazily to keep the worker bootstrap cheap.
+                    from graph_writes import merge_candidate_detected_as
+                    merge_candidate_detected_as(
+                        detection_id=det["id"],
+                        detection_class=det.get("class"),
+                        detection_confidence=det.get("confidence"),
+                        detection_lat=det.get("lat"),
+                        detection_lon=det.get("lon"),
+                        target_id=target_id,
+                        candidate_id=int(row["id"] if isinstance(row, dict) else row[0]),
+                        score=item["score"],
+                        reason=item["reason"],
+                    )
     return created
 
 

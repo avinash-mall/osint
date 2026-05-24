@@ -39,6 +39,10 @@ from imagery_metadata import extract_raster_metadata
 from video_metadata import TelemetryMissingError, extract_telemetry
 from detection_policy import active_detection_policy, detection_decision, parent_class_for_label
 from candidate_linking import rank_candidate_links
+from graph_writes import (
+    delete_candidate_detected_as,
+    merge_candidate_detected_as,
+)
 from threat_assessment import (
     assess_detection_threat,
     category_for_class,
@@ -1914,7 +1918,23 @@ def generate_candidate_links_for_detection(
                 detection_id, item["target_id"], item["target_name"],
                 item["score"], item["reason"], json.dumps(evidence, default=str),
             ))
-            candidates.append(dict(cursor.fetchone()))
+            row = dict(cursor.fetchone())
+            candidates.append(row)
+            # Persist the Neo4j edge so Cypher traversals can see pending
+            # candidates without round-tripping to PostGIS. Best-effort:
+            # failures are logged inside, never raised — PostGIS row is
+            # the source of truth.
+            merge_candidate_detected_as(
+                detection_id=detection_id,
+                detection_class=detection.get("class"),
+                detection_confidence=detection.get("confidence"),
+                detection_lat=detection.get("lat"),
+                detection_lon=detection.get("lon"),
+                target_id=row["target_id"],
+                candidate_id=row["id"],
+                score=row["score"],
+                reason=row["reason"],
+            )
     publish_event("detections", {"type": "candidate_links_updated", "detection_id": detection_id, "count": len(candidates)})
     return candidates
 
@@ -1993,6 +2013,13 @@ def approve_detection_target_candidate(candidate_id: int, req: CandidateLinkDeci
         if not result.single():
             raise HTTPException(status_code=409, detail="Approved candidate target could not be found in graph")
 
+    # DETECTED_AS is now authoritative for this (target, detection) pair;
+    # remove the pending CANDIDATE_DETECTED_AS so Cypher traversals don't
+    # double-count the relationship.
+    delete_candidate_detected_as(
+        detection_id=candidate["detection_id"],
+        target_id=candidate["target_id"],
+    )
     publish_event("detections", {"type": "candidate_link_approved", "candidate": updated})
     return {"success": True, "candidate": updated}
 
@@ -2011,6 +2038,10 @@ def reject_detection_target_candidate(candidate_id: int, req: CandidateLinkDecis
         if not row:
             raise HTTPException(status_code=404, detail="Candidate link not found")
         candidate = dict(row)
+    delete_candidate_detected_as(
+        detection_id=candidate["detection_id"],
+        target_id=candidate["target_id"],
+    )
     publish_event("detections", {"type": "candidate_link_rejected", "candidate": candidate})
     return {"success": True, "candidate": candidate}
 
