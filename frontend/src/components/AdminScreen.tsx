@@ -29,11 +29,13 @@ import PromptProfilesView from './admin/PromptProfilesView';
 import TaxonomyVersionView from './admin/TaxonomyVersionView';
 import ProcessingView from './admin/ProcessingView';
 import ModelsView from './admin/ModelsView';
+import OperationalEntitiesAdmin from './admin/OperationalEntitiesAdmin';
 import ModelLoadingView from './admin/ModelLoadingView';
 import AlertsView from './admin/AlertsView';
 
 type AdminTab =
   | 'ontology'
+  | 'entities'
   | 'processing'
   | 'models'
   | 'modelload'
@@ -59,6 +61,7 @@ type NavItemDef = {
 
 const NAV: NavItemDef[] = [
   { key: 'ontology',   label: 'Ontology',         Icon: GitBranch },
+  { key: 'entities',   label: 'Operational entities', Icon: Box },
   { key: 'processing', label: 'Processing',       Icon: Activity, badgeKey: 'processing' },
   { key: 'models',     label: 'AI models',        Icon: Box,      badgeKey: 'models' },
   { key: 'modelload',  label: 'Model loading',    Icon: Cpu },
@@ -176,6 +179,7 @@ export default function AdminScreen({
             onOpenDetectionInFmv={onOpenDetectionInFmv}
           />
         )}
+        {tab === 'entities'   && <OperationalEntitiesAdmin />}
         {tab === 'processing' && (
           <ProcessingView
             onCount={setProcessingCount}
