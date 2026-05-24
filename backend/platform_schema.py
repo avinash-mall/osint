@@ -389,6 +389,58 @@ def ensure_platform_tables() -> None:
                     UNIQUE (detection_id, target_id)
                 )
             """)
+            # Phase 4: operational entities (Vessel/Aircraft/Vehicle/Facility/Unit).
+            # PostGIS row is canonical; Neo4j carries a mirror node keyed by `id`.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS operational_entities (
+                    id VARCHAR(255) PRIMARY KEY,
+                    kind VARCHAR(40) NOT NULL,
+                    name VARCHAR(255) NOT NULL,
+                    callsign VARCHAR(120),
+                    hull VARCHAR(120),
+                    entity_class VARCHAR(120),
+                    unit_id VARCHAR(255),
+                    operates_from_base_id VARCHAR(255),
+                    metadata JSONB DEFAULT '{}',
+                    created_by VARCHAR(100),
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    CHECK (kind IN ('vessel', 'aircraft', 'vehicle', 'facility', 'unit', 'asset'))
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_operational_entities_kind ON operational_entities(kind)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_operational_entities_unit_id ON operational_entities(unit_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_operational_entities_operates_from ON operational_entities(operates_from_base_id)")
+            # Phase 4: LLM/heuristic-proposed operational entities awaiting review.
+            # Mirrors the detection_target_candidates pattern; analyst approves
+            # via /api/operational-entity-candidates/{id}/approve.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS entity_candidates (
+                    id SERIAL PRIMARY KEY,
+                    entity_kind VARCHAR(40) NOT NULL,
+                    proposed_name VARCHAR(255) NOT NULL,
+                    seed_detection_ids INTEGER[] DEFAULT '{}',
+                    score REAL DEFAULT 0,
+                    reason TEXT,
+                    status VARCHAR(50) DEFAULT 'pending',
+                    proposed_metadata JSONB DEFAULT '{}',
+                    reviewed_by VARCHAR(100),
+                    reviewed_at TIMESTAMP WITH TIME ZONE,
+                    approved_entity_id VARCHAR(255),
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_entity_candidates_kind_status ON entity_candidates(entity_kind, status)")
+            # Phase 4: tracks the last incremental `worker.tick_near_builder`
+            # cursor per static-feature id, so we only re-evaluate new Detections.
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS near_builder_state (
+                    site_id VARCHAR(255) PRIMARY KEY,
+                    last_detection_id INTEGER DEFAULT 0,
+                    last_run_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS ontology_updates (
                     id SERIAL PRIMARY KEY,
