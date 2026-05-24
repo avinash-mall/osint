@@ -28,6 +28,7 @@ Spatial joins are PostGIS; graph traversals are Neo4j. The Link Graph workspace 
 
 ## Cross-references
 
+- [architecture/link-graph-redesign.md](../architecture/link-graph-redesign.md) — approved 4-phase redesign turning this workspace into a defence-analyst reasoning surface (Investigation / Evidence / Ontology modes).
 - [backend-routers/graph-router.md](../backend-routers/graph-router.md)
 - [decisions/why-postgis-and-neo4j-coexist.md](../decisions/why-postgis-and-neo4j-coexist.md)
 - [decisions/ux-audit-001.md](../decisions/ux-audit-001.md)

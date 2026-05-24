@@ -4,6 +4,7 @@ architecture/data-flow-imagery.md|arch,imagery|COG translate -> chip -> /detect 
 architecture/data-flow-fmv.md|arch,fmv|HLS transcode -> KLV/SRT telemetry -> /detect_video NDJSON -> fmv_detections
 architecture/component-boundaries.md|arch|process/file boundaries: backend, worker, inference-sam3, frontend
 architecture/service-topology.md|arch,deployment|docker-compose service graph, internal DNS, exposed ports
+architecture/link-graph-redesign.md|arch|4-phase Link Graph redesign as analyst reasoning surface: Investigation/Evidence/Ontology modes, projectors, NEAR/SAME_AS
 backend/main-app-entrypoint.md|backend,fastapi|main.py mounts routers, lifespan migrations, session middleware, FMV prompt fallback
 backend/api-routes-reference.md|backend,router|route table by tag: auth/graph/detections/fmv/ontology/analytics/ai
 backend/auth-and-sessions.md|backend,auth|itsdangerous signed cookies, env-bootstrap admin, optional LDAP via auth_config row

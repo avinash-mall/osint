@@ -24,6 +24,7 @@ Read-only Neo4j entity graph for the Link Graph workspace + geotime feature quer
 
 ## Cross-references
 
+- [architecture/link-graph-redesign.md](../architecture/link-graph-redesign.md) — approved redesign that adds `/api/graph/investigation`, `/path`, `/site-composition/{base_id}`, `/evidence/{node_id}`, `/ontology`, plus persisted `CANDIDATE_DETECTED_AS` edges (replaces the in-memory synthesis at [graph.py#L73](../../backend/routers/graph.py#L73)).
 - [backend/database-connections.md](../backend/database-connections.md)
 - [decisions/why-postgis-and-neo4j-coexist.md](../decisions/why-postgis-and-neo4j-coexist.md)
 - [frontend/workspace-link-graph.md](../frontend/workspace-link-graph.md)
