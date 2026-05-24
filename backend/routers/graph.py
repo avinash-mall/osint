@@ -400,8 +400,53 @@ def get_site_composition(
         props = dict(record["props"]) if record["props"] else {}
         aoi_postgis_id = props.get("aoi_postgis_id")
 
+    # Phase 4.C: prefer precomputed :NEAR edges when worker.tick_near_builder
+    # has materialised any for this site; fall back to live PostGIS ST_DWithin
+    # otherwise so the endpoint works on day one (before the beat task runs).
     recent_detections: list[dict[str, Any]] = []
-    if aoi_postgis_id is not None:
+    source = "live_st_dwithin"
+    used_near = False
+    try:
+        with db.get_session() as near_session:
+            near_record = near_session.run(
+                """
+                MATCH (s)<-[r:NEAR]-(d:Detection)
+                WHERE elementId(s) = $base_id
+                RETURN count(r) AS edges
+                """,
+                {"base_id": base_id},
+            ).single()
+            near_edge_count = int(near_record["edges"]) if near_record else 0
+    except Exception:
+        near_edge_count = 0
+
+    if near_edge_count > 0:
+        used_near = True
+        source = "neo4j_near"
+        # Group by class from the NEAR-traversal-attached detections.
+        try:
+            with db.get_session() as near_session:
+                rows = near_session.run(
+                    """
+                    MATCH (s)<-[:NEAR]-(d:Detection)
+                    WHERE elementId(s) = $base_id
+                      AND d.created_at IS NOT NULL
+                      AND d.created_at >= datetime() - duration({days: $recent_days})
+                    RETURN d.class AS class, count(d) AS count, max(d.created_at) AS last_seen
+                    ORDER BY count DESC
+                    """,
+                    {"base_id": base_id, "recent_days": recent_days},
+                )
+                for r in rows:
+                    recent_detections.append({
+                        "class": r["class"],
+                        "count": int(r["count"]),
+                        "last_seen": str(r["last_seen"]) if r["last_seen"] else None,
+                    })
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("site-composition: NEAR traversal failed for %s: %s", base_id, exc)
+
+    if not used_near and aoi_postgis_id is not None:
         try:
             with postgis_db.get_cursor() as cursor:
                 cursor.execute(
@@ -455,12 +500,13 @@ def get_site_composition(
         "radius_m": radius_m,
         "recent_days": recent_days,
         "recent_detections": recent_detections,
+        "recent_detections_source": source,
         "vessels": vessels,
         "vehicles": vehicles,
         "aircraft": aircraft,
         "other_assets": other_assets,
-        "fmv_clips": [],  # Phase 2 projector populates.
-        "reports": [],    # Phase 2 projector populates.
+        "fmv_clips": [],
+        "reports": [],
     }
 
 

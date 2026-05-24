@@ -251,6 +251,11 @@ celery_app.conf.beat_schedule = {
         "task": "worker.tick_feed_poll",
         "schedule": float(env_int("FEED_POLL_INTERVAL_S", 60)),
     },
+    # Phase 4.C: build :NEAR edges from Detections to Base/LaunchPoint/Facility.
+    "tick-near-builder": {
+        "task": "worker.tick_near_builder",
+        "schedule": float(env_int("NEAR_BUILDER_INTERVAL_S", 60 * 60)),
+    },
 }
 celery_app.conf.timezone = "UTC"
 
@@ -3240,6 +3245,118 @@ def consolidate_fmv(clip_id: int) -> dict:
     except Exception:
         logger.exception("failed to queue worker.project_fmv_to_graph for clip %s", clip_id)
     return result
+
+
+_NEAR_RADIUS_M = {
+    "base": 5000.0,
+    "launchpoint": 2000.0,
+    "launch_point": 2000.0,
+    "facility": 1000.0,
+}
+
+
+@celery_app.task(name="worker.tick_near_builder", queue="default")
+def tick_near_builder() -> dict:
+    """Phase 4 beat task: MERGE ``:NEAR`` edges from Detections to Base/
+    LaunchPoint/Facility sites.
+
+    For each AOI tagged with an ``aoi_kind``, find Detections inserted since
+    the last successful run for that site (cursor in ``near_builder_state``)
+    whose centroid falls within the per-class radius, then MERGE the NEAR
+    edge with ``distance_m``. Incremental — re-running is cheap.
+    """
+    from graph_writes import project_near_edges_batch
+
+    total_edges = 0
+    sites_processed = 0
+    sites_skipped = 0
+    try:
+        with postgis_db.get_cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, metadata FROM aois
+                WHERE metadata ? 'aoi_kind'
+                  AND metadata->>'aoi_kind' IN ('base', 'launchpoint', 'launch_point', 'facility')
+                """
+            )
+            sites = [dict(r) for r in cursor.fetchall()]
+    except Exception as exc:
+        logger.exception("tick_near_builder: AOI fetch failed")
+        return {"error": "aoi_fetch_failed", "detail": str(exc)}
+
+    for site in sites:
+        aoi_id = int(site["id"])
+        meta = site.get("metadata") or {}
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except json.JSONDecodeError:
+                meta = {}
+        kind = (meta.get("aoi_kind") or "").lower()
+        radius_m = _NEAR_RADIUS_M.get(kind)
+        if not radius_m:
+            sites_skipped += 1
+            continue
+        site_id = f"aoi-{aoi_id}"
+
+        try:
+            with postgis_db.get_cursor(commit=True) as cursor:
+                cursor.execute(
+                    "INSERT INTO near_builder_state (site_id, last_detection_id) VALUES (%s, 0) ON CONFLICT (site_id) DO NOTHING",
+                    (site_id,),
+                )
+                cursor.execute("SELECT last_detection_id FROM near_builder_state WHERE site_id = %s", (site_id,))
+                last_id_row = cursor.fetchone()
+                last_id = int(last_id_row["last_detection_id"]) if last_id_row else 0
+                cursor.execute(
+                    """
+                    WITH aoi AS (SELECT ST_Centroid(geom) AS centroid FROM aois WHERE id = %s)
+                    SELECT d.id AS detection_postgis_id,
+                           ST_Distance(d.centroid::geography, aoi.centroid::geography)::float AS distance_m
+                    FROM detections d, aoi
+                    WHERE d.deleted_at IS NULL
+                      AND d.id > %s
+                      AND ST_DWithin(d.centroid::geography, aoi.centroid::geography, %s)
+                    ORDER BY d.id
+                    LIMIT 5000
+                    """,
+                    (aoi_id, last_id, radius_m),
+                )
+                pairs = [dict(r) for r in cursor.fetchall()]
+        except Exception:
+            logger.exception("tick_near_builder: ST_DWithin failed for aoi=%s", aoi_id)
+            sites_skipped += 1
+            continue
+
+        if pairs:
+            rows = [
+                {"detection_postgis_id": p["detection_postgis_id"], "site_id": site_id, "distance_m": p["distance_m"]}
+                for p in pairs
+            ]
+            total_edges += project_near_edges_batch(rows)
+            new_last = max(p["detection_postgis_id"] for p in pairs)
+            try:
+                with postgis_db.get_cursor(commit=True) as cursor:
+                    cursor.execute(
+                        "UPDATE near_builder_state SET last_detection_id = %s, last_run_at = NOW() WHERE site_id = %s",
+                        (new_last, site_id),
+                    )
+            except Exception:
+                logger.warning("tick_near_builder: cursor update failed for %s", site_id)
+        else:
+            # Touch last_run_at so the cursor table reflects activity.
+            try:
+                with postgis_db.get_cursor(commit=True) as cursor:
+                    cursor.execute("UPDATE near_builder_state SET last_run_at = NOW() WHERE site_id = %s", (site_id,))
+            except Exception:
+                pass
+        sites_processed += 1
+
+    return {
+        "sites_processed": sites_processed,
+        "sites_skipped": sites_skipped,
+        "near_edges_written": total_edges,
+    }
 
 
 @celery_app.task(name="worker.project_label_of_edges", queue="default")

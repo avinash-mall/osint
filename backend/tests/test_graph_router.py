@@ -136,7 +136,13 @@ def test_site_composition_returns_payload_for_valid_base(monkeypatch):
         "props": {"aoi_postgis_id": 7, "name": "Test Base"},
     }
     observed_records: list = []  # no OBSERVED_AT links yet (Phase 1)
-    calls = iter([_Result([base_record]), _Result(observed_records)])
+    # Phase 4.C added a NEAR-count query + (when zero) skips the NEAR-group
+    # query, then runs OBSERVED query. So: base, near_count, observed.
+    calls = iter([
+        _Result([base_record]),
+        _Result([{"edges": 0}]),  # near_count = 0 → falls back to PostGIS
+        _Result(observed_records),
+    ])
 
     def neo4j_side_effect(*_a, **_kw):
         return next(calls)
@@ -156,10 +162,35 @@ def test_site_composition_returns_payload_for_valid_base(monkeypatch):
     assert body["recent_detections"] == [
         {"class": "container_ship", "count": 12, "last_seen": "2026-05-01T00:00:00Z"}
     ]
-    # Phase 1 placeholders are present and empty.
+    assert body["recent_detections_source"] == "live_st_dwithin"
     assert body["vessels"] == []
     assert body["fmv_clips"] == []
     assert body["reports"] == []
+
+
+def test_site_composition_prefers_near_edges_when_present(monkeypatch):
+    base_record = {
+        "b": MagicMock(),
+        "labels": ["Base"],
+        "props": {"aoi_postgis_id": 7, "name": "Test Base"},
+    }
+    near_grouped = [
+        {"class": "tank", "count": 5, "last_seen": "2026-05-15T00:00:00Z"},
+    ]
+    calls = iter([
+        _Result([base_record]),
+        _Result([{"edges": 17}]),       # near_count > 0
+        _Result(near_grouped),           # NEAR group-by results
+        _Result([]),                     # observed
+    ])
+    def neo4j_side_effect(*_a, **_kw):
+        return next(calls)
+    client = _client(monkeypatch, neo4j_runs=neo4j_side_effect)
+    resp = client.get("/api/graph/site-composition/elem-9")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["recent_detections_source"] == "neo4j_near"
+    assert body["recent_detections"][0]["class"] == "tank"
 
 
 # ---------------------------------------------------------------------------

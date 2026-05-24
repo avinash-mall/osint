@@ -37,6 +37,7 @@ from worker_legacy import (  # noqa: F401  — explicit names for IDE completion
     project_observations_to_graph,
     project_ontology_to_graph,
     project_unknown_labels,
+    tick_near_builder,
     run_prithvi_multitemporal,
     transcribe_audio,
     train_model,

@@ -913,6 +913,39 @@ def merge_possibly_same_as_batch(rows: list[dict[str, Any]]) -> int:
         return 0
 
 
+def project_near_edges_batch(rows: list[dict[str, Any]]) -> int:
+    """MERGE ``(d:Detection)-[:NEAR {distance_m, computed_at}]->(s)`` edges.
+
+    Each row carries ``detection_postgis_id, site_id, distance_m``. Both ends
+    must already exist (Detection projected by the satellite worker, site
+    projected by [aois router](../docs/backend-routers/aois-router.md)).
+    Returns the number of edges written.
+    """
+    if not rows:
+        return 0
+    try:
+        with db.get_session() as session:
+            result = session.run(
+                """
+                UNWIND $rows AS row
+                MATCH (d:Detection {postgis_id: row.detection_postgis_id})
+                MATCH (s) WHERE s.id = row.site_id
+                  AND any(l IN labels(s) WHERE l IN ['Base', 'LaunchPoint', 'Facility'])
+                MERGE (d)-[r:NEAR]->(s)
+                  ON CREATE SET r.created_at = datetime()
+                SET r.distance_m = row.distance_m,
+                    r.computed_at = datetime()
+                RETURN count(r) AS edges
+                """,
+                {"rows": rows},
+            )
+            record = result.single()
+            return int(record["edges"]) if record else 0
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("graph_writes: project_near_edges_batch(%d rows) failed: %s", len(rows), exc)
+        return 0
+
+
 def promote_candidate_to_detected_as(
     *,
     candidate_id: int,
