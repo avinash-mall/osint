@@ -13,7 +13,7 @@ Three-mode force-directed view of the Neo4j entity graph for defence analysts. I
 | Mode | Status | Backed by |
 |---|---|---|
 | **Investigation** (default) | Phase 1 | [`GET /api/graph/investigation`](../backend-routers/graph-router.md), [`POST /api/graph/path`](../backend-routers/graph-router.md), [`GET /api/graph/site-composition/{base_id}`](../backend-routers/graph-router.md) |
-| **Evidence** | Phase 2 stub | placeholder card; right-click "Evidence chain" from Investigation will land here |
+| **Evidence** | Phase 2 | `EvidenceColumnDAG` ([frontend/src/components/graph/EvidenceColumnDAG.tsx](../../frontend/src/components/graph/EvidenceColumnDAG.tsx)) fed by `/api/graph/evidence/{node_id}`. Right-click "Evidence chain" on any node in Investigation triggers it. Contradict button on Detection/OntologyCandidate leaves POSTs `/api/graph/contradict`. |
 | **Ontology** | Phase 3 stub | placeholder card; reuses [OntologyAdmin's](ontology-admin-ui.md) unknown-label form as a popover when shipped |
 
 Sub-tabs share selection state (current node, time range, class lens) — see [decisions/why-three-graph-modes.md](../decisions/why-three-graph-modes.md).
@@ -31,7 +31,8 @@ Sub-tabs share selection state (current node, time range, class lens) — see [d
 - **Search Around** — local 1-hop filter using already-loaded data.
 - **Expand Node** — server-side 2-hop fetch via `/api/graph/neighborhood`.
 - **Find path to…** — picks a second node from either the canvas or the entity list, calls `/api/graph/path` (max depth 4), renders all shortest paths in the detail panel with predicate trail, and swaps the visible graph for the union of returned paths.
-- **Roll up to site** (only on Base/LaunchPoint/Facility) — calls `/api/graph/site-composition/{id}` and renders recent-detections by class + per-asset-kind buckets in the detail panel. FMV clips + reports panels are Phase 2 placeholders.
+- **Roll up to site** (only on Base/LaunchPoint/Facility) — calls `/api/graph/site-composition/{id}` and renders recent-detections by class + per-asset-kind buckets in the detail panel.
+- **Evidence chain** — switches to Evidence mode focused on this node; fetches `/api/graph/evidence/{id}` and renders the column-DAG.
 - **Export Selection** — JSON dump of the selected node or current view.
 
 ## Bottom strip

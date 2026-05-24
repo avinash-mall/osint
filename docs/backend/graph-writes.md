@@ -1,7 +1,7 @@
 # Graph Write Helpers
 
 **Path:** [backend/graph_writes.py](../../backend/graph_writes.py)
-**Lines:** ~160
+**Lines:** ~500
 **Depends on:** [backend/database.py](../../backend/database.py) (`db`)
 
 ## Purpose
@@ -16,9 +16,21 @@ Pure-Python scoring stays in [candidate_linking.py](../../backend/candidate_link
 
 ## Key symbols
 
+Candidate edges (Phase 1.B):
 - [`merge_candidate_detected_as`](../../backend/graph_writes.py#L24-L94) — MERGE Detection (lazy) + MERGE `(t)-[rel:CANDIDATE_DETECTED_AS]->(d)` with `candidate_id, score, reason, status='pending'`. Returns `False` if the Target isn't in Neo4j.
 - [`delete_candidate_detected_as`](../../backend/graph_writes.py#L97-L121) — removes the edge for one `(target, detection)` pair. Used by approve/reject endpoints.
-- [`promote_candidate_to_detected_as`](../../backend/graph_writes.py#L124-L162) — atomic transition: locates the pending edge by `candidate_id`, MERGE-creates `:DETECTED_AS`, deletes the candidate edge. Used by `/api/graph/candidate-edges/{id}/promote` in Phase 1.C.
+- [`promote_candidate_to_detected_as`](../../backend/graph_writes.py#L124-L162) — atomic transition: locates the pending edge by `candidate_id`, MERGE-creates `:DETECTED_AS`, deletes the candidate edge. Used by `/api/graph/candidate-edges/{id}/promote`.
+
+AOI projection (Phase 1.D):
+- `merge_site_from_aoi` — MERGE `:Base` / `:LaunchPoint` / `:Facility` from an AOI tagged with `metadata.aoi_kind`. Identity is `id = f"aoi-{postgis_id}"`.
+- `delete_site_for_aoi` — removes the mirror when the AOI is deleted or `aoi_kind` is cleared.
+
+Phase 2 projector helpers:
+- `project_fmv_clip_and_tracks` — MERGE `:FMVClip` + per-track `:FMVDetection` nodes + `CONTAINS_DETECTION` edges from a single UNWIND batch.
+- `project_document_with_mentions` — MERGE `:Document` stub + (when a label index is supplied) `:MENTIONS` edges to operational entities resolved by case-insensitive substring match.
+- `load_entity_label_index` — builds the lowercase-name index used by the document projector. Called once per projector invocation; results are not cached (analyst can edit entity names between runs).
+- `project_observation_batch` — single UNWIND-MERGE batch creating `:Observation` nodes and OPTIONAL-MATCH-then-FOREACH-MERGE `OBSERVED_AT` edges only when an operational entity resolves.
+- `merge_contradicted_by` — analyst-driven dissent edge: `(actor)-[:CONTRADICTED_BY {reason, analyst}]->(:Detection)`. Used by `/api/graph/contradict`.
 
 ## Inputs / Outputs
 

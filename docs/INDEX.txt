@@ -137,6 +137,7 @@ decisions/why-bbox-toggle-removed.md|decision,frontend|BBOX toggle removed; dete
 decisions/why-candidate-edges-persisted.md|decision,backend|persist CANDIDATE_DETECTED_AS in Neo4j on candidate creation; makes pending edges Cypher-traversable
 decisions/why-category-presence-gate.md|decision,sam3|SegEarth-OV-3-style 0.40 filter suppresses absent concepts
 decisions/why-three-graph-modes.md|decision,frontend|Link Graph splits into Investigation/Evidence/Ontology sub-tabs; one workspace, shared state
+decisions/why-postgis-to-neo4j-projectors.md|decision,backend|one-way PostGIS→Neo4j mirroring of identity + headline props; backfill for catchup
 decisions/why-deconflicted-detection-prompts.md|decision,ontology|one object per unique prompt; label IS the prompt; collapses overloaded false-positive prompts
 decisions/why-detection-boxes-use-polygon-map.md|decision,frontend|box layer is per-feature <Polygon> map; <GeoJSON> canvas layer silently failed to paint
 decisions/why-dinov3-sat-only.md|decision|DINOv3 ViT-L SAT-493M keeps re-ID quality without DINOv3_LVD NaNs
@@ -184,3 +185,4 @@ conventions/adding-a-new-ontology-object.md|conventions,ontology|seed JSON path,
 conventions/adding-a-new-celery-task.md|conventions,celery|@celery_app.task(name=) preserved name; legacy vs package placement
 conventions/adding-a-new-router.md|conventions,backend|mount in main.py, /api prefix, session middleware coverage
 conventions/adding-a-new-admin-tab.md|conventions,frontend|AdminScreen tab registry + admin/*View.tsx pattern
+conventions/adding-a-new-graph-projector.md|conventions,backend|recipe: identity-only MERGE helper + Celery task wrapper + on-write trigger + backfill
