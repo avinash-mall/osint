@@ -25,6 +25,7 @@ import {
   X,
 } from 'lucide-react';
 import { TimeScrubber, type TimeRange } from './graph/TimeScrubber';
+import { EvidenceColumnDAG, type EvidencePayload } from './graph/EvidenceColumnDAG';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -218,6 +219,8 @@ export default function GraphExplorer() {
   const [pathPicker, setPathPicker] = useState<{ from: any } | null>(null);
   const [pathResult, setPathResult] = useState<any | null>(null);
   const [siteRollup, setSiteRollup] = useState<any | null>(null);
+  const [evidenceFocusId, setEvidenceFocusId] = useState<string | null>(null);
+  const [evidencePayload, setEvidencePayload] = useState<EvidencePayload | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const graphPaneRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<any>(null);
@@ -467,6 +470,36 @@ export default function GraphExplorer() {
 
   const cancelPath = useCallback(() => setPathPicker(null), []);
 
+  // Evidence chain action: switches mode to evidence, fetches the chain.
+  const openEvidenceChain = useCallback(async (node: any) => {
+    setContextMenu(null);
+    setMode('evidence');
+    setEvidenceFocusId(node.id);
+    setEvidencePayload(null);
+    try {
+      const resp = await axios.get(`${API_URL}/api/graph/evidence/${encodeURIComponent(node.id)}`);
+      setEvidencePayload(resp.data);
+    } catch (err) {
+      console.error('evidence fetch failed', err);
+      setEvidencePayload({
+        focus: { id: node.id, label: node.label, properties: node.properties || {} },
+        nodes: [], links: [],
+        evidence_records: {},
+      } as EvidencePayload);
+    }
+  }, []);
+
+  const contradictDetection = useCallback(async (actorId: string, detectionPostgisId: number) => {
+    try {
+      await axios.post(`${API_URL}/api/graph/contradict`, {
+        actor_id: actorId,
+        detection_postgis_id: detectionPostgisId,
+      });
+    } catch (err) {
+      console.error('contradict failed', err);
+    }
+  }, []);
+
   const rollupSite = useCallback(async (node: any) => {
     setContextMenu(null);
     setPathResult(null);
@@ -497,7 +530,7 @@ export default function GraphExplorer() {
     return false;
   }, [contextMenu]);
 
-  const isStubMode = mode !== 'investigation';
+  const isStubMode = mode === 'ontology' || (mode === 'evidence' && !evidencePayload);
 
   return (
     <div className="graph-shell h-full min-h-0 bg-sentinel-bg text-sentinel-text overflow-hidden" onClick={() => setContextMenu(null)}>
@@ -651,20 +684,39 @@ export default function GraphExplorer() {
 
         <div ref={graphPaneRef} className="relative flex-1 min-h-0 overflow-hidden bg-[#0a0d10]">
           <div className="absolute inset-0 opacity-70" style={{ backgroundImage: 'radial-gradient(circle, #1d2227 1px, transparent 1px)', backgroundSize: '22px 22px' }} />
-          {isStubMode ? (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-sentinel-muted p-6 text-center">
-              {mode === 'evidence' ? (
+          {mode === 'evidence' ? (
+            evidencePayload ? (
+              <EvidenceColumnDAG
+                payload={evidencePayload}
+                onContradict={contradictDetection}
+                onClose={() => {
+                  setMode('investigation');
+                  setEvidenceFocusId(null);
+                  setEvidencePayload(null);
+                }}
+              />
+            ) : (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-sentinel-muted p-6 text-center">
                 <Layers size={28} className="text-sentinel-accent" />
-              ) : (
-                <GitBranch size={28} className="text-sentinel-accent" />
-              )}
+                <div className="text-sm font-semibold text-sentinel-text">
+                  {evidenceFocusId ? 'Loading evidence chain…' : 'Right-click a node in Investigation → "Evidence chain"'}
+                </div>
+                <div className="text-xs max-w-sm font-mono">
+                  Returns a column-DAG of SatellitePass / FMVClip / Document / Report / FeedEvent / Observation evidence for the selected focus node, with PostGIS provenance on each leaf.
+                </div>
+                <button type="button" onClick={() => setMode('investigation')} className="sentinel-btn">
+                  ← Back to Investigation
+                </button>
+              </div>
+            )
+          ) : mode === 'ontology' ? (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-sentinel-muted p-6 text-center">
+              <GitBranch size={28} className="text-sentinel-accent" />
               <div className="text-sm font-semibold text-sentinel-text">
-                {mode === 'evidence' ? 'Evidence mode arrives in Phase 2.' : 'Ontology mode arrives in Phase 3.'}
+                Ontology mode arrives in Phase 3.
               </div>
               <div className="text-xs max-w-sm font-mono">
-                {mode === 'evidence'
-                  ? 'Per-Target provenance DAG (SatellitePass / FMVClip / Document / Report / FeedEvent → file / model / confidence / review status).'
-                  : 'Branch/object/prompt graph with UnknownLabel orbits and co-occurrence chips. The current Admin → Ontology tab remains the bulk-edit view.'}
+                Branch/object/prompt graph with UnknownLabel orbits and co-occurrence chips. The current Admin → Ontology tab remains the bulk-edit view.
               </div>
               <button type="button" onClick={() => setMode('investigation')} className="sentinel-btn">
                 ← Back to Investigation
@@ -982,6 +1034,9 @@ export default function GraphExplorer() {
           </button>
           <button type="button" onClick={() => startPathPick(contextMenu.node)} className="w-full text-left px-3 py-2 hover:bg-sentinel-panel-2 flex items-center gap-2">
             <Route size={14} /> Find path to…
+          </button>
+          <button type="button" onClick={() => openEvidenceChain(contextMenu.node)} className="w-full text-left px-3 py-2 hover:bg-sentinel-panel-2 flex items-center gap-2">
+            <Layers size={14} /> Evidence chain
           </button>
           {selectedIsSite && (
             <button type="button" onClick={() => rollupSite(contextMenu.node)} className="w-full text-left px-3 py-2 hover:bg-sentinel-panel-2 flex items-center gap-2">
