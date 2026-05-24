@@ -1,90 +1,132 @@
-"""Neo4j graph routes: /api/graph, /api/graph/neighborhood, /api/geotime/features."""
+"""Neo4j graph routes.
+
+Existing (back-compat):
+- ``GET  /api/graph``                — 1500-node global slice
+- ``POST /api/graph/neighborhood``   — 1-hop neighborhood of a seed node
+- ``GET  /api/geotime/features``     — static features + asset tracks for the map
+
+Phase 1 (Link Graph redesign):
+- ``GET  /api/graph/investigation``                    — bounded slice + 2-hop
+- ``POST /api/graph/path``                             — shortest path
+- ``GET  /api/graph/site-composition/{base_id}``       — workflow 3 rollup
+- ``POST /api/graph/candidate-edges/{candidate_id}/promote`` — graph-side approve
+"""
 
 from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
 
 from database import db, postgis_db
-from schemas import GraphActionRequest
+from graph_writes import (
+    delete_candidate_detected_as,
+    promote_candidate_to_detected_as,
+)
+from schemas import GraphActionRequest, GraphPathRequest, GraphPromoteRequest
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+
+# Node labels treated as "operational" (always rendered in Investigation).
+_OPERATIONAL_LABELS = {
+    "Target", "Asset", "Base", "LaunchPoint", "Facility", "Unit",
+    "Vessel", "Aircraft", "Vehicle",
+}
+# Node labels treated as "evidence" (rendered inside the seed neighborhood).
+_EVIDENCE_LABELS = {
+    "Detection", "Observation", "SatellitePass",
+    "FMVClip", "FMVDetection", "Document", "Report", "FeedEvent",
+}
+
+
+def _serialise_node(n) -> dict[str, Any]:
+    return {
+        "id": n.element_id,
+        "label": list(n.labels)[0] if n.labels else "Node",
+        "labels": list(n.labels),
+        "properties": dict(n),
+    }
+
+
+def _serialise_relationship(rel, *, source_id: str | None = None, target_id: str | None = None) -> dict[str, Any]:
+    rel_type = rel.type
+    return {
+        "source": source_id if source_id is not None else rel.start_node.element_id,
+        "target": target_id if target_id is not None else rel.end_node.element_id,
+        "type": rel_type,
+        "predicate": rel_type,
+        "candidate": str(rel_type).startswith("CANDIDATE_"),
+        "properties": dict(rel),
+    }
+
+
+def _parse_iso(ts: str | None) -> datetime | None:
+    if not ts:
+        return None
+    try:
+        # FastAPI passes strings as-is; accept both `Z` and `+00:00`.
+        clean = ts.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(clean)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid timestamp: {ts}") from exc
+
+
+# ---------------------------------------------------------------------------
+# back-compat endpoints
+# ---------------------------------------------------------------------------
+
+
 @router.get("/api/graph")
-def get_graph(include_candidates: bool = Query(False, description="Include pending candidate links as review-only graph edges")):
+def get_graph(include_candidates: bool = Query(False, description="Include pending CANDIDATE_* edges")):
+    """Global slice up to 1500 nodes. Used by the legacy Link Graph workspace.
+
+    Candidate edges are now persisted (see
+    [decisions/why-candidate-edges-persisted.md](../../docs/decisions/why-candidate-edges-persisted.md)),
+    so the prior in-memory synthesis pass has been removed — `include_candidates`
+    now just toggles whether the Cypher WHERE-clause filters them out.
+    """
     with db.get_session() as session:
-        result = session.run("""
+        result = session.run(
+            """
             MATCH (n)
             OPTIONAL MATCH (n)-[r]->(m)
             WHERE r IS NULL OR $include_candidates OR NOT type(r) STARTS WITH 'CANDIDATE_'
             RETURN n, r, m
             LIMIT 1500
-        """, {"include_candidates": include_candidates})
-        nodes = {}
-        links = []
+            """,
+            {"include_candidates": include_candidates},
+        )
+        nodes: dict[str, dict[str, Any]] = {}
+        links: list[dict[str, Any]] = []
         for record in result:
             n = record["n"]
             m = record["m"]
             r = record["r"]
-
-            nodes[n.element_id] = {"id": n.element_id, "label": list(n.labels)[0], "properties": dict(n)}
+            nodes[n.element_id] = _serialise_node(n)
             if m is not None:
-                nodes[m.element_id] = {"id": m.element_id, "label": list(m.labels)[0], "properties": dict(m)}
+                nodes[m.element_id] = _serialise_node(m)
             if r is not None and m is not None:
-                links.append({
-                    "source": n.element_id,
-                    "target": m.element_id,
-                    "type": r.type,
-                    # `predicate` is the semantic edge label the graph UI
-                    # renders mid-edge and filters on (UX-AUDIT F22). It is
-                    # the Neo4j relationship type — the canonical predicate.
-                    "predicate": r.type,
-                    "candidate": str(r.type).startswith("CANDIDATE_"),
-                    "properties": dict(r),
-                })
-
-        if include_candidates:
-            with postgis_db.get_cursor() as cursor:
-                cursor.execute("""
-                    SELECT id, detection_id, target_id, target_name, score, reason, status
-                    FROM detection_target_candidates
-                    WHERE status = 'pending'
-                    ORDER BY score DESC
-                    LIMIT 300
-                """)
-                candidates = [dict(row) for row in cursor.fetchall()]
-            if candidates:
-                candidate_result = session.run("""
-                    UNWIND $candidates AS c
-                    MATCH (t:Target)
-                    WHERE elementId(t) = c.target_id OR t.id = c.target_id
-                    MATCH (d:Detection {postgis_id: c.detection_id})
-                    RETURN t, d, c
-                """, {"candidates": candidates})
-                for record in candidate_result:
-                    t = record["t"]
-                    d = record["d"]
-                    c = record["c"]
-                    nodes[t.element_id] = {"id": t.element_id, "label": list(t.labels)[0], "properties": dict(t)}
-                    nodes[d.element_id] = {"id": d.element_id, "label": list(d.labels)[0], "properties": dict(d)}
-                    links.append({
-                        "source": t.element_id,
-                        "target": d.element_id,
-                        "type": "CANDIDATE_DETECTED_AS",
-                        "predicate": "CANDIDATE_DETECTED_AS",
-                        "candidate": True,
-                        "candidate_id": c["id"],
-                        "score": c["score"],
-                        "status": c["status"],
-                    })
-
+                links.append(_serialise_relationship(r, source_id=n.element_id, target_id=m.element_id))
         return {"nodes": list(nodes.values()), "links": links}
 
 
 @router.post("/api/graph/neighborhood")
 def get_graph_neighborhood(req: GraphActionRequest):
     with db.get_session() as session:
-        result = session.run("""
+        result = session.run(
+            """
             MATCH (n)
             WHERE elementId(n) = $id
             OPTIONAL MATCH (n)-[rel]-(m)
@@ -92,59 +134,59 @@ def get_graph_neighborhood(req: GraphActionRequest):
             RETURN n, neighbors,
                    [rel IN rels WHERE rel IS NOT NULL |
                     {source: elementId(startNode(rel)), target: elementId(endNode(rel)),
-                     type: type(rel), predicate: type(rel)}] AS links
-        """, {"id": req.node_id})
+                     type: type(rel), predicate: type(rel), properties: properties(rel)}] AS links
+            """,
+            {"id": req.node_id},
+        )
         record = result.single()
         if not record:
             raise HTTPException(status_code=404, detail="Node not found")
 
-        nodes = {record["n"].element_id: {
-            "id": record["n"].element_id,
-            "label": list(record["n"].labels)[0],
-            "properties": dict(record["n"]),
-        }}
+        nodes = {record["n"].element_id: _serialise_node(record["n"])}
         for node in record["neighbors"]:
             if node is not None:
-                nodes[node.element_id] = {
-                    "id": node.element_id,
-                    "label": list(node.labels)[0],
-                    "properties": dict(node),
-                }
+                nodes[node.element_id] = _serialise_node(node)
         return {"nodes": list(nodes.values()), "links": record["links"]}
 
 
 @router.get("/api/geotime/features")
 def get_geotime_features():
     with db.get_session() as session:
-        schema_labels = set(session.run("""
-            CALL db.labels() YIELD label
-            RETURN collect(label) AS labels
-        """).single()["labels"] or [])
+        schema_labels = set(
+            session.run("CALL db.labels() YIELD label RETURN collect(label) AS labels").single()["labels"] or []
+        )
 
         static_features = []
         static_labels = sorted(schema_labels.intersection({"Base", "LaunchPoint"}))
         if static_labels:
-            result_static = session.run("""
+            result_static = session.run(
+                """
                 MATCH (n)
                 WHERE any(label IN labels(n) WHERE label IN $static_labels)
                   AND n.latitude IS NOT NULL
                 RETURN n
-            """, {"static_labels": static_labels})
-            static_features = [{"id": r["n"].element_id, "label": list(r["n"].labels)[0], "properties": dict(r["n"])} for r in result_static]
+                """,
+                {"static_labels": static_labels},
+            )
+            static_features = [
+                {"id": r["n"].element_id, "label": list(r["n"].labels)[0], "properties": dict(r["n"])}
+                for r in result_static
+            ]
 
         tracks = []
         if not {"Asset", "Observation"}.issubset(schema_labels):
             return {"static": static_features, "tracks": tracks}
 
-        result_static = session.run("""
-            CALL db.relationshipTypes() YIELD relationshipType
-            RETURN collect(relationshipType) AS relationship_types
-        """)
-        relationship_types = set(result_static.single()["relationship_types"] or [])
+        relationship_types = set(
+            session.run("CALL db.relationshipTypes() YIELD relationshipType RETURN collect(relationshipType) AS relationship_types")
+            .single()["relationship_types"]
+            or []
+        )
         if "OBSERVED_AT" not in relationship_types:
             return {"static": static_features, "tracks": tracks}
 
-        result_tracks = session.run("""
+        result_tracks = session.run(
+            """
             MATCH (a)-[rel]->(o)
             WHERE 'Asset' IN labels(a)
               AND type(rel) = 'OBSERVED_AT'
@@ -152,18 +194,306 @@ def get_geotime_features():
             WITH a, o ORDER BY o.timestamp DESC
             WITH a, collect(o) as obs
             RETURN a, obs[0] as latest, obs
-        """)
+            """
+        )
         for r in result_tracks:
             asset = r["a"]
             latest = r["latest"]
             history = [{"lat": ob["latitude"], "lng": ob["longitude"], "time": ob["timestamp"]} for ob in r["obs"]]
-            tracks.append({
-                "id": asset.element_id,
-                "label": list(asset.labels)[0],
-                "asset_id": asset["id"],
-                "properties": dict(asset),
-                "latest": dict(latest),
-                "history": history
-            })
-
+            tracks.append(
+                {
+                    "id": asset.element_id,
+                    "label": list(asset.labels)[0],
+                    "asset_id": asset["id"],
+                    "properties": dict(asset),
+                    "latest": dict(latest),
+                    "history": history,
+                }
+            )
         return {"static": static_features, "tracks": tracks}
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 — redesigned routes
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/graph/investigation")
+def get_graph_investigation(
+    class_lens: list[str] = Query(default_factory=list, description="Restrict to these node labels"),
+    time_start: str | None = Query(None, description="ISO 8601 — lower bound on Detection/Observation created_at"),
+    time_end: str | None = Query(None, description="ISO 8601 — upper bound"),
+    aoi_id: int | None = Query(None, description="Scope to nodes mirrored from this AOI"),
+    seed_node_id: str | None = Query(None, description="When set, returns 2-hop neighborhood of this node"),
+    limit: int = Query(150, ge=1, le=500, description="Cap on total nodes returned"),
+):
+    """Default Investigation panel feed. Operational nodes + their 1-hop
+    neighborhood, capped, optionally scoped by time / AOI / class.
+
+    Operational-only labels never include `Detection`/`SatellitePass` directly
+    unless they are pulled in as 1-hop neighbors of an operational node.
+    """
+    t_start = _parse_iso(time_start)
+    t_end = _parse_iso(time_end)
+    valid_class_lens = [c for c in class_lens if isinstance(c, str) and c]
+
+    with db.get_session() as session:
+        if seed_node_id:
+            # 2-hop neighborhood of a seed node, with the same time / class filters.
+            result = session.run(
+                """
+                MATCH (seed)
+                WHERE elementId(seed) = $seed
+                CALL {
+                    WITH seed
+                    MATCH (seed)-[*1..2]-(n)
+                    RETURN DISTINCT n LIMIT $limit
+                }
+                WITH seed, collect(DISTINCT n) AS neighbors
+                WITH seed, [seed] + neighbors AS all_nodes
+                UNWIND all_nodes AS node
+                OPTIONAL MATCH (node)-[r]-(other)
+                WHERE other IN all_nodes
+                RETURN collect(DISTINCT node) AS nodes,
+                       collect(DISTINCT r) AS rels
+                """,
+                {"seed": seed_node_id, "limit": limit},
+            )
+        else:
+            # Global slice: operational nodes first, then 1-hop expansion.
+            result = session.run(
+                """
+                CALL {
+                    MATCH (op)
+                    WHERE any(l IN labels(op) WHERE l IN $operational_labels)
+                      AND (size($class_lens) = 0 OR any(l IN labels(op) WHERE l IN $class_lens))
+                    RETURN op LIMIT $op_limit
+                }
+                WITH collect(DISTINCT op) AS operationals
+                UNWIND operationals AS op
+                OPTIONAL MATCH (op)-[r]-(neighbor)
+                WHERE (size($class_lens) = 0
+                       OR any(l IN labels(neighbor) WHERE l IN $class_lens))
+                  AND ($t_start IS NULL OR neighbor.created_at IS NULL OR neighbor.created_at >= datetime($t_start))
+                  AND ($t_end IS NULL OR neighbor.created_at IS NULL OR neighbor.created_at <= datetime($t_end))
+                WITH operationals, collect(DISTINCT neighbor) AS neighbors, collect(DISTINCT r) AS rels
+                WITH operationals + neighbors AS all_nodes, rels
+                WITH all_nodes[..$limit] AS nodes, rels
+                RETURN nodes, rels
+                """,
+                {
+                    "operational_labels": sorted(_OPERATIONAL_LABELS),
+                    "class_lens": valid_class_lens,
+                    "op_limit": min(80, limit),
+                    "limit": limit,
+                    "t_start": t_start.isoformat() if t_start else None,
+                    "t_end": t_end.isoformat() if t_end else None,
+                },
+            )
+        record = result.single()
+        if record is None:
+            return {"nodes": [], "links": []}
+
+        # `nodes` is a list of node objects; `rels` may contain Nones for
+        # the OPTIONAL MATCH leg.
+        raw_nodes = [n for n in record["nodes"] if n is not None]
+        raw_rels = [r for r in record["rels"] if r is not None]
+        node_index = {n.element_id: _serialise_node(n) for n in raw_nodes}
+
+        # AOI scope: when provided, restrict to nodes related to the AOI
+        # (Base/LaunchPoint/Facility mirrored from this AOI, plus their
+        # neighborhood). The MERGE writes ``aoi_postgis_id`` on the mirror.
+        if aoi_id is not None:
+            keep_ids: set[str] = {
+                nid for nid, payload in node_index.items()
+                if payload["properties"].get("aoi_postgis_id") == aoi_id
+            }
+            # Expand by one hop so the neighborhood comes along.
+            expanded = set(keep_ids)
+            for r in raw_rels:
+                s = r.start_node.element_id
+                t = r.end_node.element_id
+                if s in keep_ids or t in keep_ids:
+                    expanded.update({s, t})
+            node_index = {nid: payload for nid, payload in node_index.items() if nid in expanded}
+
+        links = []
+        for r in raw_rels:
+            s = r.start_node.element_id
+            t = r.end_node.element_id
+            if s in node_index and t in node_index:
+                links.append(_serialise_relationship(r, source_id=s, target_id=t))
+
+        return {"nodes": list(node_index.values()), "links": links, "limit": limit}
+
+
+@router.post("/api/graph/path")
+def get_graph_path(req: GraphPathRequest):
+    """Shortest path between two nodes — `allShortestPaths` capped by max_depth.
+
+    Returns a list of paths (each is `{nodes, links}`) ordered shortest-first.
+    """
+    with db.get_session() as session:
+        result = session.run(
+            f"""
+            MATCH (a), (b)
+            WHERE elementId(a) = $from_id AND elementId(b) = $to_id
+            MATCH p = allShortestPaths((a)-[*..{req.max_depth}]-(b))
+            RETURN p LIMIT 10
+            """,
+            {"from_id": req.from_id, "to_id": req.to_id},
+        )
+        paths_out: list[dict[str, Any]] = []
+        for record in result:
+            path = record["p"]
+            nodes = [_serialise_node(n) for n in path.nodes]
+            links = []
+            for rel in path.relationships:
+                links.append(
+                    _serialise_relationship(
+                        rel,
+                        source_id=rel.start_node.element_id,
+                        target_id=rel.end_node.element_id,
+                    )
+                )
+            paths_out.append({"nodes": nodes, "links": links, "length": len(path.relationships)})
+    return {"paths": paths_out, "max_depth": req.max_depth, "count": len(paths_out)}
+
+
+@router.get("/api/graph/site-composition/{base_id}")
+def get_site_composition(
+    base_id: str,
+    radius_m: float = Query(5000.0, ge=10.0, le=50000.0),
+    recent_days: int = Query(30, ge=1, le=365),
+):
+    """Workflow 3: "What's at this site?"
+
+    Returns grouped buckets for a Base/LaunchPoint/Facility node:
+    - ``recent_detections`` — PostGIS detections within radius_m of the AOI
+      centroid in the last ``recent_days`` days, grouped by class.
+    - ``vessels``, ``vehicles``, ``aircraft`` — Neo4j Assets with `:OBSERVED_AT`
+      pointing to this site (empty in Phase 1 until projectors run).
+    - ``fmv_clips``, ``reports`` — empty placeholders in Phase 1 (Phase 2
+      projectors populate them).
+
+    The PostGIS join is a live ST_DWithin until Phase 4's ``worker.tick_near_builder``
+    populates ``:NEAR`` edges; this avoids gating Phase 1 on the beat task.
+    """
+    with db.get_session() as session:
+        record = session.run(
+            """
+            MATCH (b)
+            WHERE elementId(b) = $base_id
+              AND any(l IN labels(b) WHERE l IN ['Base', 'LaunchPoint', 'Facility'])
+            RETURN b, labels(b) AS labels, properties(b) AS props
+            """,
+            {"base_id": base_id},
+        ).single()
+        if record is None:
+            raise HTTPException(status_code=404, detail="Site (Base/LaunchPoint/Facility) not found")
+        props = dict(record["props"]) if record["props"] else {}
+        aoi_postgis_id = props.get("aoi_postgis_id")
+
+    recent_detections: list[dict[str, Any]] = []
+    if aoi_postgis_id is not None:
+        try:
+            with postgis_db.get_cursor() as cursor:
+                cursor.execute(
+                    """
+                    WITH aoi AS (
+                        SELECT geom, ST_Centroid(geom) AS centroid FROM aois WHERE id = %s
+                    )
+                    SELECT d.class, COUNT(*)::int AS count, MAX(d.created_at) AS last_seen
+                    FROM detections d, aoi
+                    WHERE d.deleted_at IS NULL
+                      AND d.created_at >= NOW() - (%s || ' days')::interval
+                      AND ST_DWithin(d.centroid::geography, aoi.centroid::geography, %s)
+                    GROUP BY d.class
+                    ORDER BY count DESC
+                    """,
+                    (aoi_postgis_id, str(recent_days), radius_m),
+                )
+                recent_detections = [dict(r) for r in cursor.fetchall()]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("site-composition: PostGIS query failed for aoi=%s: %s", aoi_postgis_id, exc)
+
+    # Neo4j-side groupings (mostly empty until projectors run in later phases).
+    with db.get_session() as session:
+        observed = session.run(
+            """
+            MATCH (b)<-[:OBSERVED_AT|:NEAR|:OPERATES_FROM]-(a)
+            WHERE elementId(b) = $base_id
+            RETURN labels(a) AS labels, properties(a) AS props, elementId(a) AS id
+            LIMIT 200
+            """,
+            {"base_id": base_id},
+        )
+        vessels, vehicles, aircraft, other_assets = [], [], [], []
+        for r in observed:
+            labels = set(r["labels"] or [])
+            payload = {"id": r["id"], "properties": dict(r["props"] or {}), "labels": list(labels)}
+            if "Vessel" in labels:
+                vessels.append(payload)
+            elif "Vehicle" in labels:
+                vehicles.append(payload)
+            elif "Aircraft" in labels:
+                aircraft.append(payload)
+            elif "Asset" in labels:
+                other_assets.append(payload)
+
+    return {
+        "base_id": base_id,
+        "aoi_postgis_id": aoi_postgis_id,
+        "labels": record["labels"],
+        "properties": props,
+        "radius_m": radius_m,
+        "recent_days": recent_days,
+        "recent_detections": recent_detections,
+        "vessels": vessels,
+        "vehicles": vehicles,
+        "aircraft": aircraft,
+        "other_assets": other_assets,
+        "fmv_clips": [],  # Phase 2 projector populates.
+        "reports": [],    # Phase 2 projector populates.
+    }
+
+
+@router.post("/api/graph/candidate-edges/{candidate_id}/promote")
+def promote_candidate_edge(candidate_id: int, req: GraphPromoteRequest = GraphPromoteRequest()):
+    """Graph-side promotion: a pending `CANDIDATE_DETECTED_AS` becomes `DETECTED_AS`.
+
+    Mirrors the effect of ``/api/detection-target-candidates/{id}/approve`` —
+    PostGIS row flipped to ``approved`` AND the Neo4j edge is promoted. Both
+    sides updated so the analyst can drive the workflow from either the
+    SelectionPanel (PostGIS-id-based) or the Investigation graph (graph-edge-based).
+    """
+    analyst = (req.analyst or "analyst").strip() or "analyst"
+
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute(
+            """
+            UPDATE detection_target_candidates
+            SET status = 'approved', reviewed_by = %s, reviewed_at = NOW(), updated_at = NOW()
+            WHERE id = %s
+            RETURNING id, detection_id, target_id, target_name, score, reason, status,
+                      evidence, reviewed_by, reviewed_at, created_at, updated_at
+            """,
+            (analyst, candidate_id),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Candidate link not found")
+        updated = dict(row)
+
+    promoted = promote_candidate_to_detected_as(candidate_id=candidate_id, reviewed_by=analyst)
+    if promoted is None:
+        # The PostGIS row was approved but the graph edge was missing —
+        # fall back to delete-by-pair so the candidate edge (if any) is
+        # cleared and the caller can re-render. The analyst-approval flow in
+        # main.py is the safer path when the graph edge isn't already in place.
+        delete_candidate_detected_as(
+            detection_id=updated["detection_id"],
+            target_id=updated["target_id"],
+        )
+
+    return {"success": True, "candidate": updated, "graph": promoted}

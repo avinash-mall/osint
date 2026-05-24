@@ -245,6 +245,20 @@ class GraphActionRequest(BaseModel):
     node_id: str
 
 
+class GraphPathRequest(BaseModel):
+    """Body for ``POST /api/graph/path`` — shortest-path between two graph nodes."""
+
+    from_id: str
+    to_id: str
+    max_depth: int = Field(default=4, ge=1, le=8)
+
+
+class GraphPromoteRequest(BaseModel):
+    """Body for ``POST /api/graph/candidate-edges/{id}/promote`` — analyst name carried for audit."""
+
+    analyst: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Analytics + training
 # ---------------------------------------------------------------------------
