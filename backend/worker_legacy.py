@@ -3398,27 +3398,11 @@ _CLASS_TO_ENTITY_KIND = {
 }
 
 
-@celery_app.task(name="worker.tick_propose_entities", queue="default")
-def tick_propose_entities() -> dict:
-    """Phase 4 beat task: heuristic-propose ``entity_candidates`` rows for
-    repeated-class Detections that don't yet have a matching operational entity.
-
-    Phase 4 ships a cheap heuristic (uses Phase 4.D's :REPEATED_AT clusters as
-    the seed for proposals); the LLM-proposer is the upgrade slot — when the
-    AI router gains a "propose_entities" tool, swap the inner loop without
-    changing the task interface or the analyst review flow.
-
-    For each :REPEATED_AT cluster whose class maps to a known operational kind:
-    - Skip if an entity with the same proposed_name already exists.
-    - Skip if a pending candidate with the same proposed_name + kind exists.
-    - Otherwise INSERT a candidate row.
-    """
-    import json as _json
-    proposed = 0
-    skipped = 0
+def _fetch_repeated_at_clusters() -> list[dict]:
+    """Read REPEATED_AT cluster rows (used by both proposer variants)."""
     try:
         with db.get_session() as session:
-            repeats = list(session.run(
+            return [dict(r) for r in session.run(
                 """
                 MATCH (d:Detection)-[r:REPEATED_AT]->(s)
                 WHERE any(l IN labels(s) WHERE l IN ['Base', 'LaunchPoint', 'Facility'])
@@ -3429,23 +3413,131 @@ def tick_propose_entities() -> dict:
                        d.postgis_id AS sample_detection_id
                 LIMIT 200
                 """
-            ))
-    except Exception as exc:
+            )]
+    except Exception:
         logger.exception("tick_propose_entities: REPEATED_AT walk failed")
-        return {"error": "repeated_at_walk_failed", "detail": str(exc)}
+        return []
 
+
+def _llm_propose_entities(clusters: list[dict]) -> list[dict]:
+    """Phase 5.I: ask the LLM to propose operational entities from clusters.
+
+    Returns a list of ``{entity_kind, proposed_name, reason, seed_detection_ids,
+    proposed_metadata}`` dicts. Raises ``AIUnavailable`` on transport failure
+    or unparseable response so the caller can fall through to the heuristic.
+
+    Hard-caps the prompt at 60 cluster rows so the request stays well inside
+    the token budget of typical local LLMs (gemma, llama variants).
+    """
+    import ai
+    cluster_payload = []
+    for c in clusters[:60]:
+        cluster_payload.append({
+            "detection_class": c.get("detection_class"),
+            "cluster_count": int(c.get("cluster_count") or 0),
+            "site_id": c.get("site_id"),
+            "site_name": c.get("site_name"),
+            "sample_detection_id": (
+                int(c["sample_detection_id"]) if c.get("sample_detection_id") is not None else None
+            ),
+        })
+
+    system_prompt = (
+        "You propose operational entities (vessel / aircraft / vehicle / "
+        "facility / unit) from REPEATED_AT detection clusters. "
+        "Return ONLY a JSON object with key 'proposals' whose value is a list. "
+        "Each proposal: {entity_kind, proposed_name, reason, seed_detection_ids:[int]}. "
+        "entity_kind MUST be one of: vessel, aircraft, vehicle, facility, unit. "
+        "Be conservative — propose only when the detection_class clearly implies "
+        "a real operational entity. Skip if ambiguous."
+    )
+    user_prompt = f"clusters = {cluster_payload}"
+
+    parsed = ai.get_llm_json(system_prompt, user_prompt, temperature=0.0, max_tokens=1200)
+    raw_proposals = parsed.get("proposals") if isinstance(parsed, dict) else None
+    if not isinstance(raw_proposals, list):
+        return []
+
+    valid_kinds = {"vessel", "aircraft", "vehicle", "facility", "unit"}
+    out: list[dict] = []
+    for p in raw_proposals:
+        if not isinstance(p, dict):
+            continue
+        kind = str(p.get("entity_kind") or "").lower().strip()
+        name = str(p.get("proposed_name") or "").strip()
+        if kind not in valid_kinds or not name:
+            continue
+        seeds = p.get("seed_detection_ids") or []
+        if not isinstance(seeds, list):
+            seeds = []
+        out.append({
+            "entity_kind": kind,
+            "proposed_name": name,
+            "reason": str(p.get("reason") or "")[:500],
+            "seed_detection_ids": [int(x) for x in seeds if isinstance(x, (int, str)) and str(x).isdigit()],
+            "proposed_metadata": {"source": "llm"},
+        })
+    return out
+
+
+def _heuristic_propose_entities(clusters: list[dict]) -> list[dict]:
+    """Phase 5.I: original heuristic path extracted from tick_propose_entities."""
+    out: list[dict] = []
+    for row in clusters:
+        cls = (row["detection_class"] or "").lower()
+        kind = next((v for k, v in _CLASS_TO_ENTITY_KIND.items() if k in cls), None)
+        if not kind:
+            continue
+        site_name = row.get("site_name") or row.get("site_id") or "site"
+        out.append({
+            "entity_kind": kind,
+            "proposed_name": f"{cls} at {site_name}",
+            "reason": f"{row['cluster_count']} {cls} detections clustered at {site_name}",
+            "seed_detection_ids": [int(row["sample_detection_id"])] if row.get("sample_detection_id") is not None else [],
+            "proposed_metadata": {"site_id": row.get("site_id"), "detection_class": cls, "source": "heuristic"},
+            "score": min(1.0, 0.5 + (int(row.get("cluster_count") or 0) - 5) * 0.05),
+        })
+    return out
+
+
+@celery_app.task(name="worker.tick_propose_entities", queue="default")
+def tick_propose_entities() -> dict:
+    """Phase 5.I: LLM-first proposer with heuristic fallback.
+
+    Tries the LLM (via the OpenAI-compatible client in backend/ai.py, reading
+    OPENAI_API_BASE / OPENAI_API_KEY / OPENAI_MODEL from .env). On
+    AIUnavailable (LLM endpoint empty, unreachable, or returns unparseable
+    JSON), falls back to the original REPEATED_AT-cluster heuristic so the
+    pipeline keeps working air-gapped without LLM.
+
+    Either way: skip proposals whose name+kind already exists as an
+    operational entity or pending candidate.
+    """
+    import json as _json
+    proposed = 0
+    skipped = 0
+    repeats = _fetch_repeated_at_clusters()
     if not repeats:
         return {"proposed": 0, "skipped": 0, "note": "no REPEATED_AT clusters to seed from"}
 
+    proposals: list[dict] = []
+    source = "heuristic"
+    try:
+        from ai import AIUnavailable
+        llm_proposals = _llm_propose_entities(repeats)
+        if llm_proposals:
+            proposals = llm_proposals
+            source = "llm"
+    except Exception as exc:
+        # Catches AIUnavailable too — fall back to heuristic.
+        logger.info("tick_propose_entities: LLM path unavailable (%s); using heuristic", exc)
+    if not proposals:
+        proposals = _heuristic_propose_entities(repeats)
+
     with postgis_db.get_cursor(commit=True) as cursor:
-        for row in repeats:
-            cls = (row["detection_class"] or "").lower()
-            kind = next((v for k, v in _CLASS_TO_ENTITY_KIND.items() if k in cls), None)
-            if not kind:
-                skipped += 1
-                continue
-            site_name = row.get("site_name") or row.get("site_id") or "site"
-            proposed_name = f"{cls} at {site_name}"
+        for p in proposals:
+            kind = p["entity_kind"]
+            proposed_name = p["proposed_name"]
             try:
                 cursor.execute(
                     "SELECT 1 FROM operational_entities WHERE name = %s AND kind = %s LIMIT 1",
@@ -3468,10 +3560,10 @@ def tick_propose_entities() -> dict:
                     """,
                     (
                         kind, proposed_name,
-                        [int(row["sample_detection_id"])] if row["sample_detection_id"] is not None else [],
-                        min(1.0, 0.5 + (int(row["cluster_count"]) - 5) * 0.05),
-                        f"{row['cluster_count']} {cls} detections clustered at {site_name}",
-                        _json.dumps({"site_id": row["site_id"], "detection_class": cls}),
+                        p.get("seed_detection_ids") or [],
+                        float(p.get("score", 0.6)),
+                        p.get("reason", ""),
+                        _json.dumps(p.get("proposed_metadata") or {}),
                     ),
                 )
                 proposed += 1
@@ -3479,7 +3571,7 @@ def tick_propose_entities() -> dict:
                 logger.exception("tick_propose_entities: insert failed for %s", proposed_name)
                 skipped += 1
 
-    return {"proposed": proposed, "skipped": skipped}
+    return {"proposed": proposed, "skipped": skipped, "source": source}
 
 
 @celery_app.task(name="worker.tick_entity_resimilarity", queue="default")
