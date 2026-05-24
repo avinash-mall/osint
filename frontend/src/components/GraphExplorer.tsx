@@ -9,7 +9,6 @@ import {
   CircleDot,
   Database,
   Filter,
-  GitBranch,
   Hash,
   Info,
   Layers,
@@ -26,6 +25,7 @@ import {
 } from 'lucide-react';
 import { TimeScrubber, type TimeRange } from './graph/TimeScrubber';
 import { EvidenceColumnDAG, type EvidencePayload } from './graph/EvidenceColumnDAG';
+import { OntologyOrbit } from './graph/OntologyOrbit';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -710,18 +710,7 @@ export default function GraphExplorer() {
               </div>
             )
           ) : mode === 'ontology' ? (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-sentinel-muted p-6 text-center">
-              <GitBranch size={28} className="text-sentinel-accent" />
-              <div className="text-sm font-semibold text-sentinel-text">
-                Ontology mode arrives in Phase 3.
-              </div>
-              <div className="text-xs max-w-sm font-mono">
-                Branch/object/prompt graph with UnknownLabel orbits and co-occurrence chips. The current Admin → Ontology tab remains the bulk-edit view.
-              </div>
-              <button type="button" onClick={() => setMode('investigation')} className="sentinel-btn">
-                ← Back to Investigation
-              </button>
-            </div>
+            <OntologyOrbit onBack={() => setMode('investigation')} />
           ) : (
             <ForceGraph2D
               width={dimensions.width}
