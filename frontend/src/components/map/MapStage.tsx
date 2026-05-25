@@ -16,6 +16,7 @@ import {
   Crosshair,
   Eye,
   EyeOff,
+  HelpCircle,
   Minus,
   Plus,
   Target,
@@ -157,6 +158,9 @@ export type Props = {
   /* side-by-side imagery compare (optional) */
   compareImagery?: any | null;
   onClearCompare?: () => void;
+
+  /* product tour (top-toolbar button) */
+  onLaunchTour?: () => void;
 };
 
 const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
@@ -205,6 +209,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
     branchById,
     compareImagery,
     onClearCompare,
+    onLaunchTour,
   } = props;
 
   const mapInstance = useRef<L.Map | null>(null);
@@ -861,6 +866,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
           <div className="absolute right-3 top-10 flex flex-col border border-sentinel-line-2 bg-sentinel-panel">
             <button
               type="button" onClick={zoomIn}
+              data-tour="zoom-in"
               title="Zoom in (=)" aria-label="Zoom in"
               className="pointer-events-auto grid h-8 w-8 place-items-center border-b border-sentinel-line text-sentinel-muted hover:text-white"
             >
@@ -868,6 +874,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
             </button>
             <button
               type="button" onClick={zoomOut}
+              data-tour="zoom-out"
               title="Zoom out (-)" aria-label="Zoom out"
               className="pointer-events-auto grid h-8 w-8 place-items-center border-b border-sentinel-line text-sentinel-muted hover:text-white"
             >
@@ -875,6 +882,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
             </button>
             <button
               type="button" onClick={recenter}
+              data-tour="recenter"
               title="Recenter (0)" aria-label="Recenter map"
               className="pointer-events-auto grid h-8 w-8 place-items-center border-b border-sentinel-line text-sentinel-muted hover:text-white"
             >
@@ -882,6 +890,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
             </button>
             <button
               type="button" onClick={() => setFocusMode((f) => !f)}
+              data-tour="focus-mode"
               title="Focus map (F)" aria-label="Toggle focus mode" aria-pressed={focusMode}
               className={`pointer-events-auto grid h-8 w-8 place-items-center ${
                 focusMode ? 'text-sentinel-accent' : 'text-sentinel-muted hover:text-white'
@@ -903,6 +912,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
                 <button
                   key={k}
                   type="button"
+                  data-tour={`geom-${k}`}
                   onClick={() => setBboxMode(k)}
                   title={
                     k === 'hbb' ? 'Axis-aligned bounding box'
@@ -924,6 +934,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
                   <button
                     key={k}
                     type="button"
+                    data-tour={`prithvi-${k}`}
                     onClick={() => setPrithviOverlays((cur: Record<string, boolean>) => ({ ...cur, [k]: !cur[k] }))}
                     title={`Toggle Prithvi ${k} overlay`}
                     className={`px-3 py-1 rounded-full transition ${
@@ -937,6 +948,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
               <span className="mx-1 h-4 w-px bg-sentinel-line-2" />
               <button
                 type="button"
+                data-tour="tracks-toggle"
                 onClick={() => setActiveLayers((cur) => ({ ...cur, tracks: !cur.tracks }))}
                 title="Toggle asset tracks"
                 className={`px-3 py-1 rounded-full transition ${
@@ -949,6 +961,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
 
             <button
               type="button"
+              data-tour="draw-object"
               onClick={() => setDrawMode((v) => !v)}
               title={drawMode ? 'Cancel drawing' : 'Draw a manual box over an object'}
               className={`flex items-center gap-2 border px-3 py-1.5 font-mono text-[11px] uppercase tracking-widest transition ${
@@ -962,6 +975,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
             </button>
             <button
               type="button"
+              data-tour="range-ring"
               onClick={() => setRangeRingMode((v) => !v)}
               title={rangeRingMode ? 'Cancel range-ring placement' : 'Place range rings around a point'}
               className={`flex items-center gap-2 border px-3 py-1.5 font-mono text-[11px] uppercase tracking-widest transition ${
@@ -973,6 +987,18 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
               <Target className="h-3.5 w-3.5" />
               {rangeRingMode ? 'Cancel ring' : 'Range ring'}
             </button>
+            {onLaunchTour && (
+              <button
+                type="button"
+                data-tour="product-tour-btn"
+                onClick={onLaunchTour}
+                title="Take a guided tour of the Map workspace"
+                className="flex items-center gap-2 border px-3 py-1.5 font-mono text-[11px] uppercase tracking-widest border-sentinel-line-2 bg-sentinel-panel text-sentinel-text hover:border-sentinel-accent/60"
+              >
+                <HelpCircle className="h-3.5 w-3.5" />
+                Product Tour
+              </button>
+            )}
             {drawError && (
               <div className="mt-1 border border-red-500 bg-red-500/10 px-2 py-1 font-mono text-[10px] text-red-300">
                 {drawError}

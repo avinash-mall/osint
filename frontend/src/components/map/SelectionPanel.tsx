@@ -230,6 +230,7 @@ export default function SelectionPanel(props: Props) {
 
   return (
     <section
+      data-tour="selection-panel"
       className="sentinel-panel map-float-panel map-right-panel selection-panel"
       style={{
         position: 'absolute',

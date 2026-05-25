@@ -45,6 +45,8 @@ import {
 import { makeDetectionIcon } from './map/_icons';
 import LayerPanel from './map/LayerPanel';
 import MapStage, { type MapHandle } from './map/MapStage';
+import ProductTour from './tour/ProductTour';
+import { useProductTour } from '../hooks/useProductTour';
 import SelectionPanel from './map/SelectionPanel';
 import TimeMachineBar from './map/TimeMachineBar';
 import { useAuth } from '../hooks/useAuth';
@@ -1029,6 +1031,7 @@ export default function GaiaMap({
     }
   }, [fetchCandidateLinks, selectedDetection]);
 
+  const tour = useProductTour();
 
   return (
     <div ref={workspaceRef} className="map-workspace" style={{ position: 'relative', height: '100%', width: '100%', background: 'var(--bg-0)', overflow: 'hidden' }}>
@@ -1172,6 +1175,7 @@ export default function GaiaMap({
             : null
         }
         onClearCompare={() => setCompareImageryId(null)}
+        onLaunchTour={tour.launchFromButton}
       />
 
       {/* Floating event-timeline panel, anchored to the bottom and inset
@@ -1614,6 +1618,8 @@ export default function GaiaMap({
           <ChevronLeft size={11} style={{ color: 'var(--ink-3)' }} />
         </button>
       )}
+
+      <ProductTour state={tour} />
     </div>
   );
 }

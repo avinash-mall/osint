@@ -91,6 +91,7 @@ frontend/map-review-similar-provenance.md|frontend|ReviewPanel + SimilarPanel + 
 frontend/map-analytics-tools.md|frontend|AnalyticsToolsPanel.tsx viewshed/LOS/route/POL workflows
 frontend/map-time-machine.md|frontend|TimeMachineBar.tsx temporal slider for multi-pass imagery
 frontend/map-change-detection-dialog.md|frontend,imagery|ChangeDetectionDialog.tsx before/after pass selector
+frontend/product-tour.md|frontend|Custom in-repo welcome modal + 23-step tooltip walkthrough of the map workspace
 frontend/ontology-admin-ui.md|frontend,ontology|OntologyAdmin.tsx branch/object/prompt CRUD with version bumps
 frontend/object-details-form.md|frontend|ObjectDetailsForm.tsx shared metadata editor
 frontend/admin-health-dashboard.md|frontend|HealthDashboardView.tsx per-GPU KPIs, replicas, active requests
@@ -136,6 +137,7 @@ decisions/temporal-swipe-comparator.md|decision,frontend|side-by-side imagery co
 decisions/why-basemap-overlay-composition.md|decision,frontend|imagery is bottom ground-truth; BASE/TERRAIN are reference overlays on top; opacity fades overlay
 decisions/why-basemap-z14-cap.md|decision,frontend,deployment|offline bake to z=14 + overlay unmounts above; imagery is source of truth past z=14
 decisions/why-bbox-toggle-removed.md|decision,frontend|BBOX toggle removed; detection boxes always render, GEOM toolbar defaults to OBB
+decisions/why-custom-tour-engine.md|decision,frontend|Map workspace Product Tour built in-repo; no react-joyride/intro.js/shepherd dependency
 decisions/why-candidate-edges-persisted.md|decision,backend|persist CANDIDATE_DETECTED_AS in Neo4j on candidate creation; makes pending edges Cypher-traversable
 decisions/why-category-presence-gate.md|decision,sam3|SegEarth-OV-3-style 0.40 filter suppresses absent concepts
 decisions/why-three-graph-modes.md|decision,frontend|Link Graph splits into Investigation/Evidence/Ontology sub-tabs; one workspace, shared state

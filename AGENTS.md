@@ -37,6 +37,7 @@ Full rules: **[docs/conventions/documentation-workflow.md](docs/conventions/docu
 6. **Celery task names are routing identity.** When refactoring a task out of `backend/worker_legacy.py`, preserve `@celery_app.task(name="worker.xxx")` exactly — Celery routes by explicit name, not Python FQN. See [docs/backend/worker-package-facade.md](docs/backend/worker-package-facade.md).
 7. **No `--no-verify`, no force-push, no `git config` edits.** Standard repo hygiene.
 8. **Project should be able to work offline.** No links to online resources, no downloads at runtime after building container image, no api calls over internet.
+9. **Keep Product Tours current.** [frontend/src/components/tour/](frontend/src/components/tour/) holds one `*Steps.ts` file per page that has a guided tour (e.g. `tourSteps.ts` for the Map workspace; more pages may follow). If you add, remove, rename, or visually relocate any interactive control on a page that has a tour, update the matching steps file in the same change: attach `data-tour="<id>"` to the new element and add/edit/remove the corresponding entry in the steps array. Tours anchor targets via `[data-tour]` queries — a renamed or removed control silently breaks a step. Before declaring done on any frontend change, `grep -r "data-tour" frontend/src/components/` and confirm the steps files still match the page. See [docs/frontend/product-tour.md](docs/frontend/product-tour.md).
 ## Doc shape (you can pattern-match these)
 
 ```

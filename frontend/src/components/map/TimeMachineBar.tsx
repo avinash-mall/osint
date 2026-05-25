@@ -91,6 +91,7 @@ export default function TimeMachineBar({
   const [showTip, setShowTip] = useState(false);
 
   return (
+    <div data-tour="time-machine">
     <Panel style={{ padding: 8 }}>
       <div className="time-machine-header" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
         <button
@@ -347,6 +348,7 @@ export default function TimeMachineBar({
         <LegendDot color="#ff79c6" label="HSI" m="hsi" />
       </div>
     </Panel>
+    </div>
   );
 }
 

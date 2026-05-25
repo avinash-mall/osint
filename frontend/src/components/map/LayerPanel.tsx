@@ -231,6 +231,7 @@ export default function LayerPanel({
 
   return (
     <section
+      data-tour="layer-panel"
       className="sentinel-panel map-float-panel map-left-panel"
       style={{
         position: 'absolute',
@@ -263,7 +264,7 @@ export default function LayerPanel({
 
       <div className="sentinel-scroll">
         {/* Basemap selector */}
-        <div className="border-b border-sentinel-line p-2">
+        <div data-tour="basemap-selector" className="border-b border-sentinel-line p-2">
           <div className="layer-panel-basemap-grid">
             {([
               { k: 'base',    label: 'BASE',    sub: 'Dark vector' },
@@ -292,7 +293,7 @@ export default function LayerPanel({
               );
             })}
           </div>
-          <div className="mt-2 flex items-center gap-2">
+          <div data-tour="opacity-slider" className="mt-2 flex items-center gap-2">
             <span className="sentinel-label">
               {activeBaseLayer === 'sat' ? 'IMAGERY' : `${activeBaseLayer.toUpperCase()} OVERLAY`}
             </span>
@@ -332,33 +333,37 @@ export default function LayerPanel({
 
         {overlaysOpen && (
           <>
-            {liveLayerRows.map((layer) => (
-              <OverlayRow
-                key={layer.key}
-                label={layer.label}
-                metric={layer.metric}
-                colorVar={layer.colorVar}
-                active={activeLayers[layer.key as keyof ActiveLayerMap]}
-                onToggle={() => toggleLayer(layer.key as keyof ActiveLayerMap)}
-              />
-            ))}
-            <div className="layer-panel-subhead">Analytics tools</div>
-            {analyticsToolRows.map((layer) => (
-              <OverlayRow
-                key={layer.key}
-                label={layer.label}
-                metric={layer.metric}
-                colorVar={layer.colorVar}
-                active={activeLayers[layer.key as keyof ActiveLayerMap]}
-                disabled={!layer.available}
-                onToggle={() => toggleLayer(layer.key as keyof ActiveLayerMap)}
-              />
-            ))}
+            <div data-tour="layer-toggles">
+              {liveLayerRows.map((layer) => (
+                <OverlayRow
+                  key={layer.key}
+                  label={layer.label}
+                  metric={layer.metric}
+                  colorVar={layer.colorVar}
+                  active={activeLayers[layer.key as keyof ActiveLayerMap]}
+                  onToggle={() => toggleLayer(layer.key as keyof ActiveLayerMap)}
+                />
+              ))}
+            </div>
+            <div data-tour="analytics-tools">
+              <div className="layer-panel-subhead">Analytics tools</div>
+              {analyticsToolRows.map((layer) => (
+                <OverlayRow
+                  key={layer.key}
+                  label={layer.label}
+                  metric={layer.metric}
+                  colorVar={layer.colorVar}
+                  active={activeLayers[layer.key as keyof ActiveLayerMap]}
+                  disabled={!layer.available}
+                  onToggle={() => toggleLayer(layer.key as keyof ActiveLayerMap)}
+                />
+              ))}
+            </div>
           </>
         )}
 
         {/* Detection Classes section header */}
-        <div className="border-b border-sentinel-line bg-sentinel-panel-2 px-3 py-2">
+        <div data-tour="detection-classes" className="border-b border-sentinel-line bg-sentinel-panel-2 px-3 py-2">
           <div className="flex items-center gap-2">
             <span className="sentinel-label flex-1">Detection Classes / {visibleDetectionCount}</span>
             <div className="grid grid-cols-2 border border-sentinel-line-2">
@@ -493,7 +498,7 @@ export default function LayerPanel({
         })}
 
         {imagery.length > 0 && (
-          <>
+          <div data-tour="imagery-list">
             <div className="sentinel-panel-header border-t border-sentinel-line">
               <Satellite className="h-4 w-4" />
               <span>Imagery</span>
@@ -518,7 +523,7 @@ export default function LayerPanel({
                 <span className="sentinel-tag info">SAT</span>
               </button>
             ))}
-          </>
+          </div>
         )}
       </div>
     </section>
