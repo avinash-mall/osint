@@ -83,14 +83,6 @@ def _chip_paths_for_class(dataset_root: Path, source_terms: list[str], max_per_c
     return results
 
 
-def _scope_to_seed_platforms(rowcount: int, seed_platform_ids: set[str]) -> int:
-    """Centroid recompute may touch platforms outside the current seed batch
-    (e.g., stale test rows). Return the count constrained to platforms in
-    this run's seed. Caller filters by the set of platform_ids upserted.
-    """
-    return min(rowcount, len(seed_platform_ids))
-
-
 def run(
     *,
     seed_path: str,
