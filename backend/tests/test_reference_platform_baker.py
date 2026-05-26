@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -172,7 +171,7 @@ def test_bake_script_seeds_dota_platforms_and_inserts_chips(ensured_schema, tmp_
       4. Insert each chip with the returned embedding.
       5. Recompute centroids.
     """
-    import io, base64, struct
+    import base64
     from PIL import Image
 
     # Build a 2-platform, 3-chip-each fixture seed
@@ -191,6 +190,8 @@ def test_bake_script_seeds_dota_platforms_and_inserts_chips(ensured_schema, tmp_
     seed_path.write_text(json.dumps(fixture_seed))
 
     # Build a fixture chip tree with 3 small PNGs per class
+    # 32x32 is symbolic — _fake_post ignores image content. If you ever swap
+    # in a real /embed call here, raise this to >= 224x224.
     chips_root = tmp_path / "chips"
     for cls in ("plane", "ship"):
         (chips_root / cls).mkdir(parents=True)
@@ -200,7 +201,14 @@ def test_bake_script_seeds_dota_platforms_and_inserts_chips(ensured_schema, tmp_
 
     # Mock the /embed HTTP call to return a deterministic fp16-encoded vector
     def _fake_post(url, files, timeout):
-        cls_name = Path(files["image"][0]).parent.name
+        image_field = files["image"][0]
+        # Contract: bake._post_embed must pass an absolute chip path so the
+        # parent directory name reveals the class (plane / ship / etc.).
+        assert "/" in image_field, (
+            f"bake._post_embed must pass an absolute chip path, got {image_field!r}"
+        )
+        cls_name = Path(image_field).parent.name
+        assert cls_name in ("plane", "ship"), f"unexpected class dir: {cls_name!r}"
         # Vector that differs per class; identical across chips of the same class
         v = np.full(1024, 0.1 if cls_name == "plane" else 0.5, dtype=np.float16)
         b64 = base64.b64encode(v.tobytes()).decode("ascii")
@@ -223,10 +231,14 @@ def test_bake_script_seeds_dota_platforms_and_inserts_chips(ensured_schema, tmp_
     )
     assert rows_written["platforms"] == 2
     assert rows_written["chips"] == 6
+    # rows_written["centroids"] is the count of platforms recomputed for the
+    # seed-named platforms in THIS run (not a global recompute rowcount,
+    # which would also touch leftover pytest-bake-C from test 4).
     assert rows_written["centroids"] == 2
 
     # Confirm centroids are non-null and differ between platforms
-    with postgis_db_cursor() as cur:
+    from database import postgis_db
+    with postgis_db.get_cursor(commit=False) as cur:
         cur.execute(
             "SELECT platform_name, centroid_overhead FROM reference_platforms "
             "WHERE platform_name IN ('pytest-bake-plane', 'pytest-bake-ship')"
@@ -235,9 +247,3 @@ def test_bake_script_seeds_dota_platforms_and_inserts_chips(ensured_schema, tmp_
                 for r in cur.fetchall()}
     assert rows["pytest-bake-plane"].mean() == pytest.approx(0.1, abs=5e-4)
     assert rows["pytest-bake-ship"].mean() == pytest.approx(0.5, abs=5e-4)
-
-
-def postgis_db_cursor():
-    """Small adapter so the test above can use a plain `with … as cur:` block."""
-    from database import postgis_db
-    return postgis_db.get_cursor(commit=False)
