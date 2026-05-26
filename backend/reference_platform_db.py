@@ -183,3 +183,111 @@ def recompute_platform_centroids(cursor, *, platform_id: Optional[str] = None) -
         params,
     )
     return cursor.rowcount
+
+
+def find_similar_platforms(
+    cursor,
+    *,
+    embedding: Iterable[float],
+    view_domain: str = "overhead",
+    top_k: int = 3,
+    candidate_pool: int = 20,
+) -> list[dict]:
+    """Return top-k platforms whose centroid is closest to the given embedding.
+
+    Two-stage retrieval:
+      1. Centroid HNSW search → top `candidate_pool` platforms (cheap, dense).
+      2. Re-rank by best per-chip cosine score among each winner's chips (refined).
+
+    Returns a list of dicts ordered by descending score:
+        [{"platform_id": str, "platform_name": str, "platform_family": str,
+          "score": float, "matched_chip_ids": list[str]}, ...]
+
+    `score` is `1 - cosine_distance` so values are in approximately [-1, 1];
+    for unit-normalised DINOv3-SAT vectors they land in [0, 1].
+
+    Returns an empty list if no platform has a centroid in `view_domain`.
+    """
+    if view_domain not in ("overhead", "ground"):
+        raise ValueError(f"view_domain must be 'overhead' or 'ground', got {view_domain!r}")
+
+    # Preserve numpy.ndarray as-is for the pgvector adapter; list-ify other iterables.
+    try:
+        import numpy as _np
+        _is_np = isinstance(embedding, _np.ndarray)
+    except ImportError:
+        _is_np = False
+    q = embedding if _is_np else list(embedding)
+
+    centroid_col = "centroid_overhead" if view_domain == "overhead" else "centroid_ground"
+    chip_col = "embedding_overhead" if view_domain == "overhead" else "embedding_ground"
+
+    # Stage 1: centroid HNSW top-K
+    cursor.execute(
+        f"""
+        SELECT id, platform_name, platform_family,
+               1 - ({centroid_col} <=> %s) AS centroid_score
+          FROM reference_platforms
+         WHERE {centroid_col} IS NOT NULL
+         ORDER BY {centroid_col} <=> %s
+         LIMIT %s
+        """,
+        (q, q, candidate_pool),
+    )
+    centroid_winners = cursor.fetchall()
+    if not centroid_winners:
+        return []
+
+    winner_ids = [(r["id"] if isinstance(r, dict) else r[0]) for r in centroid_winners]
+    winner_names = {
+        (r["id"] if isinstance(r, dict) else r[0]): {
+            "platform_name": r["platform_name"] if isinstance(r, dict) else r[1],
+            "platform_family": r["platform_family"] if isinstance(r, dict) else r[2],
+        }
+        for r in centroid_winners
+    }
+
+    # Stage 2: for each winner, find the best per-chip cosine. We do one
+    # round-trip with a window function — gives best-chip-per-platform
+    # and avoids N+1 SELECTs.
+    cursor.execute(
+        f"""
+        WITH ranked AS (
+            SELECT c.platform_id,
+                   c.id::text AS chip_id,
+                   1 - (c.{chip_col} <=> %s) AS chip_score,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY c.platform_id
+                       ORDER BY c.{chip_col} <=> %s
+                   ) AS rn
+              FROM reference_chips c
+             WHERE c.platform_id = ANY(%s::uuid[])
+               AND c.view_domain = %s
+               AND c.{chip_col} IS NOT NULL
+        )
+        SELECT platform_id::text AS platform_id,
+               MAX(chip_score) AS best_chip_score,
+               array_agg(chip_id ORDER BY chip_score DESC) FILTER (WHERE rn <= 3) AS top_chip_ids
+          FROM ranked
+         GROUP BY platform_id
+         ORDER BY best_chip_score DESC
+         LIMIT %s
+        """,
+        (q, q, winner_ids, view_domain, top_k),
+    )
+    rows = cursor.fetchall()
+
+    results = []
+    for r in rows:
+        pid = r["platform_id"] if isinstance(r, dict) else r[0]
+        score = r["best_chip_score"] if isinstance(r, dict) else r[1]
+        chip_ids = r["top_chip_ids"] if isinstance(r, dict) else r[2]
+        info = winner_names.get(pid, {"platform_name": None, "platform_family": None})
+        results.append({
+            "platform_id": pid,
+            "platform_name": info["platform_name"],
+            "platform_family": info["platform_family"],
+            "score": float(score) if score is not None else 0.0,
+            "matched_chip_ids": list(chip_ids) if chip_ids else [],
+        })
+    return results

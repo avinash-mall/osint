@@ -19,6 +19,7 @@ Defines the Reference Embedding Vector Database schema:
 
 ## Key symbols
 - [`ensure_reference_platform_tables()`](../../backend/platform_schema.py#L659-L764) — idempotent migration; called from `ensure_platform_tables()` and (transitively) from the FastAPI lifespan + any router that uses `_ensure_*` guards.
+- [`find_similar_platforms()`](../../backend/reference_platform_db.py#L188-L293) — two-stage read-path helper: centroid HNSW top-K (`candidate_pool`) → re-rank by best per-chip cosine. Returns `[{platform_id, platform_name, platform_family, score, matched_chip_ids}, ...]` ordered by descending score. Caller compares `score` against `REFERENCE_ID_AUTO_THRESHOLD` to decide auto-apply vs queue-for-review.
 
 ## Inputs / Outputs
 - Inputs: none beyond an open Postgres connection from `database.postgis_db`.
