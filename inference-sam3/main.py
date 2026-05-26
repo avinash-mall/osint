@@ -1239,6 +1239,30 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
         _leave_request()
 
 
+@app.post("/embed")
+async def embed_endpoint(image: UploadFile = File(...)):
+    """Compute a DINOv3-SAT 1024-d embedding of the supplied image.
+
+    Lightweight alternative to /detect for bake scripts and analyst lookup
+    that only need the embedding, not the full detection pipeline.
+
+    Returns:
+        {"model": str, "dim": 1024, "fp16_b64": str}
+    """
+    bundle = _next_bundle().get("dinov3_sat")
+    if bundle is None:
+        raise HTTPException(status_code=503, detail="dinov3_sat layer not loaded")
+    try:
+        img_bytes = await image.read()
+        pil_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"could not decode image: {e}")
+    result = embedding.dinov3_pool(bundle, pil_img)
+    if not result.get("fp16_b64"):
+        raise HTTPException(status_code=500, detail="embedding computation returned empty result")
+    return result
+
+
 @app.post("/detect_raw")
 async def detect_raw(request: "Request"):  # type: ignore[name-defined]
     """Raw-binary chip endpoint that skips PIL/PNG decoding.

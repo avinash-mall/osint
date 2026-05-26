@@ -1,12 +1,12 @@
 # `inference-sam3/main.py` — Service Entrypoint
 
 **Path:** [inference-sam3/main.py](../../inference-sam3/main.py)
-**Lines:** ~1660
+**Lines:** ~1750
 **Depends on:** Every other module in `inference-sam3/`, plus `torch`, `cv2`, `PIL`, `fastapi`
 
 ## Purpose
 
-FastAPI app for the GPU inference service. Holds request handlers (`/health`, `/load`, `/unload`, `/detect`, `/detect_video`), the profile pool lifecycle, per-request metrics, the prompt-resolution cache.
+FastAPI app for the GPU inference service. Holds request handlers (`/health`, `/load`, `/unload`, `/detect`, `/embed`, `/detect_video`), the profile pool lifecycle, per-request metrics, the prompt-resolution cache.
 
 ## Why this design
 
@@ -20,6 +20,7 @@ FastAPI app for the GPU inference service. Holds request handlers (`/health`, `/
 - [`load_profile`](../../inference-sam3/main.py#L817-L820) — `POST /load`
 - [`unload_models`](../../inference-sam3/main.py#L824-L835) — `POST /unload` (re-execs the process)
 - `/detect` handler — [#L1095-L1173](../../inference-sam3/main.py#L1095-L1173)
+- [`embed_endpoint`](../../inference-sam3/main.py#L1242-L1265) — `POST /embed` — standalone DINOv3-SAT 1024-d embedding for bake scripts + analyst lookup; returns `{model, dim, fp16_b64}`. 503 when the active profile lacks `dinov3_sat`.
 - `/detect_video` handler — [#L1288-L1557](../../inference-sam3/main.py#L1288-L1557)
 
 ## Key symbols (internal)
