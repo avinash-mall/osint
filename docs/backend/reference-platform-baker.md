@@ -28,30 +28,38 @@ Designed for build-time / long-running-pipeline use — not request-path.
 - **Outputs:** new/updated rows in `reference_platforms` and `reference_chips`; per-platform centroids; a stdout JSON `{platforms, chips, chips_failed, centroids}`.
 
 ## Failure modes
-- inference-sam3 returns 503 ("dinov3_sat layer not loaded") → Plan B Task 2's `_ensure_profile("imagery")` auto-heals on the first call; if it still fails, the operator can `POST /load -d '{"profile":"imagery"}'` manually.
+- inference-sam3 returns 503 ("dinov3_sat layer not loaded") → the `/embed` handler's first-line `_ensure_profile("imagery")` call auto-heals on the first request (cold load ~10–30 s); if the failure persists, the operator can `POST /load -d '{"profile":"imagery"}'` manually. See [embed-endpoint.md](../inference/embed-endpoint.md).
 - Network timeout → tunable via `REFERENCE_EMBED_TIMEOUT` env (default 60 s).
 - Seed file references a dataset key absent from `source_terms_per_dataset` → entry silently skipped (intentional: lets one manifest cover many datasets).
 - Chip directory missing for a listed class → log a warning, skip that class.
 - Zero chips inserted with seeded platforms → `RuntimeError` (fail-loud).
 
 ## DOTA proof-of-life recipe
-The dataset on disk lives at `/nvme/osint/inference-sam3/eval/datasets/dota/` (NOT `dota_val/` — the `_val` directory has a stub schema). It has `labels.json` + a `chips/` subdir. The val set is small (~30 rows / 60 chip files) so not all 18 DOTA-class platforms get chips — typically 10 of the 18 populate after staging. That's expected for proof-of-life.
+The dataset on disk lives at `./inference-sam3/eval/datasets/dota/` on the host (NOT `dota_val/` — the `_val` directory has a stub schema). It has `labels.json` + a `chips/` subdir. The val set is small (~30 rows / 60 chip files) so not all 18 DOTA-class platforms get chips — typically 10 of the 18 populate after staging. That's expected for proof-of-life.
 
-Recipe (run inside the backend container):
+Cross-container path problem: `inference-sam3` has the DOTA tree at `/app/eval/datasets/dota/` (its bind-mount), but it does NOT mount `/data/datasets/`. `backend` has `/data/datasets/` (the `dataset_data` named volume) but does NOT see the DOTA tree. The bridge is `docker compose cp` from the host into the backend container — the host has the DOTA tree directly under the `./inference-sam3/` bind-mount.
+
+Recipe (run from the repo root on the host):
 ```
-# Stage chips from the source layout into the per-class layout
-python scripts/stage_dota_chips.py \
+# 1. Copy the DOTA source from the host bind-mount into the backend container.
+docker compose cp ./inference-sam3/eval/datasets/dota backend:/data/datasets/dota_src
+
+# 2. Stage chips from the source layout into the per-class layout (inside backend).
+docker compose exec -T backend python /app/scripts/stage_dota_chips.py \
     --labels /data/datasets/dota_src/labels.json \
-    --chips-dir /data/datasets/dota_src \
+    --chips-dir /data/datasets/dota_src/chips \
     --out-root /data/datasets/reference-chips/dota
 
-# Run the bake (requires INFERENCE_SAM3_URL env or default http://inference-sam3:8001)
-python -m scripts.bake_reference_index \
+# 3. Run the bake (uses INFERENCE_SAM3_URL env or default http://inference-sam3:8001).
+docker compose exec -T backend python -m scripts.bake_reference_index \
     --seed /app/scripts/seeds/reference_platforms.seed.json \
     --dataset dota \
     --dataset-root /data/datasets/reference-chips/dota \
     --license CC-BY-4.0 \
     --max-chips-per-class 20
+
+# 4. Optional: drop the temporary copy once the bake is durable.
+docker compose exec -T backend rm -rf /data/datasets/dota_src
 ```
 
 ## Cross-references
