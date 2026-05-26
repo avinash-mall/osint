@@ -658,7 +658,7 @@ def auto_seed_ontology_if_empty() -> None:
 
 def ensure_reference_platform_tables() -> None:
     """Reference Embedding DB schema — see
-    /home/avinash/.claude/plans/i-want-to-build-breezy-snail.md and
+    docs/superpowers/plans/2026-05-26-reference-db-plan-a-pgvector-schema.md and
     docs/backend/reference-platform-db.md.
 
     Idempotent. Safe to call multiple times.
