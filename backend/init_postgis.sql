@@ -1,6 +1,10 @@
 -- Enable PostGIS extension
 CREATE EXTENSION IF NOT EXISTS postgis;
 
+-- Enable pgvector extension (Reference Embedding DB — see
+-- docs/decisions/why-pgvector-for-reference-db.md)
+CREATE EXTENSION IF NOT EXISTS vector;
+
 -- Satellite imagery catalog
 CREATE TABLE IF NOT EXISTS satellite_passes (
     id SERIAL PRIMARY KEY,
