@@ -9,8 +9,8 @@ Single entry point for getting data into the platform. Combines sensor-aware ima
 
 ## Sections
 
-1. **Imagery upload** — sensor dropdown (Optical / Multispectral / Hyperspectral / SAR / FMV) drives `modality` + `enabled_layers` for the request body — see [architecture/data-flow-imagery.md#modality-dispatch](../architecture/data-flow-imagery.md#modality-dispatch).
-2. **FMV upload** — multi-file MP4 + optional `.srt` sidecar.
+1. **Imagery upload** — sensor dropdown (Optical / Multispectral / Hyperspectral / SAR / FMV) drives `modality` + `enabled_layers` for the request body — see [architecture/data-flow-imagery.md#modality-dispatch](../architecture/data-flow-imagery.md#modality-dispatch). A `(model, prompt_mode)` selector pair sits above the Defence-ontology picker and mirrors the FMV form: `sam3 + pcs` (default) runs the existing multi-layer fusion, `yolo26 + amg` runs YOLOE-PF only, `yolo26 + pcs` runs YOLOE-SEG with the analyst's prompt list (or `FMV_FALLBACK_PROMPTS` if the picker is empty). See [decisions/why-imagery-yoloe-mirrors-fmv.md](../decisions/why-imagery-yoloe-mirrors-fmv.md).
+2. **FMV upload** — multi-file MP4 + optional `.srt` sidecar, same `(model, prompt_mode)` selector pair.
 3. **URL ingest** — fetches from a remote URL on the backend side.
 4. **Feeds** — connect/disconnect HTTP polling feeds; per-feed event log.
 5. **Recent uploads** — live `GET /api/ingest/uploads` listing with per-row status and a link to the resulting satellite pass / FMV clip.

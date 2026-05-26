@@ -227,11 +227,56 @@ def upload_imagery(
     ontology_branch: Optional[str] = Form(None),
     modality: Optional[str] = Form(None),
     enabled_layers: Optional[str] = Form(None),
+    model: Optional[str] = Form(None),
+    prompt_mode: Optional[str] = Form(None),
     allow_synthetic_telemetry: bool = Form(False),
 ):
     ensure_platform_tables()
     filename = safe_filename(file.filename or "upload.tif")
     media_type, handler = classify_upload(filename)
+
+    # For imagery: parse enabled_layers JSON once, then resolve
+    # (model, prompt_mode) into overrides. Mirrors POST /api/fmv/clips
+    # in backend/main.py so YOLOE-PF (amg) / YOLOE-SEG (pcs) routes are
+    # reachable from the imagery upload form too. Defaults (sam3 + pcs)
+    # preserve today's sensor-pipeline behaviour for clients that omit
+    # the new form fields.
+    parsed_enabled_layers: Optional[list[str]] = None
+    if enabled_layers:
+        try:
+            parsed_enabled_layers = json.loads(enabled_layers)
+            if not isinstance(parsed_enabled_layers, list):
+                parsed_enabled_layers = None
+        except (TypeError, json.JSONDecodeError):
+            parsed_enabled_layers = None
+    resolved_model: Optional[str] = None
+    resolved_prompt_mode: Optional[str] = None
+    if media_type == "imagery":
+        resolved_model = (model or "sam3").strip().lower()
+        resolved_prompt_mode = (prompt_mode or "pcs").strip().lower()
+        if resolved_prompt_mode not in {"pcs", "amg"}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"prompt_mode must be 'pcs' or 'amg', got {prompt_mode!r}",
+            )
+        if resolved_model not in {"sam3", "yolo26"}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"model must be 'sam3' or 'yolo26', got {model!r}",
+            )
+        if resolved_model == "sam3" and resolved_prompt_mode == "amg":
+            raise HTTPException(
+                status_code=400,
+                detail="SAM 3 imagery does not support AMG; pick model='yolo26' or prompt_mode='pcs'",
+            )
+        if resolved_model == "yolo26":
+            if resolved_prompt_mode == "amg":
+                parsed_enabled_layers = ["yoloe_pf"]
+                text_prompts = None
+            else:
+                parsed_enabled_layers = ["yoloe_seg"]
+                if not text_prompts:
+                    text_prompts = ",".join(_fmv_fallback_prompts())
 
     if media_type in {"imagery", "fmv"}:
         try:
@@ -293,7 +338,9 @@ def upload_imagery(
                         "text_prompts": text_prompts,
                         "ontology_branch": ontology_branch,
                         "modality": modality,
-                        "enabled_layers": enabled_layers,
+                        "enabled_layers": parsed_enabled_layers,
+                        "model": resolved_model,
+                        "prompt_mode": resolved_prompt_mode,
                         "bytes": size,
                         "raster_metadata": raster_metadata,
                         "source_hash": None,
@@ -307,14 +354,6 @@ def upload_imagery(
         upload_job_recorded = True
 
     if media_type == "imagery" and auto_process:
-        parsed_enabled_layers = None
-        if enabled_layers:
-            try:
-                parsed_enabled_layers = json.loads(enabled_layers)
-                if not isinstance(parsed_enabled_layers, list):
-                    parsed_enabled_layers = None
-            except (TypeError, json.JSONDecodeError):
-                parsed_enabled_layers = None
         task = process_satellite_imagery.delay(
             str(local_path), sensor_type, effective_acquisition_time, upload_id,
             enabled_layers=parsed_enabled_layers,

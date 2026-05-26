@@ -64,6 +64,11 @@ export default function IngestConnect() {
   const [sensorType, setSensorType] = useState('Optical');
   const [fmvModel, setFmvModel] = useState<'sam3' | 'yolo26'>('sam3');
   const [fmvPromptMode, setFmvPromptMode] = useState<'pcs' | 'amg'>('pcs');
+  // Imagery (still-image) model + prompt-mode — mirrors the FMV selectors
+  // above. Defaults preserve today's SAM3 sensor-pipeline behaviour;
+  // yolo26 switches the backend to YOLOE-PF (amg) or YOLOE-SEG (pcs).
+  const [imageryModel, setImageryModel] = useState<'sam3' | 'yolo26'>('sam3');
+  const [imageryPromptMode, setImageryPromptMode] = useState<'pcs' | 'amg'>('pcs');
   // Phase 8.41: opt-in synthetic Dubai telemetry. Default off — uploads
   // without real KLV/GPMD/SRT now fail with HTTP 422 unless this is ticked.
   const [fmvAllowSynthetic, setFmvAllowSynthetic] = useState(false);
@@ -278,6 +283,10 @@ export default function IngestConnect() {
         if (selectedPrompts.length > 0) {
           form.append('text_prompts', JSON.stringify(selectedPrompts));
         }
+        // Mirrors the FMV branch — backend resolves these into
+        // enabled_layers + text_prompts overrides for the YOLOE paths.
+        form.append('model', imageryModel);
+        form.append('prompt_mode', imageryPromptMode);
       } else {
         // FMV: route through /api/fmv/clips so the sidecar (KLV/SRT) is
         // attached and the clip record is created with HLS transcode +
@@ -677,6 +686,66 @@ export default function IngestConnect() {
             </div>
           )}
         </div>
+
+        {mediaType === 'imagery' && (
+        <div className="ingest-two-col grid grid-cols-1 gap-3">
+          <div>
+            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">Model</div>
+            <select
+              value={imageryModel}
+              onChange={(event) => {
+                const next = event.target.value as 'sam3' | 'yolo26';
+                setImageryModel(next);
+                if (next === 'sam3' && imageryPromptMode === 'amg') setImageryPromptMode('pcs');
+              }}
+              disabled={uploading}
+              className="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm"
+              title="Inference engine for stills. SAM 3.1 runs the multi-layer sensor pipeline (SAM3 + DOTA-OBB + Grounding-DINO + DINOv3-SAT etc.); YOLO 26 runs YOLOE-26x-seg(-pf) only and supports promptless AMG."
+            >
+              <option value="sam3">SAM 3.1 (default — sensor pipeline)</option>
+              <option value="yolo26">YOLO 26 (YOLOE-26x-seg)</option>
+            </select>
+          </div>
+          <div>
+            <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">Detection mode</div>
+            <div className="inline-flex border border-slate-700 rounded overflow-hidden w-full">
+              {imageryModel === 'yolo26' && (
+                <button
+                  type="button"
+                  onClick={() => setImageryPromptMode('amg')}
+                  disabled={uploading}
+                  title="Automatic Mask Generation — YOLOE-26x-seg-pf promptless closed-set detection. Object picker below is ignored."
+                  className={`flex-1 px-3 py-2 text-xs font-bold uppercase tracking-wider ${
+                    imageryPromptMode === 'amg'
+                      ? 'bg-blue-500/20 text-blue-200'
+                      : 'bg-slate-900 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  AMG
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setImageryPromptMode('pcs')}
+                disabled={uploading}
+                title="Promptable Concept Segmentation — detect named classes from the object picker / ontology"
+                className={`flex-1 px-3 py-2 text-xs font-bold uppercase tracking-wider ${
+                  imageryPromptMode === 'pcs'
+                    ? 'bg-blue-500/20 text-blue-200'
+                    : 'bg-slate-900 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                PCS
+              </button>
+            </div>
+          </div>
+          {imageryModel === 'yolo26' && imageryPromptMode === 'amg' && (
+            <div className="col-span-full font-mono text-[10px] text-amber-300/90">
+              AMG ignores the object picker below — YOLOE-PF emits its baked-in LVIS vocabulary.
+            </div>
+          )}
+        </div>
+        )}
 
         {mediaType === 'imagery' && (
         <div className="border border-slate-800 bg-slate-900/70 rounded">

@@ -41,7 +41,7 @@ FastAPI app for the GPU inference service. Holds request handlers (`/health`, `/
 | `metadata.text_prompts` | precision defaults | Strings to text-prompt SAM3. Explicit empty list → 400 unless `prompt_boxes` supplied |
 | `metadata.ontology_branch` | none (full vocab) | Ontology branch id; in `SAM3_DEFAULT_PROMPT_SOURCE=ontology` mode, scopes the fetched vocabulary to that branch + descendants. Ignored when `text_prompts` is given |
 | `metadata.prompt_boxes` | `[]` | Box prompts: `[{bbox: cxcywh_norm, class: str}, ...]` |
-| `metadata.enabled_layers` | profile defaults | Subset of `sam3, dota_obb, grounding_dino, remoteclip, dinov3_sat, prithvi, terramind, yoloe` |
+| `metadata.enabled_layers` | profile defaults | Subset of `sam3, dota_obb, grounding_dino, remoteclip, dinov3_sat, prithvi, terramind`. Setting it to **exactly** `["yoloe_pf"]` or `["yoloe_seg"]` activates YOLOE-exclusive mode in [`_detect_pipeline`](../../inference-sam3/main.py#L893) — SAM3 is skipped and YOLOE runs per chip instead (the imagery upload form's `model=yolo26 + prompt_mode=amg/pcs` paths). See [decisions/why-imagery-yoloe-mirrors-fmv.md](../decisions/why-imagery-yoloe-mirrors-fmv.md). |
 | `metadata.hls_timesteps` | `1` | Set `3` for HLS multi-temporal crop classifier |
 
 Per-detection output includes `source_layer` (`sam3`, `dota_obb`, `grounding_dino`, etc.) → backend calibration + NMS provenance distinguish detector families. When `remoteclip` loaded + enabled, detections also include `semantic_verifier` + `semantic_margin` for backend evidence ranking. Response includes `debug_counts` (`prompt_count`, `candidates_by_layer`, `suppressed_by_nms`, `suppressed_by_policy`) for false-positive triage.

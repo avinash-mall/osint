@@ -26,11 +26,17 @@ YOLOE_IOU = float(os.getenv("YOLOE_IOU", "0.50"))
 YOLOE_IMGSZ = int(os.getenv("YOLOE_IMGSZ", "640"))
 
 # GPU optimization flags emitted by scripts/gpu_profiles.py:runtime_env.
-# Defaults match the safest behaviour (fp32, no layout change) so an
-# unset env doesn't surprise developer machines.
+# - fuse: Conv+BN folding, safe everywhere
+# - half: forced OFF — ultralytics' YOLOE Lrpc vocab head keeps fp32
+#   sub-modules even after model.half(), so a half-cast body trips
+#   "mat1 and mat2 must have the same dtype" inside set_classes() and
+#   the SwiGLU w12 Linear during predict(). Producing zero detections
+#   silently on GPU. See docs/decisions/why-yoloe-half-disabled.md.
+# - channels_last: forced OFF — same Lrpc head doesn't honour the
+#   layout transform; pinned off until tested per-GPU.
 YOLOE_FUSE = os.getenv("SAM3_YOLO_FUSE", "1").strip().lower() in {"1", "true", "yes", "on"}
-YOLOE_HALF = os.getenv("SAM3_YOLO_HALF", "0").strip().lower() in {"1", "true", "yes", "on"}
-YOLOE_CHANNELS_LAST = os.getenv("SAM3_YOLO_CHANNELS_LAST", "0").strip().lower() in {"1", "true", "yes", "on"}
+YOLOE_HALF = False
+YOLOE_CHANNELS_LAST = False
 
 # Where the Dockerfile bakes the MobileCLIP2-B TorchScript text encoder that
 # ultralytics' YOLOE pulls in text-prompt mode. Default matches the path used
@@ -198,7 +204,7 @@ def run(
             name="yoloe.predict",
         )
     except Exception as exc:
-        print(f"[yoloe] inference failed: {exc}")
+        print(f"[yoloe] inference failed: {exc}", flush=True)
         return []
 
     out: list[tuple[np.ndarray, list[float], float, str]] = []
@@ -209,15 +215,20 @@ def run(
         if boxes is None:
             continue
         try:
-            xyxy = boxes.xyxy.cpu().numpy()
-            confs = boxes.conf.cpu().numpy()
-            cls_ids = boxes.cls.cpu().numpy().astype(int)
+            # Cast to float32 first — under autocast / bf16 the model can
+            # return bf16 boxes/conf, and numpy() refuses to convert
+            # ScalarType BFloat16. The except clause used to swallow this
+            # and silently return zero detections.
+            xyxy = boxes.xyxy.float().cpu().numpy()
+            confs = boxes.conf.float().cpu().numpy()
+            cls_ids = boxes.cls.long().cpu().numpy()
         except Exception:
             continue
         mask_data: np.ndarray | None = None
         if masks is not None:
             try:
-                mask_data = masks.data.cpu().numpy()
+                # Same bf16-vs-numpy guard as the boxes block above.
+                mask_data = masks.data.float().cpu().numpy()
             except Exception:
                 mask_data = None
         for idx in range(len(confs)):

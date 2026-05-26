@@ -209,6 +209,11 @@ PROFILE_COMPONENTS: dict[str, tuple[str, ...]] = {
         "dota_obb" if SAM3_LOAD_DOTA_OBB else None,
         "grounding_dino" if SAM3_LOAD_GROUNDING_DINO else None,
         "remoteclip" if SAM3_LOAD_REMOTECLIP else None,
+        # YOLOE is reachable from the imagery upload form (yolo26+amg /
+        # yolo26+pcs) as an alternative source layer to SAM3. The image
+        # /detect path runs YOLOE only when enabled_layers selects it
+        # exclusively, so this load is cheap when unused.
+        "yoloe" if SAM3_LOAD_YOLOE else None,
     ),
 }
 PROFILE_COMPONENTS["imagery"] = tuple(c for c in PROFILE_COMPONENTS["imagery"] if c)
@@ -928,7 +933,52 @@ async def _detect_pipeline(
     sam3_timings: dict[str, float] = {}
     layer_candidates: list[tuple[str, tuple[Any, Any, Any, Any]]] = []
     candidates_by_layer: dict[str, int] = {}
-    if isinstance(prompt_boxes, list) and prompt_boxes:
+    # YOLOE-exclusive imagery mode: when the caller sets enabled_layers to
+    # exactly {"yoloe_pf"} or {"yoloe_seg"} (the imagery upload form's
+    # yolo26+amg / yolo26+pcs paths), skip SAM3 entirely and run YOLOE
+    # instead. Mirrors how POST /api/fmv/clips routes yolo26 uploads off
+    # the SAM3 multiplex tracker. The other specialist layers
+    # (DOTA-OBB / GDINO / Prithvi) are already filtered out by their own
+    # _layer_active() guards when only yoloe_* is in _enabled.
+    _yoloe_exclusive = _enabled in ({"yoloe_pf"}, {"yoloe_seg"})
+    if _yoloe_exclusive:
+        yoloe_bundle = bundle.get("yoloe") or {}
+        if not (yoloe_bundle.get("pf") or yoloe_bundle.get("seg")):
+            raise HTTPException(
+                status_code=503,
+                detail="YOLOE not loaded (set SAM3_LOAD_YOLOE=1 and reload the imagery profile)",
+            )
+        if isinstance(prompt_boxes, list) and prompt_boxes:
+            # Box-prompt mode is a SAM3-only concept; YOLOE doesn't accept
+            # geometric prompts. Reject loudly so the analyst doesn't get a
+            # silently-different result.
+            raise HTTPException(
+                status_code=400,
+                detail="prompt_boxes is not supported when enabled_layers selects YOLOE",
+            )
+        _yoloe_seg = "yoloe_seg" in _enabled
+        if _yoloe_seg:
+            try:
+                prompts = resolve_prompts(meta)
+            except OntologyBackendUnavailable as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        else:
+            prompts = []
+        prompt_count = len(prompts)
+        _yoloe_slug = "yoloe_seg" if _yoloe_seg else "yoloe_pf"
+        with _track(_yoloe_slug):
+            yoloe_candidates = await run_in_threadpool(
+                yoloe.run,
+                yoloe_bundle,
+                chip3,
+                prompts if prompts else None,
+                SAM3_BOX_THR,
+            )
+        layer_candidates.extend(_tag_candidates("yoloe", yoloe_candidates))
+        candidates_by_layer["yoloe"] = len(yoloe_candidates)
+    elif isinstance(prompt_boxes, list) and prompt_boxes:
         prompt_count = len(prompt_boxes)
         with _track("sam3_image"):
             sam3_candidates = await run_in_threadpool(
