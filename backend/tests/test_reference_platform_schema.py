@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from pgvector import Vector
 
 pytestmark = pytest.mark.integration
 
@@ -131,7 +132,7 @@ def test_vector_roundtrip_and_knn_query(ensured_schema):
         register_vector(cur.connection)
 
         # Insert a platform with a known centroid
-        v = [0.1] * 1024
+        v = Vector([0.1] * 1024)
         cur.execute("""
             INSERT INTO reference_platforms (platform_name, platform_family, centroid_overhead, view_domains)
             VALUES (%s, %s, %s, %s)
@@ -141,7 +142,7 @@ def test_vector_roundtrip_and_knn_query(ensured_schema):
 
         # Insert 3 chips for it
         for i in range(3):
-            chip_v = [0.1 + 0.001 * i] * 1024
+            chip_v = Vector([0.1 + 0.001 * i] * 1024)
             cur.execute("""
                 INSERT INTO reference_chips
                     (platform_id, view_domain, source_dataset, license_spdx, chip_path, embedding_overhead)
@@ -149,7 +150,7 @@ def test_vector_roundtrip_and_knn_query(ensured_schema):
             """, (platform_id, f'/tmp/pytest-{i}.jpg', chip_v))
 
         # Query: nearest centroid to a near-by query vector
-        q = [0.105] * 1024
+        q = Vector([0.105] * 1024)
         cur.execute("""
             SELECT platform_name
               FROM reference_platforms
