@@ -54,6 +54,7 @@ def _read_object_details(source: str, source_id: str) -> dict:
             """
             SELECT designation, object_class, military_classification,
                    threat_level, affiliation, confidence_override, notes,
+                   platform_name, platform_family, platform_confidence, platform_source,
                    updated_at, updated_by
             FROM object_details
             WHERE source = %s AND source_id = %s
@@ -98,7 +99,9 @@ def _upsert_object_details(
                 updated_at              = NOW(),
                 updated_by              = EXCLUDED.updated_by
             RETURNING designation, object_class, military_classification, threat_level,
-                      affiliation, confidence_override, notes, updated_at, updated_by
+                      affiliation, confidence_override, notes,
+                      platform_name, platform_family, platform_confidence, platform_source,
+                      updated_at, updated_by
             """,
             (
                 source,

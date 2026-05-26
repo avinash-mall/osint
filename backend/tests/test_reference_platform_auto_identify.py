@@ -257,6 +257,55 @@ def test_attach_is_idempotent_on_rerun(populated_ref_db):
     assert row["n"] == n1, f"expected {n1} rows, got {row['n']}"
 
 
+def test_auto_apply_overwrites_analyst_asserted_platform(populated_ref_db):
+    """Auto-identify run REPLACES an analyst-asserted platform_name when
+    top-1 score >= threshold. Intentional contract — Plan D's UI surfaces
+    the conflict via platform_source='auto'.
+    """
+    from database import postgis_db
+    from reference_platform_db import attach_identification_candidates
+    det_id = _insert_fake_detection("pytest-autoid-overwrite")
+
+    # Step 1: analyst manually asserts platform_name = 'Manually-Asserted'
+    with postgis_db.get_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            INSERT INTO object_details
+                (source, source_id, platform_name, platform_family,
+                 platform_source, updated_by)
+            VALUES ('detection', %s, 'Manually-Asserted', 'ManualFam',
+                    'analyst', 'pytest-analyst')
+            """,
+            (str(det_id),),
+        )
+
+    # Step 2: auto-identify fires with a Red-pointing query (above threshold)
+    q = np.full(1024, 1.0, dtype=np.float32)
+    with postgis_db.get_cursor(commit=True) as cur:
+        attach_identification_candidates(
+            cur,
+            detection_id=det_id,
+            embedding=q,
+            view_domain="overhead",
+            auto_threshold=0.85,
+            top_k=3,
+        )
+
+    # Step 3: object_details.platform_name is now Red (auto overwrote analyst)
+    with postgis_db.get_cursor(commit=False) as cur:
+        cur.execute("""
+            SELECT platform_name, platform_family, platform_source
+              FROM object_details
+             WHERE source = 'detection' AND source_id = %s
+        """, (str(det_id),))
+        od = cur.fetchone()
+    assert od["platform_name"] == "pytest-autoid-Red", \
+        f"auto should have overwritten 'Manually-Asserted'; got {od['platform_name']}"
+    assert od["platform_family"] == "RedFam"
+    assert od["platform_source"] == "auto", \
+        f"platform_source should be 'auto' (signalling the overwrite); got {od['platform_source']}"
+
+
 def test_platform_confidence_check_rejects_out_of_range(populated_ref_db):
     """The CHECK constraint added in Task 1 must reject confidence > 1.0."""
     import psycopg2

@@ -332,14 +332,15 @@ def attach_identification_candidates(
         view_domain=view_domain,
         top_k=top_k,
     )
-    if not candidates:
-        return 0
 
     # Idempotency: replace any prior candidates for this detection.
+    # DELETE first so an empty-candidates re-run still clears stale rows.
     cursor.execute(
         "DELETE FROM platform_identification_candidates WHERE detection_id = %s",
         (detection_id,),
     )
+    if not candidates:
+        return 0
 
     top_score = candidates[0]["score"]
     auto_applied = top_score >= auto_threshold
@@ -371,6 +372,11 @@ def attach_identification_candidates(
         # Direct SQL UPSERT to avoid the Pydantic request-side path.
         # Touches only the four platform_* columns + source/source_id/
         # updated_by/updated_at; leaves analyst-asserted columns alone.
+        # Intentional: plain EXCLUDED (no COALESCE) means a fresh auto run
+        # overwrites prior auto verdicts. Analyst-asserted platform_* values
+        # will ALSO be overwritten — by design; Plan D's UI surfaces the
+        # conflict via platform_source='auto'. See decision doc
+        # docs/decisions/why-auto-write-with-threshold.md (Task 6).
         cursor.execute(
             """
             INSERT INTO object_details
