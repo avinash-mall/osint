@@ -31,15 +31,17 @@ class _VectorAwareConnection(Psycopg2Connection):
 
     def cursor(self, *args, **kwargs):
         if not self._vector_registered:
+            # Set the flag FIRST to break the re-entrancy cycle: register_vector
+            # itself calls conn.cursor(...) internally to query pg_type, which
+            # dispatches back to this override. Reset on failure so a later call
+            # retries once the extension is available.
+            self._vector_registered = True
             try:
                 from pgvector.psycopg2 import register_vector
                 register_vector(self)
-            except Exception:
-                # pgvector extension not yet installed in the target DB; harmless
-                # for non-reference-DB callers. Will retry on next cursor() call.
-                pass
-            else:
-                self._vector_registered = True
+            except (ImportError, psycopg2.Error) as e:
+                self._vector_registered = False
+                logger.debug("pgvector adapter registration deferred: %s", e)
         return super().cursor(*args, **kwargs)
 
 # Neo4j Configuration
