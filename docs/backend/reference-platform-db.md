@@ -22,7 +22,7 @@ Defines the Reference Embedding Vector Database schema:
 
 ## Inputs / Outputs
 - Inputs: none beyond an open Postgres connection from `database.postgis_db`.
-- Outputs: three tables, the four new `object_details` columns, four HNSW indexes (two per view domain, on both centroids and chips), six regular B-tree indexes, plus a unique index `uq_reference_chips_platform_path` on `reference_chips(platform_id, chip_path)` that backs the `ON CONFLICT` upsert used by `backend.reference_platform_db.insert_reference_chip`.
+- Outputs: three tables, the four new `object_details` columns, four HNSW indexes (two per view domain, on both centroids and chips), six regular B-tree indexes, plus a unique index `uq_reference_chips_platform_path` on `reference_chips(platform_id, chip_path)` that backs the `ON CONFLICT` upsert used by `backend.reference_platform_db.insert_reference_chip`; plus a CHECK constraint `object_details_platform_confidence_check` keeping `platform_confidence` in [0, 1].
 
 ## Failure modes
 - pgvector missing → `CREATE EXTENSION vector` raises `ERROR: could not open extension control file`. Fix: ensure the Postgres container is the derived image with `postgresql-18-pgvector` installed ([postgis/Dockerfile](../../postgis/Dockerfile)).

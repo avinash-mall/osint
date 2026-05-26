@@ -761,4 +761,17 @@ def ensure_reference_platform_tables() -> None:
         cursor.execute("ALTER TABLE object_details ADD COLUMN IF NOT EXISTS platform_name       TEXT")
         cursor.execute("ALTER TABLE object_details ADD COLUMN IF NOT EXISTS platform_family     TEXT")
         cursor.execute("ALTER TABLE object_details ADD COLUMN IF NOT EXISTS platform_confidence REAL")
+        cursor.execute("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                     WHERE conname = 'object_details_platform_confidence_check'
+                ) THEN
+                    ALTER TABLE object_details
+                        ADD CONSTRAINT object_details_platform_confidence_check
+                        CHECK (platform_confidence IS NULL OR (platform_confidence >= 0 AND platform_confidence <= 1));
+                END IF;
+            END $$;
+        """)
         cursor.execute("ALTER TABLE object_details ADD COLUMN IF NOT EXISTS platform_source     TEXT")
