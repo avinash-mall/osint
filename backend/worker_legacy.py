@@ -43,12 +43,14 @@ from threat_assessment import (
     detection_ontology,
 )
 from ontology import normalize as ontology_normalize
+from reference_platform_db import attach_identification_candidates
 import provider_lifecycle
 from chip_prep_profiler import stage_timer as _chip_stage_timer, record as _chip_record
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 INFERENCE_SAM3_URL = os.getenv("INFERENCE_SAM3_URL", "http://inference-sam3:8001")
 IMAGERY_PATH = os.getenv("IMAGERY_PATH", "/data/imagery")
+REFERENCE_ID_AUTO_THRESHOLD = float(os.getenv("REFERENCE_ID_AUTO_THRESHOLD", "0.85"))
 
 
 def _setdefault_gdal_env() -> None:
@@ -2590,7 +2592,31 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
             ))
             
             det_id = cursor.fetchone()["id"]
-            
+
+            # Plan C: attach reference-DB platform identification candidates and
+            # (when top-1 score >= threshold) auto-apply platform_* to
+            # object_details. Best-effort: any exception is logged and skipped --
+            # must NEVER break the detection write.
+            emb_dict = det.get("embedding")
+            if emb_dict:
+                try:
+                    emb_anchor = _parse_embedding_anchor(emb_dict)
+                    if emb_anchor is not None:
+                        attach_identification_candidates(
+                            cursor,
+                            detection_id=det_id,
+                            embedding=emb_anchor,
+                            view_domain="overhead",
+                            auto_threshold=REFERENCE_ID_AUTO_THRESHOLD,
+                            top_k=3,
+                        )
+                except Exception:
+                    logger.warning(
+                        "auto-identify failed for detection %s (continuing)",
+                        det_id,
+                        exc_info=True,
+                    )
+
             neo_session.run("""
                 MATCH (sp:SatellitePass {postgis_id: $pass_id})
                 CREATE (d:Detection {

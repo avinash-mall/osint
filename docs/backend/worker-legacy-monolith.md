@@ -55,7 +55,7 @@ See [decisions/why-worker-legacy-monolith-kept.md](../decisions/why-worker-legac
 - NDJSON consumer for `/detect_video` (parses streaming response, yields per-frame records).
 - [`_calibration_tag_for_detection`](../../backend/worker_legacy.py#L662-L664) — chooses `source_layer` for detector-specific calibration.
 - [`_llm_propose_entities`](../../backend/worker_legacy.py#L3429-L3487) — schema-constrained LLM proposer over REPEATED_AT clusters; raises/falls back cleanly.
-- [`store_detections`](../../backend/worker_legacy.py#L2446-L2600) — persists calibrated, georeferenced, evidence-ranked detections.
+- [`store_detections`](../../backend/worker_legacy.py#L2446-L2620) — persists calibrated, georeferenced, evidence-ranked detections. Plan C: immediately after each `INSERT INTO detections … RETURNING id`, calls [`attach_identification_candidates`](reference-platform-db.md) with the row's `embedding_anchor` (best-effort, exception-swallowing — must not break the detection write); top-1 score ≥ `REFERENCE_ID_AUTO_THRESHOLD` (default `0.85`, env-overridable) auto-applies `platform_*` to `object_details`.
 - [`FMV_DEFAULT_PROMPTS`](../../backend/worker_legacy.py#L236) — PCS fallback prompt set (`vehicle,person,building`) when operator gave no FMV prompts.
 
 ## Fork safety
