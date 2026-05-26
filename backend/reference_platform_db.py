@@ -192,6 +192,7 @@ def find_similar_platforms(
     view_domain: str = "overhead",
     top_k: int = 3,
     candidate_pool: int = 20,
+    top_chips_per_platform: int = 3,
 ) -> list[dict]:
     """Return top-k platforms whose centroid is closest to the given embedding.
 
@@ -207,6 +208,10 @@ def find_similar_platforms(
     for unit-normalised DINOv3-SAT vectors they land in [0, 1].
 
     Returns an empty list if no platform has a centroid in `view_domain`.
+    Note: platforms whose centroid is present but who have ZERO chips in
+    `view_domain` are silently skipped during the per-chip re-rank — they
+    will not appear in the results even if their centroid scored high in
+    Stage 1.
     """
     if view_domain not in ("overhead", "ground"):
         raise ValueError(f"view_domain must be 'overhead' or 'ground', got {view_domain!r}")
@@ -267,13 +272,13 @@ def find_similar_platforms(
         )
         SELECT platform_id::text AS platform_id,
                MAX(chip_score) AS best_chip_score,
-               array_agg(chip_id ORDER BY chip_score DESC) FILTER (WHERE rn <= 3) AS top_chip_ids
+               array_agg(chip_id ORDER BY chip_score DESC) FILTER (WHERE rn <= %s) AS top_chip_ids
           FROM ranked
          GROUP BY platform_id
          ORDER BY best_chip_score DESC
          LIMIT %s
         """,
-        (q, q, winner_ids, view_domain, top_k),
+        (q, q, winner_ids, view_domain, top_chips_per_platform, top_k),
     )
     rows = cursor.fetchall()
 
