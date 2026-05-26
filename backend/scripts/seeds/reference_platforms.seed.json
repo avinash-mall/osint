@@ -1,6 +1,6 @@
 {
   "version": "2026-05-27-plan-b",
-  "description": "Reference platform seed manifest. Curated bridge between source-dataset class names and canonical platform identities. DOTA proof-of-life: one row per DOTA class with the class name as platform_family. Later seeds (xView, RarePlanes) will add real platforms (F-35, B-2, etc.) and deepen the `attributes` field. The bake script (backend/scripts/bake_reference_db.py, Task 6) reads this file and uses `source_terms_per_dataset.<dataset>` to locate chip directories.",
+  "description": "Reference platform seed manifest. Curated bridge between source-dataset class names and canonical platform identities. DOTA proof-of-life: one row per DOTA class with the class name as platform_family. Later seeds (xView, RarePlanes) will add real platforms (F-35, B-2, etc.) and deepen the `attributes` field. The bake script (backend/scripts/bake_reference_index.py) reads this file and uses `source_terms_per_dataset.<dataset>` to locate chip directories.",
   "field_notes": {
     "platform_name": "Globally unique identifier. DOTA placeholders use the `DOTA::<class>` prefix to keep them clearly distinguishable from real-world platforms added later.",
     "platform_family": "CamelCase grouping. For DOTA placeholders this mirrors the class name; for real platforms it groups variants (e.g. F-35A/B/C share family `F-35`).",
