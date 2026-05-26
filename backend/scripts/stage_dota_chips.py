@@ -3,7 +3,7 @@
 For each entry in labels.json:
 - Pick the annotation with the largest bbox area (tie-break: first listed).
 - Crop the chip to that bbox + 8 px margin (clipped to image bounds).
-- Save the crop as <out_root>/<class>/<chip-stem>__<idx>.png.
+- Save the crop as <out_root>/<class>/<chip-stem>__<class>.png.
 
 This makes every chip carry one canonical class assignment without re-extracting
 from the full DOTA training rasters. The result is one subdirectory per class
