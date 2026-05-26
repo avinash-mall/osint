@@ -296,3 +296,101 @@ def find_similar_platforms(
             "matched_chip_ids": list(chip_ids) if chip_ids else [],
         })
     return results
+
+
+def attach_identification_candidates(
+    cursor,
+    *,
+    detection_id: int,
+    embedding: Iterable[float],
+    view_domain: str = "overhead",
+    auto_threshold: float = 0.85,
+    top_k: int = 3,
+) -> int:
+    """For a freshly-inserted detection, compute top-k reference-platform
+    candidates and persist them.
+
+    Behaviour:
+      - Calls `find_similar_platforms` to get top-k candidates.
+      - Deletes any existing `platform_identification_candidates` rows for
+        this `detection_id` (so a re-run replaces, not duplicates).
+      - Inserts one `platform_identification_candidates` row per candidate.
+      - If top-1 score >= `auto_threshold`, marks that row `auto_applied` and
+        writes `platform_name` / `platform_family` / `platform_confidence`
+        / `platform_source='auto'` to `object_details` via a direct UPSERT
+        (mirrors detection_helpers.py's column shape).
+      - Below threshold, all rows land as `pending` and `object_details` is
+        left untouched.
+
+    Returns the number of candidate rows written. Returns 0 if no candidates
+    were found (e.g. reference DB empty for this view_domain), in which case
+    `object_details` is also not modified.
+    """
+    candidates = find_similar_platforms(
+        cursor,
+        embedding=embedding,
+        view_domain=view_domain,
+        top_k=top_k,
+    )
+    if not candidates:
+        return 0
+
+    # Idempotency: replace any prior candidates for this detection.
+    cursor.execute(
+        "DELETE FROM platform_identification_candidates WHERE detection_id = %s",
+        (detection_id,),
+    )
+
+    top_score = candidates[0]["score"]
+    auto_applied = top_score >= auto_threshold
+
+    for rank, cand in enumerate(candidates, start=1):
+        is_top = (rank == 1)
+        status = "auto_applied" if (is_top and auto_applied) else "pending"
+        applied_at_sql = "NOW()" if status == "auto_applied" else "NULL"
+        cursor.execute(
+            f"""
+            INSERT INTO platform_identification_candidates
+                (detection_id, platform_id, score, rank, matched_chip_ids,
+                 status, applied_at)
+            VALUES (%s, %s, %s, %s, %s::uuid[], %s, {applied_at_sql})
+            """,
+            (
+                detection_id,
+                cand["platform_id"],
+                cand["score"],
+                rank,
+                cand["matched_chip_ids"] or [],
+                status,
+            ),
+        )
+
+    # Auto-apply to object_details only when top-1 cleared the threshold.
+    if auto_applied:
+        top = candidates[0]
+        # Direct SQL UPSERT to avoid the Pydantic request-side path.
+        # Touches only the four platform_* columns + source/source_id/
+        # updated_by/updated_at; leaves analyst-asserted columns alone.
+        cursor.execute(
+            """
+            INSERT INTO object_details
+                (source, source_id, platform_name, platform_family,
+                 platform_confidence, platform_source, updated_by)
+            VALUES ('detection', %s, %s, %s, %s, 'auto', 'reference-db-auto-identify')
+            ON CONFLICT (source, source_id) DO UPDATE SET
+                platform_name        = EXCLUDED.platform_name,
+                platform_family      = EXCLUDED.platform_family,
+                platform_confidence  = EXCLUDED.platform_confidence,
+                platform_source      = EXCLUDED.platform_source,
+                updated_at           = NOW(),
+                updated_by           = EXCLUDED.updated_by
+            """,
+            (
+                str(detection_id),
+                top["platform_name"],
+                top["platform_family"],
+                float(top["score"]),
+            ),
+        )
+
+    return len(candidates)

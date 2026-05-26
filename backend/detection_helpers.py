@@ -79,8 +79,10 @@ def _upsert_object_details(
             """
             INSERT INTO object_details (
                 source, source_id, designation, object_class, military_classification,
-                threat_level, affiliation, confidence_override, notes, updated_at, updated_by
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s)
+                threat_level, affiliation, confidence_override, notes,
+                platform_name, platform_family, platform_confidence, platform_source,
+                updated_at, updated_by
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s)
             ON CONFLICT (source, source_id) DO UPDATE SET
                 designation             = COALESCE(EXCLUDED.designation, object_details.designation),
                 object_class            = COALESCE(EXCLUDED.object_class, object_details.object_class),
@@ -89,6 +91,10 @@ def _upsert_object_details(
                 affiliation             = COALESCE(EXCLUDED.affiliation, object_details.affiliation),
                 confidence_override     = COALESCE(EXCLUDED.confidence_override, object_details.confidence_override),
                 notes                   = COALESCE(EXCLUDED.notes, object_details.notes),
+                platform_name           = COALESCE(EXCLUDED.platform_name,        object_details.platform_name),
+                platform_family         = COALESCE(EXCLUDED.platform_family,      object_details.platform_family),
+                platform_confidence     = COALESCE(EXCLUDED.platform_confidence,  object_details.platform_confidence),
+                platform_source         = COALESCE(EXCLUDED.platform_source,      object_details.platform_source),
                 updated_at              = NOW(),
                 updated_by              = EXCLUDED.updated_by
             RETURNING designation, object_class, military_classification, threat_level,
@@ -104,6 +110,10 @@ def _upsert_object_details(
                 affiliation,
                 body.confidence_override,
                 body.notes,
+                body.platform_name,
+                body.platform_family,
+                body.platform_confidence,
+                body.platform_source,
                 updated_by,
             ),
         )

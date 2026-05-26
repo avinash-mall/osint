@@ -60,6 +60,10 @@ class ObjectDetailsBody(BaseModel):
     affiliation: Optional[str] = None
     confidence_override: Optional[float] = None
     notes: Optional[str] = None
+    platform_name: Optional[str] = None
+    platform_family: Optional[str] = None
+    platform_confidence: Optional[float] = None
+    platform_source: Optional[str] = None  # 'auto' | 'analyst' | 'manual'
 
 
 class ManualDetectionBody(BaseModel):
