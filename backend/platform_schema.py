@@ -627,6 +627,7 @@ def ensure_platform_tables() -> None:
             """)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_onto_history_version ON ontology_version_history(version_id DESC)")
 
+        ensure_reference_platform_tables()
         _platform_schema_ready = True
 
 
@@ -653,3 +654,110 @@ def auto_seed_ontology_if_empty() -> None:
         # Don't crash the app — log loudly so an operator can re-run the
         # seed manually via `python -m backend.scripts.seed_ontology`.
         logger.exception("ontology auto-seed failed: %s", exc)
+
+
+def ensure_reference_platform_tables() -> None:
+    """Reference Embedding DB schema — see
+    /home/avinash/.claude/plans/i-want-to-build-breezy-snail.md and
+    docs/backend/reference-platform-db.md.
+
+    Idempotent. Safe to call multiple times.
+    """
+    with postgis_db.get_cursor(commit=True) as cursor:
+        acquire_schema_xact_lock(cursor, "sentinel_reference_platform_schema")
+
+        # Make sure pgvector is available even on databases initialised
+        # before the init_postgis.sql gained the CREATE EXTENSION line.
+        cursor.execute("CREATE EXTENSION IF NOT EXISTS vector")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS reference_platforms (
+                id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                platform_name       TEXT NOT NULL UNIQUE,
+                platform_family     TEXT NOT NULL,
+                ontology_object_id  TEXT REFERENCES ontology_objects(id) ON DELETE SET NULL,
+                country_of_origin   TEXT,
+                role                TEXT,
+                attributes          JSONB NOT NULL DEFAULT '{}'::jsonb,
+                centroid_overhead   vector(1024),
+                centroid_ground     vector(512),
+                view_domains        TEXT[] NOT NULL DEFAULT '{}'::text[],
+                created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_reference_platforms_family ON reference_platforms(platform_family)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_reference_platforms_ontology ON reference_platforms(ontology_object_id)")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS reference_chips (
+                id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                platform_id         UUID NOT NULL REFERENCES reference_platforms(id) ON DELETE CASCADE,
+                view_domain         TEXT NOT NULL CHECK (view_domain IN ('overhead','ground')),
+                source_dataset      TEXT NOT NULL,
+                source_url          TEXT,
+                license_spdx        TEXT NOT NULL,
+                attribution         TEXT,
+                gsd_meters          REAL,
+                sensor              TEXT,
+                chip_path           TEXT NOT NULL,
+                bbox_in_source      JSONB,
+                metadata            JSONB NOT NULL DEFAULT '{}'::jsonb,
+                embedding_overhead  vector(1024),
+                embedding_ground    vector(512),
+                created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_reference_chips_platform ON reference_chips(platform_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_reference_chips_dataset ON reference_chips(source_dataset)")
+        # Partial HNSW indexes — only build over rows with a non-null embedding
+        # in the relevant view domain, keeping each index dense and small.
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS reference_chips_overhead_hnsw
+                ON reference_chips USING hnsw (embedding_overhead vector_cosine_ops)
+             WHERE view_domain = 'overhead' AND embedding_overhead IS NOT NULL
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS reference_chips_ground_hnsw
+                ON reference_chips USING hnsw (embedding_ground vector_cosine_ops)
+             WHERE view_domain = 'ground' AND embedding_ground IS NOT NULL
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS reference_platforms_centroid_overhead_hnsw
+                ON reference_platforms USING hnsw (centroid_overhead vector_cosine_ops)
+             WHERE centroid_overhead IS NOT NULL
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS reference_platforms_centroid_ground_hnsw
+                ON reference_platforms USING hnsw (centroid_ground vector_cosine_ops)
+             WHERE centroid_ground IS NOT NULL
+        """)
+
+        # detection_id is INTEGER to match detections.id SERIAL.
+        # platform_id has ON DELETE CASCADE so deleting a reference platform
+        # cleans up its outstanding identification candidates atomically.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS platform_identification_candidates (
+                id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                detection_id      INTEGER NOT NULL REFERENCES detections(id) ON DELETE CASCADE,
+                platform_id       UUID NOT NULL REFERENCES reference_platforms(id) ON DELETE CASCADE,
+                score             REAL NOT NULL,
+                rank              INTEGER NOT NULL,
+                matched_chip_ids  UUID[] NOT NULL DEFAULT '{}'::uuid[],
+                status            TEXT NOT NULL DEFAULT 'pending'
+                                  CHECK (status IN ('pending','approved','rejected','auto_applied')),
+                applied_at        TIMESTAMPTZ,
+                reviewed_by       TEXT,
+                reviewed_at       TIMESTAMPTZ,
+                created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pic_detection_rank ON platform_identification_candidates(detection_id, rank)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pic_status ON platform_identification_candidates(status)")
+
+        # Extend object_details so an approved/auto-applied identification can
+        # land on the detection's existing analyst-asserted metadata row.
+        cursor.execute("ALTER TABLE object_details ADD COLUMN IF NOT EXISTS platform_name       TEXT")
+        cursor.execute("ALTER TABLE object_details ADD COLUMN IF NOT EXISTS platform_family     TEXT")
+        cursor.execute("ALTER TABLE object_details ADD COLUMN IF NOT EXISTS platform_confidence REAL")
+        cursor.execute("ALTER TABLE object_details ADD COLUMN IF NOT EXISTS platform_source     TEXT")
