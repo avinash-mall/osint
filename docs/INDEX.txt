@@ -30,6 +30,7 @@ backend/fmv-helpers-hls.md|backend,fmv|ffmpeg stream-copy HLS transcode, ffprobe
 backend/geometry-iou.md|backend|bbox parse, xyxy/cxcywh IoU, point extraction
 backend/imagery-metadata-hashing.md|backend,imagery|SHA256 + NITF IDATIM + SAR keys + native_max_zoom extraction
 backend/provider-lifecycle.md|backend|polls inference-sam3 /health for startup gating
+backend/reference-platform-db.md|backend,reference-db|reference_platforms+chips+candidates pgvector schema + object_details platform_* cols
 backend/reports-and-collections.md|backend|target-package and collection-requirement persistence
 backend/routing-graph-osmnx.md|backend|NetworkX routing on osmnx pickle, terrain+threat metadata
 backend/sar-cfar-detector.md|backend,imagery|CA-CFAR ship detection on Sentinel-1 dB raster, CPU-only
@@ -157,6 +158,7 @@ decisions/why-grounding-dino-auto-gated.md|decision|forcing GDINO drops mAP via 
 decisions/why-imagery-yoloe-mirrors-fmv.md|decision,imagery,inference|imagery upload grows (model, prompt_mode); yolo26 routes /detect to YOLOE-exclusive branch
 decisions/why-layerpanel-dot-toggle.md|decision,frontend|eye-toggle column removed; 10px coloured dot is the visibility signal, locked analytics subgroup
 decisions/why-open-vocabulary.md|decision|no closed taxonomy: explicit/precision/ontology labels are first-class
+decisions/why-pgvector-for-reference-db.md|decision,reference-db|pgvector + HNSW in PostGIS; no faiss/hnswlib in inference-sam3
 decisions/why-postgis-and-neo4j-coexist.md|decision|PostGIS for spatial detections; Neo4j for entity/link graph
 decisions/why-precision-first-inference-defaults.md|decision|bounded prompt defaults, source-layer provenance, specialist gates, nonzero policy floor
 decisions/why-sam3-as-foundation.md|decision,sam3|open-vocabulary segmentation across RGB/MSI/SAR with native API
