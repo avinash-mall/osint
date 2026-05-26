@@ -12,12 +12,14 @@
 | [test_auth.py](../../backend/tests/test_auth.py) | Session signing, LDAP binds, admin checks |
 | [test_chip_emitter.py](../../backend/tests/test_chip_emitter.py) | `worker._emit_chip_payload` multispectral/SAR encoding + INFERENCE_SPEED_PROFILE recall_review/fast_review defaults |
 | [test_debias_units.py](../../backend/tests/test_debias_units.py) | Candidate-link scoring, multi-pass ranking |
+| [test_detection_classes_llm_labels.py](../../backend/tests/test_detection_classes_llm_labels.py) | `/api/detections/classes` display-label policy for YOLOE-PF imagery AMG rows and LLM-unavailable fallback |
 | [test_detection_evidence.py](../../backend/tests/test_detection_evidence.py) | Evidence tiering, physical validators, SAR proxy conservatism |
 | [test_fmv_tracker.py](../../backend/tests/test_fmv_tracker.py) | FMV track consolidation: cost gates, temporal-support class vote, cross-prompt merge, heartbeat routing, idempotency (`integration`: live-PostGIS end-to-end) |
 | [test_object_details.py](../../backend/tests/test_object_details.py) | Threat/affiliation validation, `object_details` upsert |
 | [test_ontology.py](../../backend/tests/test_ontology.py) | Label normalization, cache invalidation, unknown-label logging |
 | [test_ontology_api.py](../../backend/tests/test_ontology_api.py) | Branch/object/prompt API endpoints |
 | [test_precision_inference_policy.py](../../backend/tests/test_precision_inference_policy.py) | Precision policy defaults and source-layer calibration tag selection |
+| [test_propose_entities.py](../../backend/tests/test_propose_entities.py) | LLM-first operational-entity proposer plus heuristic fallback |
 | [test_size_estimation.py](../../backend/tests/test_size_estimation.py) | OBB → length/width/area/bearing in UTM-local |
 
 ## conftest

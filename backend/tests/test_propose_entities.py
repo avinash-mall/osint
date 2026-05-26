@@ -38,8 +38,11 @@ def test_llm_proposer_used_when_get_llm_json_returns_proposals(monkeypatch):
         {"detection_class": "container_ship", "cluster_count": 9, "site_id": "aoi-1", "site_name": "Pier 7", "sample_detection_id": 100},
     ])
     # LLM returns one structured proposal.
-    fake_ai = types.SimpleNamespace(
-        get_llm_json=lambda system, user, **kw: {
+    def _fake_get_llm_json(*, prompt, system="", max_tokens=500, timeout_seconds=8):
+        assert prompt.startswith("clusters = ")
+        assert "operational entities" in system
+        assert max_tokens == 1200
+        return {
             "proposals": [
                 {
                     "entity_kind": "vessel",
@@ -48,7 +51,10 @@ def test_llm_proposer_used_when_get_llm_json_returns_proposals(monkeypatch):
                     "seed_detection_ids": [100],
                 }
             ]
-        },
+        }
+
+    fake_ai = types.SimpleNamespace(
+        get_llm_json=_fake_get_llm_json,
         AIUnavailable=type("AIUnavailable", (RuntimeError,), {}),
     )
     monkeypatch.setitem(sys.modules, "ai", fake_ai)
@@ -104,7 +110,7 @@ def test_llm_filters_unknown_kinds(monkeypatch):
         {"detection_class": "container_ship", "cluster_count": 9, "site_id": "aoi-1", "site_name": "Pier 7", "sample_detection_id": 100},
     ])
     fake_ai = types.SimpleNamespace(
-        get_llm_json=lambda system, user, **kw: {
+        get_llm_json=lambda *, prompt, system="", max_tokens=500, timeout_seconds=8: {
             "proposals": [
                 {"entity_kind": "spaceship", "proposed_name": "Enterprise"},
                 {"entity_kind": "vessel", "proposed_name": "Pearl-9", "seed_detection_ids": [100]},

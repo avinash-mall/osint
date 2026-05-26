@@ -1,7 +1,7 @@
 # Geoint Workspace — `GaiaMap.tsx`
 
 **Path:** [frontend/src/components/GaiaMap.tsx](../../frontend/src/components/GaiaMap.tsx)
-**Lines:** ~70085 characters (~2000 lines TSX)
+**Lines:** ~1670
 
 ## Purpose
 
@@ -35,6 +35,7 @@ The Common Operating Picture: a 2D Leaflet map with all detection layers, satell
 ## Data sources
 
 - `GET /api/detections/geojson` — live detection layer
+- `GET /api/detections/classes?llm=true` — global Detection Classes summary; raw class keys drive filtering, while `display_label` may show an LLM advisory for all-YOLOE-PF imagery AMG rows
 - `GET /api/imagery` — satellite passes
 - `GET /api/tracks/detections` — cross-image tracks
 - `GET /api/geotime/features` — Bases / LaunchPoints / asset tracks
@@ -44,9 +45,12 @@ The Common Operating Picture: a 2D Leaflet map with all detection layers, satell
 
 `GaiaMap` owns the detection-layer view state: `bboxMode` (`hbb`/`obb`/`mask`, default `obb`) and the derived `showDetectionCenterMarkers` flag (`count` 1–`DETECTION_CENTER_MARKER_LIMIT`). Detection bounding boxes always render; no `showBbox` toggle. See [map-stage-and-layers.md](map-stage-and-layers.md), [decisions/why-bbox-toggle-removed.md](../decisions/why-bbox-toggle-removed.md).
 
+The left Detection Classes list keeps `rawClass` as the hide/solo/API filter key. `displayLabel` is used only for presentation: when the backend marks `label_source="llm_advisory"` for image `yolo26+amg` rows, the LLM label is primary and the raw class remains visible in [LayerPanel](map-stage-and-layers.md). See [decisions/why-amg-detection-classes-use-llm-labels.md](../decisions/why-amg-detection-classes-use-llm-labels.md).
+
 ## Cross-references
 
 - [map-stage-and-layers.md](map-stage-and-layers.md)
+- [decisions/why-amg-detection-classes-use-llm-labels.md](../decisions/why-amg-detection-classes-use-llm-labels.md)
 - [decisions/why-bbox-toggle-removed.md](../decisions/why-bbox-toggle-removed.md)
 - [map-selection-panel.md](map-selection-panel.md)
 - [backend-routers/imagery-router.md](../backend-routers/imagery-router.md)

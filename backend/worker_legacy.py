@@ -3460,7 +3460,7 @@ def _llm_propose_entities(clusters: list[dict]) -> list[dict]:
     )
     user_prompt = f"clusters = {cluster_payload}"
 
-    parsed = ai.get_llm_json(system_prompt, user_prompt, temperature=0.0, max_tokens=1200)
+    parsed = ai.get_llm_json(prompt=user_prompt, system=system_prompt, max_tokens=1200)
     raw_proposals = parsed.get("proposals") if isinstance(parsed, dict) else None
     if not isinstance(raw_proposals, list):
         return []
@@ -4451,6 +4451,11 @@ def process_satellite_imagery(
         raster_metadata = extract_raster_metadata(input_path)
         source_hash = raster_metadata.get("source_hash")
         source_filename = original_filename
+        ingest_mode_metadata = {
+            key: upload_meta.get(key)
+            for key in ("model", "prompt_mode", "enabled_layers")
+            if upload_meta.get(key) is not None
+        }
         update_upload_job(
             upload_id=upload_id,
             file_path=input_path,
@@ -4513,7 +4518,7 @@ def process_satellite_imagery(
                     acq_time,
                     footprint_wkt,
                     "EPSG:4326",
-                    json.dumps({**raster_metadata, "upload_id": upload_id, "replacement": True}, default=str),
+                    json.dumps({**raster_metadata, **ingest_mode_metadata, "upload_id": upload_id, "replacement": True}, default=str),
                     source_hash,
                     source_filename,
                     pass_id,
@@ -4535,7 +4540,7 @@ def process_satellite_imagery(
                     acq_time,
                     footprint_wkt,
                     "EPSG:4326",
-                    json.dumps({**raster_metadata, "upload_id": upload_id, "replacement": False}, default=str),
+                    json.dumps({**raster_metadata, **ingest_mode_metadata, "upload_id": upload_id, "replacement": False}, default=str),
                     source_hash,
                     source_filename,
                 ))
@@ -4600,6 +4605,10 @@ def process_satellite_imagery(
         ontology_branch = upload_meta.get("ontology_branch")
         if isinstance(ontology_branch, str) and ontology_branch.strip():
             inference_metadata["ontology_branch"] = ontology_branch.strip()
+        for mode_key in ("model", "prompt_mode"):
+            mode_value = upload_meta.get(mode_key)
+            if isinstance(mode_value, str) and mode_value.strip():
+                inference_metadata[mode_key] = mode_value.strip().lower()
         # Honor enabled_layers from the upload form. Two channels: explicit
         # task arg (already parsed) takes precedence; otherwise read from the
         # stored upload_meta which may carry a JSON-encoded list.

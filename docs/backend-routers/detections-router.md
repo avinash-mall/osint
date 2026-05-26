@@ -8,7 +8,7 @@
 
 **Review surface** for satellite-imagery detections. Reading is in [backend/main.py](../../backend/main.py); this router owns detail edits, manual detections, deletion, the per-detection workflow.
 
-Bulk read endpoints (`GET /api/detections`, `/api/detections/geojson`, `/api/detections/classes`, `/api/detections/{id}/similar`, `/api/detections/queue`, `/api/detections/resolve`, `/api/detections/prithvi-overlays`, `/api/detections/{id}/candidate-links`, `/api/detection-target-candidates/{id}/approve`, `/api/detections/{id}/tag`, `/api/detections/{id}/review`) live in [backend/main.py](../../backend/main.py).
+Bulk read endpoints (`GET /api/detections`, `/api/detections/geojson`, `/api/detections/classes`, `/api/detections/{id}/similar`, `/api/detections/queue`, `/api/detections/resolve`, `/api/detections/prithvi-overlays`, `/api/detections/{id}/candidate-links`, `/api/detection-target-candidates/{id}/approve`, `/api/detections/{id}/tag`, `/api/detections/{id}/review`) live in [backend/main.py](../../backend/main.py). `/api/detections/classes?llm=true` may return `display_label` / `label_source` for all-YOLOE-PF imagery AMG class rows; raw `class` remains the filter key.
 
 ## Endpoints in this router
 
@@ -29,5 +29,6 @@ Bulk read endpoints (`GET /api/detections`, `/api/detections/geojson`, `/api/det
 
 - [backend/detection-helpers.md](../backend/detection-helpers.md) — shared validators (threat levels, affiliations)
 - [backend/pydantic-schemas.md](../backend/pydantic-schemas.md)
+- [decisions/why-amg-detection-classes-use-llm-labels.md](../decisions/why-amg-detection-classes-use-llm-labels.md)
 - [frontend/object-details-form.md](../frontend/object-details-form.md)
 - [operations/candidate-link-approval.md](../operations/candidate-link-approval.md)

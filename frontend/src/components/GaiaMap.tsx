@@ -275,11 +275,15 @@ export default function GaiaMap({
         if (storedClass) parentClassesWithSubclassDetails.add(storedClass);
       }
       const existing = stats.get(rawClass);
+      const label = rawClass === storedClass ? feature?.properties?.label || existing?.label || detectionClassLabel(rawClass) : existing?.label || detectionClassLabel(rawClass);
       stats.set(rawClass, {
         ...existing,
         rawClass,
         parentClass,
-        label: rawClass === storedClass ? feature?.properties?.label || existing?.label || detectionClassLabel(rawClass) : existing?.label || detectionClassLabel(rawClass),
+        label,
+        displayLabel: existing?.displayLabel || label,
+        labelSource: existing?.labelSource || 'deterministic',
+        amgImageCount: existing?.amgImageCount || 0,
         count: Number(existing?.count || 0) + 1,
         maxConfidence: Math.max(Number(existing?.maxConfidence || 0), confidenceValue(feature)),
         color: categoryFor(category, DETECTION_CATEGORIES).color,
@@ -297,11 +301,19 @@ export default function GaiaMap({
       const category: DetectionCategoryId = (meta?.branch_id ? String(meta.branch_id) : 'Other') as DetectionCategoryId;
       const existing = stats.get(rawClass);
       if (!existing && parentClassesWithSubclassDetails.has(rawClass)) continue;
+      const canonicalLabel = existing?.label || meta?.label || detectionClassLabel(rawClass);
+      const isLlmPrimary = meta?.label_source === 'llm_advisory' && Boolean(meta?.display_label);
+      const displayLabel = isLlmPrimary
+        ? String(meta.display_label)
+        : existing?.displayLabel || canonicalLabel;
       stats.set(rawClass, {
         ...existing,
         rawClass,
         parentClass,
-        label: existing?.label || meta?.label || detectionClassLabel(rawClass),
+        label: canonicalLabel,
+        displayLabel,
+        labelSource: isLlmPrimary ? 'llm_advisory' : existing?.labelSource || 'deterministic',
+        amgImageCount: Number(meta?.amg_image_count || existing?.amgImageCount || 0),
         count: Number(existing?.count ?? meta?.count ?? 0),
         maxConfidence: Math.max(Number(existing?.maxConfidence || 0), Number(meta?.max_confidence || 0)),
         color: categoryFor(category, DETECTION_CATEGORIES).color,
@@ -465,7 +477,7 @@ export default function GaiaMap({
   const filteredDetectionClassStats = useMemo(() => {
     const query = detectionLabelSearch.trim().toLowerCase();
     return query
-      ? detectionLabelStats.filter((item) => `${item.label} ${item.rawClass} ${item.parentClass || ''} ${categoryFor(item.category, DETECTION_CATEGORIES).label} ${item.source} ${item.ontology?.category || ''} ${item.threatLevel || ''}`.toLowerCase().includes(query))
+      ? detectionLabelStats.filter((item) => `${item.displayLabel || item.label} ${item.label} ${item.rawClass} ${item.parentClass || ''} ${categoryFor(item.category, DETECTION_CATEGORIES).label} ${item.source} ${item.ontology?.category || ''} ${item.threatLevel || ''} ${item.llmAdvisory?.description || ''}`.toLowerCase().includes(query))
       : detectionLabelStats;
   }, [detectionLabelSearch, detectionLabelStats]);
 

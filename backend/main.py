@@ -1240,9 +1240,18 @@ def get_detection_classes(
                    d.metadata,
                    coalesce(d.metadata->>'parent_class', d.class) AS parent_class,
                    coalesce(d.metadata->>'review_status', 'review_candidate') AS review_status,
-                   coalesce(d.metadata->>'allegiance', 'unknown') AS allegiance
+                   coalesce(d.metadata->>'allegiance', 'unknown') AS allegiance,
+                   (
+                       lower(coalesce(sp.metadata->>'model', uj.metadata->>'model', d.metadata->>'model', '')) = 'yolo26'
+                       AND lower(coalesce(sp.metadata->>'prompt_mode', uj.metadata->>'prompt_mode', d.metadata->>'prompt_mode', '')) = 'amg'
+                   )
+                   OR coalesce(sp.metadata->'enabled_layers', '[]'::jsonb) ? 'yoloe_pf'
+                   OR coalesce(uj.metadata->'enabled_layers', '[]'::jsonb) ? 'yoloe_pf'
+                   OR coalesce(d.metadata->'enabled_layers', '[]'::jsonb) ? 'yoloe_pf'
+                   AS is_amg_image
             FROM detections d
             JOIN satellite_passes sp ON d.pass_id = sp.id
+            LEFT JOIN upload_jobs uj ON uj.upload_id = sp.metadata->>'upload_id'
             WHERE d.deleted_at IS NULL
     """
     params = []
@@ -1264,6 +1273,8 @@ def get_detection_classes(
                    count(*) AS count,
                    max(confidence) AS max_confidence,
                    avg(confidence) AS avg_confidence,
+                   sum(CASE WHEN is_amg_image THEN 1 ELSE 0 END)::int AS amg_image_count,
+                   bool_and(is_amg_image) AS amg_image_primary,
                    mode() WITHIN GROUP (ORDER BY filtered.metadata->>'branch_id') AS branch_id,
                    mode() WITHIN GROUP (ORDER BY filtered.metadata->>'icon_key') AS icon_key
             FROM filtered
@@ -1309,6 +1320,8 @@ def get_detection_classes(
                c.count,
                c.max_confidence,
                c.avg_confidence,
+               c.amg_image_count,
+               c.amg_image_primary,
                c.branch_id,
                c.icon_key,
                coalesce(a.allegiance_counts, '{}'::jsonb) AS allegiance_counts,
@@ -1322,16 +1335,16 @@ def get_detection_classes(
         cursor.execute(query, params)
         classes = []
         for index, row in enumerate(cursor.fetchall()):
-            # Phase 6.23: the deterministic ontology is the AUTHORITATIVE
-            # value the analyst sees as the class label/category/threat. The
-            # LLM refinement (when requested) is captured as a separate
-            # `llm_advisory` field so the UI can render it as an "AI
-            # suggestion" pill instead of silently overwriting the model's
-            # raw class with a hallucinated refinement.
+            # Phase 6.23: deterministic ontology remains authoritative for
+            # category/threat/filtering. YOLOE-PF imagery AMG rows may promote
+            # the LLM's human label to display_label only; raw class identity
+            # stays unchanged for filtering and audit.
             ontology = conservative_detection_ontology(row["class"], confidence=float(row["avg_confidence"] or 0))
             classification_status = "unavailable"
             llm_advisory = None
-            if llm and index < 8:
+            amg_image_primary = bool(row.get("amg_image_primary"))
+            llm_allowed = llm and (amg_image_primary or index < 8)
+            if llm_allowed:
                 try:
                     advisory = llm_detection_ontology(
                         row["class"],
@@ -1351,13 +1364,21 @@ def get_detection_classes(
                     }
                 except AIUnavailable:
                     classification_status = "unavailable"
+            display_label = ontology["label"]
+            label_source = "deterministic"
+            if amg_image_primary and llm_advisory and llm_advisory.get("label"):
+                display_label = str(llm_advisory.get("label") or ontology["label"])[:80]
+                label_source = "llm_advisory"
             classes.append({
                 "class": row["class"],
                 "parent_class": row["parent_class"],
                 "label": ontology["label"],
+                "display_label": display_label,
+                "label_source": label_source,
                 "count": row["count"],
                 "max_confidence": float(row["max_confidence"] or 0),
                 "avg_confidence": float(row["avg_confidence"] or 0),
+                "amg_image_count": int(row.get("amg_image_count") or 0),
                 "ontology": ontology,
                 "threat_level": ontology["threat_level"],
                 "allegiance_counts": row["allegiance_counts"] or {},

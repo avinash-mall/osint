@@ -65,7 +65,18 @@ export async function installMockApi(page: Page, options: MockOptions = {}) {
     if (path === '/api/ontology/unknown-labels') return fulfillJson(route, { unknown_labels: [{ label: 'mobile_launcher', count: 4, first_seen: '2026-05-16T02:20:00.000Z', layer: 'sam3' }] });
     if (path === '/api/geotime/features') return fulfillJson(route, { static: [], tracks: [] });
     if (path === '/api/imagery') return fulfillJson(route, { imagery: [{ id: 5, name: 'visual-pass-05', sensor_type: 'Optical', cloud_cover: 4, acquisition_time: '2026-05-16T02:30:00.000Z', file_path: '/fixtures/imagery.tif' }] });
-    if (path === '/api/detections/classes') return fulfillJson(route, { classes: [{ class: 'tank', label: 'Tank', count: 1, max_confidence: 0.93, branch_id: 'vehicles', threat_level: 'high' }] });
+    if (path === '/api/detections/classes') return fulfillJson(route, { classes: [{
+      class: 'tank',
+      label: 'Tank',
+      display_label: 'Armored vehicle',
+      label_source: 'llm_advisory',
+      llm_advisory: { label: 'Armored vehicle', description: 'Tracked armored vehicle candidate.', generated_by: 'mock-llm' },
+      amg_image_count: 1,
+      count: 1,
+      max_confidence: 0.93,
+      branch_id: 'vehicles',
+      threat_level: 'high',
+    }] });
     if (path === '/api/detections/geojson') return fulfillJson(route, geojson);
     if (path === '/api/detections/prithvi-overlays') return fulfillJson(route, { type: 'FeatureCollection', features: [] });
     if (path === '/api/tracks/detections') return fulfillJson(route, { tracks: [] });

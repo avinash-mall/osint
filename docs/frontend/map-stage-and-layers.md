@@ -2,9 +2,9 @@
 
 **Paths:**
 - [frontend/src/components/map/MapStage.tsx](../../frontend/src/components/map/MapStage.tsx) (~38280 chars)
-- [frontend/src/components/map/LayerPanel.tsx](../../frontend/src/components/map/LayerPanel.tsx) (~21960 chars)
+- [frontend/src/components/map/LayerPanel.tsx](../../frontend/src/components/map/LayerPanel.tsx) (~587 lines)
 - [frontend/src/components/map/MapEventHandlers.tsx](../../frontend/src/components/map/MapEventHandlers.tsx)
-- [frontend/src/components/map/_helpers.ts](../../frontend/src/components/map/_helpers.ts) (projection/bounds/GeoJSON transforms)
+- [frontend/src/components/map/_helpers.ts](../../frontend/src/components/map/_helpers.ts) (~360 lines; projection/bounds/GeoJSON transforms + class-stat shape)
 - [frontend/src/components/map/_icons.tsx](../../frontend/src/components/map/_icons.tsx) (detection-type icon factory + `BasemapThumb` previews)
 
 ## Purpose
@@ -23,6 +23,7 @@ The basemap selector is a **thumbnail gallery** — three 56×40 hand-painted `B
   Boxes were previously a single `<GeoJSON>` canvas layer; it silently failed to paint → replaced with the per-feature `<Polygon>` map — see [decisions/why-detection-boxes-use-polygon-map.md](../decisions/why-detection-boxes-use-polygon-map.md).
 - **Box mode** segmented control switches detection box shape: `HBB` (axis-aligned envelope), `OBB` (oriented rectangle, default), `MASK` (raw `geom`). State in `GaiaMap` as `bboxMode`. Renders inside the LayerPanel **Overlays** section (between Layer toggles and Analytics tools) — relocated from the MapStage top-centre toolbar so all layer-display state lives in one rail. See [decisions/why-geom-prithvi-in-layerpanel.md](../decisions/why-geom-prithvi-in-layerpanel.md).
 - **Prithvi overlays** (Flood / Burn / Crops) — three independent `OverlayRow` toggles in the LayerPanel **Overlays** section, drive the `prithviOverlays` map in `GaiaMap` and the `<TileLayer>` mounts in MapStage. Also relocated from the top-centre toolbar.
+- **Detection Classes display labels** — rows use `DetectionClassStat.displayLabel` when the backend returns `label_source="llm_advisory"` for all-YOLOE-PF imagery AMG classes. `rawClass` remains the hide/solo/filter key and is shown as secondary audit text; non-AMG LLM suggestions still render as advisory pills. See [decisions/why-amg-detection-classes-use-llm-labels.md](../decisions/why-amg-detection-classes-use-llm-labels.md).
 - **Top-centre action bar** — single horizontal row with three command buttons: **Draw object** · **Range ring** · **Product Tour**. The legacy GEOM/PRITHVI/tracks pill has been removed; tracks visibility lives in LayerPanel's "Active Tracks" row.
 - Legacy `showBbox` / **BBOX toggle button removed** — see [decisions/why-bbox-toggle-removed.md](../decisions/why-bbox-toggle-removed.md).
 - **Basemap composition** — the SAT / BASE / TERRAIN picker composes an ordered, `zIndex`-explicit `TileLayer` stack: the COG imagery is the analyst's ground truth and renders at the bottom (`zIndex={200}`, full opacity) whenever a scene is loaded, in *every* mode; BASE/TERRAIN add the Carto/Terrain basemap as a **reference overlay on top** (`zIndex={300}`, opacity from the LayerPanel slider); a cartographic fallback (`zIndex={100}`) renders only when no imagery is loaded so the stage is never empty. SAT mode = imagery alone. The old `lastNonSatBaseRef` "remember last non-SAT base" workaround was removed — it kept a basemap rendered *under* the imagery and hid the imagery in BASE/TERRAIN. The LayerPanel opacity slider label reads `IMAGERY` (disabled in SAT mode) or `<MODE> OVERLAY`, and keys only on `base`/`terrain` — SAT imagery always renders at full opacity. The reference overlay also **unmounts above z=14** (the offline bake ceiling, `BASEMAP_OVERLAY_MAX_ZOOM`) — the panel surfaces a `Reference hidden past zoom 14 · imagery only` hint and disables the opacity slider. See [decisions/why-basemap-overlay-composition.md](../decisions/why-basemap-overlay-composition.md) and [decisions/why-basemap-z14-cap.md](../decisions/why-basemap-z14-cap.md).
@@ -47,6 +48,7 @@ The basemap selector is a **thumbnail gallery** — three 56×40 hand-painted `B
 ## Cross-references
 
 - [decisions/why-bbox-toggle-removed.md](../decisions/why-bbox-toggle-removed.md)
+- [decisions/why-amg-detection-classes-use-llm-labels.md](../decisions/why-amg-detection-classes-use-llm-labels.md)
 - [decisions/live-mgrs-cursor-readout.md](../decisions/live-mgrs-cursor-readout.md)
 - [decisions/manual-draw-modal-replaces-prompt.md](../decisions/manual-draw-modal-replaces-prompt.md)
 - [decisions/borders-vs-graticule-split.md](../decisions/borders-vs-graticule-split.md)

@@ -336,6 +336,9 @@ export type DetectionClassStat = {
   rawClass: string;
   parentClass?: string;
   label: string;
+  displayLabel?: string;
+  labelSource?: 'deterministic' | 'llm_advisory';
+  amgImageCount?: number;
   count: number;
   maxConfidence: number;
   color: string;
@@ -344,10 +347,9 @@ export type DetectionClassStat = {
   category: DetectionCategoryId;
   source: string;
   /**
-   * Non-authoritative LLM suggestion for this class. The deterministic
-   * label/category/threat remain the authoritative values shown to the
-   * analyst — this advisory just adds an "AI suggested" pill alongside,
-   * so model hallucination can be inspected without overriding it.
+   * LLM suggestion for this class. YOLOE-PF imagery AMG rows may promote the
+   * advisory label to displayLabel; deterministic category/threat/rawClass
+   * remain the filtering and audit authority.
    */
   llmAdvisory?: {
     label?: string | null;

@@ -1,7 +1,7 @@
 # `backend/worker_legacy.py` — Monolithic Celery Tasks
 
 **Path:** [backend/worker_legacy.py](../../backend/worker_legacy.py)
-**Lines:** ~4550 (largest file in the repo)
+**Lines:** ~5222 (largest file in the repo)
 **Depends on:** Most of the rest of `backend/` plus `celery`, `requests`, `numpy`, `rasterio`, `cv2`
 
 ## Purpose
@@ -42,7 +42,7 @@ See [decisions/why-worker-legacy-monolith-kept.md](../decisions/why-worker-legac
 | `worker.tick_near_builder` | 60 min | Phase 4.C — :NEAR edges from Detection → Base/LaunchPoint/Facility via incremental ST_DWithin. Reads per-kind radius from `repeat_detector_thresholds` (Phase 5.B) with env fallback. |
 | `worker.tick_repeat_detector` | 24 h | Phase 4.D — representative :REPEATED_AT edges per class+site cluster. Thresholds from `repeat_detector_thresholds` with env fallback. |
 | `worker.tick_entity_resimilarity` | 7 d | Phase 4.E + 5.J + 5.K — POSSIBLY_SAME_AS candidate edges. Embedding cosine branch (when both entities have `re_id_embedding`) + name-match heuristic fallback. Time + AOI scoped. |
-| `worker.tick_propose_entities` | 24 h | Phase 4.F + 5.I — `entity_candidates` rows from REPEATED_AT clusters. LLM-first (via [ai.py](../../backend/ai.py)), heuristic fallback. |
+| `worker.tick_propose_entities` | 24 h | Phase 4.F + 5.I — `entity_candidates` rows from REPEATED_AT clusters. LLM-first (via [ai.py](../../backend/ai.py)), heuristic fallback. Calls `get_llm_json(prompt=..., system=...)` with the client-owned zero-temperature JSON path. |
 | `worker.tick_aggregate_entity_embeddings` | 12 h | Phase 5.J — average `detection_tracks.embedding_anchor` per entity into `operational_entities.re_id_embedding` centroid. |
 
 `grep -nE "@celery_app.task" backend/worker_legacy.py` for the full live list (≈25 tasks total as of Phase 5).
@@ -54,7 +54,8 @@ See [decisions/why-worker-legacy-monolith-kept.md](../decisions/why-worker-legac
 - SAM3 HTTP client constants (`INFERENCE_SAM3_URL`, timeouts).
 - NDJSON consumer for `/detect_video` (parses streaming response, yields per-frame records).
 - [`_calibration_tag_for_detection`](../../backend/worker_legacy.py#L662-L664) — chooses `source_layer` for detector-specific calibration.
-- [`store_detections`](../../backend/worker_legacy.py#L2390-L2591) — persists calibrated, georeferenced, evidence-ranked detections.
+- [`_llm_propose_entities`](../../backend/worker_legacy.py#L3429-L3487) — schema-constrained LLM proposer over REPEATED_AT clusters; raises/falls back cleanly.
+- [`store_detections`](../../backend/worker_legacy.py#L2446-L2600) — persists calibrated, georeferenced, evidence-ranked detections.
 - [`FMV_DEFAULT_PROMPTS`](../../backend/worker_legacy.py#L236) — PCS fallback prompt set (`vehicle,person,building`) when operator gave no FMV prompts.
 
 ## Fork safety
@@ -63,7 +64,7 @@ Runs DB queries at **import time** (`DETECTION_POLICY = active_detection_policy(
 
 ## Inputs / Outputs
 
-Imagery tasks emit per-pass summaries with `candidates_by_layer`, `suppressed_by_nms`, `suppressed_by_policy` from inference debug counts. Imagery pipeline calibrates raw confidence by `source_layer`, applies [detection-policy.md](detection-policy.md), georeferences OBBs, deduplicates across chips, applies [detection-evidence.md](detection-evidence.md), persists survivors to PostGIS.
+Imagery tasks emit per-pass summaries with `candidates_by_layer`, `suppressed_by_nms`, `suppressed_by_policy` from inference debug counts. Imagery pipeline calibrates raw confidence by `source_layer`, applies [detection-policy.md](detection-policy.md), georeferences OBBs, deduplicates across chips, applies [detection-evidence.md](detection-evidence.md), persists survivors to PostGIS. New imagery passes retain upload `model`, `prompt_mode`, and `enabled_layers` in `satellite_passes.metadata` so `/api/detections/classes` can identify all-YOLOE-PF AMG rows without relying only on the transient upload-job record.
 
 FMV tasks consume `/detect_video` NDJSON. SAM3 + YOLOE entries preserve `source_layer` in row metadata → downstream review distinguishes tracker families. `_insert_detection_rows` writes rows **raw** — window-seam + cross-prompt duplicates included; identity reconciled afterwards by `worker.consolidate_fmv` ([fmv-track-consolidation.md](fmv-track-consolidation.md)), which `process_fmv` dispatches once all windows finish. The earlier per-`(frame, class)` `overlap_index` dedup was removed — see [decisions/why-fmv-track-consolidation.md](../decisions/why-fmv-track-consolidation.md).
 
@@ -73,6 +74,7 @@ FMV tasks consume `/detect_video` NDJSON. SAM3 + YOLOE entries preserve `source_
 - Detections below the active policy floor → counted in `suppressed_by_policy`, not persisted.
 - Evidence ranking never drops detections; weak rows persisted as `candidate`/`discovery` metadata.
 - Missing FMV prompts no longer launch a single `"object"` session; precision fallback launches the bounded `FMV_DEFAULT_PROMPTS` list.
+- LLM entity proposal failures (unset endpoint, transport error, malformed JSON, or empty valid proposal list) fall back to the deterministic REPEATED_AT heuristic.
 
 ## Re-export shape
 
@@ -82,6 +84,7 @@ Everything here is re-exported by [backend/worker/__init__.py](../../backend/wor
 
 - [backend/worker-package-facade.md](worker-package-facade.md)
 - [backend/detection-evidence.md](detection-evidence.md)
+- [decisions/why-amg-detection-classes-use-llm-labels.md](../decisions/why-amg-detection-classes-use-llm-labels.md)
 - [decisions/why-worker-legacy-monolith-kept.md](../decisions/why-worker-legacy-monolith-kept.md)
 - [decisions/reset-db-pool-after-fork.md](../decisions/reset-db-pool-after-fork.md)
 - [backend/database-connections.md](database-connections.md)
