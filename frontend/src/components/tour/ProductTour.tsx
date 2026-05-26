@@ -78,7 +78,17 @@ function computeAnchor(step: TourStep, target: Element): Anchor {
   };
 }
 
-export default function ProductTour({ state }: { state: ProductTourState }) {
+export default function ProductTour({
+  state,
+  onStepChange,
+}: {
+  state: ProductTourState;
+  /** Fired with the *resolved* step id every time the spotlight lands on a
+      new step (or null when the tour is not running). Lets the parent open
+      panels, switch tabs, or otherwise satisfy prerequisites before the
+      next render-pass tries to find the target. */
+  onStepChange?: (stepId: string | null) => void;
+}) {
   const {
     running, stepIndex, welcomeOpen,
     start, next, prev, finish, skip, dismissWelcome,
@@ -112,6 +122,15 @@ export default function ProductTour({ state }: { state: ProductTourState }) {
       prev();
     }
   }, [running, currentStep, targetExists, moveDir, stepIndex, next, prev, finish]);
+
+  // Fire onStepChange whenever the parent needs to ready prerequisite state
+  // for the upcoming step (open the right panel, switch a tab, …). Runs on
+  // every step transition AND on the very first render of a new running
+  // tour so the parent gets a chance to prepare before targetExists is
+  // sampled in the next render pass.
+  useEffect(() => {
+    onStepChange?.(running && currentStep ? currentStep.id : null);
+  }, [running, currentStep, onStepChange]);
 
   // Compute card + spotlight position. Recompute on resize / scroll.
   const [anchor, setAnchor] = useState<Anchor | null>(null);

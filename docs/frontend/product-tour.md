@@ -2,8 +2,8 @@
 
 **Paths:**
 - [frontend/src/hooks/useProductTour.ts](../../frontend/src/hooks/useProductTour.ts) (~87 lines)
-- [frontend/src/components/tour/tourSteps.ts](../../frontend/src/components/tour/tourSteps.ts) (~189 lines)
-- [frontend/src/components/tour/ProductTour.tsx](../../frontend/src/components/tour/ProductTour.tsx) (~315 lines)
+- [frontend/src/components/tour/tourSteps.ts](../../frontend/src/components/tour/tourSteps.ts) (~361 lines)
+- [frontend/src/components/tour/ProductTour.tsx](../../frontend/src/components/tour/ProductTour.tsx) (~334 lines)
 
 **Lines:** ~590 total across three files
 
@@ -15,7 +15,7 @@ In-app guided onboarding for the Map workspace, aimed at defence analysts seeing
 
 1. **Auto-welcome on first visit.** When the operator opens the map page and `localStorage[sentinel:tour-completed]` is unset, a welcome modal pops with three actions: *Take the tour*, *Maybe later* (dismiss without setting the flag — re-pops next visit), *Don't show again* (sets the flag).
 2. **Manual re-launch.** A **Product Tour** button in the top-center toolbar of `MapStage` re-opens the welcome modal any time.
-3. **Step-by-step tooltip walkthrough.** 23 declarative steps (one per interactive control on the page) — basemap selector, opacity slider, layer toggles, detection-class tree, imagery list, analytics tools, GEOM/PRITHVI/tracks/draw/range-ring/zoom/focus toolbar buttons, time machine, selection panel.
+3. **Step-by-step tooltip walkthrough.** 43 declarative steps (one per interactive control on the page) covering — left rail (basemap, opacity, layer toggles, GEOM modes, PRITHVI overlays, detection classes, imagery passes, analytics-tools layer toggles), top action bar (Draw / Range-ring / Product Tour), zoom cluster (zoom-in/out, recenter, focus mode), Time-machine deep (play, recenter, ranges, CONF threshold, passes count, sensor legend), bottom chrome (restored-hidden filter banner, SHOWING N/M suppression chip, event timeline + window buttons + in-window counter), and SelectionPanel deep (header status chip, collapse, four tabs, three Analytics tools + capabilities footer, Track Object button). Each step body is a two-sentence what-it-does + when-an-analyst-reaches-for-it explanation.
 
 ## Why this design
 
@@ -34,7 +34,8 @@ In-app guided onboarding for the Map workspace, aimed at defence analysts seeing
 - `dismissWelcome` ≠ `skip`: *dismiss* closes the modal without setting the LS flag (re-pops next session); *skip* persists the flag.
 
 ### `tourSteps.ts`
-- `TOUR_STEPS: TourStep[]` ([tourSteps.ts#L22-L189](../../frontend/src/components/tour/tourSteps.ts#L22-L189)) — 23 steps in display order. Selectors are `[data-tour="..."]` matches.
+- `TOUR_STEPS: TourStep[]` ([tourSteps.ts#L30-L361](../../frontend/src/components/tour/tourSteps.ts#L30-L361)) — 43 steps in display order. Selectors are `[data-tour="..."]` matches.
+- **`onStepChange` callback** ([ProductTour.tsx](../../frontend/src/components/tour/ProductTour.tsx)) — optional prop the engine fires whenever the resolved step changes (or with `null` when the tour is not running). [GaiaMap.tsx](../../frontend/src/components/GaiaMap.tsx) implements it to open the SelectionPanel + switch to the right tab before a Selection/Analytics/Tracks step is spotlighted, and to open the timeline panel before any `tm-*` / `event-*` step. This is what lets steps that live inside a panel/tab the analyst hasn't visited still resolve cleanly: the parent satisfies prerequisite state, then the auto-skip effect retries `document.querySelector` on the next render.
 - `Placement` ([tourSteps.ts#L11](../../frontend/src/components/tour/tourSteps.ts#L11)) — `'top' | 'bottom' | 'left' | 'right'`, the *preferred* tooltip placement (falls back automatically if the card would clip the viewport).
 
 ### `ProductTour.tsx`

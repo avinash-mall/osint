@@ -103,8 +103,6 @@ export type Props = {
   geomDisplayedDetectionsGeoJSON: { features?: any[]; [k: string]: any };
   detectionsGeoJSON: { features?: any[]; [k: string]: any };
   detectionClassFilter: string | null;
-  bboxMode: 'hbb' | 'obb' | 'mask';
-  setBboxMode: (m: 'hbb' | 'obb' | 'mask') => void;
   showDetectionCenterMarkers: boolean;
   detectionIcon: (feature: any) => L.DivIcon;
   getDetectionStyle: (feature: any) => L.PathOptions;
@@ -113,7 +111,6 @@ export type Props = {
 
   /* track + asset layers */
   activeLayers: ActiveLayerMap;
-  setActiveLayers: React.Dispatch<React.SetStateAction<ActiveLayerMap>>;
   data: { static: any[]; tracks: any[] };
   detectionTracks: DetectionTrack[];
   selectedDetectionTrack: DetectionTrack | null;
@@ -122,7 +119,6 @@ export type Props = {
 
   /* prithvi overlays */
   prithviOverlays: Record<string, boolean>;
-  setPrithviOverlays: (updater: any) => void;
   prithviGeojson: Record<string, any>;
 
   /* analytics overlays */
@@ -172,22 +168,18 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
     geomDisplayedDetectionsGeoJSON,
     detectionsGeoJSON,
     detectionClassFilter,
-    bboxMode,
-    setBboxMode,
     showDetectionCenterMarkers,
     detectionIcon,
     getDetectionStyle,
     detectionCanvasRenderer,
     setSelectedDetection,
     activeLayers,
-    setActiveLayers,
     data,
     detectionTracks,
     selectedDetectionTrack,
     setSelectedDetectionTrack,
     trackColor,
     prithviOverlays,
-    setPrithviOverlays,
     prithviGeojson,
     analyticsResults,
     pendingPick,
@@ -836,7 +828,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
           <div className="sentinel-grid" />
           <div className="map-focus-collapsible map-focus-left absolute left-2 top-2 font-mono text-[10px] tracking-wider text-sentinel-muted">WGS84 / MERCATOR / LIVE COP</div>
           <div className="map-focus-collapsible map-focus-right absolute right-2 top-2 font-mono text-[10px] tracking-wider text-sentinel-muted">AOR / CURRENT VIEW</div>
-          <div className="absolute left-1/2 top-8 -translate-x-1/2 border border-sentinel-line-2 bg-sentinel-panel px-3 py-1 font-mono text-[11px]">
+          <div className="absolute left-1/2 top-14 -translate-x-1/2 border border-sentinel-line-2 bg-sentinel-panel px-3 py-1 font-mono text-[11px]">
             <span className="text-sentinel-accent">{visibleDetectionCount}</span>
             <span className="text-sentinel-muted"> / {detectionsGeoJSON.features?.length || 0} detections / last {timelineWindowMinutes}m</span>
             {visibleDetectionCount > 0 && <span className="text-sentinel-muted"> / hover labels</span>}
@@ -862,8 +854,21 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
             </div>
           </div>
           {/* F14 — 32×32 px controls, wired to the live map, keyboard hints
-              in tooltips. F12 — the focus toggle lives in this cluster. */}
-          <div className="absolute right-3 top-10 flex flex-col border border-sentinel-line-2 bg-sentinel-panel">
+              in tooltips. F12 — the focus toggle lives in this cluster.
+              Anchored at the viewport's bottom-right edge, overlapping the
+              SelectionPanel's rightmost strip (cluster width 32 px >
+              panel right-margin 14 px). z-[600] keeps it above the panel
+              (z 500). Position is static — when the panel collapses to a
+              36 px rail the cluster covers the rail's left ~22 px while
+              the remaining ~14 px on the right stays clickable for
+              re-expand. */}
+          <div
+            className="absolute z-[600] flex flex-col border border-sentinel-line-2 bg-sentinel-panel"
+            style={{
+              bottom: 14,
+              right: 4,
+            }}
+          >
             <button
               type="button" onClick={zoomIn}
               data-tour="zoom-in"
@@ -900,65 +905,10 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
             </button>
           </div>
 
-          {/* Top-center toolbar — geometry mode, Prithvi overlays, draw mode */}
-          <div className="absolute left-1/2 top-3 z-[500] -translate-x-1/2 pointer-events-auto flex flex-col items-center gap-2">
-            <div
-              className="flex items-center gap-1 border border-sentinel-line-2 bg-sentinel-panel/95 px-2 py-1 font-mono text-[10px] uppercase tracking-widest text-slate-300 rounded-full"
-              role="group"
-              aria-label="Detection geometry mode"
-            >
-              <span className="px-2 text-[10px] text-sentinel-muted">GEOM</span>
-              {(['hbb', 'obb', 'mask'] as const).map((k) => (
-                <button
-                  key={k}
-                  type="button"
-                  data-tour={`geom-${k}`}
-                  onClick={() => setBboxMode(k)}
-                  title={
-                    k === 'hbb' ? 'Axis-aligned bounding box'
-                    : k === 'obb' ? 'Oriented bounding box (from SAM3 metadata)'
-                    : 'Mask polygon (raw geometry)'
-                  }
-                  className={`px-3 py-1 rounded-full transition ${
-                    bboxMode === k ? 'bg-sentinel-accent text-slate-900 font-bold' : 'text-slate-300 hover:text-white'
-                  }`}
-                >
-                  {k.toUpperCase()}
-                </button>
-              ))}
-              <span className="mx-1 h-4 w-px bg-sentinel-line-2" />
-              <span className="px-1 text-[10px] text-sentinel-muted">PRITHVI</span>
-              {(['flood', 'burn', 'crops'] as const).map((k) => {
-                const on = prithviOverlays[k];
-                return (
-                  <button
-                    key={k}
-                    type="button"
-                    data-tour={`prithvi-${k}`}
-                    onClick={() => setPrithviOverlays((cur: Record<string, boolean>) => ({ ...cur, [k]: !cur[k] }))}
-                    title={`Toggle Prithvi ${k} overlay`}
-                    className={`px-3 py-1 rounded-full transition ${
-                      on ? 'bg-sentinel-accent/20 text-sentinel-accent' : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    {k}
-                  </button>
-                );
-              })}
-              <span className="mx-1 h-4 w-px bg-sentinel-line-2" />
-              <button
-                type="button"
-                data-tour="tracks-toggle"
-                onClick={() => setActiveLayers((cur) => ({ ...cur, tracks: !cur.tracks }))}
-                title="Toggle asset tracks"
-                className={`px-3 py-1 rounded-full transition ${
-                  activeLayers.tracks ? 'bg-sentinel-accent/20 text-sentinel-accent' : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                tracks
-              </button>
-            </div>
-
+          {/* Top-center action bar — Draw / Range ring / Product Tour. Layer-
+              display state (GEOM box mode, Prithvi overlays, tracks visibility)
+              lives in the LayerPanel Overlays section, not here. */}
+          <div className="absolute left-1/2 top-3 z-[500] -translate-x-1/2 pointer-events-auto flex flex-row items-center gap-2">
             <button
               type="button"
               data-tour="draw-object"

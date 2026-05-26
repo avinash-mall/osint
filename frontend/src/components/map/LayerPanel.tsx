@@ -81,6 +81,16 @@ type Props = {
   activeLayers: ActiveLayerMap;
   setActiveLayers: React.Dispatch<React.SetStateAction<ActiveLayerMap>>;
 
+  /* Detection box geometry mode (HBB / OBB / MASK) — relocated from the
+     MapStage top-center toolbar so all layer-display state lives in one rail. */
+  bboxMode: 'hbb' | 'obb' | 'mask';
+  setBboxMode: (m: 'hbb' | 'obb' | 'mask') => void;
+
+  /* Prithvi overlay toggles (flood / burn / crops) — relocated from the
+     MapStage top-center toolbar. */
+  prithviOverlays: Record<string, boolean>;
+  setPrithviOverlays: (updater: any) => void;
+
   /* Counts for overlay rows */
   imagery: any[];
   visibleDetectionCount: number;
@@ -175,6 +185,10 @@ export default function LayerPanel({
   setOverlaysOpen,
   activeLayers,
   setActiveLayers,
+  bboxMode,
+  setBboxMode,
+  prithviOverlays,
+  setPrithviOverlays,
   imagery,
   visibleDetectionCount,
   tracksCount,
@@ -345,6 +359,41 @@ export default function LayerPanel({
                 />
               ))}
             </div>
+            <div className="layer-panel-subhead">Box mode</div>
+            <div className="flex items-center gap-1 px-3 py-2 font-mono text-[10px] uppercase tracking-widest">
+              {(['hbb', 'obb', 'mask'] as const).map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  data-tour={`geom-${k}`}
+                  onClick={() => setBboxMode(k)}
+                  title={
+                    k === 'hbb' ? 'Axis-aligned bounding box'
+                    : k === 'obb' ? 'Oriented bounding box (from SAM3 metadata)'
+                    : 'Mask polygon (raw geometry)'
+                  }
+                  className={`px-3 py-1 rounded-full transition ${
+                    bboxMode === k ? 'bg-sentinel-accent text-slate-900 font-bold' : 'text-slate-300 hover:text-white'
+                  }`}
+                >
+                  {k.toUpperCase()}
+                </button>
+              ))}
+            </div>
+            <div className="layer-panel-subhead">Prithvi overlays</div>
+            {(['flood', 'burn', 'crops'] as const).map((k) => (
+              <div key={k} data-tour={`prithvi-${k}`}>
+                <OverlayRow
+                  label={k.charAt(0).toUpperCase() + k.slice(1)}
+                  metric={prithviOverlays[k] ? 'ON' : 'OFF'}
+                  colorVar="var(--color-sentinel-accent)"
+                  active={!!prithviOverlays[k]}
+                  onToggle={() =>
+                    setPrithviOverlays((cur: Record<string, boolean>) => ({ ...cur, [k]: !cur[k] }))
+                  }
+                />
+              </div>
+            ))}
             <div data-tour="analytics-tools">
               <div className="layer-panel-subhead">Analytics tools</div>
               {analyticsToolRows.map((layer) => (

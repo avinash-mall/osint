@@ -211,6 +211,7 @@ export default function AnalyticsToolsPanel({
       <ToolCard
         icon={<Eye className="h-3.5 w-3.5" />}
         title="Viewshed"
+        dataTour="analytics-viewshed"
         busy={vs.busy}
         error={vs.error}
         onRun={() => onRun('viewshed')}
@@ -250,6 +251,7 @@ export default function AnalyticsToolsPanel({
       <ToolCard
         icon={<Spline className="h-3.5 w-3.5" />}
         title="Line of sight"
+        dataTour="analytics-los"
         busy={los.busy}
         error={los.error}
         onRun={() => onRun('los')}
@@ -277,6 +279,7 @@ export default function AnalyticsToolsPanel({
       <ToolCard
         icon={<RouteIcon className="h-3.5 w-3.5" />}
         title="Routes"
+        dataTour="analytics-routes"
         busy={rt.busy}
         error={rt.error}
         onRun={() => onRun('routes')}
@@ -314,7 +317,7 @@ export default function AnalyticsToolsPanel({
         </div>
       </ToolCard>
 
-      <div className="flex items-center justify-center gap-3 pt-1 font-mono text-[9px] uppercase tracking-wider">
+      <div data-tour="analytics-capabilities" className="flex items-center justify-center gap-3 pt-1 font-mono text-[9px] uppercase tracking-wider">
         <Sparkles className="h-3 w-3 text-sentinel-accent" />
         <span style={{ color: capabilities?.dem ? '#5ee0a0' : '#e0a05e' }}>
           DEM · {capabilities?.dem ? 'OK' : 'NONE'}
@@ -403,6 +406,7 @@ function ToolCard({
   layerDisabled,
   onToggleLayer,
   fallbackMode,
+  dataTour,
   children,
 }: {
   icon: React.ReactNode;
@@ -416,6 +420,8 @@ function ToolCard({
   layerDisabled: boolean;
   onToggleLayer: () => void;
   fallbackMode?: AnalyticsMode;
+  /** Product Tour anchor id; surfaced on the card root for spotlight lookup. */
+  dataTour?: string;
   children: React.ReactNode;
 }) {
   const layerActive = layerOn && !layerDisabled;
@@ -429,7 +435,7 @@ function ToolCard({
     }
   })();
   return (
-    <div className="border border-sentinel-line-2 bg-sentinel-bg p-2">
+    <div data-tour={dataTour} className="border border-sentinel-line-2 bg-sentinel-bg p-2">
       <div className="flex items-center gap-2 pb-1">
         <span className="text-sentinel-accent">{icon}</span>
         <span className="flex-1 text-[11px] font-bold uppercase tracking-wider text-slate-200">{title}</span>

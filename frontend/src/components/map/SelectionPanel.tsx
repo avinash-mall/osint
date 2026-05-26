@@ -254,11 +254,11 @@ export default function SelectionPanel(props: Props) {
         <HeaderIcon className="h-4 w-4" />
         <span>{rightHeader.label}</span>
         {rightTab === 'details' && selectedDetection ? (
-          <span className={`sentinel-tag ${allegianceTagClass} ml-auto uppercase`}>{selectedDetection.properties?.allegiance || 'unknown'}</span>
+          <span data-tour="selection-header-chip" className={`sentinel-tag ${allegianceTagClass} ml-auto uppercase`}>{selectedDetection.properties?.allegiance || 'unknown'}</span>
         ) : (
-          <span className="sentinel-tag acc ml-auto">{rightHeader.tag}</span>
+          <span data-tour="selection-header-chip" className="sentinel-tag acc ml-auto">{rightHeader.tag}</span>
         )}
-        <button type="button" onClick={onClose} className="sentinel-icon-btn h-6 w-6" title="Collapse panel">
+        <button type="button" data-tour="selection-collapse" onClick={onClose} className="sentinel-icon-btn h-6 w-6" title="Collapse panel">
           <ChevronRight className="h-3.5 w-3.5" />
         </button>
       </div>
@@ -275,6 +275,7 @@ export default function SelectionPanel(props: Props) {
             <button
               key={k}
               type="button"
+              data-tour={`tab-${k}`}
               onClick={() => setRightTab(k)}
               className={`flex-1 h-[34px] font-mono text-[10.5px] uppercase tracking-[.08em] flex items-center justify-center gap-1.5 border-r border-sentinel-line last:border-r-0 ${
                 isActive ? 'bg-sentinel-panel text-slate-100' : 'text-sentinel-muted'
@@ -620,6 +621,7 @@ export default function SelectionPanel(props: Props) {
             <div className="border-b border-sentinel-line p-3">
               <button
                 type="button"
+                data-tour="tracks-track-object"
                 disabled={isActionBusy || !selectedDetection}
                 onClick={() => selectedDetection && actions.pinTrack(selectedDetection.properties.id)}
                 className="sentinel-btn w-full justify-center disabled:cursor-not-allowed disabled:opacity-40"

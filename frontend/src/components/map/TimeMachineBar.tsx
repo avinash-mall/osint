@@ -96,6 +96,7 @@ export default function TimeMachineBar({
       <div className="time-machine-header" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
         <button
           type="button"
+          data-tour="tm-play"
           className="btn icon sm"
           style={{ borderRadius: 999 }}
           onClick={onTogglePlay}
@@ -105,6 +106,7 @@ export default function TimeMachineBar({
         </button>
         <button
           type="button"
+          data-tour="tm-recenter"
           className="btn icon sm"
           style={{ borderRadius: 999 }}
           onClick={onRecenter}
@@ -117,7 +119,7 @@ export default function TimeMachineBar({
           {new Date(playheadIso).toUTCString().replace('GMT', 'Z')} · {range} window
         </span>
         <div className="time-machine-spacer" style={{ flex: 1 }} />
-        <div className="seg" style={{ borderRadius: 999, overflow: 'hidden' }}>
+        <div data-tour="tm-ranges" className="seg" style={{ borderRadius: 999, overflow: 'hidden' }}>
           {(['24h', '7d', '30d'] as Range[]).map((w) => (
             <button
               key={w}
@@ -130,6 +132,7 @@ export default function TimeMachineBar({
           ))}
         </div>
         <span
+          data-tour="tm-conf"
           className="time-machine-confidence mono"
           style={{
             display: 'inline-flex',
@@ -156,7 +159,7 @@ export default function TimeMachineBar({
             {Math.round(confidence * 100)}%
           </span>
         </span>
-        <span className="mono" style={{ fontSize: 10.5, color: 'var(--accent)' }}>
+        <span data-tour="tm-passes" className="mono" style={{ fontSize: 10.5, color: 'var(--accent)' }}>
           {dots.length} passes
         </span>
         {(() => {
@@ -341,7 +344,7 @@ export default function TimeMachineBar({
       </div>
 
       {/* Legend strip */}
-      <div className="time-machine-legend" style={{ display: 'flex', gap: 14, marginTop: 4, fontSize: 10.5 }}>
+      <div data-tour="tm-legend" className="time-machine-legend" style={{ display: 'flex', gap: 14, marginTop: 4, fontSize: 10.5 }}>
         <LegendDot color="#9bd1ff" label="RGB" m="rgb" />
         <LegendDot color="#a78bfa" label="MSI" m="multispectral" />
         <LegendDot color="#fca56a" label="SAR" m="sar" />

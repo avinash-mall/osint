@@ -1050,6 +1050,10 @@ export default function GaiaMap({
         setOverlaysOpen={setOverlaysOpen}
         activeLayers={activeLayers}
         setActiveLayers={setActiveLayers}
+        bboxMode={bboxMode}
+        setBboxMode={setBboxMode}
+        prithviOverlays={prithviOverlays}
+        setPrithviOverlays={setPrithviOverlays}
         imagery={imagery}
         visibleDetectionCount={visibleDetectionCount}
         tracksCount={data.tracks.length}
@@ -1134,22 +1138,18 @@ export default function GaiaMap({
         geomDisplayedDetectionsGeoJSON={geomDisplayedDetectionsGeoJSON}
         detectionsGeoJSON={detectionsGeoJSON}
         detectionClassFilter={detectionClassFilter}
-        bboxMode={bboxMode}
-        setBboxMode={setBboxMode}
         showDetectionCenterMarkers={showDetectionCenterMarkers}
         detectionIcon={detectionIcon}
         getDetectionStyle={getDetectionStyle}
         detectionCanvasRenderer={detectionCanvasRenderer}
         setSelectedDetection={setSelectedDetection}
         activeLayers={activeLayers}
-        setActiveLayers={setActiveLayers}
         data={data}
         detectionTracks={detectionTracks}
         selectedDetectionTrack={selectedDetectionTrack}
         setSelectedDetectionTrack={setSelectedDetectionTrack}
         trackColor={trackColor}
         prithviOverlays={prithviOverlays}
-        setPrithviOverlays={setPrithviOverlays}
         prithviGeojson={prithviGeojson}
         analyticsResults={analyticsResults}
         pendingPick={pendingPick}
@@ -1246,6 +1246,7 @@ export default function GaiaMap({
               disappears as soon as the analyst acts on it. */}
           {restoredHiddenNotice && (
             <div
+              data-tour="hidden-banner"
               role="status"
               aria-label="Restored hidden filters"
               style={{
@@ -1352,6 +1353,7 @@ export default function GaiaMap({
             };
             return (
               <div
+                data-tour="showing-chip"
                 role="status"
                 aria-label="Hidden detection summary"
                 style={{
@@ -1432,6 +1434,7 @@ export default function GaiaMap({
             );
           })()}
 
+          <div data-tour="event-timeline">
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
             <button
               type="button"
@@ -1450,7 +1453,7 @@ export default function GaiaMap({
               <RefreshCw size={12} />
             </button>
             <span className="label-mono">Event timeline · last {timelineWindowMinutes}m</span>
-            <div className="seg" style={{ marginLeft: 8 }}>
+            <div data-tour="event-windows" className="seg" style={{ marginLeft: 8 }}>
               {[15, 30, 60].map((minutes) => (
                 <button
                   key={minutes}
@@ -1466,7 +1469,7 @@ export default function GaiaMap({
             <span className="mono" style={{ fontSize: 10, color: 'var(--ink-2)' }}>
               {new Date(timeRange.start).toLocaleTimeString()} / {new Date(timeRange.end).toLocaleTimeString()}
             </span>
-            <span className="mono" style={{ fontSize: 10, color: 'var(--ink-3)' }}>
+            <span data-tour="event-counter" className="mono" style={{ fontSize: 10, color: 'var(--ink-3)' }}>
               · {visibleDetectionCount} in window
             </span>
           </div>
@@ -1506,6 +1509,7 @@ export default function GaiaMap({
                 background: 'var(--accent)',
               }}
             />
+          </div>
           </div>
         </div>
       ) : (
@@ -1619,7 +1623,36 @@ export default function GaiaMap({
         </button>
       )}
 
-      <ProductTour state={tour} />
+      <ProductTour
+        state={tour}
+        onStepChange={(stepId) => {
+          if (!stepId) return;
+          // Open the right sidebar for any step that lives inside it.
+          if (
+            stepId.startsWith('selection-')
+            || stepId.startsWith('tab-')
+            || stepId.startsWith('analytics-')
+            || stepId.startsWith('tracks-')
+          ) {
+            setRightOpen(true);
+          }
+          // Switch the active tab so the spotlight lands on visible content.
+          if (stepId === 'tab-details' || stepId === 'selection-header-chip') setRightTab('details');
+          if (stepId === 'tab-analytics' || stepId.startsWith('analytics-')) setRightTab('analytics');
+          if (stepId === 'tab-similar') setRightTab('similar');
+          if (stepId === 'tab-tracks' || stepId.startsWith('tracks-')) setRightTab('tracks');
+          // Time-machine + event-timeline steps need the bottom panel open.
+          if (
+            stepId.startsWith('tm-')
+            || stepId === 'time-machine'
+            || stepId.startsWith('event-')
+            || stepId === 'hidden-banner'
+            || stepId === 'showing-chip'
+          ) {
+            setTimelineOpen(true);
+          }
+        }}
+      />
     </div>
   );
 }

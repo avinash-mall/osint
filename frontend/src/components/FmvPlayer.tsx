@@ -299,6 +299,7 @@ export default function FmvPlayer({
   consumeCrossNav,
 }: FmvPlayerProps = {}) {
   const [clips, setClips] = useState<Clip[]>([]);
+  const [clipsError, setClipsError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [frames, setFrames] = useState<FrameRow[]>([]);
   const [detections, setDetections] = useState<Detection[]>([]);
@@ -311,7 +312,14 @@ export default function FmvPlayer({
   // 3-state PiP/split/hidden map (default to PiP matching the new design).
   const [mapMode, setMapMode] = useState<MapMode>('pip');
   const [rightOpen, setRightOpen] = useState(true);
-  const [sideTab, setSideTab] = useState<SidePanelTab>('tracks');
+  // Default to the Clips library when there is no incoming clip selection —
+  // otherwise a fresh visitor lands on Tracks with "Select a clip in the
+  // Clips tab" and assumes their upload never appeared. Cross-navigation
+  // from the map (which carries an fmvClipId) keeps the analysis-first
+  // Tracks default.
+  const [sideTab, setSideTab] = useState<SidePanelTab>(
+    crossNav?.fmvClipId ? 'tracks' : 'clips',
+  );
   const [trackFilter, setTrackFilter] = useState<'in-frame' | 'all'>('in-frame');
   const [detectionFilter, setDetectionFilter] = useState<'in-frame' | 'all'>('all');
   const [detectionsSort, setDetectionsSort] = useState<DetectionsSort>('time_asc');
@@ -353,8 +361,14 @@ export default function FmvPlayer({
     try {
       const res = await axios.get(`${API_URL}/api/fmv/clips`);
       setClips(res.data.clips || []);
-    } catch (err) {
+      setClipsError(null);
+    } catch (err: any) {
       console.error('fetchClips failed', err);
+      setClipsError(
+        err?.response?.data?.detail
+          || err?.message
+          || 'Failed to load clips',
+      );
     }
   }, []);
 
@@ -2115,6 +2129,8 @@ export default function FmvPlayer({
             {sideTab === 'clips' && (
               <ClipsTab
                 clips={clips}
+                clipsError={clipsError}
+                onRetry={fetchClips}
                 selectedId={selectedId}
                 setSelectedId={setSelectedId}
               />
@@ -2212,10 +2228,14 @@ export default function FmvPlayer({
 
 function ClipsTab({
   clips,
+  clipsError,
+  onRetry,
   selectedId,
   setSelectedId,
 }: {
   clips: Clip[];
+  clipsError: string | null;
+  onRetry: () => void;
   selectedId: number | null;
   setSelectedId: (id: number) => void;
 }) {
@@ -2227,7 +2247,37 @@ function ClipsTab({
         <div className="label-mono" style={{ marginBottom: 6 }}>
           Clip library · {clips.length}
         </div>
-        {clips.length === 0 && (
+        {clips.length === 0 && clipsError && (
+          <div
+            className="mono"
+            style={{
+              fontSize: 11,
+              color: 'var(--crit)',
+              padding: 8,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+            }}
+          >
+            <span>Failed to load clips: {clipsError}</span>
+            <button
+              type="button"
+              onClick={onRetry}
+              style={{
+                alignSelf: 'flex-start',
+                fontSize: 11,
+                padding: '2px 8px',
+                background: 'transparent',
+                color: 'var(--ink-0)',
+                border: '1px solid var(--line)',
+                cursor: 'pointer',
+              }}
+            >
+              Retry
+            </button>
+          </div>
+        )}
+        {clips.length === 0 && !clipsError && (
           <div className="mono" style={{ fontSize: 11, color: 'var(--ink-2)', padding: 8 }}>
             No clips yet. Use the admin Upload tab to add one.
           </div>

@@ -31,12 +31,14 @@ HLS video player with KLV telemetry synced to a side-by-side map + per-frame det
 
 ## Key behaviors
 
+- **Side-panel default tab** — on a fresh visit (no `crossNav.fmvClipId`) the right panel opens on the **Clips** library so an analyst who just uploaded a clip sees it without hunting through sub-tabs. Cross-nav from the map (which carries a clip id) defaults to **Tracks** instead, matching the analysis intent. See [decisions/fmv-default-sidetab-clips.md](../decisions/fmv-default-sidetab-clips.md).
 - **Time sync** — as the HLS video plays, current frame index = `currentTime * fps`. Telemetry + detection overlays for that frame filtered and rendered.
 - **Track formation** — tracks colored consistently across frames. Hovering a track shows its trajectory.
 - **Prompt mode change** triggers a new ingest run when the user re-submits.
 - **HUD readouts** sit on a translucent backplate for WCAG-AA contrast over bright video (UX-AUDIT F19).
 - **PiP map** expands to split view on double-click of its header bar, in addition to the maximise button (F20).
 - **Keyboard shortcuts** — `Space`/`K` play-pause, `←`/`→` step frame, `J`/`L` fast scrub, `?` opens a `KeyboardShortcutSheet` overlay listing them (F21).
+- **Clip-load error surface** — `fetchClips` failures (network, 5xx, parse) set a `clipsError` state that the Clips tab renders as *"Failed to load clips: …"* in `var(--crit)` with a Retry button, instead of falling back to the misleading "No clips yet" empty state.
 
 ## Cross-references
 

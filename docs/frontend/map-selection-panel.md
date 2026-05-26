@@ -30,4 +30,5 @@ Four-tab right rail that appears when a detection is selected on the map.
 - [object-details-form.md](object-details-form.md)
 - [map-analytics-tools.md](map-analytics-tools.md)
 - [map-review-similar-provenance.md](map-review-similar-provenance.md)
+- [product-tour.md](product-tour.md) — the SelectionPanel header chip, collapse button, four tabs, and the Track Object button are first-class Product Tour anchors (`selection-header-chip`, `selection-collapse`, `tab-details` / `tab-analytics` / `tab-similar` / `tab-tracks`, `tracks-track-object`).
 - [operations/candidate-link-approval.md](../operations/candidate-link-approval.md)
