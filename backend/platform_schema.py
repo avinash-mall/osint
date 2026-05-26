@@ -710,6 +710,7 @@ def ensure_reference_platform_tables() -> None:
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_reference_chips_platform ON reference_chips(platform_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_reference_chips_dataset ON reference_chips(source_dataset)")
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_reference_chips_platform_path ON reference_chips(platform_id, chip_path)")
         # Partial HNSW indexes — only build over rows with a non-null embedding
         # in the relevant view domain, keeping each index dense and small.
         cursor.execute("""

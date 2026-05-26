@@ -1,7 +1,7 @@
 # `backend/platform_schema.py` — Reference-Embedding DB Schema
 
 **Path:** [backend/platform_schema.py](../../backend/platform_schema.py)
-**Lines:** ~105 (the `ensure_reference_platform_tables` function at the tail of the file, lines 659–763)
+**Lines:** ~106 (the `ensure_reference_platform_tables` function at the tail of the file, lines 659–764)
 **Depends on:** PostGIS, pgvector ≥ 0.8, `database.postgis_db`, existing `detections` + `ontology_objects` + `object_details` tables.
 
 ## Purpose
@@ -18,11 +18,11 @@ Defines the Reference Embedding Vector Database schema:
 - **`detection_id INTEGER`** in the candidates table because `detections.id` is `SERIAL`. UUIDs everywhere else because the reference DB is identity-stable across rebuilds; SERIAL would change on a `pg_dump` round-trip.
 
 ## Key symbols
-- [`ensure_reference_platform_tables()`](../../backend/platform_schema.py#L659-L763) — idempotent migration; called from `ensure_platform_tables()` and (transitively) from the FastAPI lifespan + any router that uses `_ensure_*` guards.
+- [`ensure_reference_platform_tables()`](../../backend/platform_schema.py#L659-L764) — idempotent migration; called from `ensure_platform_tables()` and (transitively) from the FastAPI lifespan + any router that uses `_ensure_*` guards.
 
 ## Inputs / Outputs
 - Inputs: none beyond an open Postgres connection from `database.postgis_db`.
-- Outputs: three tables, the four new `object_details` columns, four HNSW indexes (two per view domain, on both centroids and chips), six regular B-tree indexes.
+- Outputs: three tables, the four new `object_details` columns, four HNSW indexes (two per view domain, on both centroids and chips), six regular B-tree indexes, plus a unique index `uq_reference_chips_platform_path` on `reference_chips(platform_id, chip_path)` that backs the `ON CONFLICT` upsert used by `backend.reference_platform_db.insert_reference_chip`.
 
 ## Failure modes
 - pgvector missing → `CREATE EXTENSION vector` raises `ERROR: could not open extension control file`. Fix: ensure the Postgres container is the derived image with `postgresql-18-pgvector` installed ([postgis/Dockerfile](../../postgis/Dockerfile)).
