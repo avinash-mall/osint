@@ -1,0 +1,177 @@
+{
+  "version": "2026-05-27-plan-b",
+  "description": "Reference platform seed manifest. Curated bridge between source-dataset class names and canonical platform identities. DOTA proof-of-life: one row per DOTA class with the class name as platform_family. Later seeds (xView, RarePlanes) will add real platforms (F-35, B-2, etc.) and deepen the `attributes` field. The bake script (backend/scripts/bake_reference_db.py, Task 6) reads this file and uses `source_terms_per_dataset.<dataset>` to locate chip directories.",
+  "field_notes": {
+    "platform_name": "Globally unique identifier. DOTA placeholders use the `DOTA::<class>` prefix to keep them clearly distinguishable from real-world platforms added later.",
+    "platform_family": "CamelCase grouping. For DOTA placeholders this mirrors the class name; for real platforms it groups variants (e.g. F-35A/B/C share family `F-35`).",
+    "ontology_object_id": "Optional FK to ontology_objects.id. Nullable; ON DELETE SET NULL. Left null when no sensible ontology match exists (e.g. sports facilities).",
+    "country_of_origin": "ISO-style or short country code. Null for DOTA placeholders (generic class, no specific platform).",
+    "role": "Short human-readable description shown in admin UI.",
+    "attributes": "Free-form JSON object for platform-specific metadata (length_m, crew, etc.). Empty for DOTA placeholders; populated by later xView / RarePlanes seeds.",
+    "source_terms_per_dataset": "Map of dataset name -> list of class/term strings. The baker uses this to find chip directories under each dataset's chip root. For DOTA the value matches the chip-directory class name exactly."
+  },
+  "platforms": [
+    {
+      "platform_name": "DOTA::plane",
+      "platform_family": "Plane",
+      "ontology_object_id": "Fixed_Wing_Aircraft",
+      "country_of_origin": null,
+      "role": "Fixed-wing aircraft (DOTA class, unspecified model)",
+      "attributes": {},
+      "source_terms_per_dataset": {"dota": ["plane"]}
+    },
+    {
+      "platform_name": "DOTA::ship",
+      "platform_family": "Ship",
+      "ontology_object_id": "Ship",
+      "country_of_origin": null,
+      "role": "Surface vessel (DOTA class, unspecified type)",
+      "attributes": {},
+      "source_terms_per_dataset": {"dota": ["ship"]}
+    },
+    {
+      "platform_name": "DOTA::storage-tank",
+      "platform_family": "StorageTank",
+      "ontology_object_id": "Storage_Tank",
+      "country_of_origin": null,
+      "role": "Industrial storage tank (DOTA class, unspecified contents)",
+      "attributes": {},
+      "source_terms_per_dataset": {"dota": ["storage-tank"]}
+    },
+    {
+      "platform_name": "DOTA::baseball-diamond",
+      "platform_family": "BaseballDiamond",
+      "ontology_object_id": null,
+      "country_of_origin": null,
+      "role": "Baseball diamond / field (DOTA class, sports facility)",
+      "attributes": {},
+      "source_terms_per_dataset": {"dota": ["baseball-diamond"]}
+    },
+    {
+      "platform_name": "DOTA::tennis-court",
+      "platform_family": "TennisCourt",
+      "ontology_object_id": null,
+      "country_of_origin": null,
+      "role": "Tennis court (DOTA class, sports facility)",
+      "attributes": {},
+      "source_terms_per_dataset": {"dota": ["tennis-court"]}
+    },
+    {
+      "platform_name": "DOTA::basketball-court",
+      "platform_family": "BasketballCourt",
+      "ontology_object_id": null,
+      "country_of_origin": null,
+      "role": "Basketball court (DOTA class, sports facility)",
+      "attributes": {},
+      "source_terms_per_dataset": {"dota": ["basketball-court"]}
+    },
+    {
+      "platform_name": "DOTA::ground-track-field",
+      "platform_family": "GroundTrackField",
+      "ontology_object_id": null,
+      "country_of_origin": null,
+      "role": "Ground track field / athletics track (DOTA class, sports facility)",
+      "attributes": {},
+      "source_terms_per_dataset": {"dota": ["ground-track-field"]}
+    },
+    {
+      "platform_name": "DOTA::harbor",
+      "platform_family": "Harbor",
+      "ontology_object_id": "Harbor",
+      "country_of_origin": null,
+      "role": "Harbor / port facility (DOTA class, unspecified scale)",
+      "attributes": {},
+      "source_terms_per_dataset": {"dota": ["harbor"]}
+    },
+    {
+      "platform_name": "DOTA::bridge",
+      "platform_family": "Bridge",
+      "ontology_object_id": "Bridge",
+      "country_of_origin": null,
+      "role": "Bridge (DOTA class, unspecified type)",
+      "attributes": {},
+      "source_terms_per_dataset": {"dota": ["bridge"]}
+    },
+    {
+      "platform_name": "DOTA::large-vehicle",
+      "platform_family": "LargeVehicle",
+      "ontology_object_id": "Vehicle",
+      "country_of_origin": null,
+      "role": "Large ground vehicle, e.g. truck or bus (DOTA class, unspecified model)",
+      "attributes": {},
+      "source_terms_per_dataset": {"dota": ["large-vehicle"]}
+    },
+    {
+      "platform_name": "DOTA::small-vehicle",
+      "platform_family": "SmallVehicle",
+      "ontology_object_id": "Vehicle",
+      "country_of_origin": null,
+      "role": "Small ground vehicle, e.g. car (DOTA class, unspecified model)",
+      "attributes": {},
+      "source_terms_per_dataset": {"dota": ["small-vehicle"]}
+    },
+    {
+      "platform_name": "DOTA::helicopter",
+      "platform_family": "Helicopter",
+      "ontology_object_id": "Helicopter",
+      "country_of_origin": null,
+      "role": "Rotary-wing aircraft (DOTA class, unspecified model)",
+      "attributes": {},
+      "source_terms_per_dataset": {"dota": ["helicopter"]}
+    },
+    {
+      "platform_name": "DOTA::roundabout",
+      "platform_family": "Roundabout",
+      "ontology_object_id": "Roundabout",
+      "country_of_origin": null,
+      "role": "Road roundabout / traffic circle (DOTA class)",
+      "attributes": {},
+      "source_terms_per_dataset": {"dota": ["roundabout"]}
+    },
+    {
+      "platform_name": "DOTA::soccer-ball-field",
+      "platform_family": "SoccerBallField",
+      "ontology_object_id": null,
+      "country_of_origin": null,
+      "role": "Soccer / football field (DOTA class, sports facility)",
+      "attributes": {},
+      "source_terms_per_dataset": {"dota": ["soccer-ball-field"]}
+    },
+    {
+      "platform_name": "DOTA::swimming-pool",
+      "platform_family": "SwimmingPool",
+      "ontology_object_id": null,
+      "country_of_origin": null,
+      "role": "Swimming pool (DOTA class, sports / recreation facility)",
+      "attributes": {},
+      "source_terms_per_dataset": {"dota": ["swimming-pool"]}
+    },
+    {
+      "platform_name": "DOTA::container-crane",
+      "platform_family": "ContainerCrane",
+      "ontology_object_id": "Container_Crane",
+      "country_of_origin": null,
+      "role": "Container / quay crane (DOTA class, port infrastructure)",
+      "attributes": {},
+      "source_terms_per_dataset": {"dota": ["container-crane"]}
+    },
+    {
+      "platform_name": "DOTA::airport",
+      "platform_family": "Airport",
+      "ontology_object_id": "Airport",
+      "country_of_origin": null,
+      "role": "Airport facility (DOTA class, full airfield)",
+      "attributes": {},
+      "source_terms_per_dataset": {"dota": ["airport"]}
+    },
+    {
+      "platform_name": "DOTA::helipad",
+      "platform_family": "Helipad",
+      "ontology_object_id": "Helipad",
+      "country_of_origin": null,
+      "role": "Helipad / helicopter landing pad (DOTA class)",
+      "attributes": {},
+      "source_terms_per_dataset": {"dota": ["helipad"]}
+    }
+  ]
+}
