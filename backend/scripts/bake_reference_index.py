@@ -48,7 +48,7 @@ from reference_platform_db import (
 
 log = logging.getLogger("bake_reference_index")
 
-INFERENCE_BASE = os.environ.get("INFERENCE_SAM3_URI", "http://inference-sam3:8001")
+INFERENCE_BASE = os.environ.get("INFERENCE_SAM3_URL", "http://inference-sam3:8001")
 EMBED_TIMEOUT_SEC = float(os.environ.get("REFERENCE_EMBED_TIMEOUT", "60"))
 
 
@@ -101,9 +101,13 @@ def run(
     dataset_root_path = Path(dataset_root).resolve()  # ensure absolute
 
     chips_written = 0
+    chips_failed = 0
     platforms_written = 0
     seed_platform_ids: set[str] = set()
 
+    # NOTE: all chip INSERTs happen in one transaction. Fine at the DOTA
+    # proof-of-life scale (~hundreds of chips). For xView/RarePlanes scale
+    # (tens of thousands), this needs a per-platform commit refactor.
     with postgis_db.get_cursor(commit=True) as cur:
         for entry in platforms_in_seed:
             source_terms = (entry.get("source_terms_per_dataset", {}) or {}).get(dataset, [])
@@ -133,6 +137,7 @@ def run(
                     )
                 if getattr(resp, "status_code", None) != 200:
                     log.warning("embed failed for %s: %s", chip_path, getattr(resp, "text", "?"))
+                    chips_failed += 1
                     continue
                 emb = _decode_fp16_embedding(resp.json())
                 insert_reference_chip(
@@ -154,13 +159,22 @@ def run(
         for pid in seed_platform_ids:
             centroids_updated += recompute_platform_centroids(cur, platform_id=pid)
 
+    if chips_failed:
+        log.error("bake completed with %d failed chips — centroids may be biased low-N", chips_failed)
+
     log.info(
-        "bake done: platforms=%d, chips=%d, centroids_updated=%d",
-        platforms_written, chips_written, centroids_updated,
+        "bake done: platforms=%d, chips=%d, chips_failed=%d, centroids_updated=%d",
+        platforms_written, chips_written, chips_failed, centroids_updated,
     )
+    if platforms_written > 0 and chips_written == 0:
+        raise RuntimeError(
+            "bake produced 0 chips for {} seeded platforms — check --dataset-root "
+            "and that chip subdirectories exist for each platform's source_terms".format(platforms_written)
+        )
     return {
         "platforms": platforms_written,
         "chips": chips_written,
+        "chips_failed": chips_failed,
         "centroids": centroids_updated,
     }
 
@@ -173,7 +187,7 @@ def _main(argv: list[str]) -> int:
     p.add_argument("--dataset-root", required=True, help="Root directory of chips (one subdir per source class)")
     p.add_argument("--license", required=True, help="SPDX license identifier for the source dataset")
     p.add_argument("--max-chips-per-class", type=int, default=20)
-    p.add_argument("--inference-base", default=None, help="Override INFERENCE_SAM3_URI")
+    p.add_argument("--inference-base", default=None, help="Override INFERENCE_SAM3_URL")
     args = p.parse_args(argv)
     stats = run(
         seed_path=args.seed,
