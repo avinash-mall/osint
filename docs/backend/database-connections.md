@@ -1,8 +1,8 @@
 # `backend/database.py` — Neo4j + PostGIS
 
 **Path:** [backend/database.py](../../backend/database.py)
-**Lines:** ~170
-**Depends on:** `neo4j`, `psycopg2`, env `NEO4J_URI`, `POSTGIS_URI`, `POSTGIS_POOL_MIN`, `POSTGIS_POOL_MAX`
+**Lines:** ~215
+**Depends on:** `neo4j`, `psycopg2`, `pgvector`, env `NEO4J_URI`, `POSTGIS_URI`, `POSTGIS_POOL_MIN`, `POSTGIS_POOL_MAX`
 
 ## Purpose
 
@@ -13,15 +13,17 @@ Two connection objects shared by every backend module: `db` (Neo4j), `postgis_db
 - **Both clients = module-level globals**, not factories. Exactly one Neo4j driver + one PostGIS pool per process; modules import once, reuse.
 - **PostGIS via psycopg v3 connection pool** — min/max from env; single-tenant dev stays `1/10`, multi-tenant can crank `POSTGIS_POOL_MAX` to 30+.
 - **Docker DNS fallback** — `POSTGIS_URI` host `postgis` + DNS failure (common during compose startup race) → retry `127.0.0.1` once.
+- **pgvector adapter registered on every pooled connection** via a `connection_factory` subclass. The Reference Embedding DB stores 1024-D vectors and every writer (bake pipeline, refresh tasks, identification scorer) inserts via Python lists / numpy arrays / `pgvector.Vector` objects. Registering once at the pool level means no callsite has to remember to call `register_vector(conn)`. Registration is lazy on first `cursor()` and silently no-ops if the `vector` extension is not yet installed (the ensure-schema step runs in lifespan startup).
 - **`DatabaseManager`** wraps both for context-managed startup/shutdown.
 
 ## Key symbols
 
-- [`Neo4jConnection`](../../backend/database.py#L42) — wraps `neo4j.GraphDatabase.driver` with retry.
-- [`PostGISConnection`](../../backend/database.py#L52) — psycopg2 `ThreadedConnectionPool`, `RealDictCursor` row factory; `get_cursor(commit=...)` context manager.
-- [`PostGISConnection.reset_after_fork`](../../backend/database.py#L105) — nulls `_pool` so a forked process rebuilds its own; called from worker's `worker_process_init`.
-- [`DatabaseManager`](../../backend/database.py#L133) — composite startup/shutdown helper.
-- [`env_int`](../../backend/database.py#L28) / [`env_float`](../../backend/database.py#L35) — pool-size + threshold env reads, used across modules.
+- [`_VectorAwareConnection`](../../backend/database.py#L14-L43) — `psycopg2.extensions.connection` subclass; overrides `cursor()` to lazily call `pgvector.psycopg2.register_vector(self)` once, then short-circuits. Passed as `connection_factory` to the pool.
+- [`Neo4jConnection`](../../backend/database.py#L75) — wraps `neo4j.GraphDatabase.driver` with retry.
+- [`PostGISConnection`](../../backend/database.py#L97) — psycopg2 `ThreadedConnectionPool` with `connection_factory=_VectorAwareConnection`, `RealDictCursor` row factory; `get_cursor(commit=...)` context manager.
+- [`PostGISConnection.reset_after_fork`](../../backend/database.py#L155) — nulls `_pool` so a forked process rebuilds its own; called from worker's `worker_process_init`.
+- [`DatabaseManager`](../../backend/database.py#L205) — composite startup/shutdown helper.
+- [`env_int`](../../backend/database.py#L61) / [`env_float`](../../backend/database.py#L68) — pool-size + threshold env reads, used across modules.
 
 ## Connection lifecycle
 

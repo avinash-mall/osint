@@ -4,10 +4,43 @@ import threading
 from neo4j import GraphDatabase
 import psycopg2
 from psycopg2 import pool
+from psycopg2.extensions import connection as Psycopg2Connection
 from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
+
+
+class _VectorAwareConnection(Psycopg2Connection):
+    """psycopg2 connection that registers pgvector's vector adapter on first use.
+
+    Wired into every pool/connect call via ``connection_factory`` so any
+    Python writer (list/numpy/Vector) round-trips into a ``vector(N)`` column
+    without each callsite remembering to call ``register_vector(conn)``.
+
+    Registration is lazy (deferred until the first ``cursor()`` call) because
+    the adapter requires the ``vector`` extension to exist in the target DB,
+    which is only guaranteed after ``ensure_reference_platform_tables()`` has
+    run. A connection handed out before the extension exists is still usable
+    for everything except pgvector — we silently skip registration and retry
+    on the next ``cursor()`` so subsequent callers see the adapter once the
+    extension is installed.
+    """
+
+    _vector_registered = False
+
+    def cursor(self, *args, **kwargs):
+        if not self._vector_registered:
+            try:
+                from pgvector.psycopg2 import register_vector
+                register_vector(self)
+            except Exception:
+                # pgvector extension not yet installed in the target DB; harmless
+                # for non-reference-DB callers. Will retry on next cursor() call.
+                pass
+            else:
+                self._vector_registered = True
+        return super().cursor(*args, **kwargs)
 
 # Neo4j Configuration
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://neo4j:7687")
@@ -76,7 +109,12 @@ class PostGISConnection:
         last_error = None
         for i in range(5):
             try:
-                return pool.ThreadedConnectionPool(self.minconn, self.maxconn, self.dsn)
+                return pool.ThreadedConnectionPool(
+                    self.minconn,
+                    self.maxconn,
+                    self.dsn,
+                    connection_factory=_VectorAwareConnection,
+                )
             except psycopg2.OperationalError as e:
                 last_error = e
                 time.sleep(0.5)
