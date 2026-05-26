@@ -1244,11 +1244,13 @@ async def embed_endpoint(image: UploadFile = File(...)):
     """Compute a DINOv3-SAT 1024-d embedding of the supplied image.
 
     Lightweight alternative to /detect for bake scripts and analyst lookup
-    that only need the embedding, not the full detection pipeline.
+    that only need the embedding, not the full detection pipeline. Auto-loads
+    the imagery profile on first call.
 
     Returns:
         {"model": str, "dim": 1024, "fp16_b64": str}
     """
+    _ensure_profile("imagery")
     bundle = _next_bundle().get("dinov3_sat")
     if bundle is None:
         raise HTTPException(status_code=503, detail="dinov3_sat layer not loaded")
@@ -1260,6 +1262,7 @@ async def embed_endpoint(image: UploadFile = File(...)):
     result = embedding.dinov3_pool(bundle, pil_img)
     if not result.get("fp16_b64"):
         raise HTTPException(status_code=500, detail="embedding computation returned empty result")
+    logger.info("/embed ok dim=%s bytes=%d", result.get("dim"), len(img_bytes))
     return result
 
 
