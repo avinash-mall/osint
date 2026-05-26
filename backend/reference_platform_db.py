@@ -11,7 +11,7 @@ explicitly. Idempotent on the natural keys (platform_name; chip_path).
 
 from __future__ import annotations
 
-from typing import Optional, Sequence
+from typing import Iterable, Optional
 import json
 
 
@@ -65,7 +65,7 @@ def insert_reference_chip(
     view_domain: str,
     source_dataset: str,
     chip_path: str,
-    embedding: Sequence[float],
+    embedding: Iterable[float],
     license_spdx: str,
     source_url: Optional[str] = None,
     attribution: Optional[str] = None,
@@ -89,8 +89,17 @@ def insert_reference_chip(
             f"{view_domain} embedding must be {expected_dim}-d; got {len(embedding)}"
         )
 
-    overhead_col = list(embedding) if view_domain == "overhead" else None
-    ground_col = list(embedding) if view_domain == "ground" else None
+    # Preserve numpy.ndarray as-is so the pgvector adapter's ndarray
+    # dispatch fires; `list(np.ndarray)` would produce a list of np.float32
+    # scalars that psycopg2 cannot adapt. Plain iterables go through list().
+    try:
+        import numpy as _np  # local import keeps the helper numpy-optional
+        _is_np = isinstance(embedding, _np.ndarray)
+    except ImportError:
+        _is_np = False
+    emb = embedding if _is_np else list(embedding)
+    overhead_col = emb if view_domain == "overhead" else None
+    ground_col = emb if view_domain == "ground" else None
 
     cursor.execute(
         """
@@ -141,6 +150,11 @@ def recompute_platform_centroids(cursor, *, platform_id: Optional[str] = None) -
 
     If `platform_id` is given, only that platform is recomputed; otherwise all
     platforms with at least one chip are recomputed.
+
+    Note: this does NOT clear stale centroids on platforms that have lost all
+    their chips — the CTE only emits rows for platform_ids that still have at
+    least one chip. To retire a platform, DELETE the reference_platforms row
+    (its chips CASCADE-delete via the FK).
     """
     where_clause = "AND p.id = %s" if platform_id else ""
     params = (platform_id,) if platform_id else ()
