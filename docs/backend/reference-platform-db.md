@@ -1,7 +1,7 @@
 # `backend/platform_schema.py` — Reference-Embedding DB Schema
 
 **Path:** [backend/platform_schema.py](../../backend/platform_schema.py)
-**Lines:** ~80 (the `ensure_reference_platform_tables` function plus the three CREATE TABLE blocks at the tail of the file)
+**Lines:** ~105 (the `ensure_reference_platform_tables` function at the tail of the file, lines 659–763)
 **Depends on:** PostGIS, pgvector ≥ 0.8, `database.postgis_db`, existing `detections` + `ontology_objects` + `object_details` tables.
 
 ## Purpose
