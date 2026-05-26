@@ -30,6 +30,7 @@ backend/fmv-helpers-hls.md|backend,fmv|ffmpeg stream-copy HLS transcode, ffprobe
 backend/geometry-iou.md|backend|bbox parse, xyxy/cxcywh IoU, point extraction
 backend/imagery-metadata-hashing.md|backend,imagery|SHA256 + NITF IDATIM + SAR keys + native_max_zoom extraction
 backend/provider-lifecycle.md|backend|polls inference-sam3 /health for startup gating
+backend/reference-platform-baker.md|backend|reads seed + chip tree, POSTs to inference-sam3 /embed, writes reference_chips + centroids
 backend/reference-platform-db.md|backend|reference_platforms+chips+candidates pgvector schema; object_details platform_* cols
 backend/reports-and-collections.md|backend|target-package and collection-requirement persistence
 backend/routing-graph-osmnx.md|backend|NetworkX routing on osmnx pickle, terrain+threat metadata
@@ -69,6 +70,7 @@ inference/grounding-dino-gate.md|inference|server-side gate skips GDINO on commo
 inference/yoloe-tracker.md|inference,fmv|YOLOE-26x-seg(-pf) prompt-free + text-promptable, replaces SAM3 AMG
 inference/dota-obb-specialist.md|inference|Ultralytics YOLO26m-obb default with YOLO11n low-VRAM fallback
 inference/dinov3-embeddings.md|inference|DINOv3 ViT-L SAT-493M re-ID embedding head
+inference/embed-endpoint.md|inference|POST /embed for standalone DINOv3-SAT vectors; used by reference DB baker
 inference/remoteclip-verifier.md|inference|optional RemoteCLIP crop verifier; scores candidate labels only
 inference/prithvi-multispectral.md|inference,imagery|Prithvi-EO-2.0 flood/burn/multi-temporal-crop heads
 inference/terramind-sar-synthesis.md|inference,imagery|TerraMind v1 S1->S2 synthetic optical RGB for SAR
@@ -165,6 +167,7 @@ decisions/why-precision-first-inference-defaults.md|decision|bounded prompt defa
 decisions/why-sam3-as-foundation.md|decision,sam3|open-vocabulary segmentation across RGB/MSI/SAR with native API
 decisions/why-sar-confidence-cap.md|decision,imagery|SAR detections via TerraMind synthetic proxy capped at 0.85
 decisions/why-sat-tiles-cap-at-native-zoom.md|decision,imagery,frontend|SAT TileLayer maxNativeZoom from COG GSD + nginx cache relax kills zoom-in blur
+decisions/why-standalone-embed-endpoint.md|decision|standalone /embed avoids /detect cost and keeps DB dep in backend
 decisions/why-worker-legacy-monolith-kept.md|decision,celery|3500 tested lines preserved; thin facade package avoids breakage
 decisions/why-yoloe-fp32-and-bf16-cast.md|decision,fmv,inference|YOLOE pinned fp32 + .float() before numpy(); silent zero-detection regression on Blackwell+cu130
 decisions/why-yoloe-replaced-amg.md|decision,fmv|AMG required GDINO labeling pass; YOLOE-26x-seg(-pf) emits labels directly
