@@ -19,6 +19,7 @@ from fastapi.responses import FileResponse
 
 from auth import SessionUser, get_current_user
 from database import postgis_db
+from events import publish_event
 from reference_platform_db import (
     _upsert_platform_identification,
     attach_identification_candidates,
@@ -263,6 +264,15 @@ def identify_detection(
         rows = cur.fetchall()
 
     candidates = [_candidate_row_to_model(r) for r in rows]
+    publish_event(
+        "identifications",
+        {
+            "type": "identification_refreshed",
+            "detection_id": detection_id,
+            "candidates_written": n,
+            "reviewed_by": user.username,
+        },
+    )
     return IdentifyResponse(
         detection_id=detection_id,
         candidates_written=n,
@@ -363,6 +373,18 @@ def approve_identification_candidate(
             updated_by=user.username,
         )
 
+    publish_event(
+        "identifications",
+        {
+            "type": "identification_approved",
+            "detection_id": cand["detection_id"],
+            "candidate_id": cand["id"],
+            "platform_id": cand["platform_id"],
+            "platform_name": plat["platform_name"],
+            "reviewed_by": user.username,
+            "score": float(cand["score"]),
+        },
+    )
     return ApproveRejectResponse(
         candidate_id=cand["id"],
         status="approved",
@@ -402,6 +424,16 @@ def reject_identification_candidate(
         cand = cur.fetchone()
         if not cand:
             raise HTTPException(status_code=404, detail="candidate not found")
+    publish_event(
+        "identifications",
+        {
+            "type": "identification_rejected",
+            "detection_id": cand["detection_id"],
+            "candidate_id": cand["id"],
+            "platform_id": cand["platform_id"],
+            "reviewed_by": user.username,
+        },
+    )
     return ApproveRejectResponse(
         candidate_id=cand["id"],
         status="rejected",
