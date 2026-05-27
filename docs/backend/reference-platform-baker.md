@@ -22,6 +22,7 @@ Designed for build-time / long-running-pipeline use — not request-path.
 - [`_chip_paths_for_class()`](../../backend/scripts/bake_reference_index.py) — convention: one subdirectory per source class under `dataset_root`.
 - [`_decode_fp16_embedding()`](../../backend/scripts/bake_reference_index.py) — handles the inference response's `fp16_b64` field; raises if dim != 1024.
 - Companion: [`backend/scripts/stage_dota_chips.py`](../../backend/scripts/stage_dota_chips.py) — converts DOTA's `labels.json` + flat chip dir into the per-class layout the baker expects. Picks the largest-area annotation per row.
+- Read-path companions: [`find_similar_platforms()`](../../backend/reference_platform_db.py#L188-L293) and [`attach_identification_candidates()`](../../backend/reference_platform_db.py#L301-L402) — Plan C consumers of the rows this baker writes; documented in [reference-platform-db.md](reference-platform-db.md).
 
 ## Inputs / Outputs
 - **Inputs:** seed JSON (one entry per platform with `source_terms_per_dataset`), a dataset root with one subdir per source class, an SPDX license identifier, a max-chips-per-class cap.

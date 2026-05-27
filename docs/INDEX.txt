@@ -140,6 +140,8 @@ decisions/removed-sam3-amg.md|decision,fmv|SAM3 AMG path removed in favor of YOL
 decisions/reset-db-pool-after-fork.md|decision,celery|worker_process_init resets PostGIS pool so prefork children don't share libpq sockets
 decisions/temporal-swipe-comparator.md|decision,frontend|side-by-side imagery comparator via custom Leaflet pane + clip-path; no plugin dependency
 decisions/why-amg-detection-classes-use-llm-labels.md|decision,frontend|YOLOE-PF imagery AMG class rows may promote LLM display labels while raw class stays canonical
+decisions/why-auto-identify-in-backend-not-inference.md|decision|reference-DB auto-identify runs in the backend worker, not inference-sam3
+decisions/why-auto-write-with-threshold.md|decision|auto-write platform_* to object_details when top-1 cosine ≥ 0.85; below threshold land as pending
 decisions/why-basemap-overlay-composition.md|decision,frontend|imagery is bottom ground-truth; BASE/TERRAIN are reference overlays on top; opacity fades overlay
 decisions/why-basemap-z14-cap.md|decision,frontend,deployment|offline bake to z=14 + overlay unmounts above; imagery is source of truth past z=14
 decisions/why-bbox-toggle-removed.md|decision,frontend|BBOX toggle removed; detection boxes always render, GEOM toolbar defaults to OBB

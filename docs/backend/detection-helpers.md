@@ -19,7 +19,7 @@ Shared code for the `object_details` table, used by [detections-router.md](../ba
 - [`_normalize_threat`](../../backend/detection_helpers.py#L21) — `"unrated|low|medium|high|critical"` (case-insensitive).
 - [`_normalize_affiliation`](../../backend/detection_helpers.py#L35) — `"unknown|friendly|hostile|neutral"` (case-insensitive).
 - [`_read_object_details`](../../backend/detection_helpers.py#L51) — `(source, source_id) -> {threat, affiliation, notes, updated_at}`.
-- [`_upsert_object_details`](../../backend/detection_helpers.py#L69) — single-statement upsert into `object_details`.
+- [`_upsert_object_details`](../../backend/detection_helpers.py#L69) — single-statement upsert into `object_details`. Plan C: also writes the four optional `ObjectDetailsBody` fields `platform_name` / `platform_family` / `platform_confidence` / `platform_source`; the COALESCE-on-conflict SET preserves prior values when the request omits them. The reference-DB auto-identify path bypasses this helper and UPSERTs the four columns directly (plain `EXCLUDED.X`, no COALESCE) — see [reference-platform-db.md](reference-platform-db.md) `attach_identification_candidates`.
 
 ## Failure modes
 
