@@ -3,7 +3,7 @@
 ## Why
 - **Save analyst time on confident matches.** At threshold 0.85 on unit-normalised DINOv3-SAT embeddings, a top-1 match is extremely unlikely to be wrong; auto-writing prevents the analyst from having to confirm the obvious.
 - **Audit trail is preserved.** Every candidate row (auto-applied or pending) carries `score`, `rank`, `matched_chip_ids`. An analyst can always retrace what drove the auto-apply decision.
-- **Threshold is operator-tunable.** Defence analyst sites with stricter requirements set `REFERENCE_ID_AUTO_THRESHOLD=0.95`; sites with looser standards lower it.
+- **Threshold is operator-tunable.** Defence analyst sites with stricter requirements set `REFERENCE_ID_AUTO_THRESHOLD=0.95`; sites with looser standards lower it. Note: read at worker process start; a .env edit requires `docker compose restart worker` to take effect.
 - **`platform_source='auto'` makes the provenance visible.** UI surfaces (Plan D) can render auto-applied rows differently (e.g. lower visual weight) so an analyst always sees what was machine-asserted vs analyst-asserted.
 
 ## What we rejected

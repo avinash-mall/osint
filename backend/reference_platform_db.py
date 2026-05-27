@@ -298,6 +298,58 @@ def find_similar_platforms(
     return results
 
 
+def _upsert_platform_identification(
+    cursor,
+    *,
+    detection_id: int,
+    platform_name: str,
+    platform_family: Optional[str],
+    platform_confidence: float,
+    platform_source: str,
+    updated_by: str,
+) -> None:
+    """Write the four platform_* columns to object_details for `detection_id`.
+
+    Shared by both the auto path (`attach_identification_candidates`,
+    `platform_source='auto'`, `updated_by='reference-db-auto-identify'`)
+    and the analyst-approve path (Plan D router, `platform_source='analyst'`,
+    `updated_by=<session-username>`).
+
+    Touches ONLY the four platform_* columns + housekeeping; analyst-asserted
+    columns (threat_level, affiliation, designation, notes, etc.) are
+    preserved by ON CONFLICT DO UPDATE SET semantics — unlisted columns
+    survive. Intentional contract — see
+    docs/decisions/why-auto-write-with-threshold.md.
+    """
+    if platform_source not in ("auto", "analyst", "manual"):
+        raise ValueError(
+            f"platform_source must be 'auto'|'analyst'|'manual', got {platform_source!r}"
+        )
+    cursor.execute(
+        """
+        INSERT INTO object_details
+            (source, source_id, platform_name, platform_family,
+             platform_confidence, platform_source, updated_by)
+        VALUES ('detection', %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (source, source_id) DO UPDATE SET
+            platform_name        = EXCLUDED.platform_name,
+            platform_family      = EXCLUDED.platform_family,
+            platform_confidence  = EXCLUDED.platform_confidence,
+            platform_source      = EXCLUDED.platform_source,
+            updated_at           = NOW(),
+            updated_by           = EXCLUDED.updated_by
+        """,
+        (
+            str(detection_id),
+            platform_name,
+            platform_family,
+            float(platform_confidence),
+            platform_source,
+            updated_by,
+        ),
+    )
+
+
 def attach_identification_candidates(
     cursor,
     *,
@@ -367,36 +419,17 @@ def attach_identification_candidates(
         )
 
     # Auto-apply to object_details only when top-1 cleared the threshold.
+    # See _upsert_platform_identification for the conflict-policy contract.
     if auto_applied:
         top = candidates[0]
-        # Direct SQL UPSERT to avoid the Pydantic request-side path.
-        # Touches only the four platform_* columns + source/source_id/
-        # updated_by/updated_at; leaves analyst-asserted columns alone.
-        # Intentional: plain EXCLUDED (no COALESCE) means a fresh auto run
-        # overwrites prior auto verdicts. Analyst-asserted platform_* values
-        # will ALSO be overwritten — by design; Plan D's UI surfaces the
-        # conflict via platform_source='auto'. See decision doc
-        # docs/decisions/why-auto-write-with-threshold.md (Task 6).
-        cursor.execute(
-            """
-            INSERT INTO object_details
-                (source, source_id, platform_name, platform_family,
-                 platform_confidence, platform_source, updated_by)
-            VALUES ('detection', %s, %s, %s, %s, 'auto', 'reference-db-auto-identify')
-            ON CONFLICT (source, source_id) DO UPDATE SET
-                platform_name        = EXCLUDED.platform_name,
-                platform_family      = EXCLUDED.platform_family,
-                platform_confidence  = EXCLUDED.platform_confidence,
-                platform_source      = EXCLUDED.platform_source,
-                updated_at           = NOW(),
-                updated_by           = EXCLUDED.updated_by
-            """,
-            (
-                str(detection_id),
-                top["platform_name"],
-                top["platform_family"],
-                float(top["score"]),
-            ),
+        _upsert_platform_identification(
+            cursor,
+            detection_id=detection_id,
+            platform_name=top["platform_name"],
+            platform_family=top["platform_family"],
+            platform_confidence=float(top["score"]),
+            platform_source="auto",
+            updated_by="reference-db-auto-identify",
         )
 
     return len(candidates)

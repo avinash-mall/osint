@@ -59,6 +59,7 @@ Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 | `GLOBAL_CONFIDENCE_FLOOR` | `0.35` | Single floor across all classes |
 | `HIGH_CONFIDENCE_THRESHOLD` | `0.65` | When to tag `high_confidence` |
 | `PER_CLASS_CONFIDENCE_OVERRIDES` | `{}` | JSON map of class-specific floors |
+| `REFERENCE_ID_AUTO_THRESHOLD` | `0.85` | Reference Embedding DB auto-identify cosine floor; top-1 candidate above this threshold auto-writes `platform_*` to `object_details`. Read at worker process start — `docker compose restart worker` to apply changes. See [decisions/why-auto-write-with-threshold.md](../decisions/why-auto-write-with-threshold.md). |
 
 ## Worker / Imagery
 
