@@ -127,3 +127,39 @@ def test_chip_image_403_for_path_outside_data_datasets(client, monkeypatch):
         )
     resp = client.get(f"/api/reference-chips/{chip_id}/image")
     assert resp.status_code == 403, f"expected 403, got {resp.status_code}: {resp.text}"
+
+
+def test_chip_image_415_for_unsupported_extension(client):
+    """A chip_path with an extension outside the PNG/JPEG/WEBP allow-list
+    returns 415, NOT a stream with octet-stream content-type."""
+    _login(client)
+    from database import postgis_db
+    from reference_platform_db import upsert_reference_platform, insert_reference_chip
+    import numpy as np
+    from pathlib import Path
+    # Write a fake .svg file inside /data/datasets/ so the file-exists check passes
+    svg_dir = Path("/data/datasets/reference-chips/pytest")
+    svg_dir.mkdir(parents=True, exist_ok=True)
+    svg_path = svg_dir / "pytest-evil.svg"
+    svg_path.write_text("<svg></svg>")
+    try:
+        with postgis_db.get_cursor(commit=True) as cur:
+            pid = upsert_reference_platform(
+                cur, platform_name="pytest-chip-image-svg", platform_family="SvgFam"
+            )
+            chip_id = insert_reference_chip(
+                cur,
+                platform_id=pid,
+                view_domain="overhead",
+                source_dataset="pytest-chip-image",
+                chip_path=str(svg_path),
+                embedding=np.full(1024, 0.0, dtype=np.float32),
+                license_spdx="CC0-1.0",
+            )
+        resp = client.get(f"/api/reference-chips/{chip_id}/image")
+        assert resp.status_code == 415, f"expected 415, got {resp.status_code}: {resp.text}"
+    finally:
+        try:
+            svg_path.unlink()
+        except OSError:
+            pass

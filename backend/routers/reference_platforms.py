@@ -460,17 +460,23 @@ def serve_reference_chip_image(
     if not resolved.is_file():
         raise HTTPException(status_code=404, detail="chip file not on disk")
 
-    # Infer media type from extension; default to octet-stream for unknown.
+    # Infer media type from extension; reject unknown extensions with 415.
     ext = resolved.suffix.lower()
-    media_type = {
+    _MEDIA_TYPES = {
         ".png": "image/png",
         ".jpg": "image/jpeg",
         ".jpeg": "image/jpeg",
         ".webp": "image/webp",
-    }.get(ext, "application/octet-stream")
+    }
+    media_type = _MEDIA_TYPES.get(ext)
+    if media_type is None:
+        raise HTTPException(
+            status_code=415,
+            detail=f"unsupported chip extension {ext!r}; expected one of {sorted(_MEDIA_TYPES)}",
+        )
 
     return FileResponse(
         path=str(resolved),
         media_type=media_type,
-        filename=resolved.name,
+        content_disposition_type="inline",
     )
