@@ -16,6 +16,7 @@
 import axios from 'axios';
 import { Database, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
+import ChipImg from '../ChipImg';
 import ViewHeader from './ViewHeader';
 
 const API_URL = (import.meta as any).env?.VITE_API_URL || '';
@@ -461,24 +462,12 @@ function ChipTile({ chip }: { chip: ReferenceChip }) {
         padding: 6,
       }}
     >
-      <img
-        src={`${API_URL}/api/reference-chips/${chip.id}/image`}
+      <ChipImg
+        chipId={chip.id}
+        size={84}
         alt={`Reference chip from ${chip.source_dataset}`}
-        loading="lazy"
-        onError={(e) => {
-          const img = e.currentTarget;
-          if (img.dataset.fallback !== '1') {
-            img.dataset.fallback = '1';
-            img.src =
-              "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'%3E%3Crect width='1' height='1' fill='%23222' /%3E%3C/svg%3E";
-            img.title = 'chip image unavailable';
-            img.style.opacity = '0.4';
-          }
-        }}
         style={{
-          inlineSize: '100%',
-          blockSize: 84,
-          objectFit: 'cover',
+          width: '100%',
           background: 'var(--bg-1)',
           border: '1px solid var(--line)',
           borderRadius: 2,

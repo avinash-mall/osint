@@ -22,6 +22,7 @@ import axios from 'axios';
 import { Check, RefreshCw, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Panel } from '../atoms';
+import ChipImg from '../ChipImg';
 
 const API_URL = (import.meta as any).env?.VITE_API_URL || '';
 
@@ -318,25 +319,12 @@ function CandidateCard({
           style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}
         >
           {thumbs.map((cid) => (
-            <img
+            <ChipImg
               key={cid}
-              src={`${API_URL}/api/reference-chips/${cid}/image`}
+              chipId={cid}
+              size={56}
               alt={`Reference chip ${cid}`}
-              loading="lazy"
-              onError={(e) => {
-                const img = e.currentTarget;
-                if (img.dataset.fallback !== '1') {
-                  img.dataset.fallback = '1';
-                  img.src =
-                    "data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'%3E%3Crect width='1' height='1' fill='%23222' /%3E%3C/svg%3E";
-                  img.title = 'chip image unavailable';
-                  img.style.opacity = '0.4';
-                }
-              }}
               style={{
-                inlineSize: 56,
-                blockSize: 56,
-                objectFit: 'cover',
                 background: 'var(--bg-1)',
                 border: '1px solid var(--line)',
                 borderRadius: 3,
