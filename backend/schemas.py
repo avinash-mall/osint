@@ -16,7 +16,7 @@ need without re-declaring them. Grouped by domain to make navigation easy:
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -126,9 +126,8 @@ class ReferencePlatformsList(BaseModel):
 
 class IdentifyRequest(BaseModel):
     """Body for POST /api/detections/{id}/identify."""
-    view_domain: str = "overhead"
+    view_domain: Literal["overhead", "ground"] = "overhead"
     top_k: int = 3
-    top_chips_per_platform: int = 3
 
 
 class IdentificationCandidate(BaseModel):
