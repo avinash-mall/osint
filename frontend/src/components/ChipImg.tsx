@@ -1,5 +1,7 @@
 import { useState } from "react";
 
+const API_URL = (import.meta as any).env?.VITE_API_URL || '';
+
 interface Props {
   chipId: string;
   size?: number;
@@ -26,10 +28,17 @@ export default function ChipImg({ chipId, size = 32, alt, className, style }: Pr
     return (
       <span
         className={className}
-        style={{ ...mergedStyle, display: "inline-flex", alignItems: "center",
-                 justifyContent: "center", background: "var(--bg-2)",
-                 border: "1px solid var(--line)", color: "var(--ink-3)",
-                 fontSize: 9, opacity: 0.6 }}
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "var(--bg-2)",
+          border: "1px solid var(--line)",
+          color: "var(--ink-3)",
+          fontSize: 9,
+          opacity: 0.6,
+          ...mergedStyle,
+        }}
         title="chip image unavailable"
         aria-label="chip image unavailable"
       >
@@ -40,7 +49,7 @@ export default function ChipImg({ chipId, size = 32, alt, className, style }: Pr
 
   return (
     <img
-      src={`/api/reference-chips/${chipId}/image`}
+      src={`${API_URL}/api/reference-chips/${chipId}/image`}
       alt={alt ?? `reference chip ${chipId}`}
       loading="lazy"
       className={className}
