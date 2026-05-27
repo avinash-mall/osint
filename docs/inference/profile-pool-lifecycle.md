@@ -51,6 +51,10 @@ How `inference-sam3` loads, holds, frees model bundles. Three profiles cover the
 
 Most production deployments preload one profile via `SAM3_PRELOAD_MODELS=1` + `SAM3_PRELOAD_PROFILE=imagery` (or `fmv`). Profile switching reserved for mixed workloads — and even then, the `all` profile on a 40 GiB+ GPU avoids the unload/reload pause entirely.
 
+## Lifespan-level imagery preload
+
+After the explicit `preload_models_on_startup()` step (gated by `SAM3_PRELOAD_MODELS`), the lifespan unconditionally calls `_ensure_profile("imagery")` so the pool is non-empty by the time the compose healthcheck runs. This keeps the strict healthcheck (`model_loaded AND not model_error`) honest on GPU profiles where `configure_host.py` left `SAM3_PRELOAD_MODELS=0`. Opt out with `SAM3_SKIP_PRELOAD=1` on memory-constrained GPUs that need to load on first request. See [why-preload-imagery-on-startup.md](../decisions/why-preload-imagery-on-startup.md).
+
 ## Cross-references
 
 - [main-app-entrypoint.md](main-app-entrypoint.md) — `_load_profile`, `_unload_pool_locked`, `_next_bundle`, `_acquire_video_bundle`

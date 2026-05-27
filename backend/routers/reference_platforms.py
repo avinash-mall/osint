@@ -41,6 +41,30 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["reference-platforms"])
 
 
+def _raise_404_or_409(cur, candidate_id: str) -> None:
+    """Called when the guarded UPDATE returned 0 rows. Disambiguates between
+    'candidate doesn't exist' (404) and 'candidate already reviewed' (409)
+    with a follow-up SELECT, and raises the appropriate HTTPException."""
+    cur.execute(
+        "SELECT status, reviewed_by, reviewed_at "
+        "FROM platform_identification_candidates WHERE id = %s",
+        (candidate_id,),
+    )
+    existing = cur.fetchone()
+    if existing is None:
+        raise HTTPException(status_code=404, detail="candidate not found")
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "error": "candidate already reviewed",
+            "status": existing["status"],
+            "reviewed_by": existing["reviewed_by"],
+            "reviewed_at": existing["reviewed_at"].isoformat()
+            if existing["reviewed_at"] else None,
+        },
+    )
+
+
 def _decode_embedding_anchor(emb: dict) -> Optional[np.ndarray]:
     """Decode metadata['embedding'] = {model, dim, fp16_b64} to a float32 ndarray.
 
@@ -344,7 +368,7 @@ def approve_identification_candidate(
                    reviewed_by = %s,
                    reviewed_at = NOW(),
                    applied_at = NOW()
-             WHERE id = %s
+             WHERE id = %s AND status = 'pending'
             RETURNING id::text AS id, detection_id, platform_id::text AS platform_id,
                       score, reviewed_by, reviewed_at
             """,
@@ -352,7 +376,7 @@ def approve_identification_candidate(
         )
         cand = cur.fetchone()
         if not cand:
-            raise HTTPException(status_code=404, detail="candidate not found")
+            _raise_404_or_409(cur, candidate_id)
         # Look up platform name/family for the upsert
         cur.execute(
             "SELECT platform_name, platform_family FROM reference_platforms WHERE id = %s",
@@ -422,7 +446,7 @@ def reject_identification_candidate(
                SET status = 'rejected',
                    reviewed_by = %s,
                    reviewed_at = NOW()
-             WHERE id = %s
+             WHERE id = %s AND status = 'pending'
             RETURNING id::text AS id, detection_id, platform_id::text AS platform_id,
                       reviewed_by, reviewed_at
             """,
@@ -430,7 +454,7 @@ def reject_identification_candidate(
         )
         cand = cur.fetchone()
         if not cand:
-            raise HTTPException(status_code=404, detail="candidate not found")
+            _raise_404_or_409(cur, candidate_id)
     publish_event(
         "identifications",
         {

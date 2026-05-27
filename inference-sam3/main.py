@@ -122,6 +122,17 @@ async def lifespan(app: FastAPI):
     # Forward reference: preload_models_on_startup is defined below, but
     # is only invoked at server-startup time after module import completes.
     preload_models_on_startup()
+    # Unconditionally ensure the "imagery" profile is resident by the end
+    # of lifespan startup unless explicitly skipped. This matches what the
+    # compose healthcheck expects (model_loaded=true). SAM3_SKIP_PRELOAD=1
+    # restores the prior "load on demand" behavior for constrained GPUs.
+    if os.getenv("SAM3_SKIP_PRELOAD", "0").strip().lower() not in {"1", "true", "yes", "on"}:
+        if not _pool:
+            try:
+                logger.info("lifespan: ensuring imagery profile resident for healthcheck")
+                _ensure_profile("imagery")
+            except Exception as exc:  # noqa: BLE001 — startup must not crash
+                logger.error("lifespan imagery preload failed: %s", exc)
     yield
 
 

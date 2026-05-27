@@ -34,6 +34,7 @@ Designed for build-time / long-running-pipeline use — not request-path.
 - Seed file references a dataset key absent from `source_terms_per_dataset` → entry silently skipped (intentional: lets one manifest cover many datasets).
 - Chip directory missing for a listed class → log a warning, skip that class.
 - Zero chips inserted with seeded platforms → `RuntimeError` (fail-loud).
+- `stage_dota_chips.py` called with the wrong `--chips-dir` (e.g. the `chips/` subdir instead of its parent) → the script counts rows-with-annotations and raises `RuntimeError("staged 0 chips from {N} annotated rows (tried {path})")`. Replaces the prior silent `{}` exit-0. The error message names the exact path it tried so operators see the path doubling at the staging step rather than at the downstream bake.
 
 ## DOTA proof-of-life recipe
 The dataset on disk lives at `./inference-sam3/eval/datasets/dota/` on the host (NOT `dota_val/` — the `_val` directory has a stub schema). It has `labels.json` + a `chips/` subdir. The val set is small (~30 rows / 60 chip files) so not all 18 DOTA-class platforms get chips — typically 10 of the 18 populate after staging. That's expected for proof-of-life.
@@ -46,9 +47,12 @@ Recipe (run from the repo root on the host):
 docker compose cp ./inference-sam3/eval/datasets/dota backend:/data/datasets/dota_src
 
 # 2. Stage chips from the source layout into the per-class layout (inside backend).
+# NOTE: --chips-dir is the parent of the `chips/` subdir, NOT the subdir itself.
+# labels.json rows carry chip_file="chips/P0003.png" already prefixed; --chips-dir
+# is joined with that prefix, so passing .../dota_src/chips would double the path.
 docker compose exec -T backend python /app/scripts/stage_dota_chips.py \
     --labels /data/datasets/dota_src/labels.json \
-    --chips-dir /data/datasets/dota_src/chips \
+    --chips-dir /data/datasets/dota_src \
     --out-root /data/datasets/reference-chips/dota
 
 # 3. Run the bake (uses INFERENCE_SAM3_URL env or default http://inference-sam3:8001).

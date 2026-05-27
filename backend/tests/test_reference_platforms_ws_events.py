@@ -212,3 +212,82 @@ def test_identify_publishes_identification_refreshed(client, populated_ref):
     assert topic == "identifications"
     assert payload["type"] == "identification_refreshed"
     assert payload["detection_id"] == det_id
+
+
+# --- WS session heartbeat (TTL re-validation) -----------------------------
+
+
+def test_ws_closes_when_session_invalidates_at_heartbeat(client, monkeypatch):
+    """The WS loop re-decodes the cached session cookie every
+    _HEARTBEAT_SECONDS. If the cookie no longer decodes, the WS closes
+    with 1008 instead of continuing to leak events to an expired session."""
+    import routers.ws as ws_module
+    from starlette.websockets import WebSocketDisconnect
+
+    _login(client)
+    # 1s heartbeat so the test doesn't sit for the production 60s.
+    monkeypatch.setattr(ws_module, "_HEARTBEAT_SECONDS", 1)
+
+    # Patch decode_session_cookie *in the module that owns the call site* so
+    # the first call (at handshake) succeeds and the second call (at the
+    # heartbeat tick) returns None — simulating TTL expiry mid-connection.
+    real_decode = ws_module.decode_session_cookie
+    calls = {"n": 0}
+
+    def fake_decode(token):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return real_decode(token)
+        return None
+
+    monkeypatch.setattr(ws_module, "decode_session_cookie", fake_decode)
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws?topic=identifications") as ws:
+            ws.receive_json()  # initial "connected" message
+            # Wait for the heartbeat to tick and close us. The loop polls
+            # pubsub with timeout=1.0 + sleep(0.1) + heartbeat=1s, so we
+            # need at most ~2-3s to observe the close.
+            import time
+            deadline = time.time() + 8
+            while time.time() < deadline:
+                ws.receive_text()  # will raise WebSocketDisconnect on close
+    assert exc_info.value.code == 1008
+    assert calls["n"] >= 2  # handshake + at least one heartbeat
+
+
+def test_ws_stays_open_while_session_valid(client, monkeypatch):
+    """Sanity check: as long as the cached cookie keeps decoding, the WS
+    survives multiple heartbeats and a fresh event still arrives."""
+    import json
+    import time
+    import routers.ws as ws_module
+    from events import publish_event
+
+    _login(client)
+    monkeypatch.setattr(ws_module, "_HEARTBEAT_SECONDS", 1)
+
+    with client.websocket_connect("/ws?topic=identifications") as ws:
+        first = ws.receive_json()
+        assert first["type"] == "connected"
+        # Sleep across two heartbeat ticks
+        time.sleep(2.5)
+        # Publish a synthetic event — it must still reach the still-open WS
+        publish_event("identifications", {"type": "test_ping", "n": 1})
+        # The loop polls pubsub every ~1s, give it a beat
+        deadline = time.time() + 5
+        received = None
+        while time.time() < deadline:
+            try:
+                msg = ws.receive_text(timeout=1.0)
+            except TypeError:
+                # starlette TestClient receive_text doesn't take timeout on
+                # all versions — fall back to blocking receive with overall
+                # deadline guard.
+                msg = ws.receive_text()
+            if msg:
+                payload = json.loads(msg)
+                if payload.get("type") == "test_ping":
+                    received = payload
+                    break
+        assert received is not None and received["n"] == 1

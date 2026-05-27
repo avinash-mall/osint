@@ -42,6 +42,7 @@ Exposes the Reference Embedding DB to authenticated analysts. Seven routes:
 - 401 Unauthorized — no valid session.
 - 400 — detection has no embedding (cannot identify without one).
 - 404 — detection / platform / candidate not found.
+- **409 Conflict** — approve / reject called on a candidate whose status is no longer `pending` (another analyst reviewed it first, or the row was auto-applied). The UPDATE is guarded by `WHERE id = %s AND status = 'pending'`; when 0 rows match, the route runs a follow-up SELECT to decide between 404 (row gone) and 409. Response body: `{"detail": {"error": "candidate already reviewed", "status": "approved"|"rejected"|"auto_applied", "reviewed_by": str|null, "reviewed_at": iso8601|null}}`. No WebSocket event fires on a 409 because the guarded UPDATE produced no row — `publish_event` is unreachable on this path. See [why-reject-double-review-with-409.md](../decisions/why-reject-double-review-with-409.md).
 - 500 — defensive; only fires on FK violations the schema should already prevent.
 
 ## Cross-references

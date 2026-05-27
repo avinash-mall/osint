@@ -99,6 +99,23 @@ export default function IdentificationPanel({ detectionId, onChanged }: Props) {
     }, [detectionId]),
   );
 
+  // Format a friendly error string from an axios error. Handles the 409 race
+  // response shape from the approve/reject endpoints — body.detail is an
+  // object {error, status, reviewed_by, reviewed_at} when another analyst has
+  // already reviewed this candidate. Plain-detail bodies fall through to the
+  // existing string path.
+  function formatReviewError(err: any, defaultMsg: string): string {
+    const status = err?.response?.status;
+    const detail = err?.response?.data?.detail;
+    if (status === 409 && detail && typeof detail === 'object') {
+      const who = detail.reviewed_by ?? 'another analyst';
+      const what = detail.status ?? 'reviewed';
+      return `Already ${what} by ${who} — refreshing list.`;
+    }
+    if (typeof detail === 'string') return detail;
+    return err?.message ?? defaultMsg;
+  }
+
   async function handleApprove(candidateId: string) {
     setBusyCandidate(candidateId);
     setError(null);
@@ -109,7 +126,10 @@ export default function IdentificationPanel({ detectionId, onChanged }: Props) {
       await load();
       onChanged?.();
     } catch (err: any) {
-      setError(err?.response?.data?.detail ?? err?.message ?? 'approve failed');
+      setError(formatReviewError(err, 'approve failed'));
+      if (err?.response?.status === 409) {
+        await load();  // surface the latest state next to the inline notice
+      }
     } finally {
       setBusyCandidate(null);
     }
@@ -125,7 +145,10 @@ export default function IdentificationPanel({ detectionId, onChanged }: Props) {
       await load();
       onChanged?.();
     } catch (err: any) {
-      setError(err?.response?.data?.detail ?? err?.message ?? 'reject failed');
+      setError(formatReviewError(err, 'reject failed'));
+      if (err?.response?.status === 409) {
+        await load();
+      }
     } finally {
       setBusyCandidate(null);
     }

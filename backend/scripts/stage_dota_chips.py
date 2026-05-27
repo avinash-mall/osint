@@ -25,12 +25,17 @@ from PIL import Image
 def stage(labels_json: Path, chips_dir: Path, out_root: Path, margin_px: int = 8) -> dict[str, int]:
     rows = json.loads(labels_json.read_text())
     counts: dict[str, int] = {}
+    rows_with_annotations = 0
+    first_missing_path: Path | None = None
     for row in rows:
         anns = row.get("annotations") or []
         if not anns:
             continue
+        rows_with_annotations += 1
         chip_path = chips_dir / row["chip_file"]
         if not chip_path.is_file():
+            if first_missing_path is None:
+                first_missing_path = chip_path
             continue
         # Pick largest-area annotation
         def _area(a):
@@ -51,6 +56,13 @@ def stage(labels_json: Path, chips_dir: Path, out_root: Path, margin_px: int = 8
             (out_root / cls).mkdir(parents=True, exist_ok=True)
             crop.save(out_root / cls / f"{chip_path.stem}__{cls}.png")
             counts[cls] = counts.get(cls, 0) + 1
+    if rows_with_annotations > 0 and sum(counts.values()) == 0:
+        hint = f" (tried {first_missing_path})" if first_missing_path is not None else ""
+        raise RuntimeError(
+            f"staged 0 chips from {rows_with_annotations} annotated rows{hint} — "
+            f"check --chips-dir; labels.json chip_file values are joined onto it, "
+            f"so it must be the parent of the chips/ subdir, not the subdir itself"
+        )
     return counts
 
 

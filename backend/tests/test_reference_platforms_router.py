@@ -354,3 +354,66 @@ def test_reject_sets_status_and_does_not_write_object_details(client, populated_
         )
         od = cur.fetchone()
     assert od is None or od.get("platform_name") is None
+
+
+# --- Concurrent-analyst race: approve/reject of already-reviewed candidate ---
+
+
+def _seed_candidate(det_label: str) -> str:
+    """Insert a fake detection + run attach to create candidates; return rank-1 id."""
+    det_id = _insert_fake_detection(det_label)
+    from database import postgis_db
+    from reference_platform_db import attach_identification_candidates
+    with postgis_db.get_cursor(commit=True) as cur:
+        attach_identification_candidates(
+            cur, detection_id=det_id,
+            embedding=np.zeros(1024, dtype=np.float32),
+            view_domain="overhead", auto_threshold=0.85, top_k=3,
+        )
+        cur.execute(
+            "SELECT id FROM platform_identification_candidates "
+            "WHERE detection_id = %s ORDER BY rank LIMIT 1",
+            (det_id,),
+        )
+        return cur.fetchone()["id"]
+
+
+def test_approve_already_approved_returns_409(client, populated_ref):
+    _login(client)
+    cand_id = _seed_candidate("pytest-router-race-approve")
+    # First approve — 200
+    r1 = client.post(f"/api/identification-candidates/{cand_id}/approve")
+    assert r1.status_code == 200, r1.text
+    # Second approve on the same row — must 409 with current state
+    r2 = client.post(f"/api/identification-candidates/{cand_id}/approve")
+    assert r2.status_code == 409, r2.text
+    body = r2.json()
+    assert body["detail"]["status"] == "approved"
+    assert body["detail"]["reviewed_by"] == os.environ["ADMIN_USERNAME"]
+    assert body["detail"]["reviewed_at"]  # ISO string
+
+
+def test_reject_after_approve_returns_409(client, populated_ref):
+    _login(client)
+    cand_id = _seed_candidate("pytest-router-race-reject-approved")
+    assert client.post(f"/api/identification-candidates/{cand_id}/approve").status_code == 200
+    # Try to reject the now-approved row
+    r = client.post(f"/api/identification-candidates/{cand_id}/reject")
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["status"] == "approved"
+
+
+def test_approve_after_reject_returns_409(client, populated_ref):
+    _login(client)
+    cand_id = _seed_candidate("pytest-router-race-approve-rejected")
+    assert client.post(f"/api/identification-candidates/{cand_id}/reject").status_code == 200
+    r = client.post(f"/api/identification-candidates/{cand_id}/approve")
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["status"] == "rejected"
+
+
+def test_reject_404_for_unknown_candidate(client, populated_ref):
+    """Symmetry: reject also distinguishes 404 from 409."""
+    _login(client)
+    r = client.post("/api/identification-candidates/00000000-0000-0000-0000-000000000000/reject")
+    assert r.status_code == 404

@@ -71,20 +71,27 @@ services:
       postgis:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       titiler:
-        condition: service_started
+        condition: service_healthy
+      inference-sam3:
+        condition: service_healthy
     volumes:
       - ./backend:/app
       - imagery_data:/data/imagery
       - fmv_data:/data/fmv
       - dataset_data:/data/datasets
+    # Strict readiness: hit /api/health and require {"healthy": true}. The
+    # endpoint returns healthy=true only when neo4j AND postgis are both
+    # reachable, so the check fails until the FastAPI lifespan completes
+    # (table-create, ontology seed) AND the DB connections are usable.
+    # A bare socket-bind probe passed too early (before lifespan finished).
     healthcheck:
-      test: ["CMD-SHELL", "python3 -c 'import socket; s = socket.socket(); s.settimeout(2); exit(0 if s.connect_ex((\"127.0.0.1\", 8080)) == 0 else 1)' || exit 1"]
+      test: ["CMD-SHELL", "python3 -c 'import json, urllib.request; d=json.load(urllib.request.urlopen(\"http://127.0.0.1:8080/api/health\", timeout=3)); raise SystemExit(0 if d.get(\"healthy\") is True else 1)' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 60s
 
   llm-local-proxy:
     # Pinned for reproducible air-gap shipping. Update the digest after a
@@ -114,11 +121,15 @@ services:
       - VITE_TITILER_URL=/tiles
       - VITE_TILE_PROXY_URL=/tiles
       - VITE_MARTIN_URL=/maps
+    # HTTP probe of /, not just a port check. The Vite preview server binds
+    # the port before the bundle is wired up; an HTTP GET that returns
+    # index.html is the earliest reliable "ready for traffic" signal.
     healthcheck:
-      test: ["CMD-SHELL", "nc -z 127.0.0.1 3000 || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/ || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 15s
 
   titiler:
     # Pinned for reproducible air-gap shipping; bump the tag after testing
@@ -130,11 +141,15 @@ services:
     environment:
       - PORT=8080
       - WORKERS_PER_CORE=1
+    # Probe /healthz (titiler's real health route) instead of the raw socket.
+    # A bound port without a responsive app still satisfied the socket probe;
+    # /healthz fails until uvicorn is actually answering requests.
     healthcheck:
-      test: ["CMD-SHELL", "python3 -c 'import socket; s = socket.socket(); s.settimeout(2); exit(0 if s.connect_ex((\"127.0.0.1\", 8080)) == 0 else 1)' || exit 1"]
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; r=urllib.request.urlopen(\"http://127.0.0.1:8080/healthz\", timeout=3); raise SystemExit(0 if r.status == 200 else 1)' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 30s
 
   martin:
     # Pinned for reproducible air-gap shipping; bump the tag after testing
@@ -403,17 +418,24 @@ services:
       postgis:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
+      inference-sam3:
+        condition: service_healthy
     volumes:
       - ./backend:/app
       - imagery_data:/data/imagery
       - fmv_data:/data/fmv
       - dataset_data:/data/datasets
+    # `celery inspect ping` proves the worker is connected to the broker AND
+    # answering control messages. `pgrep -f celery` only proved the process
+    # existed — a worker that crashed mid-task but kept the parent alive
+    # could falsely report healthy.
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f celery || exit 1"]
+      test: ["CMD-SHELL", "celery -A worker.celery_app inspect ping --timeout=3 | grep -q pong || exit 1"]
       interval: 30s
-      timeout: 5s
+      timeout: 10s
       retries: 3
+      start_period: 30s
 
   worker_beat:
     image: sentinel-backend:latest
@@ -434,7 +456,7 @@ services:
       postgis:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
     volumes:
       - ./backend:/app
     healthcheck:
@@ -442,6 +464,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 15s
 
   # Strict-air-gap static-file service. Hosts the baked-in basemap tile
   # pyramid, OpenTopoMap terrain pyramid, and the self-hosted IBM Plex

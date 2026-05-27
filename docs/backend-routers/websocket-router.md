@@ -16,7 +16,11 @@ Single push channel backend → browser. Forwards Redis pubsub messages to subsc
 
 ## Auth gate
 
-The handshake is rejected with WebSocket code **1008 (Policy Violation)** before `accept()` if the request carries no valid `sentinel_session` cookie. The check uses the same `auth.decode_session_cookie` the HTTP middleware uses — same `SESSION_SECRET`, salt `sentinel-session-v1`, and TTL — so HTTP and WS auth stay in lockstep automatically. Browser clients need no change: cookies travel on the WS handshake. See [`_get_ws_session_user`](../../backend/routers/ws.py#L24) and the guard at [`ws.py#L48`](../../backend/routers/ws.py#L48).
+The handshake is rejected with WebSocket code **1008 (Policy Violation)** before `accept()` if the request carries no valid `sentinel_session` cookie. The check uses the same `auth.decode_session_cookie` the HTTP middleware uses — same `SESSION_SECRET`, salt `sentinel-session-v1`, and TTL — so HTTP and WS auth stay in lockstep automatically. Browser clients need no change: cookies travel on the WS handshake. See [`_get_ws_session_user`](../../backend/routers/ws.py) and the guard immediately after.
+
+### Session re-validation (heartbeat)
+
+Once accepted, the WS handler captures the cookie value and re-decodes it every `WS_SESSION_HEARTBEAT_SECONDS` (default 60s) inside the pubsub loop. On TTL expiry or `SESSION_SECRET` rotation the cookie no longer decodes, and the WS is closed with code 1008 reason `"session expired"` instead of continuing to deliver events to an expired session. This closes the gap where a 12-hour-default cookie could otherwise pin a single accepted connection for the full TTL. See [why-ws-session-heartbeat.md](../decisions/why-ws-session-heartbeat.md). Tests: `test_ws_closes_when_session_invalidates_at_heartbeat`, `test_ws_stays_open_while_session_valid` in [test_reference_platforms_ws_events.py](../../backend/tests/test_reference_platforms_ws_events.py).
 
 ## Topics (Redis channels)
 
