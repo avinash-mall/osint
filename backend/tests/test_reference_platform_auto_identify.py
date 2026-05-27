@@ -306,6 +306,74 @@ def test_auto_apply_overwrites_analyst_asserted_platform(populated_ref_db):
         f"platform_source should be 'auto' (signalling the overwrite); got {od['platform_source']}"
 
 
+def test_auto_apply_preserves_other_analyst_columns(populated_ref_db):
+    """An auto-identify run MUST preserve analyst-asserted columns it doesn't own.
+
+    The auto UPSERT writes only the four platform_* columns + housekeeping.
+    threat_level, affiliation, designation, notes, confidence_override,
+    object_class, military_classification are owned by the analyst path and
+    MUST survive an auto run on the same detection.
+
+    Contract-by-omission today: a future DRY-up refactor that copies the
+    full column list from _upsert_object_details into the auto UPSERT
+    would silently regress this. This test is the tripwire.
+    """
+    from database import postgis_db
+    from reference_platform_db import attach_identification_candidates
+    det_id = _insert_fake_detection("pytest-autoid-preserve")
+
+    # Step 1: pre-populate object_details with ALL analyst-asserted columns
+    with postgis_db.get_cursor(commit=True) as cur:
+        cur.execute(
+            """
+            INSERT INTO object_details
+                (source, source_id,
+                 designation, object_class, military_classification,
+                 threat_level, affiliation, confidence_override, notes,
+                 updated_by)
+            VALUES ('detection', %s,
+                    'Analyst-Designation', 'Analyst-Class', 'Confidential',
+                    'high', 'hostile', 0.42, 'analyst notes here',
+                    'pytest-analyst')
+            """,
+            (str(det_id),),
+        )
+
+    # Step 2: auto-identify fires with above-threshold embedding (Red centroid)
+    q = np.full(1024, 1.0, dtype=np.float32)
+    with postgis_db.get_cursor(commit=True) as cur:
+        attach_identification_candidates(
+            cur,
+            detection_id=det_id,
+            embedding=q,
+            view_domain="overhead",
+            auto_threshold=0.85,
+            top_k=3,
+        )
+
+    # Step 3: every analyst-owned column survives
+    with postgis_db.get_cursor(commit=False) as cur:
+        cur.execute("""
+            SELECT designation, object_class, military_classification,
+                   threat_level, affiliation, confidence_override, notes,
+                   platform_name, platform_source
+              FROM object_details
+             WHERE source = 'detection' AND source_id = %s
+        """, (str(det_id),))
+        row = cur.fetchone()
+
+    assert row["designation"] == "Analyst-Designation"
+    assert row["object_class"] == "Analyst-Class"
+    assert row["military_classification"] == "Confidential"
+    assert row["threat_level"] == "high"
+    assert row["affiliation"] == "hostile"
+    assert row["confidence_override"] == pytest.approx(0.42)
+    assert row["notes"] == "analyst notes here"
+    # And the auto path DID overwrite platform_*:
+    assert row["platform_name"] == "pytest-autoid-Red"
+    assert row["platform_source"] == "auto"
+
+
 def test_platform_confidence_check_rejects_out_of_range(populated_ref_db):
     """The CHECK constraint added in Task 1 must reject confidence > 1.0."""
     import psycopg2
