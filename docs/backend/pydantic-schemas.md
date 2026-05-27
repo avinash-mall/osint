@@ -1,7 +1,7 @@
 # `backend/schemas.py` — Pydantic Request/Response Models
 
 **Path:** [backend/schemas.py](../../backend/schemas.py)
-**Lines:** ~293
+**Lines:** ~390
 **Depends on:** `pydantic`
 
 ## Purpose
@@ -39,6 +39,8 @@ Every router request body + most response shapes. Extracted from `main.py` so ro
 | `TrainingJobCreate` | | [models-training-router.md](../backend-routers/models-training-router.md) |
 
 Not exhaustive — ~25 shapes total. `grep -n "^class " backend/schemas.py` for the live list.
+
+**Reference Embedding DB (Plan D)** — section added below the Detections block: `ReferenceChipRef`, `ReferencePlatformSummary`, `ReferencePlatformDetail`, `ReferencePlatformsList`, `IdentifyRequest`, `IdentificationCandidate`, `IdentifyResponse`, `IdentificationCandidatesList`, `ApproveRejectResponse`. Consumed by [reference_platforms router](../backend-routers/reference-platforms-router.md).
 
 ## Convention
 

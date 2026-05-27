@@ -88,6 +88,90 @@ class CandidateLinkDecision(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Reference Embedding DB — Plan D HTTP request/response models.
+# Routes are mounted at backend/routers/reference_platforms.py.
+# ---------------------------------------------------------------------------
+
+
+class ReferenceChipRef(BaseModel):
+    id: str
+    chip_path: str
+    source_dataset: str
+    source_url: Optional[str] = None
+    license_spdx: str
+    attribution: Optional[str] = None
+
+
+class ReferencePlatformSummary(BaseModel):
+    """List-view shape — chips omitted for payload size."""
+    id: str
+    platform_name: str
+    platform_family: str
+    ontology_object_id: Optional[str] = None
+    country_of_origin: Optional[str] = None
+    role: Optional[str] = None
+    view_domains: List[str]
+    attributes: dict = {}
+
+
+class ReferencePlatformDetail(ReferencePlatformSummary):
+    """Detail-view shape — includes a sample of chips."""
+    chips: List[ReferenceChipRef] = []
+
+
+class ReferencePlatformsList(BaseModel):
+    platforms: List[ReferencePlatformSummary]
+    count: int
+
+
+class IdentifyRequest(BaseModel):
+    """Body for POST /api/detections/{id}/identify."""
+    view_domain: str = "overhead"
+    top_k: int = 3
+    top_chips_per_platform: int = 3
+
+
+class IdentificationCandidate(BaseModel):
+    id: str
+    detection_id: int
+    platform_id: str
+    platform_name: str
+    platform_family: str
+    score: float
+    rank: int
+    matched_chip_ids: List[str] = []
+    status: str  # 'pending' | 'approved' | 'rejected' | 'auto_applied'
+    applied_at: Optional[str] = None
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[str] = None
+    created_at: str
+
+
+class IdentifyResponse(BaseModel):
+    """POST /api/detections/{id}/identify — what the route returns."""
+    detection_id: int
+    candidates_written: int
+    candidates: List[IdentificationCandidate]
+
+
+class IdentificationCandidatesList(BaseModel):
+    """GET /api/detections/{id}/identification-candidates."""
+    detection_id: int
+    candidates: List[IdentificationCandidate]
+    count: int
+
+
+class ApproveRejectResponse(BaseModel):
+    """POST .../approve and .../reject."""
+    candidate_id: str
+    status: str  # 'approved' or 'rejected'
+    detection_id: int
+    platform_id: str
+    reviewed_by: str
+    reviewed_at: str
+
+
+# ---------------------------------------------------------------------------
 # Tracks
 # ---------------------------------------------------------------------------
 
