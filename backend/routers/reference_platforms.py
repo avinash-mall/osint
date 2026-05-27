@@ -107,6 +107,13 @@ def list_reference_platforms(
     where_clause = ("WHERE " + " AND ".join(where)) if where else ""
 
     with postgis_db.get_cursor(commit=False) as cur:
+        # Count first (no LIMIT/OFFSET) so the UI can show "showing N of M"
+        cur.execute(
+            f"SELECT COUNT(*) AS total FROM reference_platforms {where_clause}",
+            tuple(params),
+        )
+        total = cur.fetchone()["total"]
+
         cur.execute(
             f"""
             SELECT id::text AS id, platform_name, platform_family,
@@ -134,7 +141,7 @@ def list_reference_platforms(
         )
         for r in rows
     ]
-    return ReferencePlatformsList(platforms=platforms, count=len(platforms))
+    return ReferencePlatformsList(platforms=platforms, count=len(platforms), total=total)
 
 
 # ---------------------------------------------------------------------------

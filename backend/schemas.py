@@ -121,7 +121,8 @@ class ReferencePlatformDetail(ReferencePlatformSummary):
 
 class ReferencePlatformsList(BaseModel):
     platforms: List[ReferencePlatformSummary]
-    count: int
+    count: int     # number of rows returned in this response
+    total: int     # total rows matching the filter (regardless of limit/offset)
 
 
 class IdentifyRequest(BaseModel):

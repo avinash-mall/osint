@@ -47,12 +47,13 @@ type PlatformDetail = PlatformSummary & {
   chips: ReferenceChip[];
 };
 
-type ListResponse = { platforms?: PlatformSummary[]; count?: number };
+type ListResponse = { platforms?: PlatformSummary[]; count?: number; total?: number };
 
 type Props = { onCount: (n: number) => void };
 
 export default function ReferencePlatformsView({ onCount }: Props) {
   const [platforms, setPlatforms] = useState<PlatformSummary[]>([]);
+  const [total, setTotal] = useState(0);
   const [familyFilter, setFamilyFilter] = useState('');
   const [countryFilter, setCountryFilter] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -76,9 +77,11 @@ export default function ReferencePlatformsView({ onCount }: Props) {
         { params },
       );
       setPlatforms(r.data?.platforms ?? []);
+      setTotal(r.data?.total ?? 0);
     } catch (e: any) {
       setListErr(e?.response?.data?.detail ?? e?.message ?? String(e));
       setPlatforms([]);
+      setTotal(0);
     } finally {
       setListBusy(false);
     }
@@ -115,7 +118,11 @@ export default function ReferencePlatformsView({ onCount }: Props) {
     <>
       <ViewHeader
         title="Reference platforms"
-        sub={`${platforms.length} loaded · curated reference DB · /api/reference-platforms`}
+        sub={
+          total > platforms.length
+            ? `Showing ${platforms.length} of ${total} · narrow filters to see specific platforms · /api/reference-platforms`
+            : `${platforms.length} loaded · curated reference DB · /api/reference-platforms`
+        }
         actions={
           <button
             className="btn sm"
