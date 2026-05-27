@@ -211,6 +211,7 @@ def get_reference_platform(
 def identify_detection(
     detection_id: int,
     body: IdentifyRequest,
+    user: SessionUser = Depends(get_current_user),
 ) -> IdentifyResponse:
     with postgis_db.get_cursor(commit=True) as cur:
         cur.execute(
