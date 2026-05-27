@@ -303,6 +303,20 @@ export const TOUR_STEPS: TourStep[] = [
     placement: 'left',
   },
   {
+    id: 'object-details-platform',
+    selector: '[data-tour="object-details-platform"]',
+    title: 'Platform identity',
+    body: 'The platform_* fields — type, name, role, and source — assigned to this detection from the reference DB. Populated automatically when an identification candidate scores above the auto-apply threshold, or manually when you approve a candidate below.',
+    placement: 'left',
+  },
+  {
+    id: 'identification-panel',
+    selector: '[data-tour="identification-panel"]',
+    title: 'Platform identification',
+    body: 'Top reference-DB platform candidates for this detection. Auto-applied if score ≥ 0.85 (configurable via REFERENCE_ID_AUTO_THRESHOLD). Use Approve to lock the analyst-asserted identity, Reject to discard, or Re-identify to re-run the lookup.',
+    placement: 'left',
+  },
+  {
     id: 'tab-analytics',
     selector: '[data-tour="tab-analytics"]',
     title: 'Analytics tab',
