@@ -10,10 +10,12 @@ import base64
 import json
 import logging
 import math
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 
 from auth import SessionUser, get_current_user
 from database import postgis_db
@@ -407,4 +409,68 @@ def reject_identification_candidate(
         platform_id=cand["platform_id"],
         reviewed_by=cand["reviewed_by"],
         reviewed_at=cand["reviewed_at"].isoformat(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/reference-chips/{chip_id}/image — serve a chip thumbnail
+# ---------------------------------------------------------------------------
+
+# Constant root every chip_path must be under. Set at import time so any
+# misconfiguration surfaces immediately rather than per-request.
+_REFERENCE_CHIPS_ROOT = Path("/data/datasets").resolve()
+
+
+@router.get("/api/reference-chips/{chip_id}/image")
+def serve_reference_chip_image(
+    chip_id: str,
+    user: SessionUser = Depends(get_current_user),
+):
+    """Stream the chip PNG/JPEG at `reference_chips.chip_path`.
+
+    Defense in depth: the resolved chip_path MUST be under `/data/datasets/`.
+    A row pointing anywhere else (data corruption, malicious migration)
+    returns 403, NOT the file. Prevents path traversal even if the DB is
+    compromised.
+    """
+    with postgis_db.get_cursor(commit=False) as cur:
+        cur.execute(
+            "SELECT chip_path FROM reference_chips WHERE id = %s",
+            (chip_id,),
+        )
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="reference_chip not found")
+
+    raw_path = row["chip_path"]
+    try:
+        resolved = Path(raw_path).resolve()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"invalid chip path: {e}")
+
+    # Validate resolved path is under the allowed root.
+    try:
+        resolved.relative_to(_REFERENCE_CHIPS_ROOT)
+    except ValueError:
+        raise HTTPException(
+            status_code=403,
+            detail="chip_path is not under /data/datasets/ (refusing to serve)",
+        )
+
+    if not resolved.is_file():
+        raise HTTPException(status_code=404, detail="chip file not on disk")
+
+    # Infer media type from extension; default to octet-stream for unknown.
+    ext = resolved.suffix.lower()
+    media_type = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+    }.get(ext, "application/octet-stream")
+
+    return FileResponse(
+        path=str(resolved),
+        media_type=media_type,
+        filename=resolved.name,
     )
