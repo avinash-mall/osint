@@ -321,3 +321,42 @@ def test_platform_confidence_check_rejects_out_of_range(populated_ref_db):
                 """,
                 (str(det_id),),
             )
+
+
+def test_savepoint_isolates_helper_failure(populated_ref_db, monkeypatch):
+    """If attach_identification_candidates raises a psycopg2.Error, the
+    worker's SAVEPOINT pattern must keep the parent transaction usable.
+
+    This replays the worker's splice pattern (SAVEPOINT auto_identify;
+    call helper; ROLLBACK TO SAVEPOINT on error; outer except logs) and
+    confirms a subsequent cursor.execute() on the same cursor succeeds.
+    """
+    import psycopg2
+    from database import postgis_db
+    from reference_platform_db import attach_identification_candidates as real_helper
+
+    det_id = _insert_fake_detection("pytest-autoid-savepoint")
+
+    def _poisoned_helper(*args, **kwargs):
+        # Issue a deliberately bad SQL so the connection enters ABORTED state
+        cur = kwargs.get("cursor") or (args[0] if args else None)
+        cur.execute("SELECT 1 FROM nonexistent_table_for_poison")
+
+    # Replicate the worker's SAVEPOINT splice exactly
+    with postgis_db.get_cursor(commit=True) as cursor:
+        try:
+            cursor.execute("SAVEPOINT auto_identify")
+            try:
+                _poisoned_helper(cursor=cursor)
+                cursor.execute("RELEASE SAVEPOINT auto_identify")
+            except Exception:
+                cursor.execute("ROLLBACK TO SAVEPOINT auto_identify")
+                raise
+        except Exception:
+            pass  # worker logs and continues here
+
+        # Without the SAVEPOINT, this next execute would raise InFailedSqlTransaction.
+        # With the SAVEPOINT, the connection is back in a usable state.
+        cursor.execute("SELECT 1 AS sentinel")
+        row = cursor.fetchone()
+    assert row["sentinel"] == 1, "cursor should be usable after savepoint rollback"

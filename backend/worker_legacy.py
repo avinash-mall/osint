@@ -2597,19 +2597,31 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
             # (when top-1 score >= threshold) auto-apply platform_* to
             # object_details. Best-effort: any exception is logged and skipped --
             # must NEVER break the detection write.
+            # Uses a SAVEPOINT so a psycopg2.Error inside the helper rolls back
+            # only the auto-identify sub-work; the parent transaction (this
+            # detection's INSERT + subsequent ones) stays usable. Without the
+            # SAVEPOINT, a single pgvector or DDL fault would poison the
+            # connection's transaction state and lose the entire batch with
+            # InFailedSqlTransaction.
             emb_dict = det.get("embedding")
             if emb_dict:
                 try:
                     emb_anchor = _parse_embedding_anchor(emb_dict)
                     if emb_anchor is not None:
-                        attach_identification_candidates(
-                            cursor,
-                            detection_id=det_id,
-                            embedding=emb_anchor,
-                            view_domain="overhead",
-                            auto_threshold=REFERENCE_ID_AUTO_THRESHOLD,
-                            top_k=3,
-                        )
+                        cursor.execute("SAVEPOINT auto_identify")
+                        try:
+                            attach_identification_candidates(
+                                cursor,
+                                detection_id=det_id,
+                                embedding=emb_anchor,
+                                view_domain="overhead",
+                                auto_threshold=REFERENCE_ID_AUTO_THRESHOLD,
+                                top_k=3,
+                            )
+                            cursor.execute("RELEASE SAVEPOINT auto_identify")
+                        except Exception:
+                            cursor.execute("ROLLBACK TO SAVEPOINT auto_identify")
+                            raise
                 except Exception:
                     logger.warning(
                         "auto-identify failed for detection %s (continuing)",
