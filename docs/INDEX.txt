@@ -91,6 +91,7 @@ frontend/workspace-admin.md|frontend|AdminScreen.tsx ten-tab consolidated operat
 frontend/workspace-ingest.md|frontend|IngestConnect.tsx sensor-aware upload + feed lifecycle
 frontend/map-stage-and-layers.md|frontend|MapStage.tsx + LayerPanel.tsx category toggles and provenance
 frontend/map-selection-panel.md|frontend|SelectionPanel.tsx four-tab right rail (Details/Analytics/Similar/Actions)
+frontend/identification-panel.md|frontend|top-k reference-DB candidates with approve/reject in Details tab
 frontend/map-review-similar-provenance.md|frontend|ReviewPanel + SimilarPanel + ProvenancePanel
 frontend/map-analytics-tools.md|frontend|AnalyticsToolsPanel.tsx viewshed/LOS/route/POL workflows
 frontend/map-time-machine.md|frontend|TimeMachineBar.tsx temporal slider for multi-pass imagery
@@ -104,6 +105,7 @@ frontend/admin-prompt-profiles.md|frontend|PromptProfilesView.tsx named profile 
 frontend/admin-models-and-processing.md|frontend|ModelsView + ProcessingView training-job queue and promotion
 frontend/admin-alerts-and-versions.md|frontend|AlertsView + TaxonomyVersionView
 frontend/admin-auth-ldap.md|frontend,auth|AdminAuthTab.tsx LDAP config form with test harnesses
+frontend/admin-reference-platforms.md|frontend|admin tab to browse reference platforms with chip thumbnails
 frontend/utils-ontology-and-icons.md|frontend,ontology|branchIcons, detectionTaxonomy, iconLibrary, useOntology
 frontend/services-analytics.md|frontend|services/analytics.ts job submission types
 deployment/docker-compose-services.md|deployment|service-by-service docker-compose.yml reference

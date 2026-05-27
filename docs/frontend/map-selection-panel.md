@@ -11,7 +11,7 @@ Four-tab right rail that appears when a detection is selected on the map.
 
 | Tab | What it shows |
 |---|---|
-| **Details** | `ObjectDetailsForm` — threat, affiliation, notes, size estimation, original/canonical labels, provenance link |
+| **Details** | `ObjectDetailsForm` — threat, affiliation, notes, size estimation, original/canonical labels, provenance link. Identification subsection — see [identification-panel.md](identification-panel.md) — renders between Taxonomy and the cross-nav buttons. |
 | **Analytics** | Buttons for viewshed/LOS/route/change-detection from this detection's location |
 | **Similar** | k-NN list of detections with similar embeddings (`GET /api/detections/{id}/similar`) |
 | **Actions** | Resolve-to-target, candidate-link suggestions, create target package, propose collection task |
@@ -27,6 +27,7 @@ Four-tab right rail that appears when a detection is selected on the map.
 
 ## Cross-references
 
+- [identification-panel.md](identification-panel.md)
 - [object-details-form.md](object-details-form.md)
 - [map-analytics-tools.md](map-analytics-tools.md)
 - [map-review-similar-provenance.md](map-review-similar-provenance.md)
