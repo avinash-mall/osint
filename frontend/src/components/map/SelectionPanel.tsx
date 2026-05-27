@@ -46,6 +46,7 @@ import {
   type DetectionTrack,
 } from './_helpers';
 import { CategoryIcon } from './_icons';
+import IdentificationPanel from './IdentificationPanel';
 import ObjectDetailsForm from '../ObjectDetailsForm';
 import ReviewPanel from './ReviewPanel';
 import SimilarPanel from './SimilarPanel';
@@ -189,6 +190,10 @@ export default function SelectionPanel(props: Props) {
       .catch(() => { if (!cancelled) setElevation({ value: null, status: 'unavailable' }); });
     return () => { cancelled = true; };
   }, [detCentroid?.[0], detCentroid?.[1]]);
+
+  // Bump to force ObjectDetailsForm to refetch object_details (used after
+  // IdentificationPanel approve/reject lands fresh platform_* fields).
+  const [objectDetailsRefreshKey, setObjectDetailsRefreshKey] = useState(0);
 
   const [exportingPkg, setExportingPkg] = useState(false);
   const exportTargetPackage = async () => {
@@ -434,6 +439,16 @@ export default function SelectionPanel(props: Props) {
                 </div>
               </div>
 
+              <IdentificationPanel
+                detectionId={Number(detProps.id)}
+                onChanged={() => {
+                  // Approve/reject landed platform_* on object_details — force
+                  // ObjectDetailsForm to refetch and refresh the GeoJSON layer.
+                  setObjectDetailsRefreshKey((k) => k + 1);
+                  actions.fetchDetections();
+                }}
+              />
+
               <div className="grid grid-cols-2 gap-2 border-b border-sentinel-line p-3">
                 <button
                   type="button"
@@ -479,7 +494,7 @@ export default function SelectionPanel(props: Props) {
 
               {selectionTab === 'edit' && (
                 <ObjectDetailsForm
-                  key={`map-det-${detProps.id}`}
+                  key={`map-det-${detProps.id}-${objectDetailsRefreshKey}`}
                   source="map"
                   detectionId={Number(detProps.id)}
                   defaultClass={detProps.class}
