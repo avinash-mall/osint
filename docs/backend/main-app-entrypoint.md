@@ -6,7 +6,7 @@
 
 ## Purpose
 
-Holds the FastAPI application object. Mounts the 13 routers, registers session middleware gating mutating verbs, declares lifespan startup, **and** holds bulk read endpoints never moved out (`/api/detections` GET, `/api/tracks/*`, `/api/observations`, `/api/timeline/events`, `/api/feeds/*`, `/api/sources/*`, `/api/imagery` extras, `/api/collection/tasks`).
+Holds the FastAPI application object. Mounts the 19 routers (including `reference_platforms` — the Reference Embedding DB HTTP surface at `/api/reference-platforms` and the `/api/detections/{id}/identify*` family), registers session middleware gating mutating verbs, declares lifespan startup, **and** holds bulk read endpoints never moved out (`/api/detections` GET, `/api/tracks/*`, `/api/observations`, `/api/timeline/events`, `/api/feeds/*`, `/api/sources/*`, `/api/imagery` extras, `/api/collection/tasks`).
 
 ## Why this design
 
@@ -19,7 +19,7 @@ Holds the FastAPI application object. Mounts the 13 routers, registers session m
 - [`lifespan`](../../backend/main.py#L57-L67) — async contextmanager: `_auto_seed_ontology_if_empty()` on startup, `db.close()` on shutdown. Passed to `FastAPI(lifespan=...)`; replaces deprecated `@app.on_event(...)`.
 - [`app = FastAPI(...)`](../../backend/main.py#L69) — application object.
 - [`require_session_on_mutations`](../../backend/main.py#L97-L114) — the middleware.
-- [`app.include_router(...)`](../../backend/main.py#L183-L195) — router mount block; **add new routers here**.
+- [`app.include_router(...)`](../../backend/main.py#L197-L215) — router mount block; **add new routers here**.
 - [`get_detection_classes`](../../backend/main.py#L1228-L1392) — Detection Classes summary for the map panel; returns deterministic `label` plus optional `display_label` / `label_source` when YOLOE-PF imagery AMG rows can safely promote an LLM advisory.
 - [`FMV_FALLBACK_PROMPTS`](../../backend/main.py#L915) — precision-first fallback for FMV PCS uploads without explicit prompts.
 
