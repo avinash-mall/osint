@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import math
 from typing import Optional
 
 import numpy as np
@@ -37,8 +38,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["reference-platforms"])
 
 
-def _decode_embedding_anchor(emb: dict) -> Optional[list[float]]:
-    """Decode metadata['embedding'] = {model, dim, fp16_b64} to float list."""
+def _decode_embedding_anchor(emb: dict) -> Optional[np.ndarray]:
+    """Decode metadata['embedding'] = {model, dim, fp16_b64} to a float32 ndarray.
+
+    Returns an ndarray (not a list) so the pgvector adapter in
+    `_VectorAwareConnection` round-trips it as a `vector(N)` parameter. A
+    Python list adapts as `numeric[]`, which the `<=>` operator rejects.
+    """
     fp16_b64 = (emb or {}).get("fp16_b64")
     if not fp16_b64:
         return None
@@ -47,7 +53,7 @@ def _decode_embedding_anchor(emb: dict) -> Optional[list[float]]:
         arr = np.frombuffer(raw, dtype=np.float16).astype(np.float32)
         if arr.shape != (1024,):
             return None
-        return arr.tolist()
+        return arr
     except Exception:
         return None
 
@@ -82,6 +88,7 @@ def list_reference_platforms(
     family: Optional[str] = Query(None, description="Exact match on platform_family"),
     country: Optional[str] = Query(None, description="Exact match on country_of_origin"),
     ontology_object_id: Optional[str] = Query(None),
+    user: SessionUser = Depends(get_current_user),
 ) -> ReferencePlatformsList:
     where = []
     params: list = []
@@ -139,6 +146,7 @@ def list_reference_platforms(
 def get_reference_platform(
     platform_id: str,
     max_chips: int = Query(20, ge=1, le=100),
+    user: SessionUser = Depends(get_current_user),
 ) -> ReferencePlatformDetail:
     with postgis_db.get_cursor(commit=False) as cur:
         cur.execute(
@@ -270,6 +278,7 @@ def identify_detection(
 )
 def get_identification_candidates(
     detection_id: int,
+    user: SessionUser = Depends(get_current_user),
 ) -> IdentificationCandidatesList:
     with postgis_db.get_cursor(commit=False) as cur:
         cur.execute(
@@ -333,12 +342,20 @@ def approve_identification_candidate(
         if not plat:
             # Defensive — the FK should make this impossible
             raise HTTPException(status_code=500, detail="referenced platform missing")
+        # Clamp the score into the [0,1] CHECK constraint range. NaN can
+        # surface when the centroid cosine is undefined (e.g. zero-vector
+        # query); treat as 0 so the analyst's approval still records.
+        raw_score = float(cand["score"])
+        if not math.isfinite(raw_score):
+            confidence = 0.0
+        else:
+            confidence = max(0.0, min(1.0, raw_score))
         _upsert_platform_identification(
             cur,
             detection_id=cand["detection_id"],
             platform_name=plat["platform_name"],
             platform_family=plat["platform_family"],
-            platform_confidence=float(cand["score"]),
+            platform_confidence=confidence,
             platform_source="analyst",
             updated_by=user.username,
         )
