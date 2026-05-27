@@ -1,8 +1,8 @@
 # WebSocket Router (`/ws`)
 
 **Path:** [backend/routers/ws.py](../../backend/routers/ws.py)
-**Lines:** ~40
-**Depends on:** Redis pubsub (via `os.getenv("REDIS_URL")`)
+**Lines:** ~75
+**Depends on:** Redis pubsub (via `os.getenv("REDIS_URL")`), `auth.decode_session_cookie` + `auth.SESSION_COOKIE`
 
 ## Purpose
 
@@ -12,7 +12,11 @@ Single push channel backend → browser. Forwards Redis pubsub messages to subsc
 
 | Method | Path | Source |
 |---|---|---|
-| `WS` | `/ws` | [ws.py#L13](../../backend/routers/ws.py#L13) |
+| `WS` | `/ws` | [ws.py#L46](../../backend/routers/ws.py#L46) |
+
+## Auth gate
+
+The handshake is rejected with WebSocket code **1008 (Policy Violation)** before `accept()` if the request carries no valid `sentinel_session` cookie. The check uses the same `auth.decode_session_cookie` the HTTP middleware uses — same `SESSION_SECRET`, salt `sentinel-session-v1`, and TTL — so HTTP and WS auth stay in lockstep automatically. Browser clients need no change: cookies travel on the WS handshake. See [`_get_ws_session_user`](../../backend/routers/ws.py#L24) and the guard at [`ws.py#L48`](../../backend/routers/ws.py#L48).
 
 ## Topics (Redis channels)
 
