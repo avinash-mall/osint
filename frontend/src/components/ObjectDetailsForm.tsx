@@ -139,6 +139,11 @@ export default function ObjectDetailsForm({
         notes: remote.notes || initial?.notes || '',
         updated_at: remote.updated_at,
         updated_by: remote.updated_by,
+        // Read-only platform identification (Plan C/D pipeline; UI surfaces in Plan E).
+        platform_name: remote.platform_name ?? initial?.platform_name ?? null,
+        platform_family: remote.platform_family ?? initial?.platform_family ?? null,
+        platform_confidence: remote.platform_confidence ?? initial?.platform_confidence ?? null,
+        platform_source: remote.platform_source ?? initial?.platform_source ?? null,
       };
       if (draft) {
         const draftTime = (draft as any)._draftAt as number | undefined;
@@ -362,6 +367,49 @@ export default function ObjectDetailsForm({
         />
       </Field>
 
+      {v.platform_name ? (
+        <div
+          className="object-details-platform"
+          data-tour="object-details-platform"
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 6,
+            padding: '8px 10px',
+            background: 'var(--bg-2)',
+            border: '1px solid var(--line)',
+            borderRadius: 4,
+          }}
+        >
+          <span className="label-mono" style={{ fontSize: 10 }}>
+            Platform identification
+            <span style={{ color: 'var(--ink-3)', marginLeft: 6, letterSpacing: 0, textTransform: 'none' }}>
+              · read-only · approve via Identification panel
+            </span>
+          </span>
+          <PlatformRow label="Platform" value={v.platform_name} />
+          {v.platform_family ? <PlatformRow label="Family" value={v.platform_family} /> : null}
+          {v.platform_confidence != null ? (
+            <PlatformRow
+              label="Confidence"
+              value={`${((v.platform_confidence as number) * 100).toFixed(1)}%`}
+              mono
+            />
+          ) : null}
+          {v.platform_source ? (
+            <PlatformRow
+              label="Source"
+              value={
+                v.platform_source === 'auto' ? 'Auto-identified'
+                : v.platform_source === 'analyst' ? 'Analyst-approved'
+                : v.platform_source === 'manual' ? 'Manually set'
+                : v.platform_source
+              }
+            />
+          ) : null}
+        </div>
+      ) : null}
+
       {status.kind === 'error' && (
         <div role="alert" aria-live="assertive" className="object-details-error">
           {status.message}
@@ -441,6 +489,30 @@ function SegRow({ name, value, options, onChange }: {
           {o.label}
         </button>
       ))}
+    </div>
+  );
+}
+
+function PlatformRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, fontSize: 12, lineHeight: 1.3 }}>
+      <span
+        className="label-mono"
+        style={{ fontSize: 10, width: 76, flex: '0 0 76px', color: 'var(--ink-2)' }}
+      >
+        {label}
+      </span>
+      <span
+        className={mono ? 'mono' : undefined}
+        style={{
+          color: 'var(--ink-0)',
+          fontVariantNumeric: mono ? 'tabular-nums' : undefined,
+          minWidth: 0,
+          wordBreak: 'break-word',
+        }}
+      >
+        {value}
+      </span>
     </div>
   );
 }

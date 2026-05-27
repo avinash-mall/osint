@@ -81,4 +81,11 @@ export type ObjectDetails = {
   notes?: string;
   updated_at?: string;
   updated_by?: string;
+  /** Platform identification — written by reference-DB pipeline (Plan C/D),
+   *  surfaced read-only in the form (Plan E). Operators approve/reject via
+   *  IdentificationPanel, not by typing here. */
+  platform_name?: string | null;
+  platform_family?: string | null;
+  platform_confidence?: number | null;
+  platform_source?: 'auto' | 'analyst' | 'manual' | string | null;
 };

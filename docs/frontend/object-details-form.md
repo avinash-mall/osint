@@ -15,6 +15,7 @@ Single component rendering the operator's editable fields for **any** detection 
 - **Notes** — free-form text
 - **Size estimation** — read-only, computed by [backend/size-estimation-obb.md](../backend/size-estimation-obb.md)
 - **Provenance** — chip ID, detector layer, model version (link to [map-review-similar-provenance.md](map-review-similar-provenance.md))
+- **Platform identification** — read-only display of `platform_name`, `platform_family`, `platform_confidence`, `platform_source` when populated by the reference-DB pipeline. Analysts approve/reject via the Identification panel, not by typing here (see [identification-panel.md](identification-panel.md)).
 
 ## Data sources
 
