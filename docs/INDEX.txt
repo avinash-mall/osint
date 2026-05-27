@@ -56,6 +56,7 @@ backend-routers/inference-router.md|router|/api/inference/load,unload,health,das
 backend-routers/ingest-router.md|router|/api/ingest/upload, url, ingest, uploads, jobs
 backend-routers/models-training-router.md|router|/api/models, /api/training, dataset registration, promotion
 backend-routers/ontology-router.md|router,ontology|/api/ontology branches/objects/prompts/profiles/unknown-labels/version-history
+backend-routers/reference-platforms-router.md|router|6 endpoints for the Reference Embedding DB (list, detail, identify, approve/reject)
 backend-routers/reports-router.md|router|/api/reports/target-package/{id} — ReportLab PDF export for SelectionPanel
 backend-routers/system-router.md|router|/api/system/deployment-mode — env-driven login banner posture
 backend-routers/websocket-router.md|router|/ws Redis-bridged push channel
@@ -140,6 +141,7 @@ decisions/removed-sam3-amg.md|decision,fmv|SAM3 AMG path removed in favor of YOL
 decisions/reset-db-pool-after-fork.md|decision,celery|worker_process_init resets PostGIS pool so prefork children don't share libpq sockets
 decisions/temporal-swipe-comparator.md|decision,frontend|side-by-side imagery comparator via custom Leaflet pane + clip-path; no plugin dependency
 decisions/why-amg-detection-classes-use-llm-labels.md|decision,frontend|YOLOE-PF imagery AMG class rows may promote LLM display labels while raw class stays canonical
+decisions/why-analyst-username-from-session.md|decision|capture reviewed_by from SessionUser, not request-body analyst field
 decisions/why-auto-identify-in-backend-not-inference.md|decision|reference-DB auto-identify runs in the backend worker, not inference-sam3
 decisions/why-auto-write-with-threshold.md|decision|auto-write platform_* to object_details when top-1 cosine ≥ 0.85; below threshold land as pending
 decisions/why-basemap-overlay-composition.md|decision,frontend|imagery is bottom ground-truth; BASE/TERRAIN are reference overlays on top; opacity fades overlay
