@@ -20,9 +20,10 @@
 
 import axios from 'axios';
 import { Check, RefreshCw, X } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Panel } from '../atoms';
 import ChipImg from '../ChipImg';
+import { useEventStream } from '../../hooks/useEventStream';
 
 const API_URL = (import.meta as any).env?.VITE_API_URL || '';
 
@@ -79,6 +80,24 @@ export default function IdentificationPanel({ detectionId, onChanged }: Props) {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [detectionId]);
+
+  useEventStream(
+    'identifications',
+    useCallback((msg: any) => {
+      if (!msg || typeof msg !== 'object') return;
+      // Only react to events for the currently-selected detection
+      if (msg.detection_id !== detectionId) return;
+      // Re-fetch on any of our three event types
+      if (
+        msg.type === 'identification_approved' ||
+        msg.type === 'identification_rejected' ||
+        msg.type === 'identification_refreshed'
+      ) {
+        void load();
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [detectionId]),
+  );
 
   async function handleApprove(candidateId: string) {
     setBusyCandidate(candidateId);
