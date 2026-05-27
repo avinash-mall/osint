@@ -83,6 +83,7 @@ inference/python-requirements.md|inference|inference-sam3 pip dependencies after
 frontend/app-and-routing.md|frontend|App.tsx mounts five workspaces under AuthProvider
 frontend/shell-and-chrome.md|frontend|icon rail 64->224 px, command palette, status bar
 frontend/auth-hook.md|frontend,auth|useAuth.ts cookie-backed session with boot /api/auth/me probe
+frontend/chip-img-component.md|frontend|shared reference-chip thumbnail with onError fallback
 frontend/event-stream-hook.md|frontend|useEventStream.ts WebSocket subscription to /ws topics
 frontend/workspace-geoint-gaiamap.md|frontend|GaiaMap.tsx common operating picture with leaflet layers
 frontend/workspace-fmv-player.md|frontend,fmv|FmvPlayer.tsx HLS + KLV-synced map + per-frame overlays
@@ -175,6 +176,7 @@ decisions/why-sar-confidence-cap.md|decision,imagery|SAR detections via TerraMin
 decisions/why-sat-tiles-cap-at-native-zoom.md|decision,imagery,frontend|SAT TileLayer maxNativeZoom from COG GSD + nginx cache relax kills zoom-in blur
 decisions/why-standalone-embed-endpoint.md|decision|standalone /embed avoids /detect cost and keeps DB dep in backend
 decisions/why-worker-legacy-monolith-kept.md|decision,celery|3500 tested lines preserved; thin facade package avoids breakage
+decisions/why-ws-auth-now-required.md|decision|/ws now requires session cookie; PII over the socket forced the fix
 decisions/why-yoloe-fp32-and-bf16-cast.md|decision,fmv,inference|YOLOE pinned fp32 + .float() before numpy(); silent zero-detection regression on Blackwell+cu130
 decisions/why-yoloe-replaced-amg.md|decision,fmv|AMG required GDINO labeling pass; YOLOE-26x-seg(-pf) emits labels directly
 decisions/ux-audit-001.md|decision,frontend|25-finding UX sweep: deployment banner, rail pin, focus mode, edge predicates

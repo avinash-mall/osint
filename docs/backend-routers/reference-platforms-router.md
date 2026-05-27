@@ -1,7 +1,7 @@
 # `backend/routers/reference_platforms.py` — Reference Embedding DB HTTP API
 
 **Path:** [backend/routers/reference_platforms.py](../../backend/routers/reference_platforms.py)
-**Lines:** ~482
+**Lines:** ~521
 **Depends on:** `backend/reference_platform_db.py` (helpers), `backend/schemas.py` (Pydantic models), `backend/auth.py` (`get_current_user`), `backend/database.py` (pool).
 
 ## Purpose
@@ -9,7 +9,7 @@ Exposes the Reference Embedding DB to authenticated analysts. Seven routes:
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/reference-platforms` | List platforms; filter by family/country/ontology_object_id; paginated. |
+| GET | `/api/reference-platforms` | List platforms; filter by family/country/ontology_object_id; paginated. Response includes both `count` (page length) and `total` (total filtered count) so the UI can render "Showing N of M" affordances. |
 | GET | `/api/reference-platforms/{platform_id}` | Detail view with up to `max_chips` reference chips. 404 if unknown. |
 | POST | `/api/detections/{detection_id}/identify` | Re-run lookup against pgvector for an existing detection that has an embedding. Re-writes the candidate queue idempotently; never auto-applies (analyst path). |
 | GET | `/api/detections/{detection_id}/identification-candidates` | Read the current candidate queue for a detection. |
@@ -23,6 +23,7 @@ Exposes the Reference Embedding DB to authenticated analysts. Seven routes:
 - **Approve and the worker auto-path share `_upsert_platform_identification`** — one SQL site for both, differs only by `platform_source` and `updated_by`. Decision: [why-auto-write-with-threshold.md](../decisions/why-auto-write-with-threshold.md).
 - **`view_domain` is per-request**, defaulting to `"overhead"`. Plan C's worker splice was overhead-only by design (every satellite detection is overhead); Plan D's request body lets analysts identify FMV ground-view chips when that path lands.
 - **NaN-safe approve**: a zero-vector query produces cosine 0/0 = NaN, which would violate `platform_confidence ∈ [0,1]`. The approve handler clamps via `math.isfinite` before passing to `_upsert_platform_identification`.
+- **Live events** — approve/reject/identify routes emit `publish_event("identifications", {type, detection_id, ...})` so frontend consumers can subscribe via `useEventStream("identifications", ...)` for multi-analyst sync. See [why-ws-auth-now-required.md](../decisions/why-ws-auth-now-required.md) for the WS auth gate.
 
 ## Key symbols
 - [`list_reference_platforms`](../../backend/routers/reference_platforms.py#L85-L134) — GET list with filters.

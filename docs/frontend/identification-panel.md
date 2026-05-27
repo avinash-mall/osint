@@ -1,7 +1,7 @@
 # `frontend/src/components/map/IdentificationPanel.tsx` — Reference-DB Identification UI
 
 **Path:** [frontend/src/components/map/IdentificationPanel.tsx](../../frontend/src/components/map/IdentificationPanel.tsx)
-**Lines:** ~419
+**Lines:** ~436
 **Depends on:** `axios`, `lucide-react`, the backend routes from [backend-routers/reference-platforms-router.md](../backend-routers/reference-platforms-router.md) (GET candidates, POST approve/reject/identify, GET chip image).
 
 ## Purpose
@@ -14,6 +14,7 @@ Renders top-k reference-platform candidates for a detection inside SelectionPane
 - Approve/reject buttons disabled for already-approved/rejected candidates so analysts can't double-act.
 - Per-action busy state gates ALL candidates' buttons (`anyBusy`) to prevent race conditions on the analyst's transaction.
 - Re-identify uses Plan D's `POST /api/detections/{id}/identify` with `auto_threshold=999.0` semantics: never auto-applies, just refreshes the queue.
+- **Multi-analyst sync via `useEventStream("identifications", ...)`** — when the backend publishes an event whose payload `detection_id` matches the panel's current `detectionId`, the panel re-fetches the candidate queue automatically. This keeps two analysts looking at the same detection in agreement without manual refresh. The WS channel is session-authed (see [why-ws-auth-now-required.md](../decisions/why-ws-auth-now-required.md)); publishing happens in [reference-platforms-router.md](../backend-routers/reference-platforms-router.md).
 
 ## Key symbols
 
@@ -31,7 +32,7 @@ Renders top-k reference-platform candidates for a detection inside SelectionPane
 
 - 401 → analyst session expired; error chip shows "Unauthorized"-style message. SelectionPanel doesn't redirect to login (existing behaviour).
 - 400 (no embedding on detection) → expected for detections inserted before Plan C's worker splice; the error chip surfaces the backend's detail.
-- Broken chip URLs → browser renders the broken-image glyph. Future polish: add `<img onError>` fallback.
+- Broken chip URLs → handled by the shared [ChipImg](chip-img-component.md) component, which swaps to a neutral `✕` placeholder on `<img onError>`.
 
 ## Cross-references
 

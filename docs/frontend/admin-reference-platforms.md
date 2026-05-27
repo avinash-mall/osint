@@ -1,7 +1,7 @@
 # `frontend/src/components/admin/ReferencePlatformsView.tsx` — Reference DB browser
 
 **Path:** [frontend/src/components/admin/ReferencePlatformsView.tsx](../../frontend/src/components/admin/ReferencePlatformsView.tsx)
-**Lines:** ~503
+**Lines:** ~509
 **Depends on:** `axios`, `lucide-react`, backend `GET /api/reference-platforms*` + `GET /api/reference-chips/{id}/image`.
 
 ## Purpose
@@ -12,8 +12,8 @@ Admin tab listing curated reference platforms with family/country filters. Click
 
 - Two-column grid: list left, detail right. Reads like a file-explorer.
 - Filters are exact-match by family or country_of_origin — keeps the SQL fast and avoids ambiguous fuzzy-match.
-- Chip thumbnails fetched via the chip-serving route, which enforces a path-traversal guard. See [reference-platforms-router.md](../backend-routers/reference-platforms-router.md).
-- Pagination caps at limit=200 by default. The route supports up to 1000 and offsets but the UI doesn't surface a paginator yet — DOTA's 18 platforms easily fit; Plan F can add pagination when xView lands.
+- Chip thumbnails fetched via the shared [ChipImg](chip-img-component.md) component, which wraps the chip-serving route (path-traversal-guarded — see [reference-platforms-router.md](../backend-routers/reference-platforms-router.md)) and renders a neutral `✕` placeholder on load failure.
+- Pagination caps at limit=200 by default. The list response now exposes `total` (total filtered count) alongside `count` (page length); when `total > platforms.length` the list header shows a "Showing N of M" affordance so analysts can tell the list is truncated. The route supports up to 1000 and offsets if a future tab needs a full paginator.
 
 ## Key symbols
 
