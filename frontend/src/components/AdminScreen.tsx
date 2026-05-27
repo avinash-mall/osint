@@ -14,6 +14,7 @@ import {
   AlertTriangle,
   Box,
   Cpu,
+  Database,
   Filter,
   GitBranch,
   HeartPulse,
@@ -33,6 +34,7 @@ import OperationalEntitiesAdmin from './admin/OperationalEntitiesAdmin';
 import RepeatThresholdsView from './admin/RepeatThresholdsView';
 import ModelLoadingView from './admin/ModelLoadingView';
 import AlertsView from './admin/AlertsView';
+import ReferencePlatformsView from './admin/ReferencePlatformsView';
 
 type AdminTab =
   | 'ontology'
@@ -46,12 +48,14 @@ type AdminTab =
   | 'health'
   | 'confidence'
   | 'prompts'
-  | 'versions';
+  | 'versions'
+  | 'reference-platforms';
 
 type Counts = {
   processing: number;
   models: number;
   alerts: number;
+  referencePlatforms: number;
 };
 
 type NavItemDef = {
@@ -64,6 +68,7 @@ type NavItemDef = {
 const NAV: NavItemDef[] = [
   { key: 'ontology',   label: 'Ontology',         Icon: GitBranch },
   { key: 'entities',   label: 'Operational entities', Icon: Box },
+  { key: 'reference-platforms', label: 'Reference platforms', Icon: Database, badgeKey: 'referencePlatforms' },
   { key: 'processing', label: 'Processing',       Icon: Activity, badgeKey: 'processing' },
   { key: 'models',     label: 'AI models',        Icon: Box,      badgeKey: 'models' },
   { key: 'modelload',  label: 'Model loading',    Icon: Cpu },
@@ -90,7 +95,7 @@ export default function AdminScreen({
   onOpenDetectionInFmv,
 }: AdminScreenProps = {}) {
   const [tab, setTab] = useState<AdminTab>('ontology');
-  const [counts, setCounts] = useState<Counts>({ processing: 0, models: 0, alerts: 0 });
+  const [counts, setCounts] = useState<Counts>({ processing: 0, models: 0, alerts: 0, referencePlatforms: 0 });
 
   // Stable count-setters. The Processing/Models/Alerts views list their
   // `onCount` prop in a useEffect dependency array; an inline arrow here would
@@ -99,6 +104,7 @@ export default function AdminScreen({
   const setProcessingCount = useCallback((n: number) => setCounts((c) => ({ ...c, processing: n })), []);
   const setModelsCount = useCallback((n: number) => setCounts((c) => ({ ...c, models: n })), []);
   const setAlertsCount = useCallback((n: number) => setCounts((c) => ({ ...c, alerts: n })), []);
+  const setReferencePlatformsCount = useCallback((n: number) => setCounts((c) => ({ ...c, referencePlatforms: n })), []);
 
   // Listen for Shell's "jump to admin tab" events (e.g. Bell icon ⇒ alerts).
   useEffect(() => {
@@ -183,6 +189,7 @@ export default function AdminScreen({
           />
         )}
         {tab === 'entities'   && <OperationalEntitiesAdmin />}
+        {tab === 'reference-platforms' && <ReferencePlatformsView onCount={setReferencePlatformsCount} />}
         {tab === 'thresholds' && <RepeatThresholdsView />}
         {tab === 'processing' && (
           <ProcessingView
