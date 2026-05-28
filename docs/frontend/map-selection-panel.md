@@ -53,7 +53,8 @@ display-friendly primary name plus any fusion partners.
 
 | State | Chip | Tooltip |
 |---|---|---|
-| Single-detector (no `wbf_member_sources`) | `sentinel-tag` (neutral grey) `[Cpu] SAM 3` (`data-testid="detector-provenance-chip"`) | "Single-detector call. SAM 3 text-only on overhead imagery has known limits (LAE-80C: F1 ≤ 28%). Treat as unverified unless corroborated." |
+| Single-detector, SAM 3 (no `wbf_member_sources`) | `sentinel-tag` (neutral grey) `[Cpu] SAM 3` (`data-testid="detector-provenance-chip"`) | "Single-detector call. SAM 3 text-only on overhead imagery has known limits (LAE-80C: F1 ≤ 28%). Treat as unverified unless corroborated." |
+| Single-detector, non-SAM 3 (e.g. DOTA-OBB, CFAR (SAR)) | `sentinel-tag` (neutral grey) `[Cpu] <PRIMARY>` | "Single-detector call. Treat as unverified unless corroborated by a second detector or analyst review." |
 | Multi-detector WBF (≥1 partner) | `sentinel-tag info` (blue) `[Cpu] SAM 3 +1` | "Multi-detector agreement: N detectors agreed on this region (WBF). Higher confidence than single-detector calls." |
 
 The `+N` suffix shows the partner count; full partner names live in the

@@ -393,7 +393,6 @@ export default function SelectionPanel(props: Props) {
                         data-testid="detector-provenance-chip"
                         className={`sentinel-tag ${fused ? 'info' : ''} uppercase`}
                         title={prov.tooltip}
-                        style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
                       >
                         <Cpu size={10} />
                         {prov.primary}

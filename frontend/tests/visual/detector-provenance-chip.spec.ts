@@ -4,14 +4,12 @@
  * The SelectionPanel header must render a [DETECTOR] chip showing which
  * model produced the detection (SAM 3, DOTA-OBB, …) and visually
  * distinguish single-detector calls (neutral) from multi-detector WBF
- * agreement (info / blue). The Provenance helper backs both the chip and
- * the ProvenancePanel "Detector ensemble" block.
+ * agreement (info / blue).
  *
- * NOTE: ProvenancePanel itself is not currently mounted as a tab, so its
- * "Detector ensemble" block is verified through the underlying helper
- * (page.evaluate of detectionProvenance + the data shape that ProvenancePanel
- * reads). When ProvenancePanel is wired into the right rail, the third
- * test becomes a normal DOM assertion.
+ * ProvenancePanel is currently orphan-mounted (no caller in frontend/src/);
+ * the third test below is skipped until the SelectionPanel `Provenance` tab
+ * wires it in. The underlying detectionProvenance() helper should be covered
+ * by a Vitest unit test once frontend/ grows a Vitest config.
  */
 import { expect, test, type Page } from '@playwright/test';
 import { installMockApi } from './mockApi';
@@ -86,56 +84,14 @@ test.describe('Detector provenance chip', () => {
     expect(tooltip || '').toMatch(/2 detectors agreed/);
   });
 
-  test('detectionProvenance helper backs the "Detector ensemble" panel data shape', async ({ page }) => {
-    // ProvenancePanel.tsx is not mounted in the current UI; verify the
-    // helper output that backs the Detector-ensemble Panel renders the
-    // correct primary / partners / WBF-member-count contract.
-    await installMockApi(page, {
-      authenticated: true,
-      detectionOverrides: {
-        original_class: 'plane',
-        parent_class: 'aircraft',
-        label: 'Aircraft',
-        display_label: 'Aircraft',
-        source_layer: 'sam3',
-        wbf_member_sources: ['sam3', 'dota_obb'],
-        wbf_member_count: 2,
-      },
-    });
-    await openMapAndSelectDetection(page);
-
-    // Fetch the same GeoJSON the UI consumed and feed it through the helper.
-    const result = await page.evaluate(async () => {
-      const resp = await fetch('/api/detections/geojson', { credentials: 'include' });
-      const body = await resp.json();
-      const feature = body?.features?.[0];
-      const props = feature?.properties || {};
-      const meta = props.metadata || {};
-      // Re-implement detectionProvenance() locally — the module isn't exposed
-      // on window. Mirrors frontend/src/components/map/_helpers.ts.
-      const SOURCE_LAYER_LABELS: Record<string, string> = {
-        sam3: 'SAM 3',
-        dota_obb: 'DOTA-OBB',
-        grounding_dino: 'Grounding-DINO',
-        yoloe: 'YOLOE',
-        sar_cfar: 'CFAR (SAR)',
-      };
-      const pretty = (raw: string) => raw ? (SOURCE_LAYER_LABELS[raw] ?? raw.toUpperCase()) : 'unknown';
-      const rawPrimary = String(props.source_layer ?? meta.source_layer ?? '');
-      const primary = pretty(rawPrimary);
-      const rawMembers: string[] = Array.isArray(props.wbf_member_sources)
-        ? props.wbf_member_sources
-        : Array.isArray(meta.wbf_member_sources) ? meta.wbf_member_sources : [];
-      const partners = rawMembers
-        .map(String)
-        .filter((m) => m && m !== rawPrimary)
-        .map(pretty);
-      const wbfMemberCount = Number(meta.wbf_member_count ?? props.wbf_member_count ?? 1);
-      return { primary, partners, wbfMemberCount };
-    });
-
-    expect(result.primary).toBe('SAM 3');
-    expect(result.partners).toContain('DOTA-OBB');
-    expect(result.wbfMemberCount).toBe(2);
+  // TODO: when the SelectionPanel `Provenance` tab is wired to render
+  // ProvenancePanel (follow-up to Task 1.3), replace this skip with a real
+  // DOM assertion that clicks into the Provenance tab and reads the
+  // "Detector ensemble" Kv rows. The earlier page.evaluate version was
+  // removed because it re-implemented detectionProvenance() inside the
+  // test, so a bug in _helpers.ts could not break it. Frontend has no
+  // Vitest setup yet — once one lands, unit-test the helper there instead.
+  test.skip('Detector ensemble panel renders via mounted ProvenancePanel', async () => {
+    // intentionally empty — see TODO above.
   });
 });

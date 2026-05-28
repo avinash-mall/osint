@@ -136,7 +136,9 @@ export function detectionProvenance(props: any): DetectionProvenance {
     : partners.length + 1;
 
   const tooltip = partners.length === 0
-    ? 'Single-detector call. SAM 3 text-only on overhead imagery has known limits (LAE-80C: F1 ≤ 28%). Treat as unverified unless corroborated.'
+    ? (rawPrimary === 'sam3'
+        ? 'Single-detector call. SAM 3 text-only on overhead imagery has known limits (LAE-80C: F1 ≤ 28%). Treat as unverified unless corroborated.'
+        : 'Single-detector call. Treat as unverified unless corroborated by a second detector or analyst review.')
     : `Multi-detector agreement: ${n} detectors agreed on this region (WBF). Higher confidence than single-detector calls.`;
 
   return { primary, partners, summary, tooltip };
