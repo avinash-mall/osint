@@ -62,6 +62,11 @@ def _make_bundle(processor):
 
 
 def test_run_text_prompts_single_prompt_uses_native_processor(monkeypatch):
+    # This test exercises the plumbing of run_text_prompts, not the
+    # presence-ratio gate. A single-mask fixture has max==mean (ratio=1.0)
+    # and would be dropped by the default "both" mode, so flip to the
+    # legacy max-only gate here.
+    monkeypatch.setattr(sam3_runner, "SAM3_PRESENCE_MODE", "max")
     H, W = 16, 16
     mask = np.zeros((H, W), dtype=bool)
     mask[1:4, 1:4] = True

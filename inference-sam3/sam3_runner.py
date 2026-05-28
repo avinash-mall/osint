@@ -58,6 +58,26 @@ SAM3_SDPA_BACKEND = os.getenv("SAM3_SDPA_BACKEND", "auto").strip().lower()
 # never exceeds the threshold.
 SAM3_CATEGORY_THR = float(os.getenv("SAM3_CATEGORY_THRESHOLD", "0.40"))
 
+# SegEarth-OV3-inspired presence ratio (arxiv 2512.08730). The existing
+# SAM3_CATEGORY_THRESHOLD gate uses the max per-mask score across all
+# candidates for a prompt. That catches obvious absence (low max) but
+# misses the textbook hallucination pattern where SAM3 emits many
+# uniformly mediocre masks that lift the mean close to the max — a
+# diffuse "all this background kind of looks like X" response.
+#
+# Presence ratio = max_score / max(mean_score, EPS). A "real" detection
+# is sharp/localized — max is well above mean. A hallucination is diffuse
+# — max ≈ mean. Defaults: 1.8 — means max must be at least 80% higher
+# than mean to keep the prompt.
+SAM3_PRESENCE_RATIO_FLOOR = float(os.getenv("SAM3_PRESENCE_RATIO_FLOOR", "1.8"))
+SAM3_PRESENCE_RATIO_EPS = float(os.getenv("SAM3_PRESENCE_RATIO_EPS", "0.05"))
+
+# Mode selector: which gate(s) to apply. Backward-compat default is
+# "both" (existing max-score gate AND new ratio gate must both pass).
+# "max" = only the existing gate (legacy behaviour).
+# "ratio" = only the new ratio gate (skip max-score check).
+SAM3_PRESENCE_MODE = os.getenv("SAM3_PRESENCE_MODE", "both").strip().lower()
+
 
 def _load_per_class_category_thresholds() -> dict[str, float]:
     """Per-class overrides of ``SAM3_CATEGORY_THRESHOLD``.
@@ -792,26 +812,63 @@ def run_text_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompt
     return candidates
 
 
-def _prompt_passes_category_gate(output, label: Any = None) -> bool:
-    """Category-level presence gate.
+def _presence_signals(scores: Iterable[float]) -> dict[str, float]:
+    """Summarise a per-prompt score distribution for the presence gate.
 
-    ``True`` if the prompt's best candidate score is at least the threshold
-    for ``label`` (per-class override if configured, else ``SAM3_CATEGORY_THR``).
-    Suppresses the entire prompt's detections when the concept is effectively
-    absent from the scene (presence-token probability multiplied with per-mask
-    quality < gate).
+    Returns ``{"max": float, "mean": float, "ratio": float, "n": int}``.
+    ``ratio = max / max(mean, SAM3_PRESENCE_RATIO_EPS)``. Pure function;
+    safe to call from tests and diagnostics. Empty inputs return zeros.
     """
-    threshold = _category_threshold_for(label) if label is not None else SAM3_CATEGORY_THR
-    if threshold <= 0.0:
-        return True
+    vals = [float(s) for s in scores]
+    n = len(vals)
+    if n == 0:
+        return {"max": 0.0, "mean": 0.0, "ratio": 0.0, "n": 0}
+    max_v = max(vals)
+    mean_v = sum(vals) / n
+    ratio = max_v / max(mean_v, SAM3_PRESENCE_RATIO_EPS)
+    return {"max": max_v, "mean": mean_v, "ratio": ratio, "n": n}
+
+
+def _prompt_passes_category_gate(output, label: Any = None) -> bool:
+    """Category-level presence gate (legacy max-score + SegEarth-OV3 ratio).
+
+    Returns True iff the active gates (controlled by ``SAM3_PRESENCE_MODE``)
+    all pass for this prompt. Default mode ``"both"`` requires the existing
+    max-score gate AND the new presence-ratio gate to pass.
+
+    Modes:
+      ``max``   — legacy: ``max_score >= threshold`` (per-class or global).
+      ``ratio`` — SegEarth-OV3-inspired: ``max_score / mean_score >= ratio_floor``.
+      ``both``  — DEFAULT: both gates must pass.
+
+    See [docs/decisions/why-segearth-presence-filter.md] for the rationale
+    behind the more-restrictive default; operators wanting strict legacy
+    behaviour can set ``SAM3_PRESENCE_MODE=max``.
+    """
     scores = _to_list(output.get("scores"))
     if not scores:
+        # No candidates at all — preserve existing behaviour (drop the prompt).
         return False
     try:
-        max_score = max(float(s) for s in scores)
+        scores_f = [float(s) for s in scores]
     except Exception:
         return True
-    return max_score >= threshold
+    max_score = max(scores_f)
+
+    if SAM3_PRESENCE_MODE in ("max", "both"):
+        threshold = _category_threshold_for(label) if label is not None else SAM3_CATEGORY_THR
+        if threshold > 0.0 and max_score < threshold:
+            return False
+        if SAM3_PRESENCE_MODE == "max":
+            return True
+
+    if SAM3_PRESENCE_MODE in ("ratio", "both") and SAM3_PRESENCE_RATIO_FLOOR > 0.0:
+        mean_score = sum(scores_f) / len(scores_f)
+        ratio = max_score / max(mean_score, SAM3_PRESENCE_RATIO_EPS)
+        if ratio < SAM3_PRESENCE_RATIO_FLOOR:
+            return False
+
+    return True
 
 
 def _run_text_prompts_batched(

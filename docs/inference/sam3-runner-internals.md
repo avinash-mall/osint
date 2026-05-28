@@ -1,12 +1,12 @@
 # `inference-sam3/sam3_runner.py` — SAM 3 Orchestration
 
 **Path:** [inference-sam3/sam3_runner.py](../../inference-sam3/sam3_runner.py)
-**Lines:** ~1648 (largest inference-side file)
+**Lines:** ~1685 (largest inference-side file)
 **Depends on:** `torch`, `transformers`, `huggingface_hub`, `sam3` (Meta SAM3 package)
 
 ## Purpose
 
-Loads SAM 3 / SAM 3.1 image weights, runs text- and box-prompted detection paths. Handles model selection (official vs mirror), device placement, batched text prompting, per-category threshold gating, the category-presence gate ([why-category-presence-gate.md](../decisions/why-category-presence-gate.md)).
+Loads SAM 3 / SAM 3.1 image weights, runs text- and box-prompted detection paths. Handles model selection (official vs mirror), device placement, batched text prompting, per-category threshold gating, the category-presence gate ([why-category-presence-gate.md](../decisions/why-category-presence-gate.md)) — extended with the SegEarth-OV3-style score-distribution presence-ratio filter ([why-segearth-presence-filter.md](../decisions/why-segearth-presence-filter.md)).
 
 ## Key symbols (loaders)
 
@@ -17,10 +17,13 @@ Loads SAM 3 / SAM 3.1 image weights, runs text- and box-prompted detection paths
 
 ## Key symbols (text prompting + gating)
 
-- [`_load_per_class_category_thresholds`](../../inference-sam3/sam3_runner.py#L62) — `SAM3_PER_CLASS_CATEGORY_THRESHOLDS` env JSON.
-- [`_canonical_prompt_key`](../../inference-sam3/sam3_runner.py#L96) — same canonicalization as `backend.ontology._canonical`.
-- [`_category_threshold_for`](../../inference-sam3/sam3_runner.py#L108) — per-class override or fall through to `SAM3_CATEGORY_THRESHOLD`.
-- [`_device_ctx`](../../inference-sam3/sam3_runner.py#L698) — pins PyTorch thread-local current CUDA device to the replica's device for the duration of a forward; `nullcontext()` on CPU. Outermost context in every inference `with` stack.
+- [`SAM3_PRESENCE_RATIO_FLOOR`, `SAM3_PRESENCE_RATIO_EPS`, `SAM3_PRESENCE_MODE`](../../inference-sam3/sam3_runner.py#L61-L79) — SegEarth-OV3-inspired score-distribution gate constants. Defaults `1.8 / 0.05 / "both"`. Mode `both` requires the legacy max-score gate AND the new presence-ratio gate to pass; `max` reverts to legacy behaviour; `ratio` runs only the new gate. See [why-segearth-presence-filter.md](../decisions/why-segearth-presence-filter.md).
+- [`_load_per_class_category_thresholds`](../../inference-sam3/sam3_runner.py#L82) — `SAM3_PER_CLASS_CATEGORY_THRESHOLDS` env JSON.
+- [`_canonical_prompt_key`](../../inference-sam3/sam3_runner.py#L116) — same canonicalization as `backend.ontology._canonical`.
+- [`_category_threshold_for`](../../inference-sam3/sam3_runner.py#L131) — per-class override or fall through to `SAM3_CATEGORY_THRESHOLD`.
+- [`_presence_signals`](../../inference-sam3/sam3_runner.py#L815) — pure helper returning `{"max", "mean", "ratio", "n"}` summary of a score distribution; used by tests and available for diagnostic logging.
+- [`_prompt_passes_category_gate`](../../inference-sam3/sam3_runner.py#L832) — three-mode (`max` / `ratio` / `both`) presence gate; called once per prompt inside `_run_text_prompts`.
+- [`_device_ctx`](../../inference-sam3/sam3_runner.py#L737) — pins PyTorch thread-local current CUDA device to the replica's device for the duration of a forward; `nullcontext()` on CPU. Outermost context in every inference `with` stack.
 
 ## How a `/detect` call uses this module
 
@@ -48,7 +51,7 @@ Video paths stream JSON records. SAM3 PCS records include `source_layer="sam3"`;
 
 ## Failure modes
 
-Category-presence gate drops an entire prompt when all scores are below the configured threshold. Video category gating buffers through the hotstart window before either flushing or suppressing a prompt's stream.
+Category-presence gate drops an entire prompt when all scores are below the configured threshold. Default `SAM3_PRESENCE_MODE=both` adds a SegEarth-OV3-style ratio check on top — prompts with a diffuse score distribution (`max / mean < SAM3_PRESENCE_RATIO_FLOOR`, default `1.8`) are also dropped. Operators wanting strict legacy behaviour set `SAM3_PRESENCE_MODE=max`. Video category gating buffers through the hotstart window before either flushing or suppressing a prompt's stream.
 
 Before `_device_ctx` pinning: multi-GPU hosts failed ~half of `/detect_raw` tiles with `RuntimeError: indices should be either on cpu or on the same device as the indexed tensor` in `_get_img_feats` — the collated `img_ids` landed on a drifted current CUDA device. Detections then covered only the region whose tiles happened to route to a matching replica. A single chunk failure inside the cached-batched loop is now contained per-chunk rather than failing the whole tile.
 
@@ -59,4 +62,5 @@ Before `_device_ctx` pinning: multi-GPU hosts failed ~half of `/detect_raw` tile
 - [sam3-perf-profiling.md](sam3-perf-profiling.md)
 - [decisions/why-sam3-as-foundation.md](../decisions/why-sam3-as-foundation.md)
 - [decisions/why-category-presence-gate.md](../decisions/why-category-presence-gate.md)
+- [decisions/why-segearth-presence-filter.md](../decisions/why-segearth-presence-filter.md)
 - [decisions/cached-forward-device-normalise.md](../decisions/cached-forward-device-normalise.md)

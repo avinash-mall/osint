@@ -193,6 +193,7 @@ decisions/why-remoteclip-default-on.md|decision,inference|RemoteCLIP verifier de
 decisions/why-sam3-as-foundation.md|decision,sam3|open-vocabulary segmentation across RGB/MSI/SAR with native API
 decisions/why-sar-confidence-cap.md|decision,imagery|SAR detections via TerraMind synthetic proxy capped at 0.85
 decisions/why-sat-tiles-cap-at-native-zoom.md|decision,imagery,frontend|SAT TileLayer maxNativeZoom from COG GSD + nginx cache relax kills zoom-in blur
+decisions/why-segearth-presence-filter.md|decision,sam3|SegEarth-OV3 score-distribution presence-ratio gate composed with legacy max-score gate; default mode=both
 decisions/why-standalone-embed-endpoint.md|decision|standalone /embed avoids /detect cost and keeps DB dep in backend
 decisions/why-transportation-floor-raised.md|decision,backend,ontology|per-class floor defaults (transportation=0.55, other=0.50) lift precision on noisy buckets; operator overrides via admin matrix
 decisions/why-wbf-over-nms.md|decision,inference|cross-detector fuser default WBF; NMS suppresses winners (DOTA->GDINO mAP collapse); SAM3_FUSION_MODE=wbf|nms knob

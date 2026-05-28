@@ -37,8 +37,13 @@ Set `SAM3_CATEGORY_THRESHOLD=0.0` to disable the gate. Useful for:
 
 Production stays at 0.40.
 
+## See also
+
+- [why-segearth-presence-filter.md](why-segearth-presence-filter.md) — extends this gate with a score-distribution check (max/mean ratio) that catches diffuse hallucinations the max-score gate misses. Default mode `both` composes both gates.
+
 ## Cross-references
 
 - [inference/sam3-runner-internals.md](../inference/sam3-runner-internals.md)
 - [why-open-vocabulary.md](why-open-vocabulary.md)
+- [why-segearth-presence-filter.md](why-segearth-presence-filter.md)
 - [benchmarks/inference-layer-comparison.md](../benchmarks/inference-layer-comparison.md)

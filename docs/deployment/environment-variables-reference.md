@@ -90,6 +90,9 @@ Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 | `SAM3_TEXT_THRESHOLD` | `0.50` | Min score for text-prompt detections |
 | `SAM3_BOX_THRESHOLD` | `0.25` | Min score for box-prompt detections |
 | `SAM3_CATEGORY_THRESHOLD` | `0.40` | Category-presence gate (`0.0` to disable) |
+| `SAM3_PRESENCE_MODE` | `both` | Presence-gate composition: `max` (legacy only), `ratio` (SegEarth-OV3 distribution gate only), `both` (DEFAULT — both must pass). See [why-segearth-presence-filter.md](../decisions/why-segearth-presence-filter.md) |
+| `SAM3_PRESENCE_RATIO_FLOOR` | `1.8` | Minimum `max_score / mean_score` ratio for a prompt to pass the SegEarth-OV3 distribution gate. Higher = stricter (kills more diffuse responses). `0.0` disables the ratio gate even in mode `both` |
+| `SAM3_PRESENCE_RATIO_EPS` | `0.05` | Floor for the denominator when computing the presence ratio; prevents division-by-zero when SAM3 emits near-zero mean scores |
 | `SAM3_PRITHVI_OVERLAY_THRESHOLD` | `0.30` | Mask × Prithvi-overlay IoU for label append |
 | `SAM3_SAR_CONF_CAP` | `0.85` | Hard cap on SAR confidence |
 | `SAM3_OBB_OPENING_KERNEL_PCT` | `0.01` | Morphological opening kernel before `minAreaRect` |
