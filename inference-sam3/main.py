@@ -193,9 +193,24 @@ SAM3_LOAD_DOTA_OBB        = _flag("SAM3_LOAD_DOTA_OBB",        _DEFAULT)
 # are already covered by SAM3+DOTA-OBB. Operators wanting open-vocab recall on
 # truly novel labels can re-enable with SAM3_LOAD_GROUNDING_DINO=1.
 SAM3_LOAD_GROUNDING_DINO  = _flag("SAM3_LOAD_GROUNDING_DINO",  "0")
-# RemoteCLIP-style verifier is optional and never proposes detections. It is
-# disabled by default because weights must be baked for offline runtime.
-SAM3_LOAD_REMOTECLIP      = _flag("SAM3_LOAD_REMOTECLIP",      "0")
+# RemoteCLIP-style verifier never proposes detections; it only scores existing
+# crops and emits `semantic_margin` for backend label-quality promotion. Default
+# flipped 0 → 1 in T1.6 — weights are baked into the image (Dockerfile.gpu) and
+# the per-detection cost is gated by source_layer below, so DOTA-OBB's
+# closed-vocab calls aren't second-guessed. See
+# docs/decisions/why-remoteclip-default-on.md.
+SAM3_LOAD_REMOTECLIP      = _flag("SAM3_LOAD_REMOTECLIP",      "1")
+# Which source layers the RemoteCLIP verifier is allowed to second-guess.
+# DOTA-OBB is excluded because its closed-vocab 18 classes are stronger than
+# open-vocab text matching for those categories (same auto-gate logic as
+# docs/decisions/why-grounding-dino-auto-gated.md). Override via
+# REMOTECLIP_VERIFIER_LAYERS=comma,separated,list.
+_REMOTECLIP_VERIFIER_LAYERS_RAW = os.getenv(
+    "REMOTECLIP_VERIFIER_LAYERS", "sam3,grounding_dino"
+)
+REMOTECLIP_VERIFIER_LAYERS: frozenset[str] = frozenset(
+    s.strip().lower() for s in _REMOTECLIP_VERIFIER_LAYERS_RAW.split(",") if s.strip()
+)
 # YOLOE-26x open-vocabulary segmentation specialist used by the standalone
 # FMV tracker. Bundles both -pf (prompt-free) and -seg (text-prompted)
 # checkpoints; intentionally not loaded by the imagery profile.
@@ -1051,7 +1066,15 @@ async def _detect_pipeline(
             valid_mask=valid_mask,
         )
         det["source_layer"] = source_layer
-        if bundle.get("remoteclip") and _layer_active("remoteclip"):
+        # Only verify SAM3 / Grounding-DINO open-vocab calls — DOTA-OBB's
+        # closed-vocab 18 classes are deliberately not second-guessed (same
+        # logic as decisions/why-grounding-dino-auto-gated.md). Override the
+        # gate via REMOTECLIP_VERIFIER_LAYERS.
+        if (
+            bundle.get("remoteclip")
+            and _layer_active("remoteclip")
+            and source_layer in REMOTECLIP_VERIFIER_LAYERS
+        ):
             verifier_labels = [
                 str(label),
                 str(det.get("parent_class") or ""),

@@ -312,7 +312,8 @@ services:
       # with zero true positives (see docs/inference_layer_comparison.md).
       SAM3_LOAD_DOTA_OBB:        ${SAM3_LOAD_DOTA_OBB:-1}
       SAM3_LOAD_GROUNDING_DINO:  ${SAM3_LOAD_GROUNDING_DINO:-1}
-      SAM3_LOAD_REMOTECLIP:      ${SAM3_LOAD_REMOTECLIP:-0}
+      # Default-on as of T1.6 — see docs/decisions/why-remoteclip-default-on.md
+      SAM3_LOAD_REMOTECLIP:      ${SAM3_LOAD_REMOTECLIP:-1}
       DOTA_OBB_MODEL_ID:         ${DOTA_OBB_MODEL_ID:-yolo26m-obb.pt}
       GROUNDING_DINO_REPO_ID:    ${GROUNDING_DINO_REPO_ID:-IDEA-Research/grounding-dino-tiny}
       GROUNDING_DINO_THRESHOLD:  ${GROUNDING_DINO_THRESHOLD:-0.20}

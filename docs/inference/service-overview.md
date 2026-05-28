@@ -43,7 +43,7 @@ Full per-modality request contract: [main-app-entrypoint.md](main-app-entrypoint
 |---|---|
 | SAM 3 + SAM 3.1 video + DINOv3-SAT-L + DOTA-OBB + GDINO + YOLOE (FMV/all profile) | ~12 GB |
 | + Prithvi + TerraMind | ~22 GB (24 GB+ card required) |
-| + RemoteCLIP verifier | Optional extra VRAM; disabled by default |
+| + RemoteCLIP verifier (default-on as of T1.6, imagery profile only) | +~1.5 GB |
 
 Per-component flags: [main-app-entrypoint.md](main-app-entrypoint.md) and the env table in [deployment/environment-variables-reference.md](../deployment/environment-variables-reference.md).
 

@@ -186,6 +186,7 @@ decisions/why-postgis-and-neo4j-coexist.md|decision|PostGIS for spatial detectio
 decisions/why-precision-first-inference-defaults.md|decision|bounded prompt defaults, source-layer provenance, specialist gates, nonzero policy floor
 decisions/why-preload-imagery-on-startup.md|decision,inference,deployment|inference-sam3 lifespan preloads imagery so healthcheck sees model_loaded; SAM3_SKIP_PRELOAD opts out
 decisions/why-reject-double-review-with-409.md|decision,backend|approve/reject UPDATE guarded WHERE status='pending'; 409 with prior reviewer instead of silent overwrite
+decisions/why-remoteclip-default-on.md|decision,inference|RemoteCLIP verifier default-on for imagery; gated to sam3/grounding_dino source layers
 decisions/why-sam3-as-foundation.md|decision,sam3|open-vocabulary segmentation across RGB/MSI/SAR with native API
 decisions/why-sar-confidence-cap.md|decision,imagery|SAR detections via TerraMind synthetic proxy capped at 0.85
 decisions/why-sat-tiles-cap-at-native-zoom.md|decision,imagery,frontend|SAT TileLayer maxNativeZoom from COG GSD + nginx cache relax kills zoom-in blur

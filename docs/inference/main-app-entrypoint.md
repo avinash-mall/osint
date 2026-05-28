@@ -47,7 +47,7 @@ FastAPI app for the GPU inference service. Holds request handlers (`/health`, `/
 | `metadata.enabled_layers` | profile defaults | Subset of `sam3, dota_obb, grounding_dino, remoteclip, dinov3_sat, prithvi, terramind`. `yoloe`, `yoloe_pf`, and `yoloe_seg` are rejected on image endpoints because YOLOE is FMV-only. See [decisions/removed-yoloe-imagery.md](../decisions/removed-yoloe-imagery.md). |
 | `metadata.hls_timesteps` | `1` | Set `3` for HLS multi-temporal crop classifier |
 
-Per-detection output includes `source_layer` (`sam3`, `dota_obb`, `grounding_dino`, etc.) → backend calibration + NMS provenance distinguish detector families. When `remoteclip` loaded + enabled, detections also include `semantic_verifier` + `semantic_margin` for backend evidence ranking. Response includes `debug_counts` (`prompt_count`, `candidates_by_layer`, `suppressed_by_nms`, `suppressed_by_policy`) for false-positive triage.
+Per-detection output includes `source_layer` (`sam3`, `dota_obb`, `grounding_dino`, etc.) → backend calibration + NMS provenance distinguish detector families. When `remoteclip` is loaded + enabled (default-on for the imagery profile as of T1.6), detections from layers in `REMOTECLIP_VERIFIER_LAYERS` (default `sam3, grounding_dino`) also include `semantic_verifier` + `semantic_margin` for backend evidence ranking; DOTA-OBB is deliberately excluded — see [decisions/why-remoteclip-default-on.md](../decisions/why-remoteclip-default-on.md). Response includes `debug_counts` (`prompt_count`, `candidates_by_layer`, `suppressed_by_nms`, `suppressed_by_policy`) for false-positive triage.
 
 ## /detect_video request contract
 

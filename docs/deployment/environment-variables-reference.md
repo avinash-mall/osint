@@ -104,7 +104,8 @@ Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 | `SAM3_LOAD_TERRAMIND` | `1` | TerraMind S1→S2 |
 | `SAM3_LOAD_DOTA_OBB` | `1` | DOTA-OBB specialist |
 | `SAM3_LOAD_GROUNDING_DINO` | `0` | Grounding-DINO (auto-gated + explicitly enabled per request) |
-| `SAM3_LOAD_REMOTECLIP` | `0` | Optional RemoteCLIP verifier; scores existing candidates only |
+| `SAM3_LOAD_REMOTECLIP` | `1` | RemoteCLIP verifier; scores existing candidates only (never proposes). Default-on as of T1.6 — see [why-remoteclip-default-on.md](../decisions/why-remoteclip-default-on.md) |
+| `REMOTECLIP_VERIFIER_LAYERS` | `sam3,grounding_dino` | Source layers the verifier is allowed to second-guess; DOTA-OBB excluded to preserve its closed-vocab precision |
 | `SAM3_LOAD_YOLOE` | `1` | YOLOE-26x FMV tracker |
 | `DOTA_OBB_MODEL_ID` | `yolo26m-obb.pt` | Default OBB checkpoint; `yolo11n-obb.pt` for low-VRAM fallback |
 | `REMOTECLIP_MODEL_ID` / `REMOTECLIP_ARCH` | `chendelong/RemoteCLIP` / `ViT-B-32` | OpenCLIP-compatible verifier weights + architecture |

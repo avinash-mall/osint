@@ -29,7 +29,7 @@ Single JSON file listing every model weight the inference service uses: HuggingF
 - **Pinned revisions** — reproducibility for air-gap deploys: same build run twice → identical model behavior because revisions are SHAs not tags.
 - **Gating column** — build can skip gated weights when `HF_TOKEN` absent, or set `SAM3_WEIGHTS_SOURCE=mirror` to use the `1038lab/sam3` mirror.
 - **Local-file entries** — weights bundled in the image (YOLOE, DOTA-OBB), not fetched from the Hub.
-- **Verifier entries** (RemoteCLIP) optional — baked for offline use but disabled at runtime unless `SAM3_LOAD_REMOTECLIP=1`.
+- **Verifier entries** (RemoteCLIP) — baked for offline use and loaded by default for the imagery profile (`SAM3_LOAD_REMOTECLIP=1`); per-detection verify gated by `REMOTECLIP_VERIFIER_LAYERS` so DOTA-OBB is not second-guessed. See [decisions/why-remoteclip-default-on.md](../decisions/why-remoteclip-default-on.md).
 
 ## Cross-references
 
