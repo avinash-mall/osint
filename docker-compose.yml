@@ -78,14 +78,17 @@ services:
         condition: service_healthy
       inference-sam3:
         condition: service_healthy
+      dem-assets:
+        condition: service_completed_successfully
     volumes:
       - ./backend:/app
       - imagery_data:/data/imagery
       - fmv_data:/data/fmv
       - dataset_data:/data/datasets
       # Worldwide Copernicus GLO-30 DEM mosaic (tiles + VRT). Populated by
-      # `docker compose --profile bake-dem up dem-baker` once on a connected
-      # host. Read-only at runtime — see docs/deployment/dem-glo30-bake.md.
+      # the `dem-assets` init container on first start via rsync from its
+      # baked /opt/baked-dem/. Read-only at runtime — see
+      # docs/deployment/dem-glo30-bake.md.
       - dem_data:/data/dem:ro
       # Read-only mount of the baked reference-corpora chip tree, populated
       # by the `assets` service on startup. The seed worker task copies
@@ -440,6 +443,8 @@ services:
         condition: service_healthy
       inference-sam3:
         condition: service_healthy
+      dem-assets:
+        condition: service_completed_successfully
     volumes:
       - ./backend:/app
       - imagery_data:/data/imagery
@@ -575,6 +580,9 @@ services:
     image: ghcr.io/project-osrm/osrm-backend:v6.0.0
     restart: unless-stopped
     command: osrm-routed --algorithm mld /data/planet.osrm
+    depends_on:
+      osrm-assets:
+        condition: service_completed_successfully
     volumes:
       - osrm_data:/data:ro
     healthcheck:
@@ -584,44 +592,59 @@ services:
       retries: 5
       start_period: 30s
 
-  # One-shot worldwide Copernicus GLO-30 DEM bake. Profile-gated so it does
-  # NOT run on a normal `docker compose up`. Run once on a connected host:
-  #   docker compose --profile bake-dem up --build dem-baker
-  # The bake downloads ~26,000 1°-tile GeoTIFFs (~150 GB) from
-  # AWS Open Data (s3://copernicus-dem-30m/) and runs gdalbuildvrt to
-  # produce /data/dem/glo30.vrt. Idempotent: re-runs only fetch missing
-  # tiles. See docs/deployment/dem-glo30-bake.md.
-  dem-baker:
-    profiles: ["bake-dem"]
-    image: ghcr.io/osgeo/gdal:ubuntu-small-3.9.2
+  # Auto-bake worldwide Copernicus GLO-30 DEM into the image during
+  # `docker compose up -d --build`. The fetch runs inside the Dockerfile
+  # against a BuildKit cache mount; on container start the entrypoint
+  # rsyncs the baked tree onto the `dem_data` named volume and exits.
+  # The backend + worker mount `dem_data:/data/dem:ro` and read the VRT.
+  #
+  # First-build wallclock is dominated by the ~150 GB fetch; subsequent
+  # rebuilds are seconds via the cache mount. See
+  # docs/deployment/dem-glo30-bake.md.
+  #
+  # Smoke-build hook: `DEM_ENABLED=0 docker compose build dem-assets` skips
+  # the bake (image holds an empty MANIFEST.sha256=skipped and the
+  # entrypoint no-ops; backend serves 503 for viewshed/LOS).
+  dem-assets:
+    build:
+      context: .
+      dockerfile: dem-assets/Dockerfile
+      args:
+        DEM_ENABLED: "${DEM_ENABLED:-1}"
+        DEM_CONCURRENCY: "${DEM_CONCURRENCY:-8}"
+        DEM_LAT_MIN: "${DEM_LAT_MIN:--90}"
+        DEM_LAT_MAX: "${DEM_LAT_MAX:-90}"
+        DEM_LON_MIN: "${DEM_LON_MIN:--180}"
+        DEM_LON_MAX: "${DEM_LON_MAX:-180}"
+    image: sentinel-dem-assets:offline
+    restart: "no"
     volumes:
       - dem_data:/data/dem
-      - ./scripts/build_offline_dem.py:/opt/build_offline_dem.py:ro
-    environment:
-      - DEM_BAKE_CONCURRENCY=${DEM_BAKE_CONCURRENCY:-8}
-      - DEM_BAKE_OUT=/data/dem
-    command: ["python3", "/opt/build_offline_dem.py", "--out", "/data/dem", "--concurrency", "${DEM_BAKE_CONCURRENCY:-8}"]
 
-  # One-shot planet OSRM bake. Profile-gated. Run once on a connected host:
-  #   docker compose --profile bake-osrm up --build osrm-baker
-  # Downloads planet-latest.osm.pbf (~80 GB), runs osrm-extract / -partition
-  # / -customize with the bundled car.lua profile, and leaves the result on
-  # the osrm_data volume. Total artifact ~150-200 GB. See
-  # docs/deployment/osrm-planet-bake.md.
-  osrm-baker:
-    profiles: ["bake-osrm"]
-    image: ghcr.io/project-osrm/osrm-backend:v6.0.0
-    entrypoint: ["/bin/bash"]
+  # Auto-bake planet OSRM into the image during
+  # `docker compose up -d --build`. The fetch + extract/partition/customize
+  # pipeline runs inside the Dockerfile against a BuildKit cache mount; on
+  # container start the entrypoint rsyncs the planet.osrm* artifacts onto
+  # the `osrm_data` named volume and exits. The runtime `osrm` service
+  # then mounts that volume RO and serves /route/v1/*.
+  #
+  # First-build wallclock includes an ~80 GB PBF fetch plus ~3-6 h of
+  # osrm-extract; subsequent rebuilds are seconds via the cache mount.
+  # See docs/deployment/osrm-planet-bake.md.
+  #
+  # Smoke-build hook: `OSRM_ENABLED=0 docker compose build osrm-assets`
+  # skips the bake.
+  osrm-assets:
+    build:
+      context: .
+      dockerfile: osrm-assets/Dockerfile
+      args:
+        OSRM_ENABLED: "${OSRM_ENABLED:-1}"
+        PLANET_PBF_URL: "${PLANET_PBF_URL:-https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf}"
+    image: sentinel-osrm-assets:offline
+    restart: "no"
     volumes:
       - osrm_data:/data
-      - ./scripts/build_offline_osrm.sh:/opt/build_offline_osrm.sh:ro
-    environment:
-      - PLANET_PBF_URL=${PLANET_PBF_URL:-https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf}
-      # The OSRM image bundles its stock profiles at /opt/*.lua. We use the
-      # unmodified car profile that ships with v6.0.0 — pinning the image
-      # version pins the profile.
-      - PROFILE=/opt/car.lua
-    command: ["/opt/build_offline_osrm.sh"]
 
 volumes:
   neo4j_data:

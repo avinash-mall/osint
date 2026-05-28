@@ -1,40 +1,59 @@
 # Planet OSRM Bake
 
-One-time bake of a planet-scale OSRM dataset that backs `/api/analytics/routes`. Run once on a host with internet access; the resulting `osrm_data` volume is then air-gappable.
+The planet OSRM MLD dataset that backs `/api/analytics/routes` is **baked automatically** during `docker compose up -d --build` on a connected host. Once the build is done, the resulting `sentinel-osrm-assets:offline` image holds ~150-200 GB of OSRM artifacts and is air-gappable via `docker save | gzip`. No separate profile invocation is required.
+
+## How it works
+
+- [osrm-assets/Dockerfile](../../osrm-assets/Dockerfile) — multi-stage build. The fetcher stage uses the upstream `ghcr.io/project-osrm/osrm-backend:v6.0.0` image and runs [`scripts/build_offline_osrm.sh`](../../scripts/build_offline_osrm.sh) against a BuildKit cache mount at `/cache/osrm`. The script curl-downloads `planet-latest.osm.pbf`, then runs `osrm-extract -p /opt/car.lua`, `osrm-partition`, and `osrm-customize` to produce the MLD dataset. The final stage is an alpine image holding the baked artifacts at `/opt/baked-osrm/`.
+- [osrm-assets/scripts/entrypoint.sh](../../osrm-assets/scripts/entrypoint.sh) — on first container start, rsyncs `/opt/baked-osrm/` onto the `osrm_data` named volume (mounted at `/data`). Subsequent starts compare `MANIFEST.sha256` and no-op when matching. Exits 0 either way.
+- [docker-compose.yml](../../docker-compose.yml) — the runtime `osrm` service waits via `depends_on: { osrm-assets: { condition: service_completed_successfully } }` before running `osrm-routed --algorithm mld /data/planet.osrm`.
 
 ## Prerequisites
 
-- Docker + Docker Compose
-- ~250 GB free on the disk hosting `osrm_data` (planet PBF + extract/partition/customize outputs)
+- Docker + Docker Compose v2.20+
+- ~250 GB free on the disk hosting `osrm_data`
+- ~250 GB free Docker storage
 - ~16 GB RAM during the `osrm-extract` step (planet extract is memory-heavy)
-- ~6-24 h end-to-end depending on CPU and link
+- ~6-24 h end-to-end on first build (~80 GB PBF + ~3-6 h CPU extract)
 
-## Bake
-
-```bash
-docker compose --profile bake-osrm up --build osrm-baker
-```
-
-This runs [`scripts/build_offline_osrm.sh`](../../scripts/build_offline_osrm.sh) inside the upstream `ghcr.io/project-osrm/osrm-backend:v6.0.0` image and walks the standard MLD pipeline:
-
-1. `curl --continue-at -` of `planet-latest.osm.pbf` (~80 GB) from `PLANET_PBF_URL` (default `https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf`). Resumable.
-2. `osrm-extract -p /opt/car.lua planet.osm.pbf` — the long step (~3-6 h on a fast CPU). Uses the unmodified car profile bundled with the OSRM image (pinning the image version pins the profile).
-3. `osrm-partition planet.osrm`
-4. `osrm-customize planet.osrm`
-
-Each step is gated on its own outputs, so a crashed bake can be resumed by re-running the same command.
-
-## Bring OSRM up
-
-After the bake completes, the `osrm` service mounts `osrm_data:/data:ro` and runs `osrm-routed --algorithm mld /data/planet.osrm`:
+## Default bake (planet-latest)
 
 ```bash
-docker compose up -d osrm
-docker compose ps osrm
-# wait for "healthy"
+docker compose up -d --build
 ```
 
-The backend's `routing.py` talks to `http://osrm:5000` inside the Compose network.
+The `osrm-assets` service builds (downloading planet PBF + running the OSRM pipeline), then runs its entrypoint, rsyncs to `osrm_data`, and exits 0. The runtime `osrm` service then starts.
+
+## Regional bake (much faster smoke build)
+
+Override the PBF URL to a Geofabrik regional extract:
+
+```bash
+PLANET_PBF_URL=https://download.geofabrik.de/asia/gcc-states-latest.osm.pbf \
+docker compose up -d --build
+```
+
+Bake completes in 30-90 minutes for a single-country extract. The runtime `osrm` service is region-agnostic — it serves whatever PBF was baked.
+
+## Slim build (no OSRM)
+
+For CI / smoke tests where routing doesn't need to work:
+
+```bash
+OSRM_ENABLED=0 docker compose up -d --build
+```
+
+The image is built but ships a stub `MANIFEST.sha256=skipped`. The entrypoint exits 0 without rsyncing; the runtime `osrm` service then fails healthcheck (no `/data/planet.osrm`). Backend's `osrm_available()` returns False; `/api/analytics/routes` returns 503 honestly.
+
+## Re-bake / refresh
+
+The BuildKit cache mount preserves the planet PBF and extract outputs across rebuilds. To force a clean re-bake (e.g. to pull a fresh planet):
+
+```bash
+docker builder prune --filter type=exec.cachemount
+docker compose build --no-cache osrm-assets
+docker compose up -d osrm-assets osrm
+```
 
 ## Verify
 
@@ -51,33 +70,24 @@ curl -s -X POST http://localhost:3000/api/analytics/routes \
 
 The map workspace's Analytics panel should show `ROUTING · OK` in the bottom chip.
 
-## Updating the planet
-
-To pull a fresh planet:
+## Air-gap shipping
 
 ```bash
-docker compose down osrm
-docker volume rm sentinel_osrm_data   # destroys ~200 GB; check the volume name in `docker volume ls`
-docker compose --profile bake-osrm up --build osrm-baker
-docker compose up -d osrm
+# on connected host
+docker save sentinel-osrm-assets:offline ghcr.io/project-osrm/osrm-backend:v6.0.0 \
+  | gzip > sentinel-osrm.tar.gz
+
+# on air-gap host
+gunzip -c sentinel-osrm.tar.gz | docker load
+docker compose up -d   # no --build
 ```
 
-If you only want to refresh the customization (e.g. profile change), keep the volume and re-run osrm-customize manually inside the OSRM image.
-
-## Smaller bake (regional)
-
-OSRM is region-agnostic. To bake a smaller area (e.g. Europe), point `PLANET_PBF_URL` at a Geofabrik regional extract:
-
-```
-PLANET_PBF_URL=https://download.geofabrik.de/europe-latest.osm.pbf \
-docker compose --profile bake-osrm up --build osrm-baker
-```
-
-The runtime `osrm` service does not need to change — it still serves whatever PBF was baked.
+The volume is re-seeded from the image automatically; the runtime `osrm` service starts after the seed completes.
 
 ## Cross-references
 
 - [backend/routing-osrm.md](../backend/routing-osrm.md)
 - [decisions/why-osrm-replaced-networkx.md](../decisions/why-osrm-replaced-networkx.md)
+- [decisions/why-dem-osrm-as-sibling-baker-images.md](../decisions/why-dem-osrm-as-sibling-baker-images.md)
 - [volume-mounts-and-paths.md](volume-mounts-and-paths.md)
 - [offline-airgap-deployment.md](offline-airgap-deployment.md)

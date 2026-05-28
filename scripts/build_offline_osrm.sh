@@ -79,3 +79,17 @@ fi
 
 log "bake complete; contents of ${DATA_DIR}:"
 du -sh "${DATA_DIR}"/* 2>/dev/null || true
+
+# Emit MANIFEST.sha256 — single digest over (sorted artifact name, size) pairs.
+# The osrm-assets entrypoint compares this against the volume's manifest to
+# decide whether to rsync. We hash names + sizes (not contents) to keep this
+# step fast on the multi-hundred-GB output.
+log "writing MANIFEST.sha256"
+(
+    cd "${DATA_DIR}"
+    find . -maxdepth 1 -type f \( -name 'planet.osrm*' -o -name '*.osm.pbf' \) -printf '%f\t%s\n' \
+        | sort \
+        | sha256sum \
+        | awk '{print $1}' > MANIFEST.sha256
+)
+log "MANIFEST.sha256: $(cat ${DATA_DIR}/MANIFEST.sha256)"

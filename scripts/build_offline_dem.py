@@ -124,6 +124,32 @@ def build_vrt(root: Path) -> Path:
     return vrt_path
 
 
+def write_manifest(root: Path) -> Path:
+    """Emit MANIFEST.sha256 — a single digest over (sorted filename, size) pairs.
+
+    The dem-assets entrypoint compares this digest against the volume's
+    MANIFEST.sha256 to decide whether to rsync. Hashing only names + sizes
+    keeps the build step fast (no need to re-read 150 GB) while still
+    catching tile-set changes.
+    """
+    import hashlib
+    tiles_dir = root / "glo30"
+    h = hashlib.sha256()
+    if tiles_dir.exists():
+        entries = sorted(
+            (p.name, p.stat().st_size)
+            for p in tiles_dir.glob("*.tif")
+            if p.stat().st_size > 0
+        )
+        for name, size in entries:
+            h.update(f"{name}\t{size}\n".encode("utf-8"))
+    digest = h.hexdigest()
+    manifest = root / "MANIFEST.sha256"
+    manifest.write_text(digest + "\n", encoding="utf-8")
+    LOG.info("wrote MANIFEST.sha256: %s", digest[:12])
+    return manifest
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", default="/data/dem", help="output root (held by dem_data volume)")
@@ -203,6 +229,7 @@ def main() -> int:
             LOG.warning("%d tiles failed; VRT will skip them", counters["err"])
 
     build_vrt(root)
+    write_manifest(root)
     LOG.info("VRT ready at %s/glo30.vrt", root)
     return 0
 
