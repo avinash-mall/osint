@@ -195,6 +195,7 @@ decisions/why-sar-confidence-cap.md|decision,imagery|SAR detections via TerraMin
 decisions/why-sat-tiles-cap-at-native-zoom.md|decision,imagery,frontend|SAT TileLayer maxNativeZoom from COG GSD + nginx cache relax kills zoom-in blur
 decisions/why-standalone-embed-endpoint.md|decision|standalone /embed avoids /detect cost and keeps DB dep in backend
 decisions/why-transportation-floor-raised.md|decision,backend,ontology|per-class floor defaults (transportation=0.55, other=0.50) lift precision on noisy buckets; operator overrides via admin matrix
+decisions/why-wbf-over-nms.md|decision,inference|cross-detector fuser default WBF; NMS suppresses winners (DOTA->GDINO mAP collapse); SAM3_FUSION_MODE=wbf|nms knob
 decisions/why-worker-legacy-monolith-kept.md|decision,celery|3500 tested lines preserved; thin facade package avoids breakage
 decisions/why-ws-auth-now-required.md|decision|/ws now requires session cookie; PII over the socket forced the fix
 decisions/why-ws-session-heartbeat.md|decision,backend|/ws re-decodes the session cookie every 60s; closes with 1008 on TTL expiry or key rotation

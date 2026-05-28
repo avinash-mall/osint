@@ -94,6 +94,10 @@ Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 | `SAM3_SAR_CONF_CAP` | `0.85` | Hard cap on SAR confidence |
 | `SAM3_OBB_OPENING_KERNEL_PCT` | `0.01` | Morphological opening kernel before `minAreaRect` |
 | `SAM3_OBB_MIN_AREA_PX` | `4` | Minimum contour area before HBB fallback |
+| `SAM3_FUSION_MODE` | `wbf` | Cross-detector fuser: `wbf` (Weighted Boxes Fusion, default) or `nms` (legacy mask-aware NMS). See [why-wbf-over-nms.md](../decisions/why-wbf-over-nms.md) |
+| `SAM3_WBF_WEIGHTS` | empty | JSON `{source_layer: float}` overriding the per-detector trust weights (defaults: sam3=0.5, dota_obb=1.0, fair1m_obb=1.0, grounding_dino=0.3, yoloe=0.5, sar_cfar=0.7) |
+| `SAM3_WBF_IOU` | `0.55` | IoU threshold for WBF cluster matching (also reused as the fallback NMS IoU) |
+| `SAM3_WBF_SKIP_THRESHOLD` | `0.05` | Per-input minimum confidence before WBF; below-threshold detections are dropped pre-fusion |
 | `SAM3_DEFAULT_PROMPT_SOURCE` | `precision` | `precision` = bounded built-ins; `ontology`/`backend` = `/api/ontology/default-prompts` fan-out |
 | `SAM3_PRECISION_DEFAULT_PROMPTS` | empty | Optional JSON override for bounded defaults, e.g. `{"optical":["vehicle","ship"]}` |
 | `SAM3_MAX_PROMPTS_PER_REQUEST` | `64` | Cap on resolved prompts |

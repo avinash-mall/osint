@@ -1149,9 +1149,18 @@ async def _detect_pipeline(
     _nms_agnostic = os.getenv("SAM3_NMS_AGNOSTIC", "1").strip().lower() in {"1", "true", "yes", "on"}
     _nms_soft = os.getenv("SAM3_NMS_SOFT", "0").strip().lower() in {"1", "true", "yes", "on"}
     pre_nms_count = len(detections)
-    detections = fusion.mask_aware_nms(
-        detections, iou=0.50, agnostic=_nms_agnostic, soft=_nms_soft,
-    )
+    # Soft-NMS is an NMS-mode-only knob — WBF averages instead of decaying,
+    # so the soft path is meaningless when SAM3_FUSION_MODE=wbf. When the
+    # operator has explicitly asked for soft-NMS, honour them by forcing
+    # the NMS path; otherwise dispatch via the env-selectable fuser.
+    if _nms_soft:
+        detections = fusion.mask_aware_nms(
+            detections, iou=0.50, agnostic=_nms_agnostic, soft=True,
+        )
+    else:
+        detections = fusion.fuse_detections(
+            detections, image_w=width, image_h=height, agnostic=_nms_agnostic,
+        )
     suppressed_by_nms = max(0, pre_nms_count - len(detections))
     mark("nms", t0)
     if _peak_dev is not None:

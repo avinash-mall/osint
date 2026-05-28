@@ -17,3 +17,4 @@ terratorch>=1.1,<1.5
 ultralytics>=8.3.45
 psutil>=5.9
 open_clip_torch>=2.26,<3
+ensemble-boxes>=1.0.9  # WBF fusion across detector source layers (T2.8)
