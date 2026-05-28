@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from auth import SessionUser, get_current_user, require_admin
 from database import postgis_db
+from calibration import status as calibration_status
 from detection_policy import active_detection_policy
 from platform_schema import ensure_platform_tables
 from schemas import ConfidenceConfig
@@ -278,4 +279,5 @@ def inference_dashboard(user: SessionUser = Depends(get_current_user)):
     base["system"] = health.get("system") or {}
     base["request_rate_60s"] = health.get("request_rate_60s")
     base["models"] = _build_models(health, reachable)
+    base["calibration"] = calibration_status()
     return base

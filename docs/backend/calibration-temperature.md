@@ -16,11 +16,11 @@ Single-parameter temperature scaling for detector confidence scores. SAM3, DOTA-
 
 ## Key symbols
 
-- [`_load_temperatures`](../../backend/calibration.py#L46) — env first, then file.
-- [`reload_temperatures`](../../backend/calibration.py#L92) — manual cache bust.
-- [`temperature_for`](../../backend/calibration.py#L100) — `(model_tag) -> float`.
-- [`calibrate_confidence`](../../backend/calibration.py#L117) — `(raw_score, model_tag) -> float`.
-- [`status`](../../backend/calibration.py#L148) — exposed in `/api/inference/dashboard`.
+- [`_load_temperatures`](../../backend/calibration.py#L46) — env first, then file; returns `(temperatures, metadata)`.
+- [`reload_temperatures`](../../backend/calibration.py#L107) — manual cache bust.
+- [`temperature_for`](../../backend/calibration.py#L115) — `(model_tag) -> float`.
+- [`calibrate_confidence`](../../backend/calibration.py#L132) — `(raw_score, model_tag) -> float`.
+- [`status`](../../backend/calibration.py#L163) — `(model_count, models, measured_at, measured_against, source)`; exposed in `/api/inference/dashboard` under the `calibration` key.
 
 ## How to (re)fit
 

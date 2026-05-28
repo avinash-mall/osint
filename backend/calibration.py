@@ -43,13 +43,16 @@ logger = logging.getLogger(__name__)
 _DEFAULT_FILE = "/data/calibration/model_temperatures.json"
 
 
-def _load_temperatures() -> dict[str, float]:
-    """Load per-model temperature map from env (priority) or sidecar file.
+def _load_temperatures() -> tuple[dict[str, float], dict[str, Any]]:
+    """Load per-model temperature map + provenance metadata.
 
-    Both sources MUST be a JSON dict ``{model_tag_substring: temperature}``.
-    Temperatures are clamped to ``[0.05, 20.0]`` to avoid numerical blow-ups.
+    Returns ``(temperatures, metadata)``. Metadata carries the
+    ``_measured_at`` / ``_measured_against`` wrapper fields when present so
+    callers (admin dashboard) can surface when the active calibration was
+    measured. Temperatures are clamped to ``[0.05, 20.0]`` to avoid blow-ups.
     """
     out: dict[str, float] = {}
+    meta: dict[str, Any] = {"measured_at": None, "measured_against": None, "source": None}
 
     def _ingest(raw: Any, source: str) -> None:
         if not isinstance(raw, dict):
@@ -63,9 +66,7 @@ def _load_temperatures() -> dict[str, float]:
         inner = raw.get("temperatures") if isinstance(raw.get("temperatures"), dict) else raw
         for key, value in inner.items():
             if str(key).startswith("_"):
-                # Skip metadata keys (_README, _measured_at, _measured_against)
-                # in the flat-shape case.
-                continue
+                continue  # metadata key (e.g. _README) in flat-shape case
             try:
                 t = float(value)
             except (TypeError, ValueError):
@@ -75,6 +76,9 @@ def _load_temperatures() -> dict[str, float]:
             t = max(0.05, min(20.0, t))
             out[str(key).strip().lower()] = t
         if out:
+            meta["measured_at"] = raw.get("_measured_at") or meta["measured_at"]
+            meta["measured_against"] = raw.get("_measured_against") or meta["measured_against"]
+            meta["source"] = source
             logger.info("calibration: loaded %d model temperatures from %s", len(out), source)
 
     env_raw = (os.getenv("MODEL_TEMPERATURES") or "").strip()
@@ -94,17 +98,17 @@ def _load_temperatures() -> dict[str, float]:
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning("calibration: failed to read %s: %s", path, exc)
 
-    return out
+    return out, meta
 
 
-_TEMPERATURES: dict[str, float] = _load_temperatures()
+_TEMPERATURES, _METADATA = _load_temperatures()
 
 
 def reload_temperatures() -> dict[str, float]:
     """Re-read from env / file. Useful for admin endpoints that update the
     sidecar at runtime."""
-    global _TEMPERATURES
-    _TEMPERATURES = _load_temperatures()
+    global _TEMPERATURES, _METADATA
+    _TEMPERATURES, _METADATA = _load_temperatures()
     return dict(_TEMPERATURES)
 
 
@@ -161,4 +165,7 @@ def status() -> dict[str, Any]:
     return {
         "model_count": len(_TEMPERATURES),
         "models": sorted(_TEMPERATURES.keys()),
+        "measured_at": _METADATA.get("measured_at"),
+        "measured_against": _METADATA.get("measured_against"),
+        "source": _METADATA.get("source"),
     }

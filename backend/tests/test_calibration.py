@@ -60,7 +60,7 @@ def test_load_temperatures_reads_wrapped_shape(monkeypatch, tmp_path):
         },
     )
 
-    out = calibration._load_temperatures()
+    out, _meta = calibration._load_temperatures()
 
     assert out == {"sam3": 0.8, "dota_obb": 1.1, "grounding_dino": 0.95}
     # Metadata keys must NOT leak into the lookup.
@@ -76,7 +76,7 @@ def test_load_temperatures_reads_flat_shape(monkeypatch, tmp_path):
         {"sam3": 0.7, "dota_obb": 1.2},
     )
 
-    out = calibration._load_temperatures()
+    out, _meta = calibration._load_temperatures()
 
     assert out == {"sam3": 0.7, "dota_obb": 1.2}
 
@@ -89,7 +89,7 @@ def test_load_temperatures_flat_shape_ignores_underscore_metadata(monkeypatch, t
         {"_README": "ignore me", "sam3": 0.9},
     )
 
-    out = calibration._load_temperatures()
+    out, _meta = calibration._load_temperatures()
 
     assert out == {"sam3": 0.9}
 
@@ -106,7 +106,7 @@ def test_load_temperatures_wrapped_wins_over_flat_when_both_present(monkeypatch,
         },
     )
 
-    out = calibration._load_temperatures()
+    out, _meta = calibration._load_temperatures()
 
     assert out == {"sam3": 0.8}
 
@@ -116,7 +116,7 @@ def test_load_temperatures_missing_file_returns_empty_map(monkeypatch, tmp_path)
     monkeypatch.delenv("MODEL_TEMPERATURES", raising=False)
     monkeypatch.setenv("MODEL_TEMPERATURES_FILE", str(tmp_path / "does-not-exist.json"))
 
-    out = calibration._load_temperatures()
+    out, _meta = calibration._load_temperatures()
 
     assert out == {}
 
@@ -125,7 +125,9 @@ def test_temperature_for_returns_identity_when_unloaded(monkeypatch, tmp_path):
     """Sanity: with no temperatures loaded, every model resolves to 1.0."""
     monkeypatch.delenv("MODEL_TEMPERATURES", raising=False)
     monkeypatch.setenv("MODEL_TEMPERATURES_FILE", str(tmp_path / "missing.json"))
-    monkeypatch.setattr(calibration, "_TEMPERATURES", calibration._load_temperatures())
+    temps, meta = calibration._load_temperatures()
+    monkeypatch.setattr(calibration, "_TEMPERATURES", temps)
+    monkeypatch.setattr(calibration, "_METADATA", meta)
 
     assert calibration.temperature_for("sam3") == 1.0
     assert calibration.temperature_for(None) == 1.0
@@ -148,6 +150,30 @@ def test_placeholder_json_parses_and_carries_expected_detectors():
     )
     for name, value in temps.items():
         assert value == 1.0, f"placeholder {name} must default to T=1.0, got {value}"
+
+
+def test_status_surfaces_wrapper_metadata(monkeypatch, tmp_path):
+    """status() must expose measured_at / measured_against so the dashboard
+    can show when the active calibration was measured."""
+    _set_temperature_file(
+        monkeypatch,
+        tmp_path,
+        {
+            "_measured_at": "2026-05-28",
+            "_measured_against": "DOTA val + triage 2026-05-28",
+            "temperatures": {"sam3": 0.8},
+        },
+    )
+    temps, meta = calibration._load_temperatures()
+    monkeypatch.setattr(calibration, "_TEMPERATURES", temps)
+    monkeypatch.setattr(calibration, "_METADATA", meta)
+
+    s = calibration.status()
+    assert s["model_count"] == 1
+    assert s["models"] == ["sam3"]
+    assert s["measured_at"] == "2026-05-28"
+    assert s["measured_against"] == "DOTA val + triage 2026-05-28"
+    assert s["source"]  # the file path we wrote to
 
 
 def test_placeholder_manifest_digest_matches_json():

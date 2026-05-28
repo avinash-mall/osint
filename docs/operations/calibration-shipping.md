@@ -103,7 +103,8 @@ image.
    docker compose restart backend worker
    ```
    Confirm via `/api/inference/dashboard` (the `calibration` block shows
-   `model_count` > 0 and lists the detector names).
+   `model_count` > 0, `models: [...]`, plus `measured_at` / `measured_against` /
+   `source` fields drawn from the wrapper metadata).
 
 ## Cross-references
 
