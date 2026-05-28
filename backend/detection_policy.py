@@ -258,6 +258,11 @@ def should_emit_detection(
 #
 # See docs/decisions/why-generic-labels-when-unverified.md.
 # ---------------------------------------------------------------------------
+# Source of truth: inference-sam3/dota_obb.py module docstring (the 18 DOTA-v1
+# class names emitted by the Ultralytics yolo26m-obb checkpoint). We mirror
+# the list here because the backend cannot import from the inference service
+# (separate container, separate Python env). Keep in sync if the OBB
+# checkpoint is swapped or a 19th class lands.
 DOTA_OBB_GENERIC_CLASSES: frozenset[str] = frozenset(
     normalize_label(label) for label in (
         "plane",
@@ -282,13 +287,7 @@ DOTA_OBB_GENERIC_CLASSES: frozenset[str] = frozenset(
 )
 
 
-def _verifier_margin_floor() -> float:
-    """Per-call env read so tests can monkeypatch ``LABEL_VERIFIER_MARGIN_FLOOR``."""
-    raw = os.getenv("LABEL_VERIFIER_MARGIN_FLOOR", "0.10")
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return 0.10
+LABEL_VERIFIER_MARGIN_FLOOR = float(os.getenv("LABEL_VERIFIER_MARGIN_FLOOR", "0.10"))
 
 
 def label_quality_for(detection: dict[str, Any]) -> str:
@@ -314,7 +313,7 @@ def label_quality_for(detection: dict[str, Any]) -> str:
         margin = float(detection.get("semantic_margin") or 0.0)
     except (TypeError, ValueError):
         margin = 0.0
-    if margin >= _verifier_margin_floor():
+    if margin >= LABEL_VERIFIER_MARGIN_FLOOR:
         return "verified"
 
     source_layer = str(detection.get("source_layer") or "").strip().lower()

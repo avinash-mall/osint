@@ -2473,12 +2473,7 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
                 unknown_count += 1
             det["ontology_unknown"] = bool(ont.was_unknown)
             apply_evidence_ranking(det, ontology_unknown=ont.was_unknown)
-            # Task 1.2 — generic vs specific label quality. Computed AFTER
-            # apply_evidence_ranking() so any verifier-driven semantic_margin
-            # mutations are visible. The persisted ``display_label`` is what
-            # the UI should render; ``label_quality`` lets the UI mark generic
-            # vs verified detections without re-running the policy client-side.
-            # See docs/decisions/why-generic-labels-when-unverified.md.
+            # Computed after apply_evidence_ranking so verifier mutations (semantic_margin) are visible. See decisions/why-generic-labels-when-unverified.md.
             display_label, label_quality = display_label_for(
                 {**det, "original_class": original_class, "parent_class": parent_class},
                 ont,
@@ -2546,10 +2541,7 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
                     "canonical_label": ont.canonical_label,
                     "was_unknown": ont.was_unknown,
                     "ontology_object_id": ont.ontology_object_id,
-                    # Task 1.2 — advisory display fields. ``class`` SQL column
-                    # is NOT overwritten; ``original_class`` / ``parent_class``
-                    # / ``canonical_label`` remain for audit and future
-                    # re-promotion when a verifier confirms.
+                    # Advisory fields; the canonical label remains for audit and analyst-driven promotion.
                     "display_label": display_label,
                     "label_quality": label_quality,
                     "review_status": det.get("review_status") or decision["review_status"],

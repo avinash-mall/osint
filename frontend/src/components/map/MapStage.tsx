@@ -52,7 +52,7 @@ import {
   detectionBadgePosition,
   detectionCategoryForFeature,
   detectionCenter,
-  displayLabel,
+  detectionDisplayLabel,
   geojsonToLatLngs,
   labelQuality,
   relativeTime,
@@ -525,7 +525,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
                   <div className="border border-sentinel-line bg-sentinel-panel p-2 text-slate-200">
                     <div className="mb-2 flex items-center gap-2 border-b border-sentinel-line pb-1 text-xs font-bold uppercase tracking-wider">
                       <span style={{ color: categoryMeta.color }}><DetectionSubclassIcon iconKey={p.icon_key ?? null} label={p.original_class || p.class || p.label} category={category} branchById={branchById} /></span>
-                      <span>{displayLabel(p) || detectionClassLabel(p.class)}</span>
+                      <span>{detectionDisplayLabel(p) || detectionClassLabel(p.class)}</span>
                     </div>
                     <div className="font-mono text-[11px] text-sentinel-muted">
                       CAT <span style={{ color: categoryMeta.color }}>{categoryMeta.label}</span><br />
@@ -564,7 +564,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
                   <div className="border border-sentinel-line bg-sentinel-panel p-2 text-slate-200">
                     <div className="mb-2 flex items-center gap-2 border-b border-sentinel-line pb-1 text-xs font-bold uppercase tracking-wider">
                       <span style={{ color: categoryMeta.color }}><DetectionSubclassIcon iconKey={p.icon_key ?? null} label={p.original_class || p.class || p.label} category={category} branchById={branchById} /></span>
-                      <span>{displayLabel(p) || detectionClassLabel(p.class)}</span>
+                      <span>{detectionDisplayLabel(p) || detectionClassLabel(p.class)}</span>
                     </div>
                     <div className="font-mono text-[11px] text-sentinel-muted">
                       CAT <span style={{ color: categoryMeta.color }}>{categoryMeta.label}</span><br />

@@ -37,8 +37,11 @@ export function detectionLabel(feature: any): string {
  * just needs to read ``display_label`` (top-level or in ``metadata``) and
  * fall back to the older ladder for legacy/unpersisted rows. See
  * docs/decisions/why-generic-labels-when-unverified.md.
+ *
+ * Name-disambiguated from ``DetectionClassStat.displayLabel`` (a struct field
+ * on the Classes-tab row that holds the GaiaMap-computed display string).
  */
-export function displayLabel(props: any): string {
+export function detectionDisplayLabel(props: any): string {
   const p = props || {};
   return String(
     p.display_label ||

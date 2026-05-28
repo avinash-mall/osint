@@ -45,8 +45,7 @@ def test_dota_obb_generic_classes_normalisation_is_case_and_space_insensitive() 
 # ---------------------------------------------------------------------------
 # label_quality_for — three branches + env override
 # ---------------------------------------------------------------------------
-def test_label_quality_for_verified_when_semantic_margin_above_floor(monkeypatch) -> None:
-    monkeypatch.delenv("LABEL_VERIFIER_MARGIN_FLOOR", raising=False)
+def test_label_quality_for_verified_when_semantic_margin_above_floor() -> None:
     det = {"source_layer": "dota_obb", "original_class": "plane", "semantic_margin": 0.42}
     assert detection_policy.label_quality_for(det) == "verified"
 
@@ -69,7 +68,7 @@ def test_label_quality_for_inferred_when_dota_obb_label_not_in_generic_set() -> 
 
 
 def test_label_quality_for_env_override_changes_verifier_floor(monkeypatch) -> None:
-    monkeypatch.setenv("LABEL_VERIFIER_MARGIN_FLOOR", "0.50")
+    monkeypatch.setattr(detection_policy, "LABEL_VERIFIER_MARGIN_FLOOR", 0.50)
     # 0.40 is now BELOW the floor → no longer verified.
     det = {"source_layer": "dota_obb", "original_class": "plane", "semantic_margin": 0.40}
     assert detection_policy.label_quality_for(det) == "generic"

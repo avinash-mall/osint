@@ -41,7 +41,7 @@ import type { OntologyBranch } from '../../utils/useOntology';
 
 import {
   detectionCategoryForFeature,
-  displayLabel,
+  detectionDisplayLabel,
   featureCentroid,
   featureLatLonBounds,
   labelQuality,
@@ -352,7 +352,7 @@ export default function SelectionPanel(props: Props) {
                 <div className="mt-1 flex items-center gap-2">
                   <span style={{ color: categoryMeta.color }}><CategoryIcon category={category} branchById={branchById} /></span>
                   <div className="text-lg font-semibold uppercase tracking-wide text-slate-100">
-                    {displayLabel(detProps) || detectionClassLabel(detProps.class)}
+                    {detectionDisplayLabel(detProps) || detectionClassLabel(detProps.class)}
                   </div>
                   {(() => {
                     const lq = labelQuality(detProps);
