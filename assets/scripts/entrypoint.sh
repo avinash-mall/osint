@@ -28,11 +28,12 @@ else
     mkdir -p "${MOUNTED}"
     baked_digest=$(cat "${BAKED}/MANIFEST.sha256" 2>/dev/null | head -n1)
     mounted_digest=$(cat "${MOUNTED}/MANIFEST.sha256" 2>/dev/null | head -n1 || true)
+    mounted_short="${mounted_digest:0:12}"; mounted_short="${mounted_short:-empty}"
 
     if [ "${baked_digest}" = "${mounted_digest}" ] && [ -n "${baked_digest}" ]; then
         echo "[entrypoint] reference-chips: volume matches image (digest=${baked_digest:0:12}) — skip rsync"
     else
-        echo "[entrypoint] reference-chips: rsync ${BAKED}/ → ${MOUNTED}/ (image=${baked_digest:0:12} volume=${mounted_digest:0:12:-empty})"
+        echo "[entrypoint] reference-chips: rsync ${BAKED}/ → ${MOUNTED}/ (image=${baked_digest:0:12} volume=${mounted_short})"
         # Delete-after preserves directory atomicity for clients reading
         # mid-rsync. --delete prunes content from previous bakes that no
         # longer exists in the image.
@@ -56,11 +57,12 @@ else
     mkdir -p "${CALIB_MOUNTED}"
     calib_baked_digest=$(cat "${CALIB_BAKED}/MANIFEST.sha256" 2>/dev/null | head -n1)
     calib_mounted_digest=$(cat "${CALIB_MOUNTED}/MANIFEST.sha256" 2>/dev/null | head -n1 || true)
+    calib_mounted_short="${calib_mounted_digest:0:12}"; calib_mounted_short="${calib_mounted_short:-empty}"
 
     if [ "${calib_baked_digest}" = "${calib_mounted_digest}" ] && [ -n "${calib_baked_digest}" ]; then
         echo "[entrypoint] calibration: volume matches image (digest=${calib_baked_digest:0:12}) — skip rsync"
     else
-        echo "[entrypoint] calibration: rsync ${CALIB_BAKED}/ → ${CALIB_MOUNTED}/ (image=${calib_baked_digest:0:12} volume=${calib_mounted_digest:0:12:-empty})"
+        echo "[entrypoint] calibration: rsync ${CALIB_BAKED}/ → ${CALIB_MOUNTED}/ (image=${calib_baked_digest:0:12} volume=${calib_mounted_short})"
         rsync -a --delete --delete-after "${CALIB_BAKED}/" "${CALIB_MOUNTED}/"
         echo "[entrypoint] calibration: rsync done"
     fi
