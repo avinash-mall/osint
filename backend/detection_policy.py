@@ -33,6 +33,16 @@ TAXONOMY_VERSION = os.getenv("DETECTION_TAXONOMY_VERSION", "open-world-v1")
 DEFAULT_MODEL_VERSION = os.getenv("MODEL_VERSION", "open-vocab-multi-model")
 
 
+# Per-parent-class confidence floors. Defaults override the GLOBAL_CONFIDENCE_FLOOR
+# for buckets whose measured precision is unacceptable at the global default.
+# Source: docs/benchmarks/detection-quality-ontology-mode-2026-05-22.md.
+# See docs/decisions/why-transportation-floor-raised.md for the rationale.
+DEFAULT_PER_CLASS_THRESHOLDS: dict[str, float] = {
+    "transportation": 0.55,  # 100% recall / 3.5% precision at floor=0.40 — flood of FPs
+    "other":          0.50,  # 22% recall / 27% precision — generic catch-all needs head-room
+}
+
+
 SOURCE_PREFIXES = (
     "xview", "dota", "fair1m", "fmow", "rareplanes", "dior",
     "sodaa", "hrsc", "hrsc2016", "lvis", "coco", "objects365", "local",
@@ -168,7 +178,9 @@ def active_detection_policy() -> dict[str, Any]:
     high_threshold = float(os.getenv("HIGH_CONFIDENCE_THRESHOLD", "0.65"))
     env_overrides = _load_json_thresholds("PER_CLASS_CONFIDENCE_OVERRIDES")
     db_overrides, db_global, db_high = _load_db_overrides()
-    merged = {**env_overrides, **db_overrides}  # DB wins on collisions
+    # Merge order: code-shipped defaults < env overrides < DB overrides.
+    # Operators can lower any default via env or the admin matrix.
+    merged = {**DEFAULT_PER_CLASS_THRESHOLDS, **env_overrides, **db_overrides}
     return {
         "taxonomy_version": TAXONOMY_VERSION,
         "model_version": DEFAULT_MODEL_VERSION,

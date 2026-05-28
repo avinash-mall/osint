@@ -190,6 +190,7 @@ decisions/why-sam3-as-foundation.md|decision,sam3|open-vocabulary segmentation a
 decisions/why-sar-confidence-cap.md|decision,imagery|SAR detections via TerraMind synthetic proxy capped at 0.85
 decisions/why-sat-tiles-cap-at-native-zoom.md|decision,imagery,frontend|SAT TileLayer maxNativeZoom from COG GSD + nginx cache relax kills zoom-in blur
 decisions/why-standalone-embed-endpoint.md|decision|standalone /embed avoids /detect cost and keeps DB dep in backend
+decisions/why-transportation-floor-raised.md|decision,backend,ontology|per-class floor defaults (transportation=0.55, other=0.50) lift precision on noisy buckets; operator overrides via admin matrix
 decisions/why-worker-legacy-monolith-kept.md|decision,celery|3500 tested lines preserved; thin facade package avoids breakage
 decisions/why-ws-auth-now-required.md|decision|/ws now requires session cookie; PII over the socket forced the fix
 decisions/why-ws-session-heartbeat.md|decision,backend|/ws re-decodes the session cookie every 60s; closes with 1008 on TTL expiry or key rotation
