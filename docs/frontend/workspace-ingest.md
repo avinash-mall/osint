@@ -35,6 +35,6 @@ Single entry point for getting data into the platform. Combines sensor-aware ima
 - [architecture/data-flow-imagery.md](../architecture/data-flow-imagery.md)
 - [architecture/data-flow-fmv.md](../architecture/data-flow-fmv.md)
 - [operations/imagery-ingest-pipeline.md](../operations/imagery-ingest-pipeline.md)
-- [decisions/branch-scoped-default.md](../decisions/why-branch-scoped-default.md)
+- [decisions/why-branch-scoped-default.md](../decisions/why-branch-scoped-default.md)
 - [decisions/why-deconflicted-detection-prompts.md](../decisions/why-deconflicted-detection-prompts.md)
 - [decisions/removed-yoloe-imagery.md](../decisions/removed-yoloe-imagery.md)
