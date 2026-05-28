@@ -9,6 +9,12 @@ Populates `reference_platforms` and `reference_chips` from a curated seed manife
 
 Designed for build-time / long-running-pipeline use — not request-path.
 
+## Auto-seed at lifespan
+
+Operators no longer need to invoke this script manually for a fresh stack. Backend lifespan calls [`auto_enqueue_reference_seed_if_empty`](../../backend/platform_schema.py); when `reference_platforms` has zero rows, it enqueues the `worker.seed_reference_db` Celery task, which iterates every dataset present under `/opt/reference-corpora/` (populated by the `assets` image — see [why-bake-reference-corpora-into-assets.md](../decisions/why-bake-reference-corpora-into-assets.md)) and calls `run()` per dataset. WS progress streams on the `reference-seed` topic; admin "Re-seed" hits `POST /api/admin/reference/seed` to trigger the same path on demand.
+
+Disable auto-trigger with `REFERENCE_DB_AUTO_SEED=0`. The manual recipe below still works for one-off dataset additions outside the assets-image bake.
+
 ## Why this design
 - **HTTP to inference-sam3** instead of importing `embedding` directly: keeps the bake script in the backend container (where `psycopg2` and the connection pool live) and reuses the already-loaded DINOv3-SAT model in GPU VRAM. See [why-standalone-embed-endpoint.md](../decisions/why-standalone-embed-endpoint.md).
 - **Idempotent on `(platform_id, chip_path)`** via the unique index added to `reference_chips`. Re-runs upsert in place rather than duplicate.

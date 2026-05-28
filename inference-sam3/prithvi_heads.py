@@ -154,6 +154,14 @@ def _predict_single_window(prithvi_bundle, model_key: str, window: np.ndarray, o
     x = torch.from_numpy(multispectral.resize_to_prithvi(window)).unsqueeze(0).to(prithvi_bundle["device"])
     with torch.inference_mode():
         logits = _extract_logits(_invoke_prithvi(prithvi_bundle[model_key], x))
+    # argmax(1) assumes [B, C, H, W] (class-first). Some terratorch heads
+    # return [B, H, W, C]; that layout would silently produce a garbage
+    # seg mask without raising. Assert the channel axis is the class
+    # dimension before reducing.
+    if logits.ndim != 4 or logits.shape[0] != 1 or logits.shape[1] >= logits.shape[2] or logits.shape[1] >= logits.shape[3]:
+        raise RuntimeError(
+            f"prithvi logits shape {tuple(logits.shape)} is not [1, C, H, W] with C < H,W; refusing to argmax"
+        )
     pred = logits.argmax(1)[0].detach().cpu().numpy().astype(np.int16)
     return cv2.resize(pred, (output_hw[1], output_hw[0]), interpolation=cv2.INTER_NEAREST)
 

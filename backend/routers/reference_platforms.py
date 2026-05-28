@@ -17,7 +17,7 @@ import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 
-from auth import SessionUser, get_current_user
+from auth import SessionUser, get_current_user, require_admin
 from database import postgis_db
 from events import publish_event
 from reference_platform_db import (
@@ -35,6 +35,8 @@ from schemas import (
     ReferencePlatformDetail,
     ReferencePlatformSummary,
     ReferencePlatformsList,
+    ReferenceSeedRequest,
+    ReferenceSeedResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -542,4 +544,49 @@ def serve_reference_chip_image(
         path=str(resolved),
         media_type=media_type,
         content_disposition_type="inline",
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/admin/reference/seed
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/api/admin/reference/seed",
+    response_model=ReferenceSeedResponse,
+)
+def admin_seed_reference_db(
+    body: ReferenceSeedRequest,
+    user: SessionUser = Depends(require_admin),
+) -> ReferenceSeedResponse:
+    """Enqueue ``worker.seed_reference_db`` to bake the Reference Embedding DB
+    from the baked corpora at /opt/reference-corpora/. Admin-only.
+
+    Body:
+      ``force=false`` (default) — task short-circuits if rows already present.
+      ``force=true`` — re-bake; existing rows are UPSERTed via the unique
+      ``(platform_id, chip_path)`` index, embeddings get recomputed.
+      ``only=[]`` — optional list of dataset names to limit to.
+
+    Returns the Celery task_id; subscribe to the ``reference-seed`` WS topic
+    for progress + completion events.
+    """
+    from worker import celery_app
+    # queue="default" — worker listens on imagery+default; otherwise the task
+    # lands in the broker default queue and never gets consumed.
+    result = celery_app.send_task(
+        "worker.seed_reference_db",
+        kwargs={"force": bool(body.force), "only": list(body.only or [])},
+        queue="default",
+    )
+    logger.info(
+        "admin_seed_reference_db: enqueued task_id=%s by user=%s force=%s only=%s",
+        result.id, user.username, body.force, body.only,
+    )
+    return ReferenceSeedResponse(
+        task_id=str(result.id),
+        force=bool(body.force),
+        only=list(body.only or []),
+        triggered_by=user.username,
     )

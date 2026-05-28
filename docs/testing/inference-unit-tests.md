@@ -12,7 +12,7 @@
 | [test_oom_recovery.py](../../inference-sam3/tests/test_oom_recovery.py) | `inference_utils.safe_predict` graceful OOM handling |
 | [test_prompts_loader.py](../../inference-sam3/tests/test_prompts_loader.py) | `_fetch_default_prompts` + caching + 503 fallback |
 | [test_sam3_perf.py](../../inference-sam3/tests/test_sam3_perf.py) | `stage_timer` accumulation, backend selection |
-| [test_main_stubbed.py](../../inference-sam3/tests/test_main_stubbed.py) | `/detect` request validation, precision prompt defaults, source-layer tags, specialist gates, RemoteCLIP verifier metadata |
+| [test_main_stubbed.py](../../inference-sam3/tests/test_main_stubbed.py) | `/detect` request validation, image YOLOE-layer rejection, precision prompt defaults, source-layer tags, specialist gates, RemoteCLIP verifier metadata |
 | [test_precision_benchmark.py](../../inference-sam3/tests/test_precision_benchmark.py) | Live-service precision benchmark; skipped when `INFERENCE_URL` unreachable |
 | [test_grounding_dino_gate.py](../../inference-sam3/tests/test_grounding_dino_gate.py) | `is_common` + `should_run_grounding_dino` |
 | [test_inference_utils.py](../../inference-sam3/tests/test_inference_utils.py) | YOLO optimization helpers, memory guard |

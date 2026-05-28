@@ -64,6 +64,11 @@ async def lifespan(app: FastAPI):
     # imports below this point (e.g. _auto_seed_ontology_if_empty) are bound
     # by the time the ASGI server runs startup.
     _auto_seed_ontology_if_empty()
+    # Reference Embedding DB: if empty, enqueue worker.seed_reference_db so
+    # the worker can bake from the baked corpora at /opt/reference-corpora/
+    # without blocking the lifespan (the bake calls inference-sam3 /embed
+    # and can take minutes-to-hours for the full corpus).
+    _auto_enqueue_reference_seed_if_empty()
     # Neo4j uniqueness constraints / indexes for the Link Graph redesign.
     # Best-effort: failures are logged inside, never raised.
     from graph_schema import ensure_graph_schema
@@ -164,6 +169,7 @@ from geometry import (
 from files import classify_upload, safe_filename, save_upload_file
 from platform_schema import (
     acquire_schema_xact_lock,
+    auto_enqueue_reference_seed_if_empty as _auto_enqueue_reference_seed_if_empty,
     auto_seed_ontology_if_empty as _auto_seed_ontology_if_empty,
     ensure_collection_tables,
     ensure_feed_tables,
@@ -1007,6 +1013,7 @@ def upload_fmv_clip(
         except TelemetryMissingError as exc:
             # Phase 8.41: refuse the upload rather than ship sine-wave Dubai
             # georeference into the analyst's review queue.
+            shutil.rmtree(clip_dir, ignore_errors=True)
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         cursor.executemany("""
             INSERT INTO fmv_frames (clip_id, frame_index, timestamp_seconds, telemetry, footprint)
@@ -1064,7 +1071,22 @@ def upload_fmv_clip(
         clip["model"] = model_choice
         task_id = task.id
     except Exception as exc:
-        logger.warning("Failed to queue process_fmv for clip %s: %s", clip["id"], exc)
+        # Broker down / task unregistered — surface the failure to the
+        # analyst rather than leaving a silent 'received' clip with no
+        # detections forever. Mark the clip 'failed' in the DB so the
+        # StatusBar/Processing tab shows it, and include the error on the
+        # response so the upload UI can render it.
+        logger.error("Failed to queue process_fmv for clip %s: %s", clip["id"], exc, exc_info=True)
+        try:
+            with postgis_db.get_cursor(commit=True) as cursor:
+                cursor.execute(
+                    "UPDATE fmv_clips SET status = 'failed' WHERE id = %s",
+                    (clip["id"],),
+                )
+        except Exception:
+            logger.exception("Failed to mark fmv_clip %s as failed", clip["id"])
+        clip["status"] = "failed"
+        clip["error"] = f"failed to queue tracking: {exc}"
 
     # Mirror the imagery path: record the clip as an upload_job so it shows up
     # in the global StatusBar footer and the Admin → Processing tab without
@@ -1242,18 +1264,9 @@ def get_detection_classes(
                    d.metadata,
                    coalesce(d.metadata->>'parent_class', d.class) AS parent_class,
                    coalesce(d.metadata->>'review_status', 'review_candidate') AS review_status,
-                   coalesce(d.metadata->>'allegiance', 'unknown') AS allegiance,
-                   (
-                       lower(coalesce(sp.metadata->>'model', uj.metadata->>'model', d.metadata->>'model', '')) = 'yolo26'
-                       AND lower(coalesce(sp.metadata->>'prompt_mode', uj.metadata->>'prompt_mode', d.metadata->>'prompt_mode', '')) = 'amg'
-                   )
-                   OR coalesce(sp.metadata->'enabled_layers', '[]'::jsonb) ? 'yoloe_pf'
-                   OR coalesce(uj.metadata->'enabled_layers', '[]'::jsonb) ? 'yoloe_pf'
-                   OR coalesce(d.metadata->'enabled_layers', '[]'::jsonb) ? 'yoloe_pf'
-                   AS is_amg_image
+                   coalesce(d.metadata->>'allegiance', 'unknown') AS allegiance
             FROM detections d
             JOIN satellite_passes sp ON d.pass_id = sp.id
-            LEFT JOIN upload_jobs uj ON uj.upload_id = sp.metadata->>'upload_id'
             WHERE d.deleted_at IS NULL
     """
     params = []
@@ -1275,8 +1288,6 @@ def get_detection_classes(
                    count(*) AS count,
                    max(confidence) AS max_confidence,
                    avg(confidence) AS avg_confidence,
-                   sum(CASE WHEN is_amg_image THEN 1 ELSE 0 END)::int AS amg_image_count,
-                   bool_and(is_amg_image) AS amg_image_primary,
                    mode() WITHIN GROUP (ORDER BY filtered.metadata->>'branch_id') AS branch_id,
                    mode() WITHIN GROUP (ORDER BY filtered.metadata->>'icon_key') AS icon_key
             FROM filtered
@@ -1322,8 +1333,6 @@ def get_detection_classes(
                c.count,
                c.max_confidence,
                c.avg_confidence,
-               c.amg_image_count,
-               c.amg_image_primary,
                c.branch_id,
                c.icon_key,
                coalesce(a.allegiance_counts, '{}'::jsonb) AS allegiance_counts,
@@ -1337,15 +1346,10 @@ def get_detection_classes(
         cursor.execute(query, params)
         classes = []
         for index, row in enumerate(cursor.fetchall()):
-            # Phase 6.23: deterministic ontology remains authoritative for
-            # category/threat/filtering. YOLOE-PF imagery AMG rows may promote
-            # the LLM's human label to display_label only; raw class identity
-            # stays unchanged for filtering and audit.
             ontology = conservative_detection_ontology(row["class"], confidence=float(row["avg_confidence"] or 0))
             classification_status = "unavailable"
             llm_advisory = None
-            amg_image_primary = bool(row.get("amg_image_primary"))
-            llm_allowed = llm and (amg_image_primary or index < 8)
+            llm_allowed = llm and index < 8
             if llm_allowed:
                 try:
                     advisory = llm_detection_ontology(
@@ -1368,9 +1372,6 @@ def get_detection_classes(
                     classification_status = "unavailable"
             display_label = ontology["label"]
             label_source = "deterministic"
-            if amg_image_primary and llm_advisory and llm_advisory.get("label"):
-                display_label = str(llm_advisory.get("label") or ontology["label"])[:80]
-                label_source = "llm_advisory"
             classes.append({
                 "class": row["class"],
                 "parent_class": row["parent_class"],
@@ -1380,7 +1381,6 @@ def get_detection_classes(
                 "count": row["count"],
                 "max_confidence": float(row["max_confidence"] or 0),
                 "avg_confidence": float(row["avg_confidence"] or 0),
-                "amg_image_count": int(row.get("amg_image_count") or 0),
                 "ontology": ontology,
                 "threat_level": ontology["threat_level"],
                 "allegiance_counts": row["allegiance_counts"] or {},

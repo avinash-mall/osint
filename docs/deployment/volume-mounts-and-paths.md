@@ -11,8 +11,8 @@
 | `/data/fmv/` | FMV clip uploads + HLS segments | `${FMV_PATH:-./data/fmv}` |
 | `/data/fmv/<clip_id>/playlist.m3u8` | HLS playlist served by nginx | — |
 | `/data/datasets/` | Training-set storage | `${DATASET_PATH:-./data/datasets}` |
-| `/data/dem/dem.tif` | DEM for viewshed/LOS analytics | `${DEM_PATH:-./data/dem/dem.tif}` |
-| `/data/routing/graph.pkl` | osmnx graph for routing | `${ROUTING_GRAPH_PATH:-./data/routing/graph.pkl}` |
+| `/data/dem/glo30.vrt` + `/data/dem/glo30/*.tif` | Worldwide Copernicus GLO-30 DEM mosaic | `dem_data` named volume; populated by `dem-baker` profile |
+| `/data` (in the `osrm` container) | Planet OSRM MLD dataset (~150-200 GB) | `osrm_data` named volume; populated by `osrm-baker` profile |
 | `/data/calibration/model_temperatures.json` | Per-model temperatures | — |
 
 ## Service-specific
@@ -36,5 +36,7 @@ Populated at build time or by long-running pipelines — agents should not write
 
 - [docker-compose-services.md](docker-compose-services.md)
 - [offline-airgap-deployment.md](offline-airgap-deployment.md)
+- [dem-glo30-bake.md](dem-glo30-bake.md)
+- [osrm-planet-bake.md](osrm-planet-bake.md)
 - [backend/terrain-viewshed-los.md](../backend/terrain-viewshed-los.md)
-- [backend/routing-graph-osmnx.md](../backend/routing-graph-osmnx.md)
+- [backend/routing-osrm.md](../backend/routing-osrm.md)

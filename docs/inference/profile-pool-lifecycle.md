@@ -8,7 +8,7 @@ How `inference-sam3` loads, holds, frees model bundles. Three profiles cover the
 
 | Profile | Components | Used by | VRAM (FP16) |
 |---|---|---|---|
-| `imagery` | `sam3_image`, `dinov3_sat`, `prithvi`, `terramind`, `dota_obb`, `grounding_dino`, optional `remoteclip`, `yoloe` | Imagery ingest (incl. `model=yolo26` path) | ~24 GB with all components before verifier |
+| `imagery` | `sam3_image`, `dinov3_sat`, `prithvi`, `terramind`, `dota_obb`, `grounding_dino`, optional `remoteclip` | Imagery ingest | ~23 GB with all components before verifier |
 | `fmv` | `sam3_image`, `sam3_video` (multiplex), `dota_obb`, `yoloe` | FMV ingest | ~12 GB |
 | `all` | Union of both | 40+ GiB datacenter GPUs | ~30+ GB |
 
@@ -60,3 +60,4 @@ After the explicit `preload_models_on_startup()` step (gated by `SAM3_PRELOAD_MO
 - [main-app-entrypoint.md](main-app-entrypoint.md) — `_load_profile`, `_unload_pool_locked`, `_next_bundle`, `_acquire_video_bundle`
 - [backend-routers/inference-router.md](../backend-routers/inference-router.md) — operator-facing proxy
 - [frontend/admin-health-dashboard.md](../frontend/admin-health-dashboard.md)
+- [decisions/removed-yoloe-imagery.md](../decisions/removed-yoloe-imagery.md)

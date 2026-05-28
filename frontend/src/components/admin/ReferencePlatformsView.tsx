@@ -14,9 +14,10 @@
  */
 
 import axios from 'axios';
-import { Database, RefreshCw } from 'lucide-react';
+import { Database, RefreshCw, Sprout } from 'lucide-react';
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import ChipImg from '../ChipImg';
+import { useEventStream } from '../../hooks/useEventStream';
 import ViewHeader from './ViewHeader';
 
 const API_URL = (import.meta as any).env?.VITE_API_URL || '';
@@ -114,6 +115,61 @@ export default function ReferencePlatformsView({ onCount }: Props) {
 
   const applyFilters = () => { void load(); };
 
+  // ---- Re-seed wiring --------------------------------------------------
+  // POST /api/admin/reference/seed enqueues a Celery task; progress arrives
+  // over WS topic "reference-seed". We aggregate per-dataset rows and stop
+  // listening once a "done" event arrives.
+  type SeedProgressRow = { dataset: string; platforms: number; chips: number };
+  const [seedBusy, setSeedBusy] = useState(false);
+  const [seedTaskId, setSeedTaskId] = useState<string | null>(null);
+  const [seedErr, setSeedErr] = useState<string | null>(null);
+  const [seedRows, setSeedRows] = useState<SeedProgressRow[]>([]);
+  const [seedDone, setSeedDone] = useState(false);
+
+  useEventStream(
+    'reference-seed',
+    useCallback(
+      (msg: any) => {
+        if (!msg || typeof msg !== 'object') return;
+        if (msg.type === 'started') {
+          setSeedRows([]);
+          setSeedDone(false);
+        } else if (msg.type === 'dataset_progress') {
+          setSeedRows((rows) => {
+            const next = rows.filter((r) => r.dataset !== msg.dataset);
+            next.push({ dataset: msg.dataset, platforms: msg.platforms ?? 0, chips: msg.chips ?? 0 });
+            return next;
+          });
+        } else if (msg.type === 'done') {
+          setSeedDone(true);
+          setSeedBusy(false);
+          // Refresh the list so the new totals show.
+          void load();
+        } else if (msg.type === 'error') {
+          setSeedErr(`${msg.dataset}: ${msg.detail}`);
+        }
+      },
+      [load],
+    ),
+  );
+
+  const triggerSeed = useCallback(async (force: boolean) => {
+    setSeedBusy(true);
+    setSeedErr(null);
+    setSeedRows([]);
+    setSeedDone(false);
+    try {
+      const r = await axios.post<{ task_id: string }>(
+        `${API_URL}/api/admin/reference/seed`,
+        { force, only: [] },
+      );
+      setSeedTaskId(r.data?.task_id ?? null);
+    } catch (e: any) {
+      setSeedErr(e?.response?.data?.detail ?? e?.message ?? String(e));
+      setSeedBusy(false);
+    }
+  }, []);
+
   return (
     <>
       <ViewHeader
@@ -124,15 +180,38 @@ export default function ReferencePlatformsView({ onCount }: Props) {
             : `${platforms.length} loaded · curated reference DB · /api/reference-platforms`
         }
         actions={
-          <button
-            className="btn sm"
-            type="button"
-            onClick={() => void load()}
-            disabled={listBusy}
-            aria-label="Reload reference platforms"
-          >
-            <RefreshCw size={12} /> Reload
-          </button>
+          <>
+            <button
+              className="btn sm"
+              type="button"
+              onClick={() => void triggerSeed(false)}
+              disabled={seedBusy}
+              data-tour="admin-reference-seed-button"
+              aria-label="Seed reference DB from baked corpora"
+              title="Bake reference_platforms from /opt/reference-corpora/. No-op when rows already exist; use 'Re-seed' to force re-bake."
+            >
+              <Sprout size={12} /> {seedBusy ? 'Seeding…' : 'Seed'}
+            </button>
+            <button
+              className="btn sm"
+              type="button"
+              onClick={() => void triggerSeed(true)}
+              disabled={seedBusy}
+              aria-label="Force re-seed reference DB (re-bake even if rows present)"
+              title="Force re-bake: existing rows are upserted, embeddings recomputed."
+            >
+              Re-seed
+            </button>
+            <button
+              className="btn sm"
+              type="button"
+              onClick={() => void load()}
+              disabled={listBusy}
+              aria-label="Reload reference platforms"
+            >
+              <RefreshCw size={12} /> Reload
+            </button>
+          </>
         }
       />
       <div
@@ -207,6 +286,46 @@ export default function ReferencePlatformsView({ onCount }: Props) {
             <div className="mono" style={{ fontSize: 11, color: 'var(--nato-hostile)' }}>
               Failed to load reference platforms: {listErr}
             </div>
+          </div>
+        )}
+
+        {(seedBusy || seedRows.length > 0 || seedErr) && (
+          <div
+            className="card"
+            role="status"
+            aria-live="polite"
+            style={{
+              padding: 12,
+              borderLeft: `3px solid ${seedErr ? 'var(--nato-hostile)' : seedDone ? 'var(--ok)' : 'var(--accent)'}`,
+            }}
+          >
+            <div
+              className="mono"
+              style={{ fontSize: 11, color: 'var(--ink-2)', marginBottom: 6 }}
+            >
+              <Sprout size={12} style={{ verticalAlign: 'text-bottom', marginRight: 4 }} />
+              {seedDone ? 'SEED COMPLETE' : seedBusy ? 'SEEDING' : 'SEED'}
+              {seedTaskId ? ` · task ${seedTaskId.slice(0, 8)}` : ''}
+            </div>
+            {seedErr && (
+              <div className="mono" style={{ fontSize: 11, color: 'var(--nato-hostile)' }}>
+                error: {seedErr}
+              </div>
+            )}
+            {seedRows.length > 0 && (
+              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12 }}>
+                {seedRows.map((r) => (
+                  <li key={r.dataset}>
+                    <strong>{r.dataset}</strong>: {r.platforms} platforms, {r.chips} chips
+                  </li>
+                ))}
+              </ul>
+            )}
+            {seedBusy && seedRows.length === 0 && !seedErr && (
+              <div className="mono" style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                Waiting for worker to start…
+              </div>
+            )}
           </div>
         )}
 

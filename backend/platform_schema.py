@@ -12,6 +12,7 @@ successful call within a process.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 
 from database import postgis_db
@@ -629,6 +630,61 @@ def ensure_platform_tables() -> None:
 
         ensure_reference_platform_tables()
         _platform_schema_ready = True
+
+
+def auto_enqueue_reference_seed_if_empty() -> None:
+    """If the Reference Embedding DB has zero platforms, enqueue the
+    ``worker.seed_reference_db`` Celery task so the worker can bake from the
+    baked-image-side corpora tree at ``/opt/reference-corpora/``.
+
+    Mirrors :func:`auto_seed_ontology_if_empty` but uses a Celery task
+    instead of a synchronous call — the bake invokes inference-sam3's
+    ``/embed`` route, which can take minutes-to-hours across the full corpus.
+    Blocking the lifespan synchronously would prevent ``/api/health`` from
+    reporting healthy until the bake finished.
+
+    Idempotent: no-op when rows are present OR when ``REFERENCE_DB_AUTO_SEED``
+    is set to ``0``. The corresponding worker task is also idempotent —
+    safe to enqueue multiple times.
+
+    See ``docs/decisions/why-celery-task-from-lifespan.md`` for the
+    rationale (first place we enqueue from lifespan rather than sync-seed).
+    """
+    flag = os.getenv("REFERENCE_DB_AUTO_SEED", "1").strip().lower()
+    if flag not in {"1", "true", "yes", "on"}:
+        logger.info("reference auto-seed: REFERENCE_DB_AUTO_SEED=%s — disabled", flag)
+        return
+    try:
+        with postgis_db.get_cursor() as cur:
+            cur.execute("SELECT count(*) AS n FROM reference_platforms")
+            row = cur.fetchone()
+            n_platforms = int(row["n"] if isinstance(row, dict) else row[0])
+        if n_platforms > 0:
+            logger.info(
+                "reference auto-seed: %d platforms present, skipping enqueue",
+                n_platforms,
+            )
+            return
+        logger.warning(
+            "reference auto-seed: 0 platforms — enqueueing worker.seed_reference_db"
+        )
+        from worker import celery_app
+        # queue="default" is REQUIRED — the worker listens on imagery+default,
+        # but send_task without an explicit queue defaults to the broker's
+        # generic "celery" queue, which goes nowhere.
+        result = celery_app.send_task(
+            "worker.seed_reference_db",
+            kwargs={"force": False},
+            queue="default",
+        )
+        logger.info(
+            "reference auto-seed: enqueued task_id=%s on queue=default",
+            getattr(result, "id", "?"),
+        )
+    except Exception as exc:
+        # Same posture as the ontology auto-seed: log loudly but don't crash
+        # the app. Operator can re-trigger via POST /api/admin/reference/seed.
+        logger.exception("reference auto-seed enqueue failed: %s", exc)
 
 
 def auto_seed_ontology_if_empty() -> None:

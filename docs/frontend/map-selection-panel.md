@@ -1,7 +1,8 @@
 # Selection Panel — Right Rail
 
 **Path:** [frontend/src/components/map/SelectionPanel.tsx](../../frontend/src/components/map/SelectionPanel.tsx)
-**Lines:** ~27057 characters
+**Lines:** ~671
+**Depends on:** [ObjectDetailsForm.tsx](../../frontend/src/components/ObjectDetailsForm.tsx), [IdentificationPanel.tsx](../../frontend/src/components/map/IdentificationPanel.tsx), [services/analytics.ts](../../frontend/src/services/analytics.ts), backend `/api/detections`, `/api/analytics`, and `/api/reports`
 
 ## Purpose
 
@@ -22,8 +23,13 @@ Four-tab right rail that appears when a detection is selected on the map.
 - `GET /api/detections/{id}/similar` (Similar tab)
 - `GET /api/detections/{id}/candidate-links` and `POST /api/detection-target-candidates/{id}/approve` (Actions tab)
 - `POST /api/analytics/*` (Analytics tab)
-- `GET /api/analytics/elevation?lat=&lon=` (Details tab — populates the `ELEV` row in the Geolocation section using the DEM at the detection centroid; falls back to `—` when the DEM is not configured)
-- `POST /api/reports/target-package/{id}` (Details tab — the "Generate Target Package" button streams a PDF compiled from already-persisted detection state; see [backend-routers/reports-router.md](../backend-routers/reports-router.md))
+- `GET /api/analytics/elevation?lat=&lon=` (Details tab — populates the `ELEV` row in the Geolocation section using the DEM at the detection centroid; falls back to `—` when the DEM is not configured). Requests use `VITE_API_URL` plus `credentials: "include"` at [SelectionPanel.tsx#L185](../../frontend/src/components/map/SelectionPanel.tsx#L185).
+- `POST /api/reports/target-package/{id}` (Details tab — the "Generate Target Package" button streams a PDF compiled from already-persisted detection state; see [backend-routers/reports-router.md](../backend-routers/reports-router.md)). Requests use `VITE_API_URL` plus `credentials: "include"` at [SelectionPanel.tsx#L207](../../frontend/src/components/map/SelectionPanel.tsx#L207).
+
+## Failure modes
+
+- Elevation errors are non-blocking and render `--`/unavailable state in the Geolocation section.
+- Target-package generation failures keep the user in the panel and surface the existing error path rather than navigating away.
 
 ## Cross-references
 

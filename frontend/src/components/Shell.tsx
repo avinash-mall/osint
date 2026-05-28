@@ -143,6 +143,7 @@ type ShellProps = {
   active: WorkspaceKey;
   onNavigate: (key: WorkspaceKey) => void;
   children: ReactNode;
+  canUseAdmin?: boolean;
   /** Optional override; when omitted the Shell derives a live context line. */
   contextLine?: string;
   /** Right-side content slotted into the status bar (cursor readout, etc). */
@@ -182,7 +183,7 @@ function contextLineFor(
   }
 }
 
-export function Shell({ active, onNavigate, children, contextLine, statusRight }: ShellProps) {
+export function Shell({ active, onNavigate, children, canUseAdmin = false, contextLine, statusRight }: ShellProps) {
   const [hover, setHover] = useState(false);
   const [railOpen, setRailOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -192,7 +193,11 @@ export function Shell({ active, onNavigate, children, contextLine, statusRight }
     try { return localStorage.getItem('shell:railPinned') === '1'; } catch { return false; }
   });
   const [keyboardFocus, setKeyboardFocus] = useState(false);
-  const activeNav = useMemo(() => NAV.find((n) => n.key === active) ?? NAV[0], [active]);
+  const navItems = useMemo(
+    () => NAV.filter((n) => canUseAdmin || n.key !== 'admin'),
+    [canUseAdmin],
+  );
+  const activeNav = useMemo(() => navItems.find((n) => n.key === active) ?? navItems[0], [active, navItems]);
   const { health, uploadCount, activeImageryJob, failedUploadCount } = useSystemStatus();
   const clock = useClock();
   const { clockTz } = usePreferences();
@@ -303,7 +308,7 @@ export function Shell({ active, onNavigate, children, contextLine, statusRight }
             }}>
               Workspaces
             </div>
-            {NAV.map((n) => (
+            {navItems.map((n) => (
               <NavButton key={n.key} item={n} active={active === n.key} expanded={railExpanded} onClick={() => navigate(n.key)} />
             ))}
           </div>
@@ -329,6 +334,7 @@ export function Shell({ active, onNavigate, children, contextLine, statusRight }
           onOpenPalette={() => setPaletteOpen(true)}
           onToggleRail={() => setRailOpen((o) => !o)}
           railOpen={railOpen}
+          canUseAdmin={canUseAdmin}
         />
 
         <main
@@ -352,6 +358,7 @@ export function Shell({ active, onNavigate, children, contextLine, statusRight }
         <CommandPalette
           onClose={() => setPaletteOpen(false)}
           onNavigate={(k) => { setPaletteOpen(false); navigate(k); }}
+          navItems={navItems}
         />
       )}
     </div>
@@ -452,7 +459,7 @@ function SidebarFooter({ expanded, allOk, services }: { expanded: boolean; allOk
 
 /* ── Topbar ──────────────────────────────────────────────────────────── */
 
-function Topbar({ workspaceLabel, contextLine, alerts, onNavigate, onOpenPalette, onToggleRail, railOpen }: {
+function Topbar({ workspaceLabel, contextLine, alerts, onNavigate, onOpenPalette, onToggleRail, railOpen, canUseAdmin }: {
   workspaceLabel: string;
   contextLine: string;
   alerts: { unread: number; highest: 'crit' | 'warn' };
@@ -460,6 +467,7 @@ function Topbar({ workspaceLabel, contextLine, alerts, onNavigate, onOpenPalette
   onOpenPalette: () => void;
   onToggleRail: () => void;
   railOpen: boolean;
+  canUseAdmin: boolean;
 }) {
   return (
     <header
@@ -504,19 +512,21 @@ function Topbar({ workspaceLabel, contextLine, alerts, onNavigate, onOpenPalette
         <span className="shell-jump-label" style={{ color: 'var(--ink-2)' }}>Jump to anything…</span>
         <span className="kbd">⌘K</span>
       </button>
-      <button
-        className="btn sm rounded icon"
-        type="button"
-        title={alerts.unread > 0 ? `${alerts.unread} unread health alert${alerts.unread === 1 ? '' : 's'}` : 'View health alerts'}
-        aria-label={alerts.unread > 0 ? `View ${alerts.unread} unread health alerts` : 'View health alerts'}
-        onClick={() => {
-          onNavigate('admin');
-          window.dispatchEvent(new CustomEvent('sentinel:admin-tab', { detail: { tab: 'alerts' } }));
-        }}
-      >
-        <Bell size={13} aria-hidden/>
-        <BellBadge count={alerts.unread} tone={alerts.highest}/>
-      </button>
+      {canUseAdmin && (
+        <button
+          className="btn sm rounded icon"
+          type="button"
+          title={alerts.unread > 0 ? `${alerts.unread} unread health alert${alerts.unread === 1 ? '' : 's'}` : 'View health alerts'}
+          aria-label={alerts.unread > 0 ? `View ${alerts.unread} unread health alerts` : 'View health alerts'}
+          onClick={() => {
+            onNavigate('admin');
+            window.dispatchEvent(new CustomEvent('sentinel:admin-tab', { detail: { tab: 'alerts' } }));
+          }}
+        >
+          <Bell size={13} aria-hidden/>
+          <BellBadge count={alerts.unread} tone={alerts.highest}/>
+        </button>
+      )}
       <AnalystChip/>
     </header>
   );
@@ -739,7 +749,15 @@ type Command = {
   run: () => void;
 };
 
-function CommandPalette({ onClose, onNavigate }: { onClose: () => void; onNavigate: (k: WorkspaceKey) => void }) {
+function CommandPalette({
+  onClose,
+  onNavigate,
+  navItems,
+}: {
+  onClose: () => void;
+  onNavigate: (k: WorkspaceKey) => void;
+  navItems: NavItem[];
+}) {
   const [q, setQ] = useState('');
   const [idx, setIdx] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -747,15 +765,15 @@ function CommandPalette({ onClose, onNavigate }: { onClose: () => void; onNaviga
   useEffect(() => { inputRef.current?.focus(); }, []);
 
   const baseCommands: Command[] = useMemo(() => [
-    ...NAV.map<Command>((n) => ({
+    ...navItems.map<Command>((n) => ({
       id: `nav-${n.key}`, group: 'Workspace', label: `Go to ${n.label}`, hint: n.short,
       run: () => onNavigate(n.key),
     })),
-    {
+    ...(navItems.some((n) => n.key === 'admin') ? [{
       id: 'alerts', group: 'Quick action', label: 'Open health alerts',
       run: () => { onNavigate('admin'); window.dispatchEvent(new CustomEvent('sentinel:admin-tab', { detail: { tab: 'alerts' } })); },
-    },
-  ], [onNavigate]);
+    }] : []),
+  ], [navItems, onNavigate]);
 
   const filtered = useMemo(() => {
     const cmds = [...baseCommands];

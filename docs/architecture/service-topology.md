@@ -22,6 +22,9 @@ Per-service inventory: image, ports, depends-on, volumes. Read with the compose 
 | `titiler` | `ghcr.io/developmentseed/titiler:2.0.2` | internal 8080 | — | on-the-fly COG tile server |
 | `martin` | `ghcr.io/maplibre/martin:1.9.1` | internal 3000 | postgis | PostGIS → MVT vector tiles |
 | `assets` | `sentinel-assets:offline` | internal 80 | — | offline Carto Dark + OpenTopoMap basemap (z=0..14), IBM Plex fonts |
+| `osrm` | `ghcr.io/project-osrm/osrm-backend:v6.0.0` | internal 5000 | — | Planet driving-routes service; mounts `osrm_data` RO, runs `osrm-routed --algorithm mld` |
+| `dem-baker` *(profile `bake-dem`)* | `ghcr.io/osgeo/gdal:ubuntu-small-3.9.2` | — | — | One-shot worldwide GLO-30 DEM fetcher + `gdalbuildvrt` mosaic into `dem_data` |
+| `osrm-baker` *(profile `bake-osrm`)* | `ghcr.io/project-osrm/osrm-backend:v6.0.0` | — | — | One-shot planet OSRM extract / partition / customize into `osrm_data` |
 | `llm-local-proxy` *(profile `llm-proxy`)* | `alpine/socat:1.8.0.3` | host 18001 | — | optional TCP forwarder for host-side vLLM/Ollama |
 
 ## Shared volumes
@@ -31,8 +34,8 @@ Per-service inventory: image, ports, depends-on, volumes. Read with the compose 
 | `imagery_data` (bind: `${IMAGERY_PATH:-./data/imagery}`) | backend, worker, titiler | `/data/imagery` | COG storage, chips, incoming uploads |
 | `fmv_data` (bind: `${FMV_PATH:-./data/fmv}`) | backend, worker, nginx | `/data/fmv` | uploads + HLS segments |
 | `dataset_data` (bind: `${DATASET_PATH:-./data/datasets}`) | backend, worker | `/data/datasets` | training datasets |
-| `dem_data` | backend | `/data/dem` | DEM GeoTIFF for viewshed/LOS analytics |
-| `routing_data` | backend | `/data/routing` | pickled `osmnx` graph |
+| `dem_data` | backend, worker | `/data/dem` | Worldwide Copernicus GLO-30 DEM mosaic (VRT + tiles) for viewshed/LOS analytics; populated by `dem-baker` profile |
+| `osrm_data` | osrm | `/data` | Planet OSRM MLD dataset for routing; populated by `osrm-baker` profile |
 | `sam3_models` | inference-sam3 | `/root/.cache/huggingface` | model weight cache (bind-mounted in dev) |
 | `neo4j_data` | neo4j | `/data` | graph persistence |
 | `postgis_data` | postgis | `/var/lib/postgresql/data` | DB persistence |

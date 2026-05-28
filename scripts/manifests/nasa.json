@@ -1,0 +1,6 @@
+{
+  "source_dataset": "nasa",
+  "default_license_spdx": "PD-USGov",
+  "notes": "NASA Earth Observatory / imagery archives. Used for overhead-context reference photos (airports, ports, refineries) — view_domain stays 'ground' since they're not satellite chips at our GSD.",
+  "platforms": []
+}

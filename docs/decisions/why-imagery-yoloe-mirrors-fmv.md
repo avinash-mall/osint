@@ -1,5 +1,9 @@
 # Imagery upload mirrors the FMV `(model, prompt_mode)` selector
 
+## Status
+
+Superseded by [removed-yoloe-imagery.md](removed-yoloe-imagery.md). This document records the older experiment that exposed YOLOE in still-image imagery; current code rejects image YOLOE and keeps YOLOE for FMV only.
+
 **Path:** [backend/routers/ingest.py](../../backend/routers/ingest.py), [frontend/src/components/IngestConnect.tsx](../../frontend/src/components/IngestConnect.tsx), [inference-sam3/main.py](../../inference-sam3/main.py)
 **Lines touched:** ~110
 **Depends on:** the prior FMV `(model, prompt_mode)` machinery at [main.py:1026-1054](../../backend/main.py#L1026-L1054), the bf16-cast YOLOE fix in [yoloe.py:210-226](../../inference-sam3/yoloe.py#L210-L226)

@@ -221,7 +221,7 @@ export default function ObjectDetailsForm({
     const handler = () => {
       if (dirtyRef.current && timerRef.current != null) {
         window.clearTimeout(timerRef.current);
-        // Best effort sync POST via sendBeacon when available
+        // Best-effort PUT that preserves method semantics during tab close.
         const url = endpointFor(source, detectionId);
         const body = JSON.stringify({
           designation: v.designation,
@@ -232,9 +232,13 @@ export default function ObjectDetailsForm({
           confidence_override: v.confidence_override,
           notes: v.notes,
         });
-        if (navigator.sendBeacon) {
-          navigator.sendBeacon(url, new Blob([body], { type: 'application/json' }));
-        }
+        void fetch(url, {
+          method: 'PUT',
+          body,
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          keepalive: true,
+        });
       }
     };
     window.addEventListener('beforeunload', handler);

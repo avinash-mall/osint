@@ -5258,3 +5258,199 @@ def tick_feed_poll() -> dict:
     if total_events:
         publish_event("feeds", {"type": "feed_events_collected", "polled": polled, "events": total_events})
     return {"polled": polled, "events": total_events, "due": len(due)}
+
+
+# ---------------------------------------------------------------------------
+# Reference Embedding DB — seed from baked corpora
+# ---------------------------------------------------------------------------
+#
+# Triggered:
+#   - Automatically by backend lifespan when `reference_platforms` is empty
+#     (see `auto_enqueue_reference_seed_if_empty` in platform_schema.py).
+#   - Manually via POST /api/admin/reference/seed.
+#
+# Reads from /opt/reference-corpora/ (volume populated by the assets image)
+# and runs the existing bake pipeline (backend/scripts/bake_reference_index.py)
+# per dataset. Idempotent — the bake's (platform_id, chip_path) unique index
+# handles re-runs.
+
+_REFERENCE_CORPORA_ROOT = Path(os.getenv("REFERENCE_CORPORA_ROOT", "/opt/reference-corpora"))
+_REFERENCE_CHIPS_RUNTIME_ROOT = Path(
+    os.getenv("REFERENCE_CHIPS_RUNTIME_ROOT", "/data/datasets/reference-chips")
+)
+_REFERENCE_SEED_PATH = Path(
+    os.getenv("REFERENCE_SEED_PATH", "/app/scripts/seeds/reference_platforms.seed.json")
+)
+
+
+def _list_baked_datasets() -> list[Path]:
+    """Discover which dataset trees exist under /opt/reference-corpora/."""
+    if not _REFERENCE_CORPORA_ROOT.is_dir():
+        return []
+    out = []
+    for d in sorted(_REFERENCE_CORPORA_ROOT.iterdir()):
+        if not d.is_dir():
+            continue
+        # Skip control files / marker files at the root.
+        if d.name.startswith(".") or d.name.startswith("_"):
+            continue
+        if (d / "MANIFEST.json").is_file():
+            out.append(d)
+    return out
+
+
+def _read_dataset_manifest(dataset_dir: Path) -> dict:
+    try:
+        return json.loads((dataset_dir / "MANIFEST.json").read_text())
+    except Exception:
+        return {}
+
+
+def _rsync_dataset(src: Path, dst: Path) -> int:
+    """Mirror src → dst at file level (no `rsync` binary dep). Returns chip count."""
+    dst.mkdir(parents=True, exist_ok=True)
+    count = 0
+    for cls_dir in src.iterdir():
+        if not cls_dir.is_dir() or cls_dir.name.startswith("."):
+            continue
+        out_cls = dst / cls_dir.name
+        out_cls.mkdir(parents=True, exist_ok=True)
+        for chip in cls_dir.iterdir():
+            if chip.suffix.lower() not in (".png", ".jpg", ".jpeg"):
+                continue
+            target = out_cls / chip.name
+            # Skip if target already up-to-date (size + mtime heuristic — same
+            # check rsync uses by default). The bake's unique index makes
+            # over-copying safe; this just avoids redundant disk I/O.
+            try:
+                if target.exists() and target.stat().st_size == chip.stat().st_size:
+                    count += 1
+                    continue
+            except OSError:
+                pass
+            try:
+                import shutil
+                shutil.copy2(chip, target)
+                count += 1
+            except OSError as exc:
+                logger.warning("seed_reference_db: copy %s failed: %s", chip, exc)
+    return count
+
+
+@celery_app.task(name="worker.seed_reference_db", queue="default", bind=True)
+def seed_reference_db(self, force: bool = False, only: Optional[list] = None) -> dict:
+    """Bake reference_platforms + reference_chips from /opt/reference-corpora/.
+
+    Iterates every dataset present in the baked corpora tree, copies its
+    chips into the writable /data/datasets/reference-chips/ volume, then
+    invokes ``bake_reference_index.run()`` per dataset. WS progress events
+    fire to the ``reference-seed`` topic.
+
+    Args:
+        force: If False (default) and reference_platforms already has rows,
+            short-circuits to a no-op. Pass force=True from the admin
+            re-seed endpoint to force a re-bake (existing rows get UPSERTed,
+            new chips inserted, missing chips left alone).
+        only: Optional list[str] of dataset names to limit. None = all.
+
+    Returns the per-dataset totals dict.
+    """
+    # Idempotency guard.
+    if not force:
+        with postgis_db.get_cursor() as cur:
+            cur.execute("SELECT count(*) FROM reference_platforms")
+            row = cur.fetchone()
+            n_existing = int(row["count"] if isinstance(row, dict) else row[0])
+        if n_existing > 0:
+            logger.info("seed_reference_db: %d platforms present, force=false — no-op", n_existing)
+            return {"status": "skipped", "platforms_present": n_existing}
+
+    only_set = set(only or [])
+    datasets = _list_baked_datasets()
+    if only_set:
+        datasets = [d for d in datasets if d.name in only_set]
+    dataset_names = [d.name for d in datasets]
+
+    publish_event("reference-seed", {
+        "type": "started",
+        "datasets": dataset_names,
+        "force": bool(force),
+        "task_id": self.request.id,
+    })
+
+    if not datasets:
+        publish_event("reference-seed", {
+            "type": "done",
+            "datasets": [],
+            "totals": {"platforms": 0, "chips": 0},
+            "detail": "no baked corpora present at /opt/reference-corpora/",
+        })
+        return {"status": "empty", "datasets": []}
+
+    # Late import — keeps the worker startup light and lets tests stub.
+    sys.path.insert(0, "/app/scripts")
+    try:
+        from bake_reference_index import run as bake_run  # type: ignore
+    finally:
+        sys.path.pop(0)
+
+    totals = {"platforms": 0, "chips": 0, "datasets": []}
+    for dataset_dir in datasets:
+        ds = dataset_dir.name
+        manifest = _read_dataset_manifest(dataset_dir)
+        # The license_spdx for the bake comes from the MANIFEST default — per-chip
+        # overrides land in reference_chips.license_spdx during the bake's INSERT.
+        license_spdx = "see-source-terms"
+        if manifest.get("chips"):
+            license_spdx = manifest["chips"][0].get("license_spdx") or license_spdx
+
+        # Step 1: rsync into the writable runtime volume.
+        runtime_dataset = _REFERENCE_CHIPS_RUNTIME_ROOT / ds
+        try:
+            copied = _rsync_dataset(dataset_dir, runtime_dataset)
+        except Exception as exc:
+            logger.exception("seed_reference_db: rsync %s failed", ds)
+            publish_event("reference-seed", {
+                "type": "error", "dataset": ds, "detail": f"rsync failed: {exc}",
+            })
+            continue
+
+        # Step 2: run the bake.
+        try:
+            result = bake_run(
+                seed_path=str(_REFERENCE_SEED_PATH),
+                dataset=ds,
+                dataset_root=str(runtime_dataset),
+                license_spdx=license_spdx,
+                max_chips_per_class=int(os.getenv("REFERENCE_MAX_CHIPS_PER_CLASS", "50")),
+            )
+        except Exception as exc:
+            logger.exception("seed_reference_db: bake %s failed", ds)
+            publish_event("reference-seed", {
+                "type": "error", "dataset": ds, "detail": f"bake failed: {exc}",
+            })
+            continue
+
+        platforms = int(result.get("platforms", 0))
+        chips = int(result.get("chips", 0))
+        totals["platforms"] += platforms
+        totals["chips"] += chips
+        totals["datasets"].append({
+            "dataset": ds, "platforms": platforms, "chips": chips,
+            "chips_copied": copied, "license_spdx": license_spdx,
+        })
+
+        publish_event("reference-seed", {
+            "type": "dataset_progress",
+            "dataset": ds,
+            "platforms": platforms,
+            "chips": chips,
+            "chips_copied": copied,
+        })
+
+    publish_event("reference-seed", {
+        "type": "done",
+        "totals": totals,
+        "task_id": self.request.id,
+    })
+    return {"status": "ok", **totals}

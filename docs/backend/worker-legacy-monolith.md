@@ -64,7 +64,7 @@ Runs DB queries at **import time** (`DETECTION_POLICY = active_detection_policy(
 
 ## Inputs / Outputs
 
-Imagery tasks emit per-pass summaries with `candidates_by_layer`, `suppressed_by_nms`, `suppressed_by_policy` from inference debug counts. Imagery pipeline calibrates raw confidence by `source_layer`, applies [detection-policy.md](detection-policy.md), georeferences OBBs, deduplicates across chips, applies [detection-evidence.md](detection-evidence.md), persists survivors to PostGIS. New imagery passes retain upload `model`, `prompt_mode`, and `enabled_layers` in `satellite_passes.metadata` so `/api/detections/classes` can identify all-YOLOE-PF AMG rows without relying only on the transient upload-job record.
+Imagery tasks emit per-pass summaries with `candidates_by_layer`, `suppressed_by_nms`, `suppressed_by_policy` from inference debug counts. Imagery pipeline calibrates raw confidence by `source_layer`, applies [detection-policy.md](detection-policy.md), georeferences OBBs, deduplicates across chips, applies [detection-evidence.md](detection-evidence.md), persists survivors to PostGIS. Still-image YOLOE was removed; imagery stays on the SAM3 sensor pipeline plus gated specialists.
 
 FMV tasks consume `/detect_video` NDJSON. SAM3 + YOLOE entries preserve `source_layer` in row metadata → downstream review distinguishes tracker families. `_insert_detection_rows` writes rows **raw** — window-seam + cross-prompt duplicates included; identity reconciled afterwards by `worker.consolidate_fmv` ([fmv-track-consolidation.md](fmv-track-consolidation.md)), which `process_fmv` dispatches once all windows finish. The earlier per-`(frame, class)` `overlap_index` dedup was removed — see [decisions/why-fmv-track-consolidation.md](../decisions/why-fmv-track-consolidation.md).
 
@@ -84,7 +84,7 @@ Everything here is re-exported by [backend/worker/__init__.py](../../backend/wor
 
 - [backend/worker-package-facade.md](worker-package-facade.md)
 - [backend/detection-evidence.md](detection-evidence.md)
-- [decisions/why-amg-detection-classes-use-llm-labels.md](../decisions/why-amg-detection-classes-use-llm-labels.md)
+- [decisions/removed-yoloe-imagery.md](../decisions/removed-yoloe-imagery.md)
 - [decisions/why-worker-legacy-monolith-kept.md](../decisions/why-worker-legacy-monolith-kept.md)
 - [decisions/reset-db-pool-after-fork.md](../decisions/reset-db-pool-after-fork.md)
 - [backend/database-connections.md](database-connections.md)

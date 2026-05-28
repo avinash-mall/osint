@@ -17,9 +17,10 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from auth import SessionUser, require_admin
 from database import postgis_db
 from platform_schema import ensure_platform_tables
 
@@ -39,7 +40,7 @@ class ThresholdBody(BaseModel):
 
 
 @router.get("/api/admin/repeat-thresholds")
-def list_thresholds(kind: Optional[str] = Query(None)):
+def list_thresholds(kind: Optional[str] = Query(None), user: SessionUser = Depends(require_admin)):
     ensure_platform_tables()
     where = "WHERE 1=1"
     params: list = []
@@ -64,7 +65,7 @@ def list_thresholds(kind: Optional[str] = Query(None)):
 
 
 @router.post("/api/admin/repeat-thresholds", status_code=201)
-def create_threshold(body: ThresholdBody):
+def create_threshold(body: ThresholdBody, user: SessionUser = Depends(require_admin)):
     ensure_platform_tables()
     kind = body.kind.lower()
     if kind not in _ALLOWED_KINDS:
@@ -86,7 +87,7 @@ def create_threshold(body: ThresholdBody):
 
 
 @router.put("/api/admin/repeat-thresholds/{threshold_id}/activate")
-def activate_threshold(threshold_id: int):
+def activate_threshold(threshold_id: int, user: SessionUser = Depends(require_admin)):
     ensure_platform_tables()
     with postgis_db.get_cursor(commit=True) as cur:
         cur.execute("SELECT kind FROM repeat_detector_thresholds WHERE id = %s", (threshold_id,))
@@ -107,7 +108,7 @@ def activate_threshold(threshold_id: int):
 
 
 @router.delete("/api/admin/repeat-thresholds/{threshold_id}")
-def delete_threshold(threshold_id: int):
+def delete_threshold(threshold_id: int, user: SessionUser = Depends(require_admin)):
     ensure_platform_tables()
     with postgis_db.get_cursor(commit=True) as cur:
         cur.execute(

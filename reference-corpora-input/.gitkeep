@@ -1,0 +1,20 @@
+Drop pre-extracted dataset trees here for the assets image build to pick up.
+
+Layout per dataset (one subdirectory per dataset key):
+
+  reference-corpora-input/
+    xview/
+      <class>/*.png           (or labels.json + chips/<*.png>)
+    dior/
+      <class>/*.png
+    hrsc2016/
+      <class>/*.png
+    shiprsimagenet/
+      <class>/*.png
+
+The fetcher at scripts/fetch_reference_datasets.py auto-detects these at
+build time. Empty subdirectories (or a missing subdir entirely) cause the
+adapter to log "skipped" without failing the build.
+
+This directory is bind-mounted READ-ONLY into the asset image's build
+context. Its contents are NEVER committed to git — see .gitignore.

@@ -30,7 +30,6 @@ from database import postgis_db
 from events import publish_event, record_observation, record_timeline_event
 from files import classify_upload, safe_filename, save_upload_file
 from imagery_metadata import extract_raster_metadata
-from ontology import ontology_default_prompts
 from platform_schema import ensure_platform_tables
 from schemas import IngestRequest, IngestUrlRequest
 from fmv_helpers import fmv_public_url, probe_video, transcode_hls
@@ -41,6 +40,69 @@ def _fmv_fallback_prompts() -> list[str]:
     """Lazy view of main.py's FMV_FALLBACK_PROMPTS to avoid import cycle."""
     from main import FMV_FALLBACK_PROMPTS as _p
     return list(_p)
+
+
+def _resolve_upload_modes(
+    media_type: str,
+    model: Optional[str],
+    prompt_mode: Optional[str],
+) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
+    """Validate upload model/mode fields without touching staged files."""
+    if media_type == "imagery":
+        resolved_model = (model or "sam3").strip().lower()
+        resolved_prompt_mode = (prompt_mode or "pcs").strip().lower()
+        if resolved_prompt_mode not in {"pcs", "amg"}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"prompt_mode must be 'pcs' or 'amg', got {prompt_mode!r}",
+            )
+        if resolved_model not in {"sam3", "yolo26"}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"model must be 'sam3' or 'yolo26', got {model!r}",
+            )
+        if resolved_model == "yolo26":
+            raise HTTPException(
+                status_code=400,
+                detail="YOLOE/YOLO 26 is FMV-only; satellite imagery uses the SAM3 sensor pipeline.",
+            )
+        if resolved_prompt_mode == "amg":
+            raise HTTPException(
+                status_code=400,
+                detail="SAM 3 imagery does not support AMG; use prompt_mode='pcs'",
+            )
+        return resolved_model, resolved_prompt_mode, None, None
+
+    if media_type == "fmv":
+        fmv_mode = (prompt_mode or "pcs").strip().lower()
+        if fmv_mode not in {"pcs", "amg"}:
+            raise HTTPException(status_code=400, detail=f"prompt_mode must be 'pcs' or 'amg', got {prompt_mode!r}")
+        fmv_model_choice = (model or "sam3").strip().lower()
+        if fmv_model_choice not in {"sam3", "yolo26"}:
+            raise HTTPException(status_code=400, detail=f"model must be 'sam3' or 'yolo26', got {model!r}")
+        if fmv_model_choice == "sam3" and fmv_mode == "amg":
+            raise HTTPException(
+                status_code=400,
+                detail="SAM 3.1 no longer supports AMG; pick model='yolo26' for promptless detection, or use prompt_mode='pcs'",
+            )
+        return None, None, fmv_model_choice, fmv_mode
+
+    return None, None, None, None
+
+
+def _parse_prompt_list(raw: Optional[str]) -> list[str]:
+    if not raw:
+        return []
+    text = raw.strip()
+    if not text:
+        return []
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        payload = None
+    if isinstance(payload, list):
+        return [str(item).strip() for item in payload if str(item).strip()]
+    return [item.strip() for item in text.split(",") if item.strip()]
 
 
 # Module-level alias so existing references resolve; refreshed at call time.
@@ -235,48 +297,37 @@ def upload_imagery(
     filename = safe_filename(file.filename or "upload.tif")
     media_type, handler = classify_upload(filename)
 
-    # For imagery: parse enabled_layers JSON once, then resolve
-    # (model, prompt_mode) into overrides. Mirrors POST /api/fmv/clips
-    # in backend/main.py so YOLOE-PF (amg) / YOLOE-SEG (pcs) routes are
-    # reachable from the imagery upload form too. Defaults (sam3 + pcs)
-    # preserve today's sensor-pipeline behaviour for clients that omit
-    # the new form fields.
+    # Parse enabled_layers JSON once. Imagery no longer resolves model/mode
+    # into YOLOE layer overrides; YOLOE is FMV-only.
     parsed_enabled_layers: Optional[list[str]] = None
     if enabled_layers:
         try:
             parsed_enabled_layers = json.loads(enabled_layers)
             if not isinstance(parsed_enabled_layers, list):
+                logger.warning(
+                    "ingest upload: enabled_layers parsed but not a list (got %s); ignoring",
+                    type(parsed_enabled_layers).__name__,
+                )
                 parsed_enabled_layers = None
-        except (TypeError, json.JSONDecodeError):
+        except (TypeError, json.JSONDecodeError) as exc:
+            logger.warning("ingest upload: failed to parse enabled_layers JSON: %s", exc)
             parsed_enabled_layers = None
     resolved_model: Optional[str] = None
     resolved_prompt_mode: Optional[str] = None
-    if media_type == "imagery":
-        resolved_model = (model or "sam3").strip().lower()
-        resolved_prompt_mode = (prompt_mode or "pcs").strip().lower()
-        if resolved_prompt_mode not in {"pcs", "amg"}:
+    fmv_model_choice: Optional[str] = None
+    fmv_mode: Optional[str] = None
+    resolved_model, resolved_prompt_mode, fmv_model_choice, fmv_mode = _resolve_upload_modes(
+        media_type,
+        model,
+        prompt_mode,
+    )
+    if media_type == "imagery" and parsed_enabled_layers:
+        blocked_layers = {"yoloe_pf", "yoloe_seg", "yoloe"}
+        if any(str(layer).strip().lower() in blocked_layers for layer in parsed_enabled_layers):
             raise HTTPException(
                 status_code=400,
-                detail=f"prompt_mode must be 'pcs' or 'amg', got {prompt_mode!r}",
+                detail="YOLOE layers are FMV-only; imagery enabled_layers cannot include yoloe_pf or yoloe_seg.",
             )
-        if resolved_model not in {"sam3", "yolo26"}:
-            raise HTTPException(
-                status_code=400,
-                detail=f"model must be 'sam3' or 'yolo26', got {model!r}",
-            )
-        if resolved_model == "sam3" and resolved_prompt_mode == "amg":
-            raise HTTPException(
-                status_code=400,
-                detail="SAM 3 imagery does not support AMG; pick model='yolo26' or prompt_mode='pcs'",
-            )
-        if resolved_model == "yolo26":
-            if resolved_prompt_mode == "amg":
-                parsed_enabled_layers = ["yoloe_pf"]
-                text_prompts = None
-            else:
-                parsed_enabled_layers = ["yoloe_seg"]
-                if not text_prompts:
-                    text_prompts = ",".join(_fmv_fallback_prompts())
 
     if media_type in {"imagery", "fmv"}:
         try:
@@ -415,6 +466,7 @@ def upload_imagery(
                     allow_synthetic=allow_synthetic_telemetry,
                 )
             except TelemetryMissingError as exc:
+                shutil.rmtree(clip_dir, ignore_errors=True)
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             cursor.executemany(
                 """
@@ -429,26 +481,50 @@ def upload_imagery(
             )
         clip["stream_url"] = fmv_public_url(clip.get("hls_path"), clip["file_path"])
         status = "ready"
-        prompt_list = [item.strip() for item in (text_prompts or "").split(",") if item.strip()]
-        if not prompt_list:
-            try:
-                prompt_list = ontology_default_prompts(None) or _fmv_fallback_prompts()
-            except Exception as exc:
-                logger.warning("ontology_default_prompts failed for /api/ingest FMV: %s", exc)
-                prompt_list = _fmv_fallback_prompts()
-        if prompt_list:
-            task = process_fmv.delay(clip["id"], str(clip_path), prompt_list)
+        mode = fmv_mode or "pcs"
+        model_choice = fmv_model_choice or "sam3"
+        if mode == "amg":
+            prompt_list = []
+        else:
+            prompt_list = _parse_prompt_list(text_prompts) or _fmv_fallback_prompts()
+        worker_mode = "yoloe" if model_choice == "yolo26" else mode
+        try:
+            task = process_fmv.delay(clip["id"], str(clip_path), prompt_list, None, None, worker_mode)
             celery_task_id = task.id
             status = "queued"
             clip["status"] = "queued"
+            clip["prompt_mode"] = mode
+            clip["model"] = model_choice
             response.update({
                 "task_id": task.id,
                 "status_url": f"/api/ingest/jobs/{task.id}",
-                "message": "FMV upload received and SAM3 tracking queued.",
+                "message": "FMV upload received and tracking queued.",
                 "clip": clip,
             })
-        else:
-            response.update({"message": "FMV upload received and HLS/KLV catalog prepared.", "clip": clip})
+        except Exception as exc:
+            # Broker down / task unregistered — surface the failure to the
+            # analyst rather than leaving a silent 'received' clip with no
+            # detections. The clip + telemetry are already persisted; mark
+            # status='failed' so it shows up in the StatusBar/Processing
+            # tab and the operator can retry or delete.
+            logger.error("Failed to queue process_fmv for clip %s: %s", clip["id"], exc, exc_info=True)
+            try:
+                with postgis_db.get_cursor(commit=True) as cursor:
+                    cursor.execute(
+                        "UPDATE fmv_clips SET status = 'failed' WHERE id = %s",
+                        (clip["id"],),
+                    )
+            except Exception:
+                logger.exception("Failed to mark fmv_clip %s as failed", clip["id"])
+            status = "failed"
+            clip["status"] = "failed"
+            clip["error"] = f"failed to queue tracking: {exc}"
+            response.update({
+                "task_id": None,
+                "status_url": None,
+                "message": f"FMV upload received but tracking could not be queued: {exc}",
+                "clip": clip,
+            })
     elif media_type == "vector":
         with postgis_db.get_cursor(commit=True) as cursor:
             cursor.execute(

@@ -21,10 +21,11 @@ Standalone FMV tracker. Replaces the removed SAM3 AMG path — see [decisions/wh
 - **`-seg` (text-promptable)** — `metadata.text_prompts` non-empty → this head accepts the prompt list, emits class-labeled detections.
 - **`-pf` (prompt-free)** — `text_prompts` empty → this head emits boxes from its baked-in LVIS-style vocabulary (4 585 classes — many scene/concept entries like `winter morning`, `wine cooler`, `anniversary`). Useful for "discover anything" exploration but expect scene-level labels alongside object detections.
 
-## Reachable from both FMV and imagery
+## Reachable from FMV only
 
-- **FMV path** — `POST /api/fmv/clips` with `model=yolo26 + prompt_mode=amg|pcs` enqueues `process_fmv` with `worker_mode="yoloe"`. The worker hits `/detect_video`, which calls [`sam3_runner.run_video_yoloe`](../../inference-sam3/sam3_runner.py#L1317) once per chunked window. Per-frame `yoloe.run(bundle, frame, prompts, threshold)` produces tracked detections.
-- **Imagery path** — `POST /api/ingest/upload` with `model=yolo26 + prompt_mode=amg|pcs` rewrites the request's `enabled_layers` to `["yoloe_pf"]` or `["yoloe_seg"]`. The worker tiles the raster into chips and posts each to `/detect`, where [`_detect_pipeline`](../../inference-sam3/main.py#L893) detects the YOLOE-exclusive mode (`_enabled in ({"yoloe_pf"}, {"yoloe_seg"})`) and calls `yoloe.run` per chip *instead of* SAM3. SAM3 / DOTA-OBB / Grounding-DINO / Prithvi are all skipped in this mode. See [decisions/why-imagery-yoloe-mirrors-fmv.md](../decisions/why-imagery-yoloe-mirrors-fmv.md).
+`POST /api/fmv/clips` with `model=yolo26 + prompt_mode=amg|pcs` enqueues `process_fmv` with `worker_mode="yoloe"`. The worker hits `/detect_video`, which calls [`sam3_runner.run_video_yoloe`](../../inference-sam3/sam3_runner.py#L1317) once per chunked window. Per-frame `yoloe.run(bundle, frame, prompts, threshold)` produces tracked detections.
+
+Still-image `/detect` and `/detect_raw` reject `yoloe`, `yoloe_pf`, and `yoloe_seg` layers; satellite imagery uses the SAM3 sensor pipeline plus DOTA-OBB and other specialists. See [decisions/removed-yoloe-imagery.md](../decisions/removed-yoloe-imagery.md).
 
 ## Precision and dtype
 
@@ -37,3 +38,4 @@ The `boxes`/`masks` tensors returned by `predict()` can still be bf16 (autocast 
 - [decisions/why-yoloe-replaced-amg.md](../decisions/why-yoloe-replaced-amg.md)
 - [sam3-pcs-multiplex-video.md](sam3-pcs-multiplex-video.md) — the alternative tracker
 - [architecture/data-flow-fmv.md](../architecture/data-flow-fmv.md)
+- [decisions/removed-yoloe-imagery.md](../decisions/removed-yoloe-imagery.md)

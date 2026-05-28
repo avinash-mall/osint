@@ -111,6 +111,12 @@ inference/models/*
 /assets/static/basemap/
 /assets/static/terrain/
 /assets/static/fonts/*.woff2
+
+# Operator-provided drop-in for restricted-access reference corpora.
+# Tracked: only the .gitkeep README; ignore everything else (tarballs,
+# extracted trees, manifests the operator generated).
+/reference-corpora-input/*
+!/reference-corpora-input/.gitkeep
 *_logs.txt
 *_output.txt
 build_*.txt

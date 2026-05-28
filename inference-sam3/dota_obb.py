@@ -26,8 +26,14 @@ DOTA_OBB_IMGSZ = int(os.getenv("DOTA_OBB_IMGSZ", "1024"))
 
 # GPU optimization flags (same env vars as YOLOE — set once per process by
 # scripts/gpu_profiles.py:runtime_env).
+# - half: forced OFF for the same reason YOLOE pins it off (see
+#   docs/decisions/why-yoloe-half-disabled.md). Ultralytics' OBB head
+#   keeps fp32 sub-modules even after model.half(); a half-cast body
+#   trips bf16/fp16 dtype mismatches and produces zero detections
+#   silently when the .cpu().numpy() conversion below raises and is
+#   swallowed by the except clause. Keep DOTA in fp32.
 DOTA_OBB_FUSE = os.getenv("SAM3_YOLO_FUSE", "1").strip().lower() in {"1", "true", "yes", "on"}
-DOTA_OBB_HALF = os.getenv("SAM3_YOLO_HALF", "0").strip().lower() in {"1", "true", "yes", "on"}
+DOTA_OBB_HALF = False
 DOTA_OBB_CHANNELS_LAST = os.getenv("SAM3_YOLO_CHANNELS_LAST", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -101,10 +107,15 @@ def run(
         if obb is None:
             continue
         try:
-            xyxyxyxy = obb.xyxyxyxy.cpu().numpy()  # (N, 4, 2)
-            confs = obb.conf.cpu().numpy()
+            # .float() before .cpu().numpy() — if a future code path
+            # accidentally turns the model half-precision, bf16 tensors
+            # raise TypeError on .numpy(). Mirror the YOLOE pattern at
+            # yoloe.py:222-224.
+            xyxyxyxy = obb.xyxyxyxy.float().cpu().numpy()  # (N, 4, 2)
+            confs = obb.conf.float().cpu().numpy()
             cls_ids = obb.cls.cpu().numpy().astype(int)
-        except Exception:
+        except Exception as exc:
+            print(f"[dota_obb] obb tensor conversion failed: {exc}")
             continue
         for poly, conf, cls_id in zip(xyxyxyxy, confs, cls_ids):
             label = str(names.get(int(cls_id), f"class_{cls_id}"))

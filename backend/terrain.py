@@ -1,8 +1,14 @@
 """DEM-backed terrain helpers for the analytics router.
 
-Provides ray-cast viewshed and line-of-sight against a single GeoTIFF DEM
-mounted at ``DEM_PATH`` (defaults to ``/data/dem/dem.tif``). Earth curvature
-is applied with the standard k=0.13 atmospheric-refraction adjustment.
+Provides ray-cast viewshed and line-of-sight against a DEM mounted at
+``DEM_PATH`` (defaults to ``/data/dem/glo30.vrt`` — a ``gdalbuildvrt`` mosaic
+of the per-1°-tile Copernicus GLO-30 worldwide DEM produced by
+``scripts/build_offline_dem.py``). Earth curvature is applied with the
+standard k=0.13 atmospheric-refraction adjustment.
+
+``rasterio.open`` reads VRT mosaics through the same path as a single
+GeoTIFF, so this module is agnostic to whether the DEM is one file or
+thousands of tiled GLO-30 GeoTIFFs behind a VRT.
 
 The module is intentionally pure-Python with numpy + rasterio so it can be
 unit-tested without a Celery worker, and degrades gracefully when the DEM is
@@ -35,7 +41,7 @@ REFRACTION_K = 0.13  # standard atmospheric refraction coefficient
 
 
 def dem_path() -> Path:
-    return Path(os.getenv("DEM_PATH", "/data/dem/dem.tif"))
+    return Path(os.getenv("DEM_PATH", "/data/dem/glo30.vrt"))
 
 
 def dem_available() -> bool:

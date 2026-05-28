@@ -13,17 +13,17 @@ Operator-driven spatial analysis: viewshed, line-of-sight, routing, change detec
 |---|---|
 | Viewshed (DEM) | `POST /api/analytics/viewshed` |
 | Line-of-sight (DEM) | `POST /api/analytics/los` |
-| Routes (osmnx graph) | `POST /api/analytics/routes` |
+| Routes (OSRM sidecar) | `POST /api/analytics/routes` |
 | Patterns-of-life | `POST /api/analytics/pol` |
 | Change detection | `POST /api/analytics/change` or [ChangeDetectionDialog.tsx](map-change-detection-dialog.md) |
 
 ## Capabilities-aware buttons
 
-On open, the panel calls `GET /api/analytics/capabilities` to learn whether DEM + routing graph are present. Missing capabilities disable the corresponding buttons, surface a tooltip: "DEM not configured (mode: fixture_no_dem)."
+On open, the panel calls `GET /api/analytics/capabilities` to learn whether the DEM mosaic and OSRM sidecar are reachable. The bottom-of-panel chip surfaces `DEM · OK/NONE` and `ROUTING · OK/NONE`. When a tool's underlying capability is missing, the corresponding tool returns a 503 and the panel surfaces the backend `detail` string verbatim in the tool's error row.
 
 ## Cross-references
 
 - [backend-routers/analytics-router.md](../backend-routers/analytics-router.md)
 - [backend/terrain-viewshed-los.md](../backend/terrain-viewshed-los.md)
-- [backend/routing-graph-osmnx.md](../backend/routing-graph-osmnx.md)
+- [backend/routing-osrm.md](../backend/routing-osrm.md)
 - [frontend/services-analytics.md](services-analytics.md) — the API client this UI calls into

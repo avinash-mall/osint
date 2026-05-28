@@ -6,7 +6,7 @@
 
 ## Purpose
 
-Merge raw candidates from SAM3 + DOTA-OBB + Grounding-DINO + YOLOE into one deduplicated detection list. Builds the canonical per-detection record: OBB extraction, COCO RLE encoding, overlay-label join.
+Merge raw image candidates from SAM3 + DOTA-OBB + Grounding-DINO into one deduplicated detection list. Builds the canonical per-detection record: OBB extraction, COCO RLE encoding, overlay-label join.
 
 ## Why this design
 

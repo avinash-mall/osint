@@ -138,6 +138,12 @@ def is_common(prompt: str) -> bool:
     if not prompt_tokens:
         return True
     for vocab_tokens in _vocab_token_sets():
+        # Subset matching is symmetric on purpose: prompt "main battle
+        # tank" → vocab "tank" (vocab ⊂ prompt), and prompt "tank" →
+        # vocab "main battle tank" (prompt ⊂ vocab) both gate as common.
+        # The trade-off is "tanker" can match "tank" since "tank" tokens
+        # ⊂ "tanker" tokens is false ("tanker" ≠ "tank") — token equality
+        # only fires when both word lists agree.
         if vocab_tokens and (
             vocab_tokens.issubset(prompt_tokens) or prompt_tokens.issubset(vocab_tokens)
         ):

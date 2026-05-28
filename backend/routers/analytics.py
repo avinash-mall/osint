@@ -1,9 +1,9 @@
 """Analytics routes: change, viewshed, LOS, routes, POL, job list.
 
 Production defaults are deliberately honest: terrain work requires a DEM,
-routing requires a graph, and change detection requires two imagery passes.
-The old canned GeoJSON shapes remain available only when
-``ANALYTICS_ALLOW_FIXTURES=1`` is set for an explicit demo environment.
+routing requires a reachable OSRM service, and change detection requires
+two imagery passes. The old canned GeoJSON shapes remain available only
+when ``ANALYTICS_ALLOW_FIXTURES=1`` is set for an explicit demo environment.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from geometry import make_square_feature
 from platform_schema import ensure_platform_tables
 from schemas import AnalyticsRequest
 from terrain import dem_available, line_of_sight, sample_elevation, viewshed as compute_viewshed
-from routing import compute_routes, graph_available
+from routing import compute_routes, osrm_available
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -247,9 +247,9 @@ def run_route_options(req: AnalyticsRequest):
     obs_lat, obs_lon = _observer_lat_lon(req.observer, 25.078, 55.179)
     dst_lat, dst_lon = _observer_lat_lon(req.destination, 25.276987, 55.296249)
 
-    if not graph_available():
+    if not osrm_available():
         if not _demo_fixtures_enabled():
-            raise HTTPException(status_code=503, detail="Routes unavailable: routing graph is not configured.")
+            raise HTTPException(status_code=503, detail="Routes unavailable: OSRM service is not reachable.")
         result = _routes_fixture((obs_lat, obs_lon), (dst_lat, dst_lon))
     else:
         try:
@@ -258,12 +258,14 @@ def run_route_options(req: AnalyticsRequest):
                 strategy=req.strategy,
             )
         except Exception as exc:
-            logger.warning("routes: graph routing failed: %s", exc)
+            logger.warning("routes: osrm routing failed: %s", exc)
             if _demo_fixtures_enabled():
                 result = _routes_fixture((obs_lat, obs_lon), (dst_lat, dst_lon))
                 return {"job": _store_analytics_result("routes", req.dict(), result), "result": result}
             raise HTTPException(status_code=503, detail=f"Routes unavailable: {exc}") from exc
-        result = {"type": "FeatureCollection", "features": real_features, "mode": "graph"}
+        if not real_features:
+            raise HTTPException(status_code=422, detail="Routes unavailable: OSRM returned no path between the requested points.")
+        result = {"type": "FeatureCollection", "features": real_features, "mode": "osrm"}
     return {"job": _store_analytics_result("routes", req.dict(), result), "result": result}
 
 
@@ -293,7 +295,7 @@ def analytics_capabilities():
     """Report whether real analytics resources are currently wired up."""
     return {
         "dem": dem_available(),
-        "routing_graph": graph_available(),
+        "routing": osrm_available(),
         "demo_fixtures": _demo_fixtures_enabled(),
     }
 

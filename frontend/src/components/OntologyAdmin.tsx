@@ -1,7 +1,8 @@
 /**
  * Single-tenant admin UI for editing the live ontology.
  *
- * Mounted in App.tsx via the `admin` workspace tab. No auth — by design.
+ * Mounted in App.tsx via the `admin` workspace tab. Backend mutations require
+ * an admin session; the shell hides this workspace from analyst sessions.
  *
  * The right pane reflects the current selection (`mode` is one of
  * 'branch' | 'object' | 'new-branch' | 'new-object' | null). Mutations go
@@ -10,7 +11,7 @@
  * without waiting for the 30s version watcher.
  */
 import axios from 'axios';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
   ChevronDown,
@@ -43,6 +44,8 @@ import {
   type ObjectPayload,
   type UnknownLabel,
 } from '../utils/ontologyApi';
+
+const API_URL = (import.meta as any).env?.VITE_API_URL || '';
 
 const KNOWN_SENSORS = ['optical', 'sar', 'thermal', 'multispectral', 'hyperspectral'];
 
@@ -1078,16 +1081,25 @@ export default function OntologyAdmin({
   const UNKNOWNS_FETCH_LIMIT = 200;
   const UNKNOWNS_INITIAL_DISPLAY = 50;
 
+  // Track mount status so async setState after unmount is a no-op rather
+  // than a React 19 warning when the user navigates away while
+  // listUnknownLabels() is still in flight.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
   const fetchUnknowns = useCallback(async () => {
     setUnknownsLoading(true);
     setUnknownsError(null);
     try {
       const data = await listUnknownLabels({ limit: UNKNOWNS_FETCH_LIMIT });
-      setUnknowns(data.unknown_labels || []);
+      if (mountedRef.current) setUnknowns(data.unknown_labels || []);
     } catch (e: any) {
-      setUnknownsError(e?.message || String(e));
+      if (mountedRef.current) setUnknownsError(e?.message || String(e));
     } finally {
-      setUnknownsLoading(false);
+      if (mountedRef.current) setUnknownsLoading(false);
     }
   }, []);
 
@@ -1528,7 +1540,7 @@ function RecentInstancesPanel({
         // Query detections filtered to this object's class label. The API
         // already lower-cases on disk, so the object id (e.g. "Tank")
         // matches its stored class "tank" once we map to lower.
-        const { data } = await axios.get(`/api/detections`, {
+        const { data } = await axios.get(`${API_URL}/api/detections`, {
           params: { det_class: lowered, limit: 25 },
         });
         if (cancelled) return;

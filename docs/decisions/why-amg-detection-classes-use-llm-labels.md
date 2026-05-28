@@ -1,5 +1,9 @@
 # Why AMG Detection Classes Use LLM Display Labels
 
+## Status
+
+Superseded by [removed-yoloe-imagery.md](removed-yoloe-imagery.md). Image YOLOE/AMG rows are no longer produced, so Detection Classes no longer promotes LLM labels for YOLOE-PF imagery classes.
+
 ## Decision
 
 For imagery uploaded as `model=yolo26 + prompt_mode=amg` (`enabled_layers=["yoloe_pf"]`), the map's Detection Classes panel may promote the LLM-generated advisory label to the primary display label. The raw model class remains the filtering key and is shown as secondary audit text.
@@ -27,5 +31,5 @@ This promotion is deliberately narrow:
 - [backend/worker-legacy-monolith.md](../backend/worker-legacy-monolith.md)
 - [frontend/workspace-geoint-gaiamap.md](../frontend/workspace-geoint-gaiamap.md)
 - [frontend/map-stage-and-layers.md](../frontend/map-stage-and-layers.md)
-- [decisions/why-imagery-yoloe-mirrors-fmv.md](why-imagery-yoloe-mirrors-fmv.md)
+- [decisions/removed-yoloe-imagery.md](removed-yoloe-imagery.md)
 - [decisions/why-open-vocabulary.md](why-open-vocabulary.md)

@@ -10,8 +10,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
+from auth import SessionUser, require_admin
 from database import postgis_db
 from events import normalize_domain, publish_event, record_timeline_event
 from files import safe_filename, save_upload_file
@@ -24,7 +25,7 @@ router = APIRouter()
 
 
 @router.get("/api/models/datasets")
-def list_model_datasets():
+def list_model_datasets(user: SessionUser = Depends(require_admin)):
     ensure_platform_tables()
     with postgis_db.get_cursor() as cursor:
         cursor.execute("""
@@ -36,7 +37,7 @@ def list_model_datasets():
 
 
 @router.get("/api/models")
-def list_models():
+def list_models(user: SessionUser = Depends(require_admin)):
     """List deployed/candidate detection models — used by the Admin · Models view."""
     ensure_platform_tables()
     with postgis_db.get_cursor() as cursor:
@@ -54,6 +55,7 @@ def upload_model_dataset(
     name: Optional[str] = Form(None),
     dataset_type: str = Form("object_detection"),
     domain: str = Form("GEOINT"),
+    user: SessionUser = Depends(require_admin),
 ):
     ensure_platform_tables()
     filename = safe_filename(file.filename or "dataset.zip")
@@ -83,7 +85,7 @@ def upload_model_dataset(
 
 
 @router.post("/api/models/{model_id}/promote")
-def promote_model(model_id: int):
+def promote_model(model_id: int, user: SessionUser = Depends(require_admin)):
     ensure_platform_tables()
     with postgis_db.get_cursor(commit=True) as cursor:
         cursor.execute("UPDATE models SET promoted = FALSE")
@@ -103,7 +105,7 @@ def promote_model(model_id: int):
 
 
 @router.post("/api/training/jobs")
-def create_training_job(req: TrainingJobCreate):
+def create_training_job(req: TrainingJobCreate, user: SessionUser = Depends(require_admin)):
     """Queue a real training run. Requires GPU profile; otherwise rejects so the
     operator knows the job won't run instead of recording a fake 'queued'."""
     ensure_platform_tables()
@@ -142,7 +144,7 @@ def create_training_job(req: TrainingJobCreate):
 
 
 @router.get("/api/training/jobs")
-def list_training_jobs():
+def list_training_jobs(user: SessionUser = Depends(require_admin)):
     ensure_platform_tables()
     with postgis_db.get_cursor() as cursor:
         cursor.execute("""

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 import types
 from unittest.mock import MagicMock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+from auth import SESSION_COOKIE, SessionUser, create_session_cookie
 
 
 def _install_stubs(monkeypatch, *, fetchone=None, fetchall=None):
@@ -29,12 +32,44 @@ def _install_stubs(monkeypatch, *, fetchone=None, fetchall=None):
 
 
 def _client(monkeypatch, **kwargs):
+    os.environ.setdefault("SESSION_SECRET", "test-session-secret-please-replace-1234567890abcdef")
     _install_stubs(monkeypatch, **kwargs)
     sys.modules.pop("routers.admin_thresholds", None)
     mod = importlib.import_module("routers.admin_thresholds")
     app = FastAPI()
     app.include_router(mod.router)
-    return TestClient(app), mod
+    client = TestClient(app)
+    client.cookies.set(
+        SESSION_COOKIE,
+        create_session_cookie(SessionUser(username="admin", role="admin", display_name="Admin")),
+    )
+    return client, mod
+
+
+def test_list_requires_admin_session(monkeypatch):
+    _install_stubs(monkeypatch, fetchall=[[]])
+    sys.modules.pop("routers.admin_thresholds", None)
+    mod = importlib.import_module("routers.admin_thresholds")
+    app = FastAPI()
+    app.include_router(mod.router)
+    resp = TestClient(app).get("/api/admin/repeat-thresholds")
+    assert resp.status_code == 401
+
+
+def test_list_rejects_analyst_session(monkeypatch):
+    os.environ.setdefault("SESSION_SECRET", "test-session-secret-please-replace-1234567890abcdef")
+    _install_stubs(monkeypatch, fetchall=[[]])
+    sys.modules.pop("routers.admin_thresholds", None)
+    mod = importlib.import_module("routers.admin_thresholds")
+    app = FastAPI()
+    app.include_router(mod.router)
+    client = TestClient(app)
+    client.cookies.set(
+        SESSION_COOKIE,
+        create_session_cookie(SessionUser(username="analyst", role="analyst", display_name="Analyst")),
+    )
+    resp = client.get("/api/admin/repeat-thresholds")
+    assert resp.status_code == 403
 
 
 def test_create_threshold_inserts_and_returns_row(monkeypatch):

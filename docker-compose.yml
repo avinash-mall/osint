@@ -53,6 +53,8 @@ services:
       - IMAGERY_PATH=/data/imagery
       - FMV_PATH=/data/fmv
       - DATASET_PATH=/data/datasets
+      - DEM_PATH=${DEM_PATH:-/data/dem/glo30.vrt}
+      - OSRM_URL=${OSRM_URL:-http://osrm:5000}
       - PYTHONPATH=/app
       - DETECTION_THRESHOLD_PROFILE=${DETECTION_THRESHOLD_PROFILE:-recall_review}
       - GLOBAL_CONFIDENCE_FLOOR=${GLOBAL_CONFIDENCE_FLOOR:-0.0}
@@ -81,6 +83,15 @@ services:
       - imagery_data:/data/imagery
       - fmv_data:/data/fmv
       - dataset_data:/data/datasets
+      # Worldwide Copernicus GLO-30 DEM mosaic (tiles + VRT). Populated by
+      # `docker compose --profile bake-dem up dem-baker` once on a connected
+      # host. Read-only at runtime — see docs/deployment/dem-glo30-bake.md.
+      - dem_data:/data/dem:ro
+      # Read-only mount of the baked reference-corpora chip tree, populated
+      # by the `assets` service on startup. The seed worker task copies
+      # selectively from here into /data/datasets/reference-chips/ before
+      # running the bake.
+      - reference_corpora_data:/opt/reference-corpora:ro
     # Strict readiness: hit /api/health and require {"healthy": true}. The
     # endpoint returns healthy=true only when neo4j AND postgis are both
     # reachable, so the check fails until the FastAPI lifespan completes
@@ -385,6 +396,8 @@ services:
       - IMAGERY_PATH=/data/imagery
       - FMV_PATH=/data/fmv
       - DATASET_PATH=/data/datasets
+      - DEM_PATH=${DEM_PATH:-/data/dem/glo30.vrt}
+      - OSRM_URL=${OSRM_URL:-http://osrm:5000}
       - PYTHONPATH=/app
       - DETECTION_THRESHOLD_PROFILE=${DETECTION_THRESHOLD_PROFILE:-recall_review}
       - GLOBAL_CONFIDENCE_FLOOR=${GLOBAL_CONFIDENCE_FLOOR:-0.0}
@@ -426,6 +439,8 @@ services:
       - imagery_data:/data/imagery
       - fmv_data:/data/fmv
       - dataset_data:/data/datasets
+      - dem_data:/data/dem:ro
+      - reference_corpora_data:/opt/reference-corpora:ro
     # `celery inspect ping` proves the worker is connected to the broker AND
     # answering control messages. `pgrep -f celery` only proved the process
     # existed — a worker that crashed mid-task but kept the parent alive
@@ -488,8 +503,16 @@ services:
         BASEMAP_CONCURRENCY: "${BASEMAP_CONCURRENCY:-16}"
         TERRAIN_ZOOM: "${TERRAIN_ZOOM:-0-10}"
         TERRAIN_CONCURRENCY: "${TERRAIN_CONCURRENCY:-4}"
+        REFERENCE_CORPORA_ENABLED: "${REFERENCE_CORPORA_ENABLED:-1}"
+        REFERENCE_CORPORA_HF_TOKEN: "${HF_TOKEN:-}"
+        REFERENCE_MAX_CHIPS_PER_CLASS: "${REFERENCE_MAX_CHIPS_PER_CLASS:-50}"
     image: sentinel-assets:offline
     restart: unless-stopped
+    volumes:
+      # Named volume shared RO with backend + worker. assets entrypoint
+      # rsyncs from the image-baked /opt/baked-reference-chips/ on startup
+      # when the volume is empty or its MANIFEST.sha256 lags the image.
+      - reference_corpora_data:/usr/share/nginx/html/reference-chips
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz && wget -q -O /dev/null http://127.0.0.1/basemap/0/0/0.png && wget -q -O /dev/null http://127.0.0.1/terrain/0/0/0.png || exit 1"]
       interval: 10s
@@ -522,9 +545,76 @@ services:
       timeout: 5s
       retries: 5
 
+  # Planet-scale routing sidecar. Reads a pre-built MLD OSRM dataset from the
+  # `osrm_data` named volume (produced by the `osrm-baker` service below) and
+  # serves the standard OSRM HTTP API on port 5000 inside the Compose network.
+  # The backend's `routing.py` talks to this service over HTTP. Pinned for
+  # reproducible air-gap shipping — update the digest after a connected-host
+  # `docker pull ghcr.io/project-osrm/osrm-backend:v6.0.0` and record it in
+  # docs/deployment/osrm-planet-bake.md.
+  #
+  # Soft dependency from the backend: if `osrm_data` is empty, this service
+  # fails to start, the backend still comes up, and the /api/analytics/routes
+  # endpoint returns 503 "Routes unavailable" until the operator runs
+  # `docker compose --profile bake-osrm up osrm-baker`.
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend:v6.0.0
+    restart: unless-stopped
+    command: osrm-routed --algorithm mld /data/planet.osrm
+    volumes:
+      - osrm_data:/data:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null 'http://127.0.0.1:5000/route/v1/driving/0,0;0.001,0.001?overview=false&alternatives=false&steps=false' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # One-shot worldwide Copernicus GLO-30 DEM bake. Profile-gated so it does
+  # NOT run on a normal `docker compose up`. Run once on a connected host:
+  #   docker compose --profile bake-dem up --build dem-baker
+  # The bake downloads ~26,000 1°-tile GeoTIFFs (~150 GB) from
+  # AWS Open Data (s3://copernicus-dem-30m/) and runs gdalbuildvrt to
+  # produce /data/dem/glo30.vrt. Idempotent: re-runs only fetch missing
+  # tiles. See docs/deployment/dem-glo30-bake.md.
+  dem-baker:
+    profiles: ["bake-dem"]
+    image: ghcr.io/osgeo/gdal:ubuntu-small-3.9.2
+    volumes:
+      - dem_data:/data/dem
+      - ./scripts/build_offline_dem.py:/opt/build_offline_dem.py:ro
+    environment:
+      - DEM_BAKE_CONCURRENCY=${DEM_BAKE_CONCURRENCY:-8}
+      - DEM_BAKE_OUT=/data/dem
+    command: ["python3", "/opt/build_offline_dem.py", "--out", "/data/dem", "--concurrency", "${DEM_BAKE_CONCURRENCY:-8}"]
+
+  # One-shot planet OSRM bake. Profile-gated. Run once on a connected host:
+  #   docker compose --profile bake-osrm up --build osrm-baker
+  # Downloads planet-latest.osm.pbf (~80 GB), runs osrm-extract / -partition
+  # / -customize with the bundled car.lua profile, and leaves the result on
+  # the osrm_data volume. Total artifact ~150-200 GB. See
+  # docs/deployment/osrm-planet-bake.md.
+  osrm-baker:
+    profiles: ["bake-osrm"]
+    image: ghcr.io/project-osrm/osrm-backend:v6.0.0
+    entrypoint: ["/bin/bash"]
+    volumes:
+      - osrm_data:/data
+      - ./scripts/build_offline_osrm.sh:/opt/build_offline_osrm.sh:ro
+    environment:
+      - PLANET_PBF_URL=${PLANET_PBF_URL:-https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf}
+      # The OSRM image bundles its stock profiles at /opt/*.lua. We use the
+      # unmodified car profile that ships with v6.0.0 — pinning the image
+      # version pins the profile.
+      - PROFILE=/opt/car.lua
+    command: ["/opt/build_offline_osrm.sh"]
+
 volumes:
   neo4j_data:
   pg_data:
   imagery_data:
   fmv_data:
   dataset_data:
+  reference_corpora_data:
+  dem_data:
+  osrm_data:

@@ -1,0 +1,6 @@
+{
+  "source_dataset": "nara",
+  "default_license_spdx": "PD-USGov",
+  "notes": "US National Archives — Public Domain federal imagery. URLs point to catalog.archives.gov resource links. Replace with stable archival URLs as catalog entries get pinned.",
+  "platforms": []
+}

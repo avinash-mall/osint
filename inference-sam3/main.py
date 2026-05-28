@@ -145,6 +145,15 @@ SAM3_TEXT_THR = float(os.getenv("SAM3_TEXT_THRESHOLD", "0.50"))
 SAM3_BOX_THR = float(os.getenv("SAM3_BOX_THRESHOLD", "0.25"))
 SAM3_PRITHVI_OVERLAY_THR = float(os.getenv("SAM3_PRITHVI_OVERLAY_THRESHOLD", "0.30"))
 SAM3_SAR_CONF_CAP = float(os.getenv("SAM3_SAR_CONF_CAP", "0.85"))
+# SAR detections are produced through a TerraMind S1→S2 synthetic-optical
+# proxy and must remain visibly below optical-native confidence. See
+# docs/decisions/why-sar-confidence-cap.md. Refuse to start if the env
+# override removes the proxy-flag ceiling.
+if not (0.0 < SAM3_SAR_CONF_CAP <= 0.95):
+    raise RuntimeError(
+        f"SAM3_SAR_CONF_CAP={SAM3_SAR_CONF_CAP} is out of range (0, 0.95]; "
+        "SAR is a synthetic-optical proxy and must remain below the optical ceiling"
+    )
 SAM3_MAX_PROMPTS = int(os.getenv("SAM3_MAX_PROMPTS_PER_REQUEST", "64"))
 SAM3_MAX_IMAGE_PROMPTS = int(os.getenv("SAM3_MAX_IMAGE_PROMPTS", str(SAM3_MAX_PROMPTS)))
 SAM3_MAX_VIDEO_PROMPTS = int(os.getenv("SAM3_MAX_VIDEO_PROMPTS", "128"))
@@ -189,7 +198,7 @@ SAM3_LOAD_GROUNDING_DINO  = _flag("SAM3_LOAD_GROUNDING_DINO",  "0")
 SAM3_LOAD_REMOTECLIP      = _flag("SAM3_LOAD_REMOTECLIP",      "0")
 # YOLOE-26x open-vocabulary segmentation specialist used by the standalone
 # FMV tracker. Bundles both -pf (prompt-free) and -seg (text-prompted)
-# checkpoints — together ~1 GiB, loads on every profile by default.
+# checkpoints; intentionally not loaded by the imagery profile.
 SAM3_LOAD_YOLOE           = _flag("SAM3_LOAD_YOLOE",           _DEFAULT)
 
 # Profile -> component set. "fmv" keeps VRAM small for video tracking;
@@ -220,11 +229,6 @@ PROFILE_COMPONENTS: dict[str, tuple[str, ...]] = {
         "dota_obb" if SAM3_LOAD_DOTA_OBB else None,
         "grounding_dino" if SAM3_LOAD_GROUNDING_DINO else None,
         "remoteclip" if SAM3_LOAD_REMOTECLIP else None,
-        # YOLOE is reachable from the imagery upload form (yolo26+amg /
-        # yolo26+pcs) as an alternative source layer to SAM3. The image
-        # /detect path runs YOLOE only when enabled_layers selects it
-        # exclusively, so this load is cheap when unused.
-        "yoloe" if SAM3_LOAD_YOLOE else None,
     ),
 }
 PROFILE_COMPONENTS["imagery"] = tuple(c for c in PROFILE_COMPONENTS["imagery"] if c)
@@ -267,6 +271,16 @@ _METRIC_WINDOW = int(os.getenv("SAM3_METRIC_WINDOW", "200"))
 _metrics_lock = threading.Lock()
 _metrics: dict[str, dict[str, Any]] = {}
 _req_log: collections.deque[float] = collections.deque(maxlen=2048)
+_IMAGE_YOLOE_LAYERS = {"yoloe", "yoloe_pf", "yoloe_seg"}
+
+
+def _reject_image_yoloe_layers(enabled: set[str]) -> None:
+    normalized = {str(layer).strip().lower() for layer in enabled}
+    if normalized & _IMAGE_YOLOE_LAYERS:
+        raise HTTPException(
+            status_code=400,
+            detail="YOLOE is FMV-only; image /detect requests cannot enable yoloe_pf or yoloe_seg.",
+        )
 
 
 def _record_metric(slug: str, ms: float, *, error: bool = False) -> None:
@@ -944,52 +958,7 @@ async def _detect_pipeline(
     sam3_timings: dict[str, float] = {}
     layer_candidates: list[tuple[str, tuple[Any, Any, Any, Any]]] = []
     candidates_by_layer: dict[str, int] = {}
-    # YOLOE-exclusive imagery mode: when the caller sets enabled_layers to
-    # exactly {"yoloe_pf"} or {"yoloe_seg"} (the imagery upload form's
-    # yolo26+amg / yolo26+pcs paths), skip SAM3 entirely and run YOLOE
-    # instead. Mirrors how POST /api/fmv/clips routes yolo26 uploads off
-    # the SAM3 multiplex tracker. The other specialist layers
-    # (DOTA-OBB / GDINO / Prithvi) are already filtered out by their own
-    # _layer_active() guards when only yoloe_* is in _enabled.
-    _yoloe_exclusive = _enabled in ({"yoloe_pf"}, {"yoloe_seg"})
-    if _yoloe_exclusive:
-        yoloe_bundle = bundle.get("yoloe") or {}
-        if not (yoloe_bundle.get("pf") or yoloe_bundle.get("seg")):
-            raise HTTPException(
-                status_code=503,
-                detail="YOLOE not loaded (set SAM3_LOAD_YOLOE=1 and reload the imagery profile)",
-            )
-        if isinstance(prompt_boxes, list) and prompt_boxes:
-            # Box-prompt mode is a SAM3-only concept; YOLOE doesn't accept
-            # geometric prompts. Reject loudly so the analyst doesn't get a
-            # silently-different result.
-            raise HTTPException(
-                status_code=400,
-                detail="prompt_boxes is not supported when enabled_layers selects YOLOE",
-            )
-        _yoloe_seg = "yoloe_seg" in _enabled
-        if _yoloe_seg:
-            try:
-                prompts = resolve_prompts(meta)
-            except OntologyBackendUnavailable as exc:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-        else:
-            prompts = []
-        prompt_count = len(prompts)
-        _yoloe_slug = "yoloe_seg" if _yoloe_seg else "yoloe_pf"
-        with _track(_yoloe_slug):
-            yoloe_candidates = await run_in_threadpool(
-                yoloe.run,
-                yoloe_bundle,
-                chip3,
-                prompts if prompts else None,
-                SAM3_BOX_THR,
-            )
-        layer_candidates.extend(_tag_candidates("yoloe", yoloe_candidates))
-        candidates_by_layer["yoloe"] = len(yoloe_candidates)
-    elif isinstance(prompt_boxes, list) and prompt_boxes:
+    if isinstance(prompt_boxes, list) and prompt_boxes:
         prompt_count = len(prompt_boxes)
         with _track("sam3_image"):
             sam3_candidates = await run_in_threadpool(
@@ -1203,6 +1172,7 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
     # run as usual (backward-compatible default).
     _raw_enabled = meta.get("enabled_layers")
     _enabled = set(_raw_enabled) if isinstance(_raw_enabled, list) else set()
+    _reject_image_yoloe_layers(_enabled)
     _layer_active = (lambda layer: (layer in _enabled)) if _enabled else (lambda _: True)
 
     # Surface layers that were requested but are not loaded in the bundle.
@@ -1257,6 +1227,11 @@ async def embed_endpoint(image: UploadFile = File(...)):
     Lightweight alternative to /detect for bake scripts and analyst lookup
     that only need the embedding, not the full detection pipeline. Auto-loads
     the imagery profile on first call.
+
+    NOTE: independent of ``SAM3_EMBED_DETECTIONS``. That flag controls
+    whether /detect embeds *its own* detections inline; /embed is the
+    standalone path used by the reference-DB baker per
+    docs/decisions/why-standalone-embed-endpoint.md and must always work.
 
     Returns:
         {"model": str, "dim": 1024, "fp16_b64": str}
@@ -1346,6 +1321,7 @@ async def detect_raw(request: "Request"):  # type: ignore[name-defined]
         # Layer-toggle parsing mirrors /detect so behaviour is identical.
         _raw_enabled = meta.get("enabled_layers")
         _enabled = set(_raw_enabled) if isinstance(_raw_enabled, list) else set()
+        _reject_image_yoloe_layers(_enabled)
         _layer_active = (lambda layer: (layer in _enabled)) if _enabled else (lambda _: True)
 
         body = await request.body()

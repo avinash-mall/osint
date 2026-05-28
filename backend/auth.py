@@ -186,7 +186,7 @@ def ensure_auth_tables(postgis_db) -> None:
             )
             cur.execute(
                 "INSERT INTO auth_config (id, config, updated_by) VALUES (1, %s::jsonb, %s)",
-                (defaults.json(), "bootstrap"),
+                (defaults.model_dump_json(), "bootstrap"),
             )
 
 
@@ -217,7 +217,7 @@ def save_auth_config(postgis_db, cfg: LDAPSettings, updated_by: str = "admin") -
                   updated_at = EXCLUDED.updated_at,
                   updated_by = EXCLUDED.updated_by
             """,
-            (cfg.json(), updated_by),
+            (cfg.model_dump_json(), updated_by),
         )
     return cfg
 

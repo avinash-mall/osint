@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import base64
 import sys
 import threading
 import types
@@ -129,6 +130,43 @@ def test_enabled_layers_sam3_only(monkeypatch):
     assert payload["enabled_layers_unavailable"] == []
     assert mock_dota.call_count == 0
     assert mock_gdino.call_count == 0
+
+
+def test_detect_rejects_image_yoloe_layers():
+    img = Image.new("RGB", (16, 16), color=(10, 20, 30))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+
+    client = TestClient(main.app)
+    resp = client.post(
+        "/detect",
+        files={"image": ("chip.png", buf.getvalue(), "image/png")},
+        data={
+            "metadata": '{"modality":"rgb","text_prompts":["vehicle"],"enabled_layers":["yoloe_seg"]}'
+        },
+    )
+
+    assert resp.status_code == 400
+    assert "FMV-only" in resp.json()["detail"]
+
+
+def test_detect_raw_rejects_image_yoloe_layers():
+    chip = np.zeros((4, 4, 3), dtype=np.uint8)
+    meta = '{"modality":"rgb","text_prompts":["vehicle"],"enabled_layers":["yoloe_pf"]}'
+
+    client = TestClient(main.app)
+    resp = client.post(
+        "/detect_raw",
+        content=chip.tobytes(),
+        headers={
+            "content-type": "application/octet-stream",
+            "X-Chip-Shape": "4,4,3",
+            "X-Chip-Meta-B64": base64.b64encode(meta.encode("utf-8")).decode("ascii"),
+        },
+    )
+
+    assert resp.status_code == 400
+    assert "FMV-only" in resp.json()["detail"]
 
 
 def test_resolve_prompts_explicit_dedupes_without_backend(monkeypatch):

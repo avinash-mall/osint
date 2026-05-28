@@ -1,11 +1,12 @@
 # `ObjectDetailsForm.tsx` — Shared Metadata Editor
 
 **Path:** [frontend/src/components/ObjectDetailsForm.tsx](../../frontend/src/components/ObjectDetailsForm.tsx)
-**Lines:** ~17559 characters
+**Lines:** ~547
+**Depends on:** `axios`, [frontend/src/hooks/useAuth.ts](../../frontend/src/hooks/useAuth.ts), [frontend/src/utils/objectMetadata.ts](../../frontend/src/utils/objectMetadata.ts)
 
 ## Purpose
 
-Single component rendering the operator's editable fields for **any** detection — used by both the map Selection Panel and the FMV workspace. Backing table: `object_details` in PostGIS.
+Single component rendering the operator's editable fields for **any** detection — used by both the map Selection Panel and the FMV workspace. Backing table: `object_details` in PostGIS. Dirty forms autosave through the normal `PUT` route; tab-close handling uses `fetch(..., { method: "PUT", keepalive: true })` at [ObjectDetailsForm.tsx#L224-L240](../../frontend/src/components/ObjectDetailsForm.tsx#L224-L240) so the browser does not downgrade the save to a `POST`.
 
 ## Fields
 
@@ -21,6 +22,11 @@ Single component rendering the operator's editable fields for **any** detection 
 
 - `GET /api/detections/{id}/details` or `GET /api/fmv/detections/{id}/details`
 - `PUT` on the same paths
+
+## Failure modes
+
+- Save failures leave the form dirty and surface the existing inline save status.
+- Browser unload may drop best-effort keepalive requests when the payload exceeds user-agent limits; the route/method still match backend contracts when sent.
 
 ## Cross-references
 

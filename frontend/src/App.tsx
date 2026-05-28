@@ -65,9 +65,11 @@ function Gate() {
 }
 
 function AuthedApp() {
+  const { user } = useAuth();
   const [active, setActive] = useState<WorkspaceKey>('map');
   const [cursor, setCursor] = useState<CursorPos>(null);
   const [crossNav, setCrossNav] = useState<CrossNavTarget | null>(null);
+  const canUseAdmin = user?.role === 'admin';
 
   /**
    * Switching workspaces no longer clears the cursor — the readout stays
@@ -75,13 +77,15 @@ function AuthedApp() {
    * statusbar doesn't reflow on every tab change.
    */
   const onNavigate = useCallback((key: WorkspaceKey) => {
+    if (key === 'admin' && !canUseAdmin) return;
     setActive(key);
-  }, []);
+  }, [canUseAdmin]);
 
   const requestCrossNav = useCallback((target: CrossNavTarget) => {
+    if (target.workspace === 'admin' && !canUseAdmin) return;
     setActive(target.workspace);
     setCrossNav(target);
-  }, []);
+  }, [canUseAdmin]);
 
   const consumeCrossNav = useCallback(() => {
     setCrossNav(null);
@@ -91,6 +95,7 @@ function AuthedApp() {
     <Shell
       active={active}
       onNavigate={onNavigate}
+      canUseAdmin={canUseAdmin}
       statusRight={<CursorReadout cursor={cursor} />}
     >
       {active === 'ingest' && <IngestConnect />}
@@ -112,7 +117,7 @@ function AuthedApp() {
         />
       )}
       {active === 'graph' && <GraphExplorer />}
-      {active === 'admin' && (
+      {active === 'admin' && canUseAdmin && (
         <AdminScreen
           onOpenDetectionOnMap={(detectionId, className) =>
             requestCrossNav({ workspace: 'map', detectionId, className })

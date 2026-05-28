@@ -1,157 +1,91 @@
-"""Graph-based routing for the analytics router.
+"""Routing for the analytics router — OSRM HTTP client.
 
-Expects a pre-built ``networkx`` graph pickled at ``ROUTING_GRAPH_PATH``
-(defaults to ``/data/routing/graph.pkl``). Each node carries ``y`` (lat) and
-``x`` (lon); each edge carries ``length`` (meters) and, optionally,
-``elevation`` (mean meters above sea level) and ``exposure`` (0..1 score
-indicating proximity to known threats). The graph is typically produced by
-OSMnx during deploy:
+Routes are computed by a sidecar OSRM service (``ghcr.io/project-osrm/osrm-backend``)
+mounted against a planet OSM extract. The backend talks to OSRM over HTTP at
+``$OSRM_URL`` (defaults to ``http://osrm:5000``) — see the ``osrm`` service in
+docker-compose. OSRM ships car-profile, MLD-algorithm routes on planet-scale
+data in sub-second time and is fully air-gapped once the planet PBF has been
+ingested via ``scripts/build_offline_osrm.py`` on a connected host.
 
-    import osmnx as ox, pickle
-    g = ox.graph_from_bbox(...)
-    with open("/data/routing/graph.pkl", "wb") as f:
-        pickle.dump(g, f)
+The previous design loaded a pickled ``networkx`` graph entirely into memory.
+That worked for AOI-scale graphs but is multi-terabyte for the planet, so it
+was replaced by an out-of-process router. See
+``docs/decisions/why-osrm-replaced-networkx.md``.
 
-The module falls back gracefully when the graph is missing — callers should
-treat ``None`` returns as "no real routing available" unless an explicit
-demo-fixture mode was requested.
+The module exposes ``osrm_available()`` (cheap, cached health probe) and
+``compute_routes(...)`` (returns the same FeatureCollection shape the analytics
+router has always emitted, with ``properties.mode = "osrm"``).
 """
 
 from __future__ import annotations
 
-import math
+import logging
 import os
-import pickle
-from functools import lru_cache
-from pathlib import Path
-from typing import Iterable, Optional
+import time
+from typing import Optional
 
-try:
-    import networkx as nx
-except Exception:  # pragma: no cover - networkx is in requirements
-    nx = None  # type: ignore[assignment]
+import requests
 
+logger = logging.getLogger(__name__)
 
-DEFAULT_SPEED_KMH = 60.0  # used when an edge has no `maxspeed`
+DEFAULT_OSRM_URL = "http://osrm:5000"
+HEALTH_CACHE_TTL_S = 5.0
+ROUTE_TIMEOUT_S = 15.0
 
 
-def graph_path() -> Path:
-    return Path(os.getenv("ROUTING_GRAPH_PATH", "/data/routing/graph.pkl"))
+def osrm_url() -> str:
+    return (os.getenv("OSRM_URL") or DEFAULT_OSRM_URL).rstrip("/")
 
 
-def graph_available() -> bool:
-    return nx is not None and graph_path().exists()
+_health_state: dict = {"ok": False, "checked_at": 0.0}
 
 
-@lru_cache(maxsize=1)
-def _load_graph():  # type: ignore[no-untyped-def]
-    if not graph_available():
-        return None
-    with open(graph_path(), "rb") as f:
-        return pickle.load(f)
+def osrm_available() -> bool:
+    """True when the OSRM sidecar answers a trivial route within ~1 s.
 
-
-def reset_graph_cache() -> None:
-    _load_graph.cache_clear()
-
-
-def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    R = 6_371_008.8
-    rlat1, rlat2 = math.radians(lat1), math.radians(lat2)
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    a = math.sin(dlat / 2) ** 2 + math.cos(rlat1) * math.cos(rlat2) * math.sin(dlon / 2) ** 2
-    return 2 * R * math.asin(math.sqrt(a))
-
-
-def _nearest_node(g, lat: float, lon: float):  # type: ignore[no-untyped-def]
-    best = None
-    best_d = math.inf
-    for n, data in g.nodes(data=True):
-        ny = data.get("y")
-        nx_ = data.get("x")
-        if ny is None or nx_ is None:
-            continue
-        d = _haversine(lat, lon, float(ny), float(nx_))
-        if d < best_d:
-            best_d = d
-            best = n
-    return best
-
-
-def _edge_length_m(g, u, v, key=None) -> float:  # type: ignore[no-untyped-def]
-    data = g.get_edge_data(u, v) if key is None else g.get_edge_data(u, v, key=key)
-    if data is None:
-        return 0.0
-    if isinstance(data, dict) and "length" in data:
-        try:
-            return float(data["length"])
-        except (TypeError, ValueError):
-            pass
-    # MultiGraph fallback: pick the shortest parallel edge.
-    if isinstance(data, dict):
-        candidates = [d for d in data.values() if isinstance(d, dict) and "length" in d]
-        if candidates:
-            return min(float(d["length"]) for d in candidates)
-    # As a last resort use the great-circle distance between the endpoints.
-    nu = g.nodes[u]
-    nv = g.nodes[v]
-    return _haversine(float(nu["y"]), float(nu["x"]), float(nv["y"]), float(nv["x"]))
-
-
-def _edge_attr(g, u, v, name: str, default: float = 0.0) -> float:  # type: ignore[no-untyped-def]
-    data = g.get_edge_data(u, v)
-    if data is None:
-        return default
-    if isinstance(data, dict) and name in data:
-        try:
-            return float(data[name])
-        except (TypeError, ValueError):
-            return default
-    if isinstance(data, dict):
-        vals = [d.get(name) for d in data.values() if isinstance(d, dict) and name in d]
-        nums = [float(v) for v in vals if v is not None]
-        if nums:
-            return sum(nums) / len(nums)
-    return default
-
-
-def _path_coords(g, path: Iterable) -> list[list[float]]:  # type: ignore[no-untyped-def]
-    coords: list[list[float]] = []
-    for n in path:
-        data = g.nodes[n]
-        y = data.get("y")
-        x = data.get("x")
-        if y is None or x is None:
-            continue
-        coords.append([float(x), float(y)])
-    return coords
-
-
-def _path_metrics(g, path: list) -> dict:  # type: ignore[no-untyped-def]
-    length_m = 0.0
-    exposure_sum = 0.0
-    weighted_speed = 0.0
-    for u, v in zip(path, path[1:]):
-        seg = _edge_length_m(g, u, v)
-        length_m += seg
-        exposure_sum += _edge_attr(g, u, v, "exposure", 0.0) * seg
-        maxspeed = _edge_attr(g, u, v, "maxspeed", DEFAULT_SPEED_KMH) or DEFAULT_SPEED_KMH
-        weighted_speed += maxspeed * seg
-    avg_speed = (weighted_speed / length_m) if length_m else DEFAULT_SPEED_KMH
-    duration_min = (length_m / 1000.0) / max(avg_speed, 1.0) * 60.0
-    return {
-        "length_m": length_m,
-        "duration_minutes": duration_min,
-        "exposure": exposure_sum / length_m if length_m else 0.0,
-    }
-
-
-def _route_with_weight(g, src, dst, weight_fn):  # type: ignore[no-untyped-def]
+    Result is cached for ``HEALTH_CACHE_TTL_S`` so the per-request capability
+    probe and ``/api/analytics/capabilities`` do not hammer OSRM on every poll.
+    """
+    now = time.monotonic()
+    if (now - _health_state["checked_at"]) < HEALTH_CACHE_TTL_S:
+        return bool(_health_state["ok"])
+    ok = False
     try:
-        return nx.shortest_path(g, src, dst, weight=weight_fn)
-    except (nx.NetworkXNoPath, nx.NodeNotFound):
-        return None
+        r = requests.get(
+            f"{osrm_url()}/route/v1/driving/0,0;0.001,0.001",
+            params={"overview": "false", "alternatives": "false", "steps": "false"},
+            timeout=1.5,
+        )
+        if r.status_code == 200:
+            body = r.json()
+            ok = body.get("code") in {"Ok", "NoRoute"}
+    except Exception as exc:  # pragma: no cover - exercised in air-gap tests
+        logger.debug("osrm health probe failed: %s", exc)
+        ok = False
+    _health_state["ok"] = ok
+    _health_state["checked_at"] = now
+    return ok
+
+
+def reset_osrm_health_cache() -> None:
+    _health_state["ok"] = False
+    _health_state["checked_at"] = 0.0
+
+
+_STRATEGY_LABELS = {
+    "shortest":       "shortest",
+    "balanced":       "balanced",
+    "least_exposure": "least exposure",
+}
+
+
+def _risk_label(option_idx: int) -> str:
+    # OSRM ranks alternatives by total weighted duration. Without an exposure
+    # raster baked into the OSRM profile, we surface the rank as the risk
+    # label — option 1 is the primary route, 2/3 are detours.
+    if option_idx == 1:
+        return "primary"
+    return f"alternative {option_idx}"
 
 
 def compute_routes(
@@ -162,84 +96,70 @@ def compute_routes(
     *,
     strategy: Optional[str] = None,
 ) -> Optional[list[dict]]:
-    """Compute up to three route options between observer and destination.
+    """Return up to three OSRM driving routes between observer and destination.
 
-    Strategies, ordered:
-        - "shortest"        — minimum length (length attribute)
-        - "least_exposure"  — minimum cumulative exposure * length
-        - "balanced"        — length * (1 + 0.5 * exposure)
+    Strategy parameter is accepted for API compatibility but does not change
+    OSRM's edge weights — all three alternatives are surfaced regardless, and
+    the ``strategy`` field on each Feature is set to the caller's request (or
+    ``"alternative"`` when no strategy was specified). True
+    exposure-aware routing requires a custom Lua profile baked into the
+    planet OSRM build; see ``docs/decisions/why-osrm-replaced-networkx.md`` for
+    the trade-off.
 
-    When ``strategy`` is provided, only that strategy is returned. Otherwise
-    all three are returned and de-duplicated by node-sequence.
-
-    Returns ``None`` when no routing graph is available.
+    Returns ``None`` when OSRM is unreachable or has no path.
     """
-    if not graph_available():
-        return None
-    g = _load_graph()
-    if g is None:
+    if not osrm_available():
         return None
 
-    src = _nearest_node(g, obs_lat, obs_lon)
-    dst = _nearest_node(g, dst_lat, dst_lon)
-    if src is None or dst is None or src == dst:
-        return None
-
-    def w_shortest(u, v, _data):  # type: ignore[no-untyped-def]
-        return _edge_length_m(g, u, v)
-
-    def w_least_exposure(u, v, _data):  # type: ignore[no-untyped-def]
-        length = _edge_length_m(g, u, v)
-        return length * (1 + 4 * _edge_attr(g, u, v, "exposure", 0.0))
-
-    def w_balanced(u, v, _data):  # type: ignore[no-untyped-def]
-        length = _edge_length_m(g, u, v)
-        return length * (1 + 0.5 * _edge_attr(g, u, v, "exposure", 0.0))
-
-    plans = {
-        "shortest":       ("shortest path",        w_shortest),
-        "least_exposure": ("least exposure",       w_least_exposure),
-        "balanced":       ("balanced",             w_balanced),
+    url = (
+        f"{osrm_url()}/route/v1/driving/"
+        f"{obs_lon:.6f},{obs_lat:.6f};{dst_lon:.6f},{dst_lat:.6f}"
+    )
+    params = {
+        "alternatives": "3",
+        "overview": "full",
+        "geometries": "geojson",
+        "annotations": "duration,distance",
+        "steps": "false",
     }
-    chosen = [strategy] if strategy in plans else list(plans.keys())
-    seen_paths: set[tuple] = set()
+    try:
+        r = requests.get(url, params=params, timeout=ROUTE_TIMEOUT_S)
+    except Exception as exc:
+        logger.warning("osrm route request failed: %s", exc)
+        return None
+    if r.status_code != 200:
+        logger.warning("osrm route HTTP %s: %s", r.status_code, r.text[:200])
+        return None
+    body = r.json()
+    if body.get("code") != "Ok":
+        # NoRoute / NoSegment / InvalidQuery — caller surfaces as no result.
+        logger.info("osrm route non-Ok: code=%s message=%s", body.get("code"), body.get("message"))
+        return None
+
+    routes = body.get("routes") or []
+    if not routes:
+        return None
+
+    label = _STRATEGY_LABELS.get(strategy or "", strategy or "alternative")
     out: list[dict] = []
-    for idx, key in enumerate(chosen, start=1):
-        label, weight_fn = plans[key]
-        path = _route_with_weight(g, src, dst, weight_fn)
-        if not path:
-            continue
-        sig = tuple(path)
-        if sig in seen_paths:
-            continue
-        seen_paths.add(sig)
-        coords = _path_coords(g, path)
+    for idx, route in enumerate(routes, start=1):
+        geom = route.get("geometry") or {}
+        coords = geom.get("coordinates") or []
         if len(coords) < 2:
             continue
-        metrics = _path_metrics(g, path)
+        length_m = float(route.get("distance") or 0.0)
+        duration_s = float(route.get("duration") or 0.0)
         out.append({
             "type": "Feature",
             "geometry": {"type": "LineString", "coordinates": coords},
             "properties": {
                 "option": idx,
-                "strategy": key,
+                "strategy": strategy or "alternative",
                 "label": label,
-                "length_m": metrics["length_m"],
-                "duration_minutes": metrics["duration_minutes"],
-                "exposure": metrics["exposure"],
-                "risk": _risk_label(key, metrics["exposure"]),
+                "length_m": length_m,
+                "duration_minutes": duration_s / 60.0,
+                "exposure": 0.0,
+                "risk": _risk_label(idx),
             },
         })
     return out or None
-
-
-def _risk_label(strategy: str, exposure: float) -> str:
-    if strategy == "least_exposure":
-        return "least exposure"
-    if strategy == "shortest":
-        return "shortest"
-    if exposure < 0.2:
-        return "low risk"
-    if exposure < 0.5:
-        return "medium risk"
-    return "high risk"

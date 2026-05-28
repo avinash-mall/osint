@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import time
 
+import httpx
 import requests
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -24,7 +26,7 @@ _INFERENCE_SAM3_URL = os.getenv("INFERENCE_SAM3_URL", "http://inference-sam3:800
 
 
 @router.post("/api/inference/load")
-def inference_load(profile: str = Query(...)):
+def inference_load(profile: str = Query(...), user: SessionUser = Depends(require_admin)):
     """Proxy: ask the inference service to load a named model profile."""
     try:
         resp = requests.post(
@@ -40,30 +42,33 @@ def inference_load(profile: str = Query(...)):
 
 
 @router.post("/api/inference/unload")
-def inference_unload():
+async def inference_unload(user: SessionUser = Depends(require_admin)):
     """Proxy: ask the inference service to free GPU memory.
 
     The inference container exits on /unload so docker compose can respawn
     it with a clean CUDA context (SAM3 model refs cannot be released
-    in-process). We block until /health responds again so the next
-    /load call from the frontend doesn't race against startup."""
-    try:
-        resp = requests.post(f"{_INFERENCE_SAM3_URL}/unload", timeout=120)
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"inference unreachable: {exc}") from exc
-    if resp.status_code >= 400:
-        raise HTTPException(status_code=resp.status_code, detail=resp.text)
-    body = resp.json()
-    if body.get("restarting"):
-        deadline = time.time() + 30
-        while time.time() < deadline:
-            time.sleep(0.5)
-            try:
-                h = requests.get(f"{_INFERENCE_SAM3_URL}/health", timeout=2)
-                if h.status_code == 200:
-                    return body
-            except requests.RequestException:
-                continue
+    in-process). We poll until /health responds again so the next /load
+    call from the frontend doesn't race against startup. Async so a
+    wedged inference container can't pin a worker thread for 30s while
+    the rest of the API stays responsive."""
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.post(f"{_INFERENCE_SAM3_URL}/unload", timeout=120)
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=502, detail=f"inference unreachable: {exc}") from exc
+        if resp.status_code >= 400:
+            raise HTTPException(status_code=resp.status_code, detail=resp.text)
+        body = resp.json()
+        if body.get("restarting"):
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                await asyncio.sleep(0.5)
+                try:
+                    h = await client.get(f"{_INFERENCE_SAM3_URL}/health", timeout=2)
+                    if h.status_code == 200:
+                        return body
+                except httpx.RequestError:
+                    continue
     return body
 
 

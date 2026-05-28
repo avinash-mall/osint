@@ -68,10 +68,9 @@ export async function installMockApi(page: Page, options: MockOptions = {}) {
     if (path === '/api/detections/classes') return fulfillJson(route, { classes: [{
       class: 'tank',
       label: 'Tank',
-      display_label: 'Armored vehicle',
-      label_source: 'llm_advisory',
+      display_label: 'Tank',
+      label_source: 'deterministic',
       llm_advisory: { label: 'Armored vehicle', description: 'Tracked armored vehicle candidate.', generated_by: 'mock-llm' },
-      amg_image_count: 1,
       count: 1,
       max_confidence: 0.93,
       branch_id: 'vehicles',
@@ -85,7 +84,7 @@ export async function installMockApi(page: Page, options: MockOptions = {}) {
     if (path === '/api/detections/1/details') return fulfillJson(route, { details: { object_class: 'tank', designation: 'Track Alpha', threat_level: 'high', affiliation: 'unknown', notes: 'Visual fixture' } });
     if (path === '/api/detections/queue') return fulfillJson(route, { detections: [] });
     if (path === '/api/detections/1/similar') return fulfillJson(route, { results: [] });
-    if (path === '/api/analytics/capabilities') return fulfillJson(route, { dem: true, routing_graph: true });
+    if (path === '/api/analytics/capabilities') return fulfillJson(route, { dem: true, routing: true });
     if (path === '/api/graph') return fulfillJson(route, { nodes: [{ id: 'veh-1', label: 'vehicle', name: 'Vehicle Alpha', properties: { class: 'tank' } }, { id: 'fac-1', label: 'facility', name: 'Forward Hangar', properties: { class: 'hangar' } }], links: [{ source: 'veh-1', target: 'fac-1', type: 'observed_near', score: 0.87 }] });
     if (path === '/api/ontology/updates') return fulfillJson(route, { updates: [{ id: 3, status: 'pending_review', summary: 'Tank matcher refined.' }] });
     if (path === '/api/fmv/clips') return fulfillJson(route, { clips: [{ id: 7, name: 'visual-sortie-07.mp4', file_path: '/fixtures/visual-sortie-07.mp4', hls_path: null, duration_seconds: 88, width: 1280, height: 720, fps: 30, status: 'ready', stream_url: '', metadata: {} }] });

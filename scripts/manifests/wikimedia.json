@@ -1,0 +1,67 @@
+{
+  "source_dataset": "wikimedia",
+  "default_license_spdx": "CC-BY-SA-4.0",
+  "notes": "Curated Wikimedia Commons photos for ground-view reference. Per-item license_spdx overrides the default — many USAF/DoD images are PD-USGov via Commons.",
+  "platforms": [
+    {
+      "platform_name": "F-16 Fighting Falcon",
+      "view_domain": "ground",
+      "items": [
+        {
+          "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/03/F-16C_Fighting_Falcon.jpg/1024px-F-16C_Fighting_Falcon.jpg",
+          "sha256": "",
+          "license_spdx": "PD-USGov",
+          "attribution": "USAF / Wikimedia Commons"
+        }
+      ]
+    },
+    {
+      "platform_name": "F-35A Lightning II",
+      "view_domain": "ground",
+      "items": [
+        {
+          "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/2/2e/Lockheed_Martin_F-35A_Lightning_II.jpg/1024px-Lockheed_Martin_F-35A_Lightning_II.jpg",
+          "sha256": "",
+          "license_spdx": "PD-USGov",
+          "attribution": "USAF / Wikimedia Commons"
+        }
+      ]
+    },
+    {
+      "platform_name": "Arleigh Burke-class destroyer",
+      "view_domain": "ground",
+      "items": [
+        {
+          "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/00/USS_Arleigh_Burke_DDG-51.jpg/1024px-USS_Arleigh_Burke_DDG-51.jpg",
+          "sha256": "",
+          "license_spdx": "PD-USGov",
+          "attribution": "US Navy / Wikimedia Commons"
+        }
+      ]
+    },
+    {
+      "platform_name": "T-90 main battle tank",
+      "view_domain": "ground",
+      "items": [
+        {
+          "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/38/T-90_-_2008.jpg/1024px-T-90_-_2008.jpg",
+          "sha256": "",
+          "license_spdx": "CC-BY-SA-3.0",
+          "attribution": "Vitaly V. Kuzmin / Wikimedia Commons"
+        }
+      ]
+    },
+    {
+      "platform_name": "M1 Abrams",
+      "view_domain": "ground",
+      "items": [
+        {
+          "url": "https://upload.wikimedia.org/wikipedia/commons/thumb/d/d6/M1A1_Abrams.jpg/1024px-M1A1_Abrams.jpg",
+          "sha256": "",
+          "license_spdx": "PD-USGov",
+          "attribution": "US Army / Wikimedia Commons"
+        }
+      ]
+    }
+  ]
+}

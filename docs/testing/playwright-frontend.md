@@ -19,7 +19,7 @@ npm run test             # or `npx playwright test`
 - Workspace navigation (rail + topbar state)
 - Ingest upload form validation
 - Map detection layer rendering
-- Detection Classes mock data includes the `display_label` / `label_source` path used for YOLOE-PF imagery AMG LLM labels
+- Detection Classes mock data covers deterministic labels plus optional LLM advisory text
 - Selection panel basic interactions
 
 Visual regression for major workspaces — screenshots committed under `tests/screenshots/`, diffed on each run. See `VISUAL_TESTING.md` for the workflow when intentionally updating reference screenshots.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 
 import numpy as np
 import rasterio
@@ -9,12 +10,24 @@ import rasterio
 PRITHVI_CONSTANT_SCALE = 0.0001
 PRITHVI_SIZE = 224
 
+# HLS_SCALE_MODE controls whether decode_hls6 applies the 0.0001 reflectance
+# scale factor. Default 'auto' triggers scaling when mean > 1.0 (raw int
+# DN); 'always' forces it on; 'never' assumes the input is already in
+# [0, 1] reflectance. The heuristic mostly works but mis-classifies
+# mostly-zero arrays with a few high pixels — callers who know their
+# input format should set the env to skip the guess.
+_HLS_SCALE_MODE = os.getenv("HLS_SCALE_MODE", "auto").strip().lower()
+
 
 def decode_hls6(payload: bytes) -> np.ndarray:
     with rasterio.open(io.BytesIO(payload)) as src:
         if src.count < 6:
             raise ValueError(f"Expected at least 6 HLS bands, got {src.count}")
         arr = src.read(indexes=list(range(1, 7))).astype(np.float32)
+    if _HLS_SCALE_MODE == "always":
+        return arr * PRITHVI_CONSTANT_SCALE
+    if _HLS_SCALE_MODE == "never":
+        return arr
     return arr * PRITHVI_CONSTANT_SCALE if float(np.nanmean(arr)) > 1.0 else arr
 
 

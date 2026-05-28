@@ -178,7 +178,7 @@ def get_ontology_unknown_labels(
 def assign_unknown_label(
     label: str,
     body: OntologyAssignBody,
-    user: SessionUser = Depends(get_current_user),
+    user: SessionUser = Depends(require_admin),
 ):
     if body.object_id and body.create_object:
         raise HTTPException(status_code=400, detail="provide object_id OR create_object, not both")
@@ -211,21 +211,37 @@ def assign_unknown_label(
 
         if body.create_object:
             co = body.create_object
-            new_oid = (co.id or "").strip() or f"obj_{uuid.uuid4().hex[:10]}"
+            caller_oid = (co.id or "").strip()
             sensors_json = json.dumps(co.sensors if co.sensors is not None else ["optical"])
-            cursor.execute("SELECT 1 FROM ontology_objects WHERE id = %s", (new_oid,))
-            if cursor.fetchone():
-                raise HTTPException(status_code=409, detail=f"object {new_oid} already exists")
-            cursor.execute(
-                "INSERT INTO ontology_objects "
-                "(id, branch_id, label, prompt, sensors, min_gsd_meters, icon_key, order_index) "
-                "VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s)",
-                (
-                    new_oid, bid, co.label, co.prompt, sensors_json,
-                    co.min_gsd_meters, co.icon_key,
-                    int(co.order_index or 0),
-                ),
-            )
+            # ON CONFLICT DO NOTHING RETURNING removes the SELECT/INSERT
+            # race: two concurrent triagers can no longer both pass the
+            # existence check and then conflict on INSERT. Caller-supplied
+            # ids still get a 409 (no row returned); generated ids retry
+            # with a fresh UUID since 10-hex = 40 bits is not collision-
+            # proof under heavy concurrent triage.
+            new_oid: Optional[str] = None
+            attempts = 1 if caller_oid else 3
+            for _ in range(attempts):
+                candidate = caller_oid or f"obj_{uuid.uuid4().hex[:10]}"
+                cursor.execute(
+                    "INSERT INTO ontology_objects "
+                    "(id, branch_id, label, prompt, sensors, min_gsd_meters, icon_key, order_index) "
+                    "VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s) "
+                    "ON CONFLICT (id) DO NOTHING RETURNING id",
+                    (
+                        candidate, bid, co.label, co.prompt, sensors_json,
+                        co.min_gsd_meters, co.icon_key,
+                        int(co.order_index or 0),
+                    ),
+                )
+                row = cursor.fetchone()
+                if row:
+                    new_oid = row["id"] if isinstance(row, dict) else row[0]
+                    break
+            if new_oid is None:
+                if caller_oid:
+                    raise HTTPException(status_code=409, detail=f"object {caller_oid} already exists")
+                raise HTTPException(status_code=500, detail="failed to allocate unique object id after 3 attempts")
             created_object_id = new_oid
 
         cursor.execute("DELETE FROM ontology_unknown_labels WHERE label = %s", (label,))
@@ -267,7 +283,7 @@ def _fetch_object(cursor, object_id: str) -> Optional[dict]:
 
 
 @router.post("/branches", status_code=201)
-def create_ontology_branch(body: OntologyBranchIn, user: SessionUser = Depends(get_current_user)):
+def create_ontology_branch(body: OntologyBranchIn, user: SessionUser = Depends(require_admin)):
     bid = (body.id or "").strip()
     if not bid:
         raise HTTPException(status_code=400, detail="id is required")
@@ -299,11 +315,23 @@ def create_ontology_branch(body: OntologyBranchIn, user: SessionUser = Depends(g
     return _branch_row_to_dict(row)
 
 
+_PATCH_BRANCH_COLUMNS = {
+    "parent_id", "label", "color", "short", "icon_key",
+    "matchers", "sensors", "order_index",
+}
+
+
 @router.patch("/branches/{branch_id}")
-def patch_ontology_branch(branch_id: str, body: OntologyBranchPatch, user: SessionUser = Depends(get_current_user)):
+def patch_ontology_branch(branch_id: str, body: OntologyBranchPatch, user: SessionUser = Depends(require_admin)):
     payload = body.dict(exclude_unset=True)
     if not payload:
         raise HTTPException(status_code=400, detail="no fields to update")
+    # Defense-in-depth: the Pydantic schema constrains the key set, but
+    # an explicit column whitelist keeps a future schema-vs-DB drift
+    # from surfacing as a cryptic postgres syntax error.
+    bad_keys = set(payload) - _PATCH_BRANCH_COLUMNS
+    if bad_keys:
+        raise HTTPException(status_code=400, detail=f"unknown fields: {sorted(bad_keys)}")
     set_clauses: list[str] = []
     params: list = []
     for key, val in payload.items():
@@ -343,8 +371,15 @@ def patch_ontology_branch(branch_id: str, body: OntologyBranchPatch, user: Sessi
 
 
 @router.delete("/branches/{branch_id}")
-def delete_ontology_branch(branch_id: str, force: bool = Query(False), user: SessionUser = Depends(get_current_user)):
+def delete_ontology_branch(branch_id: str, force: bool = Query(False), user: SessionUser = Depends(require_admin)):
     with postgis_db.get_cursor(commit=True) as cursor:
+        # Serialise on this branch id so concurrent admins counting then
+        # deleting can't race with concurrent inserts of child branches or
+        # detections referencing this branch. Released on transaction end.
+        cursor.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s))",
+            (f"ontology_branch_delete:{branch_id}",),
+        )
         existing = _fetch_branch(cursor, branch_id)
         if not existing:
             raise HTTPException(status_code=404, detail="branch not found")
@@ -424,7 +459,7 @@ def delete_ontology_branch(branch_id: str, force: bool = Query(False), user: Ses
 # ─── Objects CRUD ──────────────────────────────────────────────────────
 
 @router.post("/objects", status_code=201)
-def create_ontology_object(body: OntologyObjectIn, user: SessionUser = Depends(get_current_user)):
+def create_ontology_object(body: OntologyObjectIn, user: SessionUser = Depends(require_admin)):
     oid = (body.id or "").strip()
     bid = (body.branch_id or "").strip()
     if not oid:
@@ -460,7 +495,7 @@ def create_ontology_object(body: OntologyObjectIn, user: SessionUser = Depends(g
 
 
 @router.patch("/objects/{object_id}")
-def patch_ontology_object(object_id: str, body: OntologyObjectPatch, user: SessionUser = Depends(get_current_user)):
+def patch_ontology_object(object_id: str, body: OntologyObjectPatch, user: SessionUser = Depends(require_admin)):
     payload = body.dict(exclude_unset=True)
     if not payload:
         raise HTTPException(status_code=400, detail="no fields to update")
@@ -498,7 +533,7 @@ def patch_ontology_object(object_id: str, body: OntologyObjectPatch, user: Sessi
 
 
 @router.delete("/objects/{object_id}")
-def delete_ontology_object(object_id: str, user: SessionUser = Depends(get_current_user)):
+def delete_ontology_object(object_id: str, user: SessionUser = Depends(require_admin)):
     with postgis_db.get_cursor(commit=True) as cursor:
         existing = _fetch_object(cursor, object_id)
         if not existing:
@@ -529,7 +564,7 @@ def list_prompt_profiles(user: SessionUser = Depends(get_current_user)):
 @router.post("/prompt-profiles", status_code=201)
 def create_prompt_profile(body: PromptProfileBody, user: SessionUser = Depends(require_admin)):
     ensure_platform_tables()
-    if not body.sensor or not body.version or not body.name:
+    if not (body.sensor or "").strip() or not (body.version or "").strip() or not (body.name or "").strip():
         raise HTTPException(status_code=400, detail="sensor, name and version are required")
     sensor = body.sensor.strip().lower()
     with postgis_db.get_cursor(commit=True) as cur:
@@ -542,7 +577,7 @@ def create_prompt_profile(body: PromptProfileBody, user: SessionUser = Depends(r
             ON CONFLICT (sensor, version) DO UPDATE
               SET name = EXCLUDED.name,
                   prompts = EXCLUDED.prompts,
-                  current = EXCLUDED.current OR prompt_profiles.current,
+                  current = EXCLUDED.current,
                   notes = EXCLUDED.notes
             RETURNING id, sensor, name, version, prompts, current, notes, created_at, created_by
             """,
@@ -612,4 +647,3 @@ def get_ontology_updates(limit: int = Query(8, ge=1, le=100), user: SessionUser 
         )
         rows = [dict(r) for r in cur.fetchall()]
     return {"updates": rows}
-

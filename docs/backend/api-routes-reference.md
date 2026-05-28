@@ -44,7 +44,7 @@ Link Graph redesign added the bulk of these — see [architecture/link-graph-red
 | `POST` | `/api/operational-entities/{a_id}/merge-into/{b_id}` | [operational-entities-router.md](../backend-routers/operational-entities-router.md) — Phase 5.H |
 | `GET` `POST` | `/api/operational-entities/pending-same-as[/reject]` | [operational-entities-router.md](../backend-routers/operational-entities-router.md) — Phase 5.F |
 | `GET` `POST` | `/api/operational-entity-candidates[/{id}/approve|/reject]` | [operational-entities-router.md](../backend-routers/operational-entities-router.md) — Phase 4.F |
-| `GET` `POST` `PUT` `DELETE` | `/api/admin/repeat-thresholds[/{id}/activate]` | [admin-thresholds-router.md](../backend-routers/admin-thresholds-router.md) — Phase 5.B |
+| `GET` `POST` `PUT` `DELETE` | `/api/admin/repeat-thresholds[/{id}/activate]` | [admin-thresholds-router.md](../backend-routers/admin-thresholds-router.md) — Phase 5.B; admin session required |
 
 ## Imagery, FMV & Detections
 
@@ -54,9 +54,9 @@ Link Graph redesign added the bulk of these — see [architecture/link-graph-red
 | `POST` | `/api/imagery/change` | [imagery-router.md](../backend-routers/imagery-router.md) |
 | `POST` | `/api/ingest` · `/upload` · `/url` | [ingest-router.md](../backend-routers/ingest-router.md) |
 | `GET` | `/api/ingest/uploads` · `/jobs/{task_id}` | [ingest-router.md](../backend-routers/ingest-router.md) |
-| `POST` `GET` | `/api/fmv/clips` (+ `/{id}` · `/klv` · `/detections`) | upload in [ingest-router.md](../backend-routers/ingest-router.md); reads in [backend/main.py](../../backend/main.py) |
+| `POST` `GET` | `/api/fmv/clips` (+ `/{id}` · `/klv` · `/detections`) | upload and reads in [backend/main.py](../../backend/main.py) |
 | `GET` `PUT` `DELETE` | `/api/fmv/detections/{id}/*` | [fmv-router.md](../backend-routers/fmv-router.md) |
-| `GET` | `/api/detections` · `/geojson` · `/classes` · `/queue` · `/prithvi-overlays` | [backend/main.py](../../backend/main.py) (`/classes` returns optional LLM `display_label` for all-YOLOE-PF imagery AMG rows) |
+| `GET` | `/api/detections` · `/geojson` · `/classes` · `/queue` · `/prithvi-overlays` | [backend/main.py](../../backend/main.py) (`/classes` returns deterministic labels plus optional LLM advisory metadata) |
 | `GET` `PUT` | `/api/detections/{id}/details` | [detections-router.md](../backend-routers/detections-router.md) |
 | `POST` | `/api/detections/manual` · `/resolve` | [detections-router.md](../backend-routers/detections-router.md) and [backend/main.py](../../backend/main.py) |
 | `DELETE` | `/api/detections/{id}` | [detections-router.md](../backend-routers/detections-router.md) |
@@ -68,7 +68,7 @@ Link Graph redesign added the bulk of these — see [architecture/link-graph-red
 
 | Method | Path | Source |
 |---|---|---|
-| `POST` | `/api/inference/load` · `/unload` | [inference-router.md](../backend-routers/inference-router.md) |
+| `POST` | `/api/inference/load` · `/unload` | [inference-router.md](../backend-routers/inference-router.md) — admin session required |
 | `GET` | `/api/inference/health` · `/dashboard` · `/confidence-overrides` | [inference-router.md](../backend-routers/inference-router.md) |
 | `PUT` | `/api/inference/confidence-overrides` | [inference-router.md](../backend-routers/inference-router.md) |
 
@@ -76,10 +76,10 @@ Link Graph redesign added the bulk of these — see [architecture/link-graph-red
 
 | Method | Path | Source |
 |---|---|---|
-| `GET` `POST` `PATCH` `DELETE` | `/api/ontology` · `/branches` · `/objects` | [ontology-router.md](../backend-routers/ontology-router.md) |
+| `GET` `POST` `PATCH` `DELETE` | `/api/ontology` · `/branches` · `/objects` | [ontology-router.md](../backend-routers/ontology-router.md) — branch/object mutations require admin |
 | `GET` | `/api/ontology/version` · `/default-prompts` · `/version-history` | [ontology-router.md](../backend-routers/ontology-router.md) |
-| `GET` `POST` | `/api/ontology/unknown-labels` · `/{label}/assign` | [ontology-router.md](../backend-routers/ontology-router.md) |
-| `GET` `POST` `PUT` `DELETE` | `/api/ontology/prompt-profiles[/{id}/activate]` | [ontology-router.md](../backend-routers/ontology-router.md) |
+| `GET` `POST` | `/api/ontology/unknown-labels` · `/{label}/assign` | [ontology-router.md](../backend-routers/ontology-router.md) — assignment requires admin |
+| `GET` `POST` `PUT` `DELETE` | `/api/ontology/prompt-profiles[/{id}/activate]` | [ontology-router.md](../backend-routers/ontology-router.md) — profile mutations require admin |
 | `GET` | `/api/ontology/updates` | [ontology-router.md](../backend-routers/ontology-router.md) |
 | `POST` | `/api/ontology/update` | [backend/main.py](../../backend/main.py) (LLM-proposed bulk edits) |
 
@@ -89,7 +89,7 @@ Link Graph redesign added the bulk of these — see [architecture/link-graph-red
 |---|---|---|
 | `POST` | `/api/analytics/change` · `viewshed` · `los` · `routes` · `pol` | [analytics-router.md](../backend-routers/analytics-router.md) |
 | `GET` | `/api/analytics/capabilities` · `/jobs` | [analytics-router.md](../backend-routers/analytics-router.md) |
-| `GET` `POST` | `/api/models` · `/datasets` · `/{id}/promote` · `/api/training/jobs` | [models-training-router.md](../backend-routers/models-training-router.md) |
+| `GET` `POST` | `/api/models` · `/datasets` · `/{id}/promote` · `/api/training/jobs` | [models-training-router.md](../backend-routers/models-training-router.md) — admin session required |
 | `GET` | `/api/feeds` · `/api/observations` · `/api/timeline/events` | [backend/main.py](../../backend/main.py) |
 | `POST` `PUT` | `/api/feeds/connect` · `/{id}/status` · `/events` | [backend/main.py](../../backend/main.py) |
 | `POST` | `/api/collection/tasks` | [backend/main.py](../../backend/main.py) |

@@ -1,0 +1,6 @@
+{
+  "source_dataset": "dvids",
+  "default_license_spdx": "PD-USGov",
+  "notes": "DVIDS (Defense Visual Information Distribution Service) — US DoD imagery. Public photos are PD-USGov but the bulk API requires .mil-domain auth. Add per-image URLs from public.dvidshub.net here as you curate.",
+  "platforms": []
+}

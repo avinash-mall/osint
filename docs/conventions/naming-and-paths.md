@@ -26,11 +26,10 @@
 | `/data/imagery/` | COGs, chips, uploads |
 | `/data/fmv/` | clips + HLS segments |
 | `/data/datasets/` | training datasets |
-| `/data/dem/dem.tif` | DEM for analytics |
-| `/data/routing/graph.pkl` | osmnx graph |
+| `/data/dem/glo30.vrt` | GLO-30 worldwide DEM mosaic for analytics |
 | `/data/calibration/` | calibration JSON |
 
-Override via env: `IMAGERY_PATH`, `FMV_PATH`, `DATASET_PATH`, `DEM_PATH`, `ROUTING_GRAPH_PATH`. See [deployment/environment-variables-reference.md](../deployment/environment-variables-reference.md).
+Override via env: `IMAGERY_PATH`, `FMV_PATH`, `DATASET_PATH`, `DEM_PATH`, `OSRM_URL`. Routing is now provided by the `osrm` sidecar over HTTP rather than a file mount. See [deployment/environment-variables-reference.md](../deployment/environment-variables-reference.md).
 
 ## Cross-references
 

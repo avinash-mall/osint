@@ -29,6 +29,12 @@ export function useEventStream(topic: string, onMessage: (message: any) => void)
     const connect = () => {
       socket = new WebSocket(toWsUrl(API_URL, topic));
       socket.onmessage = (event) => {
+        // Drop messages from a socket that's being torn down. When `topic`
+        // changes, cleanup sets closed=true and calls socket.close(), but
+        // close is async — a queued message can still fire here against
+        // the new topic's onMessage handler. Late messages from the old
+        // topic would deliver the wrong payload to the new subscriber.
+        if (closed) return;
         try {
           onMessageRef.current(JSON.parse(event.data));
         } catch {

@@ -27,8 +27,8 @@ Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 | Variable | Default | Description |
 |---|---|---|
 | `IMAGERY_PATH` / `FMV_PATH` / `DATASET_PATH` | `/data/imagery` / `/data/fmv` / `/data/datasets` | Shared volume mounts |
-| `DEM_PATH` | `/data/dem/dem.tif` | DEM GeoTIFF for viewshed/LOS; missing → fixture |
-| `ROUTING_GRAPH_PATH` | `/data/routing/graph.pkl` | Pickled osmnx graph; missing → fixture |
+| `DEM_PATH` | `/data/dem/glo30.vrt` | GLO-30 VRT mosaic for viewshed/LOS; missing → 503 (or fixture if `ANALYTICS_ALLOW_FIXTURES=1`) |
+| `OSRM_URL` | `http://osrm:5000` | URL of the OSRM sidecar for routing; unreachable → 503 (or fixture if `ANALYTICS_ALLOW_FIXTURES=1`) |
 
 ## Auth & CORS
 

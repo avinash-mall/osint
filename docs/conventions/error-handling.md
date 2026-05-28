@@ -27,8 +27,8 @@ When a feature requires optional infrastructure (DEM, routing graph), the endpoi
 
 Examples:
 
-- [backend/terrain-viewshed-los.md](../backend/terrain-viewshed-los.md): `dem_available()` → `mode: "fixture_no_dem"`
-- [backend/routing-graph-osmnx.md](../backend/routing-graph-osmnx.md): `graph_available()` → `mode: "fixture_no_graph"`
+- [backend/terrain-viewshed-los.md](../backend/terrain-viewshed-los.md): `dem_available()` → 503 (or `mode: "fixture_no_dem"` under `ANALYTICS_ALLOW_FIXTURES=1`)
+- [backend/routing-osrm.md](../backend/routing-osrm.md): `osrm_available()` → 503 (or `mode: "fixture_no_graph"` under `ANALYTICS_ALLOW_FIXTURES=1`)
 
 ## Internal trust boundary
 

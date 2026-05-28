@@ -105,15 +105,28 @@ def _canonical_prompt_key(text: Any) -> str:
 _PER_CLASS_CATEGORY_THR: dict[str, float] = _load_per_class_category_thresholds()
 
 
+_LOGGED_THRESHOLD_MISS: set[str] = set()
+
+
 def _category_threshold_for(label: Any) -> float:
     """Return the category-presence threshold for a given prompt label.
 
     Falls back to the global ``SAM3_CATEGORY_THR`` when no per-class override
-    is configured for the label.
+    is configured for the label. Logs the canonical key on the first miss
+    per label so operators can see why an override appeared to be ignored.
     """
     if not _PER_CLASS_CATEGORY_THR:
         return SAM3_CATEGORY_THR
-    return _PER_CLASS_CATEGORY_THR.get(_canonical_prompt_key(label), SAM3_CATEGORY_THR)
+    key = _canonical_prompt_key(label)
+    if key in _PER_CLASS_CATEGORY_THR:
+        return _PER_CLASS_CATEGORY_THR[key]
+    if key and key not in _LOGGED_THRESHOLD_MISS:
+        _LOGGED_THRESHOLD_MISS.add(key)
+        print(
+            f"[sam3_runner] no per-class category threshold for canonical key "
+            f"{key!r}; falling back to SAM3_CATEGORY_THR={SAM3_CATEGORY_THR}"
+        )
+    return SAM3_CATEGORY_THR
 
 
 # Number of frames the SAM3 multiplex tracker buffers internally before its
@@ -327,6 +340,12 @@ def _device_context(device: str):
     without wrapping the build in this context, every replica lands on
     cuda:0 regardless of the `device` argument, collapsing a 4-GPU pool
     onto one GPU.
+
+    Functionally equivalent to `_device_ctx` defined below. They differ
+    only in docstring emphasis: this one is for predictor build / video
+    session lifecycle; `_device_ctx` is for per-forward-pass thread-local
+    pinning under anyio threadpool reuse. A future refactor should
+    collapse them to a single helper.
     """
     from contextlib import nullcontext
     if not device.startswith("cuda"):
@@ -705,6 +724,12 @@ def _device_ctx(device: str):
     on the *current* device — under drift that is a wrong GPU and _get_img_feats
     then dies indexing the cached vis_pos_enc. Pinning makes the collator build
     those tensors on the replica's GPU. No-op for CPU devices.
+
+    Functionally equivalent to `_device_context` defined above. Both wrap
+    `torch.cuda.device(device)`. Kept as a separate name for now because
+    text/box forward paths reach for `_device_ctx` while video lifecycle
+    code reaches for `_device_context`; a future refactor should collapse
+    them.
     """
     import torch
     from contextlib import nullcontext

@@ -33,16 +33,16 @@ backend/provider-lifecycle.md|backend|polls inference-sam3 /health for startup g
 backend/reference-platform-baker.md|backend|reads seed + chip tree, POSTs to inference-sam3 /embed, writes reference_chips + centroids
 backend/reference-platform-db.md|backend|reference_platforms+chips+candidates pgvector schema; object_details platform_* cols
 backend/reports-and-collections.md|backend|target-package and collection-requirement persistence
-backend/routing-graph-osmnx.md|backend|NetworkX routing on osmnx pickle, terrain+threat metadata
+backend/routing-osrm.md|backend|OSRM HTTP client; planet-scale driving routes via sidecar service
 backend/sar-cfar-detector.md|backend,imagery|CA-CFAR ship detection on Sentinel-1 dB raster, CPU-only
 backend/size-estimation-obb.md|backend|UTM-local OBB -> length/width/area/bearing with uncertainty
-backend/terrain-viewshed-los.md|backend|DEM ray-cast with k=0.13 atmospheric refraction
+backend/terrain-viewshed-los.md|backend|DEM ray-cast with k=0.13 refraction; reads GLO-30 VRT mosaic
 backend/threat-assessment.md|backend|open-vocab neutral binning into category buckets
 backend/video-metadata-klv.md|backend,fmv|MISB ST 0601 KLV + MP4 GPMD + SRT sidecar parsers
 backend/worker-legacy-monolith.md|backend,celery|4110-line worker_legacy.py: imagery/FMV tasks, chip planner, evidence persistence
 backend/worker-package-facade.md|backend,celery|worker/__init__.py namespace re-exports preserving Celery task names
 backend-routers/ai-router.md|router|/api/ai/* — LLM analyze/extract/link/propose-actions
-backend-routers/analytics-router.md|router|/api/analytics/* — change/viewshed/los/routes with fixture fallbacks
+backend-routers/analytics-router.md|router|/api/analytics/* — change/viewshed/los/routes; honest 503 when DEM or OSRM missing
 backend-routers/aois-router.md|router|/api/aois CRUD; projects Base/LaunchPoint/Facility into Neo4j on metadata.aoi_kind
 backend-routers/operational-entities-router.md|router|/api/operational-entities CRUD + entity-candidate review; projects Vessel/Aircraft/Vehicle/Facility/Unit/Asset
 backend-routers/admin-thresholds-router.md|router|/api/admin/repeat-thresholds CRUD; per-kind active row drives tick_near_builder + tick_repeat_detector
@@ -115,7 +115,9 @@ deployment/nginx-gateway-and-tile-cache.md|deployment|nginx conf: routes, 24h ti
 deployment/offline-airgap-deployment.md|deployment|build-once / load-and-go runbook, no DNS at runtime
 deployment/gpu-profile-detection.md|deployment,gpu|configure_host.py picks CUDA/PyTorch/arch-list per GPU
 deployment/environment-variables-reference.md|deployment|every variable .env.example exposes, grouped by subsystem
-deployment/volume-mounts-and-paths.md|deployment|/data/imagery, /data/fmv, /data/datasets, /data/dem, /data/routing
+deployment/dem-glo30-bake.md|deployment|operator runbook for the worldwide Copernicus GLO-30 DEM bake
+deployment/osrm-planet-bake.md|deployment|operator runbook for the planet OSRM extract/partition/customize bake
+deployment/volume-mounts-and-paths.md|deployment|/data/imagery, /data/fmv, /data/datasets, dem_data, osrm_data
 operations/celery-queues-and-tasks.md|operations,celery|imagery + default queues, task name table, retry policy
 operations/celery-beat-schedule.md|operations,celery|worker_beat scheduler, periodic feed polling, observation cleanup
 operations/websocket-event-channels.md|operations|topic list: ingest_progress, fmv_detections_complete, ontology_updated
@@ -128,6 +130,7 @@ operations/change-detection-runbook.md|operations,imagery|launching a two-pass c
 operations/health-monitoring.md|operations|Health Dashboard, /api/health, replica chips, alert escalation
 operations/auth-and-ldap-setup.md|operations,auth|env-bootstrap admin, Admin->Auth LDAP form, test bind workflows
 operations/llm-ava-configuration.md|operations|OPENAI_API_BASE pointing at vLLM/Ollama, graceful degradation
+operations/reference-corpora-bake.md|operations,backend|assets-image bake of reference corpora; auto-seed lifespan; admin re-seed; drop-in tarballs
 decisions/borders-vs-graticule-split.md|decision,frontend|LayerPanel "Tactical Grid" split into Borders (admin GeoJSON) and Graticule (coordinate grid)
 decisions/cached-forward-device-normalise.md|decision,sam3|multi-GPU _get_img_feats crash: pin thread-local CUDA device so SAM3 collator builds img_ids right
 decisions/disable-addmm-cuda-lt.md|decision,gpu|routes nn.Linear off cuBLAS-Lt to dodge A100/cu130 corruption bug
@@ -138,20 +141,26 @@ decisions/los-obstruction-point-features.md|decision,backend,frontend|LOS endpoi
 decisions/manual-draw-modal-replaces-prompt.md|decision,frontend|in-app ManualDetectionDialog replaces window.prompt; hardened browsers block native prompts
 decisions/merged-additions-responsive-css.md|decision,frontend|additions.responsive.css folded into index.css to kill duplicate/drifting rules
 decisions/pgvector-adapter-on-pool.md|decision,backend|connection_factory registers pgvector adapter on every pooled connection so list/numpy/Vector inserts work
+decisions/prompt-profile-demote-via-upsert.md|decision,backend,ontology|UPSERT no longer ORs current with existing; make_current=FALSE actually demotes
 decisions/removed-defence-yolo.md|decision|DEFENCE_YOLO emitted 1297 FPs / 0 TPs on DOTA val
 decisions/removed-dinov3-lvd.md|decision|DINOV3_LVD emitted NaN embeddings on drone-video crops
 decisions/removed-sam3-amg.md|decision,fmv|SAM3 AMG path removed in favor of YOLOE
+decisions/removed-yoloe-imagery.md|decision,imagery,inference|YOLOE removed from still-image inference; FMV YOLOE remains
 decisions/reset-db-pool-after-fork.md|decision,celery|worker_process_init resets PostGIS pool so prefork children don't share libpq sockets
 decisions/temporal-swipe-comparator.md|decision,frontend|side-by-side imagery comparator via custom Leaflet pane + clip-path; no plugin dependency
-decisions/why-amg-detection-classes-use-llm-labels.md|decision,frontend|YOLOE-PF imagery AMG class rows may promote LLM display labels while raw class stays canonical
+decisions/why-admin-mutators-require-admin.md|decision,auth|global config/model/ontology/inference mutators require admin sessions
+decisions/why-amg-detection-classes-use-llm-labels.md|decision,frontend|superseded: YOLOE-PF imagery labels no longer promoted after image YOLOE removal
 decisions/why-analyst-username-from-session.md|decision|capture reviewed_by from SessionUser, not request-body analyst field
 decisions/why-auto-identify-in-backend-not-inference.md|decision|reference-DB auto-identify runs in the backend worker, not inference-sam3
 decisions/why-auto-write-with-threshold.md|decision|auto-write platform_* to object_details when top-1 cosine ≥ 0.85; below threshold land as pending
+decisions/why-bake-reference-corpora-into-assets.md|decision,deployment|reference chips baked into assets image; shared volume RW assets / RO backend+worker; rsync-on-startup
+decisions/why-celery-task-from-lifespan.md|decision,backend|first place lifespan enqueues a task; reference-DB bake is too slow to seed sync without blocking /api/health
 decisions/why-basemap-overlay-composition.md|decision,frontend|imagery is bottom ground-truth; BASE/TERRAIN are reference overlays on top; opacity fades overlay
 decisions/why-basemap-z14-cap.md|decision,frontend,deployment|offline bake to z=14 + overlay unmounts above; imagery is source of truth past z=14
 decisions/why-bbox-toggle-removed.md|decision,frontend|BBOX toggle removed; detection boxes always render, GEOM toolbar defaults to OBB
 decisions/why-custom-tour-engine.md|decision,frontend|Map workspace Product Tour built in-repo; no react-joyride/intro.js/shepherd dependency
 decisions/why-geom-prithvi-in-layerpanel.md|decision,frontend|GEOM box-mode + Prithvi overlay toggles moved from top toolbar into LayerPanel Overlays section
+decisions/why-glo30-as-default-dem.md|decision,deployment|Copernicus GLO-30 (30 m, ~150 GB) chosen for tactical worldwide viewshed/LOS
 decisions/why-candidate-edges-persisted.md|decision,backend|persist CANDIDATE_DETECTED_AS in Neo4j on candidate creation; makes pending edges Cypher-traversable
 decisions/why-category-presence-gate.md|decision,sam3|SegEarth-OV-3-style 0.40 filter suppresses absent concepts
 decisions/why-three-graph-modes.md|decision,frontend|Link Graph splits into Investigation/Evidence/Ontology sub-tabs; one workspace, shared state
@@ -165,9 +174,10 @@ decisions/why-dinov3-sat-only.md|decision|DINOv3 ViT-L SAT-493M keeps re-ID qual
 decisions/why-evidence-ranked-detections.md|decision|confirmed objects require source, verifier, physics, and SAR evidence signals
 decisions/why-fmv-track-consolidation.md|decision,fmv|post-inference pass stitches windows/prompts; overlap_index removed; temporal-support class vote
 decisions/why-grounding-dino-auto-gated.md|decision|forcing GDINO drops mAP via NMS suppression of DOTA detections
-decisions/why-imagery-yoloe-mirrors-fmv.md|decision,imagery,inference|imagery upload grows (model, prompt_mode); yolo26 routes /detect to YOLOE-exclusive branch
+decisions/why-imagery-yoloe-mirrors-fmv.md|decision,imagery,inference|superseded: older image YOLOE routing experiment replaced by FMV-only YOLOE
 decisions/why-layerpanel-dot-toggle.md|decision,frontend|eye-toggle column removed; 10px coloured dot is the visibility signal, locked analytics subgroup
 decisions/why-open-vocabulary.md|decision|no closed taxonomy: explicit/precision/ontology labels are first-class
+decisions/why-osrm-replaced-networkx.md|decision,backend|planet-scale routing via OSRM sidecar; pickled networkx graph doesn't scale worldwide
 decisions/why-pgvector-for-reference-db.md|decision|pgvector + HNSW in PostGIS; no FAISS/hnswlib in inference-sam3
 decisions/why-postgis-and-neo4j-coexist.md|decision|PostGIS for spatial detections; Neo4j for entity/link graph
 decisions/why-precision-first-inference-defaults.md|decision|bounded prompt defaults, source-layer provenance, specialist gates, nonzero policy floor
@@ -216,3 +226,4 @@ conventions/adding-a-new-router.md|conventions,backend|mount in main.py, /api pr
 conventions/adding-a-new-admin-tab.md|conventions,frontend|AdminScreen tab registry + admin/*View.tsx pattern
 conventions/adding-a-new-graph-projector.md|conventions,backend|recipe: identity-only MERGE helper + Celery task wrapper + on-write trigger + backfill
 conventions/adding-a-new-admin-config-table.md|conventions,backend|recipe: per-scope versioned config table + CRUD router + worker helper + admin tab
+conventions/adding-a-reference-dataset.md|conventions,backend|recipe: sub-fetcher + seed_terms_per_dataset + MANIFEST + small-subset test + assets rebuild

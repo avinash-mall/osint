@@ -57,6 +57,8 @@ import AnalyticsToolsPanel, {
 import type { AnalyticsResponse } from '../../services/analytics';
 import type { ActiveLayerMap } from './LayerPanel';
 
+const API_URL = (import.meta as any).env?.VITE_API_URL || '';
+
 export type SelectionRightTab = 'details' | 'analytics' | 'similar' | 'tracks';
 export type SelectionEditTab = 'edit' | 'review';
 
@@ -180,7 +182,7 @@ export default function SelectionPanel(props: Props) {
     const [lat, lon] = detCentroid;
     let cancelled = false;
     setElevation({ value: null, status: 'loading' });
-    fetch(`/api/analytics/elevation?lat=${lat}&lon=${lon}`)
+    fetch(`${API_URL}/api/analytics/elevation?lat=${lat}&lon=${lon}`, { credentials: 'include' })
       .then((r) => r.ok ? r.json() : Promise.reject(r.status))
       .then((data) => {
         if (cancelled) return;
@@ -202,7 +204,10 @@ export default function SelectionPanel(props: Props) {
     if (id == null) return;
     setExportingPkg(true);
     try {
-      const r = await fetch(`/api/reports/target-package/${id}`, { method: 'POST' });
+      const r = await fetch(`${API_URL}/api/reports/target-package/${id}`, {
+        method: 'POST',
+        credentials: 'include',
+      });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const blob = await r.blob();
       const url = URL.createObjectURL(blob);

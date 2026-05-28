@@ -171,6 +171,21 @@ class ApproveRejectResponse(BaseModel):
     reviewed_at: str
 
 
+class ReferenceSeedRequest(BaseModel):
+    """POST /api/admin/reference/seed."""
+    force: bool = False
+    only: list[str] = []
+
+
+class ReferenceSeedResponse(BaseModel):
+    """Returned immediately on POST /api/admin/reference/seed. Progress and
+    completion arrive over WS on the ``reference-seed`` topic."""
+    task_id: str
+    force: bool
+    only: list[str]
+    triggered_by: str
+
+
 # ---------------------------------------------------------------------------
 # Tracks
 # ---------------------------------------------------------------------------

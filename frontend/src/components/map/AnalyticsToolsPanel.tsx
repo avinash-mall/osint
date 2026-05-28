@@ -120,7 +120,7 @@ export default function AnalyticsToolsPanel({
     let cancelled = false;
     getCapabilities()
       .then((c) => { if (!cancelled) setCapabilities(c); })
-      .catch(() => { if (!cancelled) setCapabilities({ dem: false, routing_graph: false }); });
+      .catch(() => { if (!cancelled) setCapabilities({ dem: false, routing: false }); });
     return () => { cancelled = true; };
   }, []);
 
@@ -323,8 +323,8 @@ export default function AnalyticsToolsPanel({
           DEM · {capabilities?.dem ? 'OK' : 'NONE'}
         </span>
         <span className="text-sentinel-muted">·</span>
-        <span style={{ color: capabilities?.routing_graph ? '#5ee0a0' : '#e0a05e' }}>
-          ROUTING GRAPH · {capabilities?.routing_graph ? 'OK' : 'NONE'}
+        <span style={{ color: capabilities?.routing ? '#5ee0a0' : '#e0a05e' }}>
+          ROUTING · {capabilities?.routing ? 'OK' : 'NONE'}
         </span>
       </div>
     </div>

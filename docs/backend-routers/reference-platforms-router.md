@@ -16,6 +16,7 @@ Exposes the Reference Embedding DB to authenticated analysts. Seven routes:
 | POST | `/api/identification-candidates/{candidate_id}/approve` | Set status='approved', write `platform_*` to `object_details` with `platform_source='analyst'`, `updated_by=<session-username>`. |
 | POST | `/api/identification-candidates/{candidate_id}/reject` | Set status='rejected'; leaves `object_details` untouched. |
 | GET | `/api/reference-chips/{chip_id}/image` | Stream the chip image at `reference_chips.chip_path` with path-traversal guard. 403 if path is not under `/data/datasets/`. 415 if the file extension is not in the allow-list (png/jpg/jpeg/webp). |
+| POST | `/api/admin/reference/seed` | **Admin-only.** Enqueue `worker.seed_reference_db`. Body: `{force?: bool, only?: list[str]}`. Returns the task_id; progress streams on the `reference-seed` WS topic. Subscribe via `useEventStream("reference-seed", ...)`. See [reference-corpora-bake.md](../operations/reference-corpora-bake.md). |
 
 ## Why this design
 - **Every endpoint explicitly takes `Depends(get_current_user)`** — even the POST ones the session middleware already gates. The explicit dep is belt-and-suspenders consistency + survives a middleware refactor + makes router-only tests still meaningful. See [why-analyst-username-from-session.md](../decisions/why-analyst-username-from-session.md).
