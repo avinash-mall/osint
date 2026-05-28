@@ -103,11 +103,15 @@ Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 | `SAM3_LOAD_PRITHVI` | `0` | Prithvi flood/burn |
 | `SAM3_LOAD_TERRAMIND` | `1` | TerraMind S1→S2 |
 | `SAM3_LOAD_DOTA_OBB` | `1` | DOTA-OBB specialist |
+| `SAM3_LOAD_FAIR1M_OBB` | `1` | FAIR1M-2.0 fine-grained OBB specialist (37 aircraft / naval / vehicle sub-types). Plumbing default-on; runner returns a no-op bundle until operator bakes weights — see [fair1m-bake.md](../operations/fair1m-bake.md) |
 | `SAM3_LOAD_GROUNDING_DINO` | `0` | Grounding-DINO (auto-gated + explicitly enabled per request) |
 | `SAM3_LOAD_REMOTECLIP` | `1` | RemoteCLIP verifier; scores existing candidates only (never proposes). Default-on as of T1.6 — see [why-remoteclip-default-on.md](../decisions/why-remoteclip-default-on.md) |
 | `REMOTECLIP_VERIFIER_LAYERS` | `sam3,grounding_dino` | Source layers the verifier is allowed to second-guess; DOTA-OBB excluded to preserve its closed-vocab precision |
 | `SAM3_LOAD_YOLOE` | `1` | YOLOE-26x FMV tracker |
 | `DOTA_OBB_MODEL_ID` | `yolo26m-obb.pt` | Default OBB checkpoint; `yolo11n-obb.pt` for low-VRAM fallback |
+| `FAIR1M_OBB_MODEL_ID` | `yolo11m-obb-fair1m.pt` | FAIR1M-2.0 OBB checkpoint filename (operator-baked) |
+| `FAIR1M_OBB_THRESHOLD` / `FAIR1M_OBB_IOU` / `FAIR1M_OBB_IMGSZ` | `0.30` / `0.50` / `1024` | Per-prediction confidence floor / NMS IoU / inference image size |
+| `FAIR1M_OBB_WEIGHTS_DIR` | `/data/inference-weights/fair1m` | Mount point where the assets-image rsync deposits the operator-baked `.pt` |
 | `REMOTECLIP_MODEL_ID` / `REMOTECLIP_ARCH` | `chendelong/RemoteCLIP` / `ViT-B-32` | OpenCLIP-compatible verifier weights + architecture |
 | `REMOTECLIP_MARGIN_THRESHOLD` | `0.05` | Semantic margin required for verifier pass |
 | `REMOTECLIP_LOCAL_FILES_ONLY` | `1` | Prevent runtime downloads; verifier loads only baked/cache weights |
