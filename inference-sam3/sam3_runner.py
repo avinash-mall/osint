@@ -76,7 +76,17 @@ SAM3_PRESENCE_RATIO_EPS = float(os.getenv("SAM3_PRESENCE_RATIO_EPS", "0.05"))
 # "both" (existing max-score gate AND new ratio gate must both pass).
 # "max" = only the existing gate (legacy behaviour).
 # "ratio" = only the new ratio gate (skip max-score check).
-SAM3_PRESENCE_MODE = os.getenv("SAM3_PRESENCE_MODE", "both").strip().lower()
+# An invalid value silently disables BOTH gates because neither branch
+# matches; warn and fall back so a typo doesn't quietly turn off filtering.
+_VALID_PRESENCE_MODES = ("max", "ratio", "both")
+_raw_mode = os.getenv("SAM3_PRESENCE_MODE", "both").strip().lower()
+if _raw_mode not in _VALID_PRESENCE_MODES:
+    logger.warning(
+        "SAM3_PRESENCE_MODE=%r is invalid (expected one of %s); falling back to 'both'",
+        _raw_mode, _VALID_PRESENCE_MODES,
+    )
+    _raw_mode = "both"
+SAM3_PRESENCE_MODE = _raw_mode
 
 
 def _load_per_class_category_thresholds() -> dict[str, float]:
@@ -858,6 +868,11 @@ def _prompt_passes_category_gate(output, label: Any = None) -> bool:
     if SAM3_PRESENCE_MODE in ("max", "both"):
         threshold = _category_threshold_for(label) if label is not None else SAM3_CATEGORY_THR
         if threshold > 0.0 and max_score < threshold:
+            if label is not None:
+                logger.debug(
+                    "presence gate dropped prompt %r: signals=%s mode=%s floor=%.2f",
+                    label, _presence_signals(scores_f), SAM3_PRESENCE_MODE, SAM3_PRESENCE_RATIO_FLOOR,
+                )
             return False
         if SAM3_PRESENCE_MODE == "max":
             return True
@@ -866,6 +881,11 @@ def _prompt_passes_category_gate(output, label: Any = None) -> bool:
         mean_score = sum(scores_f) / len(scores_f)
         ratio = max_score / max(mean_score, SAM3_PRESENCE_RATIO_EPS)
         if ratio < SAM3_PRESENCE_RATIO_FLOOR:
+            if label is not None:
+                logger.debug(
+                    "presence gate dropped prompt %r: signals=%s mode=%s floor=%.2f",
+                    label, _presence_signals(scores_f), SAM3_PRESENCE_MODE, SAM3_PRESENCE_RATIO_FLOOR,
+                )
             return False
 
     return True
@@ -1114,16 +1134,13 @@ def _collect_batched_candidates(processed: dict[int, dict[str, Any]], query_labe
         masks = _to_list(result.get("masks"))
         boxes = _to_list(result.get("boxes"))
         scores = _to_list(result.get("scores"))
-        # Category-level presence gate: drop the entire prompt if its best
-        # candidate score is below the per-class (or global) threshold.
-        threshold = _category_threshold_for(label)
-        if threshold > 0.0 and scores:
-            try:
-                max_score = max(float(s) for s in scores)
-            except Exception:
-                max_score = 1.0
-            if max_score < threshold:
-                continue
+        # Delegate to the canonical gate so the batched path applies the
+        # same max-gate + SegEarth-OV3 ratio composition as the single-prompt
+        # path (SAM3_PRESENCE_MODE). Production runs with SAM3_BATCHED_TEXT=1
+        # so this is the dominant code path; an inline max-only gate here
+        # would defeat the ratio default.
+        if not _prompt_passes_category_gate({"scores": scores}, label):
+            continue
         for mask, box_xyxy, score in zip(masks, boxes, scores):
             out.append((
                 np.asarray(_to_numpy(mask), dtype=bool).squeeze(),

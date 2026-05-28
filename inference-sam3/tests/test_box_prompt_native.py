@@ -146,7 +146,12 @@ def test_run_text_prompts_chunks_batched_path(monkeypatch):
     assert calls == [["a", "b"], ["c", "d"], ["e"]]
 
 
-def test_collect_batched_candidates_normalizes_output():
+def test_collect_batched_candidates_normalizes_output(monkeypatch):
+    # Single-score fixture: ratio=1.0, would be dropped by the default
+    # `both` presence-gate mode. This test exercises output normalization
+    # (mask dtype, box rounding, label propagation), not gate semantics,
+    # so we pin the mode to legacy `max`.
+    monkeypatch.setattr(sam3_runner, "SAM3_PRESENCE_MODE", "max")
     H, W = 8, 8
     mask = np.zeros((H, W), dtype=bool)
     mask[2:6, 2:6] = True

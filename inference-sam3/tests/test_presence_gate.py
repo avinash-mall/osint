@@ -92,6 +92,65 @@ def test_presence_signals_helper():
     assert empty == {"max": 0.0, "mean": 0.0, "ratio": 0.0, "n": 0}
 
 
+def test_batched_path_applies_presence_gate(monkeypatch):
+    """`_collect_batched_candidates` (the SAM3_BATCHED_TEXT=1 production path)
+    must delegate to `_prompt_passes_category_gate` so the new ratio gate
+    actually fires. A diffuse score distribution (max ≈ mean) must drop the
+    prompt under default mode `both` and survive under legacy mode `max`."""
+    import numpy as np
+
+    # Diffuse: max=0.47, mean=0.446, ratio≈1.05 — below the 1.8 floor.
+    diffuse_scores = [0.45, 0.43, 0.47, 0.42, 0.46]
+    fake_mask = np.zeros((4, 4), dtype=bool)
+    fake_box = np.asarray([0.0, 0.0, 1.0, 1.0])
+    processed = {
+        0: {
+            "masks": [fake_mask for _ in diffuse_scores],
+            "boxes": [fake_box for _ in diffuse_scores],
+            "scores": diffuse_scores,
+        }
+    }
+    query_labels = {0: "vehicle"}
+
+    # Default mode `both`: ratio gate kills the diffuse distribution → zero candidates.
+    out = sam3_runner._collect_batched_candidates(processed, query_labels)
+    assert out == [], "batched path must apply the ratio gate under default mode"
+
+    # Legacy mode `max`: only max-score check (0.47 > 0.40 floor) → all kept.
+    monkeypatch.setattr(sam3_runner, "SAM3_PRESENCE_MODE", "max")
+    out_legacy = sam3_runner._collect_batched_candidates(processed, query_labels)
+    assert len(out_legacy) == 5, "max-mode batched path must restore legacy permissive behaviour"
+
+
+def test_invalid_presence_mode_falls_back_to_both(monkeypatch, caplog):
+    """An invalid SAM3_PRESENCE_MODE value (typo) must warn and fall back to
+    'both' rather than silently disabling both gates."""
+    import importlib
+    import logging
+
+    monkeypatch.setenv("SAM3_PRESENCE_MODE", "foobar")
+    with caplog.at_level(logging.WARNING, logger="sam3_runner"):
+        importlib.reload(sam3_runner)
+    assert sam3_runner.SAM3_PRESENCE_MODE == "both"
+    assert any("SAM3_PRESENCE_MODE" in rec.message and "invalid" in rec.message for rec in caplog.records)
+
+
+def test_presence_gate_logs_drop_at_debug_level(caplog):
+    """A dropped prompt must emit a debug log line carrying the label +
+    presence signals so operators can grep when tuning the floor."""
+    import logging
+
+    diffuse = [0.45, 0.43, 0.47, 0.42, 0.46]
+    with caplog.at_level(logging.DEBUG, logger="sam3_runner"):
+        result = sam3_runner._prompt_passes_category_gate(_output(diffuse), label="vehicle")
+    assert result is False
+    drop_logs = [r for r in caplog.records if "presence gate dropped" in r.message]
+    assert drop_logs, "expected a debug log line on prompt drop"
+    msg = drop_logs[-1].message
+    assert "vehicle" in msg
+    assert "signals=" in msg
+
+
 def test_per_class_threshold_still_honored_in_both_mode(monkeypatch):
     # Per-class override raises the max gate from 0.40 to 0.60 for "vehicle".
     # Distribution: max=0.55 — fails the per-class max gate even though
