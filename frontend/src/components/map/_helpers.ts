@@ -29,6 +29,44 @@ export function detectionLabel(feature: any): string {
   );
 }
 
+/**
+ * Task 1.2 — single source of truth for the analyst-facing label.
+ *
+ * The backend's ``display_label_for`` policy resolves "(generic)" suffixes,
+ * verifier-trusted canonical labels, and inferred-fallback chains. The UI
+ * just needs to read ``display_label`` (top-level or in ``metadata``) and
+ * fall back to the older ladder for legacy/unpersisted rows. See
+ * docs/decisions/why-generic-labels-when-unverified.md.
+ */
+export function displayLabel(props: any): string {
+  const p = props || {};
+  return String(
+    p.display_label ||
+    p.metadata?.display_label ||
+    p.label ||
+    p.original_class ||
+    p.metadata?.original_class ||
+    p.parent_class ||
+    p.metadata?.parent_class ||
+    p.class ||
+    'Unknown',
+  );
+}
+
+export type LabelQuality = 'verified' | 'inferred' | 'generic';
+
+/**
+ * Returns the persisted ``label_quality`` for a detection, or ``undefined``
+ * for legacy rows persisted before Task 1.2 shipped. Callers should treat
+ * ``undefined`` as the same as ``"inferred"`` for display purposes.
+ */
+export function labelQuality(props: any): LabelQuality | undefined {
+  const p = props || {};
+  const raw = p.label_quality ?? p.metadata?.label_quality;
+  if (raw === 'verified' || raw === 'inferred' || raw === 'generic') return raw;
+  return undefined;
+}
+
 export function detectionClassKeys(feature: any): string[] {
   const props = feature?.properties || {};
   return Array.from(new Set(

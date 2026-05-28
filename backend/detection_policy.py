@@ -243,3 +243,143 @@ def should_emit_detection(
     """Open-vocab: emit unless the operator explicitly raised the floor."""
     decision = detection_decision(label, confidence, policy)
     return decision["review_status"] != "below_class_threshold"
+
+
+# ---------------------------------------------------------------------------
+# Task 1.2 — generic vs specific label quality.
+#
+# DOTA-OBB's 18 classes are deliberately generic (e.g. "plane", "ship",
+# "large vehicle"). When such a label arrives, ``ontology.normalize`` may
+# tie-break the generic prompt to a *specific* defence ontology object label
+# (e.g. "Fighter Aircraft"). That promotion is unsafe without a verifier —
+# the model only said "plane". This helper triplet lets the persistence layer
+# tag detections as ``verified`` / ``inferred`` / ``generic`` so the UI can
+# render an honest label instead of a fabricated specific one.
+#
+# See docs/decisions/why-generic-labels-when-unverified.md.
+# ---------------------------------------------------------------------------
+DOTA_OBB_GENERIC_CLASSES: frozenset[str] = frozenset(
+    normalize_label(label) for label in (
+        "plane",
+        "ship",
+        "storage tank",
+        "baseball diamond",
+        "tennis court",
+        "basketball court",
+        "ground track field",
+        "harbor",
+        "bridge",
+        "large vehicle",
+        "small vehicle",
+        "helicopter",
+        "roundabout",
+        "soccer ball field",
+        "swimming pool",
+        "container crane",
+        "airport",
+        "helipad",
+    )
+)
+
+
+def _verifier_margin_floor() -> float:
+    """Per-call env read so tests can monkeypatch ``LABEL_VERIFIER_MARGIN_FLOOR``."""
+    raw = os.getenv("LABEL_VERIFIER_MARGIN_FLOOR", "0.10")
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return 0.10
+
+
+def label_quality_for(detection: dict[str, Any]) -> str:
+    """Classify a detection's label confidence as verified / inferred / generic.
+
+    * ``"verified"`` — a verifier (RemoteCLIP or a future fine-grained
+      classifier) confirmed the specific label with
+      ``semantic_margin >= LABEL_VERIFIER_MARGIN_FLOOR``.
+    * ``"generic"``  — the underlying ``source_layer`` is ``"dota_obb"`` and
+      ``original_class`` is one of the 18 DOTA-OBB generic classes, and the
+      detection is not verified. Promoting the label to a specific defence
+      object would be fabrication.
+    * ``"inferred"`` — everything else (SAM3 text-prompt detections without
+      verifier confirmation, or any other unverified case). The operator typed
+      the prompt, so the label is honest, but it's "inferred" until verified.
+
+    Missing fields default to safe values; this function never raises.
+    """
+    if not isinstance(detection, dict):
+        return "inferred"
+
+    try:
+        margin = float(detection.get("semantic_margin") or 0.0)
+    except (TypeError, ValueError):
+        margin = 0.0
+    if margin >= _verifier_margin_floor():
+        return "verified"
+
+    source_layer = str(detection.get("source_layer") or "").strip().lower()
+    if source_layer == "dota_obb":
+        original = normalize_label(detection.get("original_class") or detection.get("class") or "")
+        if original in DOTA_OBB_GENERIC_CLASSES:
+            return "generic"
+
+    return "inferred"
+
+
+def display_label_for(
+    detection: dict[str, Any],
+    normalized: Any,
+) -> tuple[str, str]:
+    """Resolve the display label + label_quality the UI should render.
+
+    ``normalized`` is a ``backend.ontology.NormalizedLabel`` (or any object
+    exposing ``canonical_label`` / ``parent_class`` attributes); accepting
+    ``Any`` keeps this module free of an ontology import cycle.
+
+    Returns ``(display_label, label_quality)``:
+
+    * ``verified`` → trust the specific ontology label
+      (``normalized.canonical_label``), fall back to ``original_class``.
+    * ``generic``  → "{parent_class.title()} (generic)" when a parent bucket
+      exists, otherwise the title-cased ``original_class``. We deliberately
+      DO NOT use ``normalized.canonical_label`` — that's the fabrication
+      this helper exists to suppress.
+    * ``inferred`` → prefer ``canonical_label`` (the SAM3 text-prompt match
+      is what the operator typed), fall back to the parent bucket or the
+      original class. The UI flags this state separately.
+    """
+    quality = label_quality_for(detection if isinstance(detection, dict) else {})
+
+    det = detection if isinstance(detection, dict) else {}
+    original_raw = str(det.get("original_class") or det.get("class") or "").strip()
+    parent_raw = str(det.get("parent_class") or "").strip()
+
+    canonical = ""
+    parent_from_norm = ""
+    if normalized is not None:
+        canonical = str(getattr(normalized, "canonical_label", "") or "").strip()
+        parent_from_norm = str(getattr(normalized, "parent_class", "") or "").strip()
+
+    parent = parent_raw or parent_from_norm
+
+    if quality == "verified":
+        display = canonical or original_raw or "Unknown"
+        return display, quality
+
+    if quality == "generic":
+        if parent:
+            display = f"{parent.replace('_', ' ').title()} (generic)"
+        else:
+            display = original_raw.replace("_", " ").title() or "Unknown"
+        return display, quality
+
+    # inferred
+    if canonical:
+        display = canonical
+    elif parent:
+        display = parent.replace("_", " ").title()
+    elif original_raw:
+        display = original_raw.replace("_", " ").title()
+    else:
+        display = "Unknown"
+    return display, quality

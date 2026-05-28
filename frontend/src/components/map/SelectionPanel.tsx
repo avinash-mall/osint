@@ -41,8 +41,10 @@ import type { OntologyBranch } from '../../utils/useOntology';
 
 import {
   detectionCategoryForFeature,
+  displayLabel,
   featureCentroid,
   featureLatLonBounds,
+  labelQuality,
   type DetectionTrack,
 } from './_helpers';
 import { CategoryIcon } from './_icons';
@@ -350,8 +352,34 @@ export default function SelectionPanel(props: Props) {
                 <div className="mt-1 flex items-center gap-2">
                   <span style={{ color: categoryMeta.color }}><CategoryIcon category={category} branchById={branchById} /></span>
                   <div className="text-lg font-semibold uppercase tracking-wide text-slate-100">
-                    {detProps.label || detectionClassLabel(detProps.class)}
+                    {displayLabel(detProps) || detectionClassLabel(detProps.class)}
                   </div>
+                  {(() => {
+                    const lq = labelQuality(detProps);
+                    if (lq === 'generic') {
+                      return (
+                        <span
+                          data-testid="label-quality-chip"
+                          className="sentinel-tag warn uppercase"
+                          title="Detector emitted a generic class; no specific ontology match without a verifier."
+                        >
+                          generic
+                        </span>
+                      );
+                    }
+                    if (lq === 'verified') {
+                      return (
+                        <span
+                          data-testid="label-quality-chip"
+                          className="sentinel-tag ok uppercase"
+                          title="Confirmed by RemoteCLIP verifier (semantic_margin meets the configured floor)."
+                        >
+                          verified
+                        </span>
+                      );
+                    }
+                    return null;
+                  })()}
                 </div>
                 <div className="mt-3 flex items-center gap-2">
                   <div className="h-1 flex-1 bg-sentinel-bg">

@@ -4,7 +4,7 @@
 - [frontend/src/components/map/MapStage.tsx](../../frontend/src/components/map/MapStage.tsx) (~38280 chars)
 - [frontend/src/components/map/LayerPanel.tsx](../../frontend/src/components/map/LayerPanel.tsx) (~587 lines)
 - [frontend/src/components/map/MapEventHandlers.tsx](../../frontend/src/components/map/MapEventHandlers.tsx)
-- [frontend/src/components/map/_helpers.ts](../../frontend/src/components/map/_helpers.ts) (~360 lines; projection/bounds/GeoJSON transforms + class-stat shape)
+- [frontend/src/components/map/_helpers.ts](../../frontend/src/components/map/_helpers.ts) (~396 lines; projection/bounds/GeoJSON transforms + class-stat shape + Task 1.2 `displayLabel` / `labelQuality`)
 - [frontend/src/components/map/_icons.tsx](../../frontend/src/components/map/_icons.tsx) (detection-type icon factory + `BasemapThumb` previews)
 
 ## Purpose
@@ -43,11 +43,13 @@ The basemap selector is a **thumbnail gallery** — three 56×40 hand-painted `B
 - **Range rings** — a toolbar button activates one-shot click pick mode; the picked center opens `RangeRingsDialog` for comma-separated radii (km). The map renders one `Circle` per radius and a center dot whose right-click removes the ring set. Session state only — not persisted.
 - **Side-by-side imagery compare** — when GaiaMap supplies a `compareImagery` pass, `SwipeControl.tsx` mounts a second TileLayer in a custom `sentinel-compare` Leaflet pane and clips it with CSS `clip-path: inset(0 0 0 N%)` driven by a draggable divider chip. No external plugin — keeps the workstation offline-safe.
 - **LOS obstruction tooltips** — obstruction features are rendered as individual `CircleMarker`s (Point per obstruction), each carrying a sticky tooltip with `ELEV`, `BLOCKED clearance`, `distance` from observer.
+- **Detection popup label-quality row (Task 1.2)** — the marker popup that opens on icon-click now reads its title via `displayLabel(p)` from `_helpers.ts`, so DOTA-OBB generic detections surface as `"Aircraft (generic)"` instead of a fabricated specific defence label. A new monospace `LABEL_QUALITY {verified|generic|inferred}` row sits between `ORIG` and `CONF`. See [decisions/why-generic-labels-when-unverified.md](../decisions/why-generic-labels-when-unverified.md).
 - **Focus mode** (UX-AUDIT F12) — `F` (or the eye button in the zoom cluster) collapses floating map chrome to the viewport edges via `.map-focus-on` / `.map-focus-collapsible` classes, leaving a 24 px hover lip. The **zoom / recenter / focus cluster** (F14) — four 32×32 px buttons wired to the live Leaflet instance — sits at the **viewport's bottom-right corner** (`bottom: 14, right: 4`), flush against the SelectionPanel's right edge and overlapping its rightmost ~18 px strip (panel right-margin is 14 px; cluster width 32 px). `z-[600]` keeps it above the panel (`zIndex: 500`). Position is static — when the panel collapses to a 36 px rail the cluster covers the rail's left ~22 px while the remaining ~14 px on the right stays clickable for re-expand.
 
 ## Cross-references
 
 - [decisions/why-bbox-toggle-removed.md](../decisions/why-bbox-toggle-removed.md)
+- [decisions/why-generic-labels-when-unverified.md](../decisions/why-generic-labels-when-unverified.md)
 - [decisions/removed-yoloe-imagery.md](../decisions/removed-yoloe-imagery.md)
 - [decisions/live-mgrs-cursor-readout.md](../decisions/live-mgrs-cursor-readout.md)
 - [decisions/manual-draw-modal-replaces-prompt.md](../decisions/manual-draw-modal-replaces-prompt.md)

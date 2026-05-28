@@ -1,7 +1,7 @@
 # `backend/worker_legacy.py` — Monolithic Celery Tasks
 
 **Path:** [backend/worker_legacy.py](../../backend/worker_legacy.py)
-**Lines:** ~5222 (largest file in the repo)
+**Lines:** ~5477 (largest file in the repo)
 **Depends on:** Most of the rest of `backend/` plus `celery`, `requests`, `numpy`, `rasterio`, `cv2`
 
 ## Purpose
@@ -55,7 +55,7 @@ See [decisions/why-worker-legacy-monolith-kept.md](../decisions/why-worker-legac
 - NDJSON consumer for `/detect_video` (parses streaming response, yields per-frame records).
 - [`_calibration_tag_for_detection`](../../backend/worker_legacy.py#L662-L664) — chooses `source_layer` for detector-specific calibration.
 - [`_llm_propose_entities`](../../backend/worker_legacy.py#L3429-L3487) — schema-constrained LLM proposer over REPEATED_AT clusters; raises/falls back cleanly.
-- [`store_detections`](../../backend/worker_legacy.py#L2440-L2686) — persists calibrated, georeferenced, evidence-ranked detections. Plan C: immediately after each `INSERT INTO detections … RETURNING id`, opens a `SAVEPOINT auto_identify` and calls [`attach_identification_candidates`](reference-platform-db.md) with the row's `embedding_anchor` (best-effort: any exception is logged at WARNING and the savepoint is rolled back so a helper failure cannot poison the surrounding batch transaction — see [why-auto-identify-in-backend-not-inference.md](../decisions/why-auto-identify-in-backend-not-inference.md)). Top-1 score ≥ `REFERENCE_ID_AUTO_THRESHOLD` (default `0.85`, env-overridable) auto-applies `platform_*` to `object_details` per [why-auto-write-with-threshold.md](../decisions/why-auto-write-with-threshold.md).
+- [`store_detections`](../../backend/worker_legacy.py#L2444-L2700) — persists calibrated, georeferenced, evidence-ranked detections. Plan C: immediately after each `INSERT INTO detections … RETURNING id`, opens a `SAVEPOINT auto_identify` and calls [`attach_identification_candidates`](reference-platform-db.md) with the row's `embedding_anchor` (best-effort: any exception is logged at WARNING and the savepoint is rolled back so a helper failure cannot poison the surrounding batch transaction — see [why-auto-identify-in-backend-not-inference.md](../decisions/why-auto-identify-in-backend-not-inference.md)). Top-1 score ≥ `REFERENCE_ID_AUTO_THRESHOLD` (default `0.85`, env-overridable) auto-applies `platform_*` to `object_details` per [why-auto-write-with-threshold.md](../decisions/why-auto-write-with-threshold.md). Task 1.2: also calls [`display_label_for`](detection-policy.md) and persists `display_label` + `label_quality` advisory metadata fields so the UI can render generic DOTA-OBB detections as `"Aircraft (generic)"` instead of a fabricated specific defence label — see [decisions/why-generic-labels-when-unverified.md](../decisions/why-generic-labels-when-unverified.md).
 - [`FMV_DEFAULT_PROMPTS`](../../backend/worker_legacy.py#L236) — PCS fallback prompt set (`vehicle,person,building`) when operator gave no FMV prompts.
 
 ## Fork safety
@@ -90,5 +90,6 @@ Everything here is re-exported by [backend/worker/__init__.py](../../backend/wor
 - [backend/database-connections.md](database-connections.md)
 - [decisions/why-evidence-ranked-detections.md](../decisions/why-evidence-ranked-detections.md)
 - [decisions/why-precision-first-inference-defaults.md](../decisions/why-precision-first-inference-defaults.md)
+- [decisions/why-generic-labels-when-unverified.md](../decisions/why-generic-labels-when-unverified.md)
 - [operations/celery-queues-and-tasks.md](../operations/celery-queues-and-tasks.md)
 - [conventions/adding-a-new-celery-task.md](../conventions/adding-a-new-celery-task.md)

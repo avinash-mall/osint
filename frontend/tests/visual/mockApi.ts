@@ -1,6 +1,22 @@
 import type { Page, Route } from '@playwright/test';
 
-type MockOptions = { authenticated?: boolean };
+type MockOptions = {
+  authenticated?: boolean;
+  /**
+   * Task 1.2 fixture knob — override the single detection's label-quality
+   * surface so visual specs can assert the [GENERIC] / [VERIFIED] chips
+   * without re-mocking the full ontology.
+   */
+  detectionOverrides?: {
+    label?: string;
+    display_label?: string;
+    label_quality?: 'verified' | 'inferred' | 'generic';
+    original_class?: string;
+    parent_class?: string;
+    branch_id?: string;
+    metadata_extra?: Record<string, unknown>;
+  };
+};
 const NOW = '2026-05-16T03:00:00.000Z';
 const ONE_PIXEL_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aX0AAAAASUVORK5CYII=';
 
@@ -22,24 +38,57 @@ const ontology = {
   ],
 };
 
-const geojson = {
-  type: 'FeatureCollection',
-  features: [{
-    type: 'Feature',
-    geometry: { type: 'Polygon', coordinates: [[[54.92, 24.98], [54.96, 24.98], [54.96, 25.02], [54.92, 25.02], [54.92, 24.98]]] },
-    properties: {
-      id: 1, class: 'tank', label: 'Tank', parent_class: 'tank', original_class: 'tank', branch_id: 'vehicles', confidence: 0.93,
-      threat_level: 'high', allegiance: 'unknown', review_status: 'review_candidate',
-      metadata: { designation: 'Track Alpha', branch_id: 'vehicles', original_class: 'tank', parent_class: 'tank', model_version: 'sam3-visual', taxonomy_version: 'v18', embedding: true, embedding_head: 'sat', coverage_fraction: 0.82, threshold_profile: 'imagery' },
-    },
-  }],
-};
+function buildGeoJSON(overrides: MockOptions['detectionOverrides'] = {}) {
+  const baseClass = overrides?.original_class || 'tank';
+  const baseLabel = overrides?.label || 'Tank';
+  return {
+    type: 'FeatureCollection',
+    features: [{
+      type: 'Feature',
+      geometry: { type: 'Polygon', coordinates: [[[54.92, 24.98], [54.96, 24.98], [54.96, 25.02], [54.92, 25.02], [54.92, 24.98]]] },
+      properties: {
+        id: 1,
+        class: baseClass,
+        label: baseLabel,
+        parent_class: overrides?.parent_class || baseClass,
+        original_class: baseClass,
+        branch_id: overrides?.branch_id || 'vehicles',
+        confidence: 0.93,
+        threat_level: 'high',
+        allegiance: 'unknown',
+        review_status: 'review_candidate',
+        // Task 1.2 — surface display_label + label_quality so the UI's
+        // displayLabel() / labelQuality() helpers can read them directly.
+        display_label: overrides?.display_label,
+        label_quality: overrides?.label_quality,
+        metadata: {
+          designation: 'Track Alpha',
+          branch_id: overrides?.branch_id || 'vehicles',
+          original_class: baseClass,
+          parent_class: overrides?.parent_class || baseClass,
+          model_version: 'sam3-visual',
+          taxonomy_version: 'v18',
+          embedding: true,
+          embedding_head: 'sat',
+          coverage_fraction: 0.82,
+          threshold_profile: 'imagery',
+          display_label: overrides?.display_label,
+          label_quality: overrides?.label_quality,
+          ...(overrides?.metadata_extra || {}),
+        },
+      },
+    }],
+  };
+}
+
+const geojson = buildGeoJSON();
 
 const fmvDetections = [{ id: 11, clip_id: 7, frame_index: 42, class: 'tank', confidence: 0.91, bbox: [0.5, 0.5, 0.2, 0.2], metadata: { track_id: 'A-17', affiliation: 'unknown', uses_multiplex: true } }];
 const fulfillJson = (route: Route, body: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
 
 export async function installMockApi(page: Page, options: MockOptions = {}) {
   const authenticated = options.authenticated ?? true;
+  const detectionGeoJSON = options.detectionOverrides ? buildGeoJSON(options.detectionOverrides) : geojson;
   await page.addInitScript((fixedNow) => {
     const NativeDate = Date;
     class FixedDate extends NativeDate {
@@ -76,7 +125,7 @@ export async function installMockApi(page: Page, options: MockOptions = {}) {
       branch_id: 'vehicles',
       threat_level: 'high',
     }] });
-    if (path === '/api/detections/geojson') return fulfillJson(route, geojson);
+    if (path === '/api/detections/geojson') return fulfillJson(route, detectionGeoJSON);
     if (path === '/api/detections/prithvi-overlays') return fulfillJson(route, { type: 'FeatureCollection', features: [] });
     if (path === '/api/tracks/detections') return fulfillJson(route, { tracks: [] });
     if (path === '/api/basemap/countries') return fulfillJson(route, { type: 'FeatureCollection', features: [] });

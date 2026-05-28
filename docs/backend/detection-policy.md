@@ -1,8 +1,8 @@
 # `backend/detection_policy.py` — Precision Open-Vocab Filter Policy
 
 **Path:** [backend/detection_policy.py](../../backend/detection_policy.py)
-**Lines:** ~245
-**Depends on:** [backend/ontology.py](../../backend/ontology.py), [backend/database.py](../../backend/database.py), env `GLOBAL_CONFIDENCE_FLOOR`, `PER_CLASS_CONFIDENCE_OVERRIDES`, `DETECTION_THRESHOLD_PROFILE`
+**Lines:** ~390
+**Depends on:** [backend/ontology.py](../../backend/ontology.py), [backend/database.py](../../backend/database.py), env `GLOBAL_CONFIDENCE_FLOOR`, `PER_CLASS_CONFIDENCE_OVERRIDES`, `DETECTION_THRESHOLD_PROFILE`, `LABEL_VERIFIER_MARGIN_FLOOR`
 
 ## Purpose
 
@@ -23,10 +23,25 @@ Single policy module: should a raw `/detect` detection be emitted, what is its `
 - [`invalidate_policy_cache`](../../backend/detection_policy.py#L184).
 - [`detection_decision`](../../backend/detection_policy.py#L198) — `{emit: bool, reasons: list[str]}` per detection.
 - [`should_emit_detection`](../../backend/detection_policy.py#L240) — boolean shortcut.
+- [`DOTA_OBB_GENERIC_CLASSES`](../../backend/detection_policy.py#L262) — the 18 deliberately-generic DOTA-OBB v1 categories, pre-normalised. Task 1.2 anchor.
+- [`label_quality_for`](../../backend/detection_policy.py#L295) — classifies a detection's display trust as `verified` / `inferred` / `generic`. See [decisions/why-generic-labels-when-unverified.md](../decisions/why-generic-labels-when-unverified.md).
+- [`display_label_for`](../../backend/detection_policy.py#L331) — returns `(display_label, label_quality)`; suppresses fabricated specific labels on unverified DOTA-OBB generics.
 
 ## Inputs / Outputs
 
 Input: raw model labels + confidence scores from imagery worker after calibration. Output: policy record — normalized/original class, parent class, calibrated confidence, active class threshold, review status, profile, taxonomy version, model version.
+
+For Task 1.2, the worker persistence path additionally calls `display_label_for(det, ont)` and stores two advisory metadata fields:
+
+- `display_label: str` — the analyst-facing string. Generic DOTA-OBB rows
+  surface as `"Aircraft (generic)"` / `"Vehicle (generic)"` instead of the
+  ontology's tie-broken specific label.
+- `label_quality: "verified" | "inferred" | "generic"` — drives the
+  SelectionPanel chip and the MapStage popup's `LABEL_QUALITY` row.
+
+These fields are **advisory only**: the `class` SQL column and every existing
+metadata key (`original_class`, `parent_class`, `canonical_label`, …) remain
+untouched for audit and future re-promotion.
 
 ## Failure modes
 
@@ -39,5 +54,8 @@ Input: raw model labels + confidence scores from imagery worker after calibratio
 - [backend/ontology-system.md](ontology-system.md)
 - [decisions/why-open-vocabulary.md](../decisions/why-open-vocabulary.md)
 - [decisions/why-precision-first-inference-defaults.md](../decisions/why-precision-first-inference-defaults.md)
+- [decisions/why-generic-labels-when-unverified.md](../decisions/why-generic-labels-when-unverified.md)
 - [backend-routers/inference-router.md](../backend-routers/inference-router.md) — PUT confidence overrides
 - [frontend/admin-conf-overrides.md](../frontend/admin-conf-overrides.md)
+- [inference/dota-obb-specialist.md](../inference/dota-obb-specialist.md) — the 18 generic categories
+- [inference/remoteclip-verifier.md](../inference/remoteclip-verifier.md) — verifier that lifts `generic → verified`
