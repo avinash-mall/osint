@@ -70,6 +70,7 @@ inference/grounding-dino-detector.md|inference|IDEA-Research grounding-dino-{tin
 inference/grounding-dino-gate.md|inference|server-side gate skips GDINO on common-vocab prompts
 inference/yoloe-tracker.md|inference,fmv|YOLOE-26x-seg(-pf) prompt-free + text-promptable, replaces SAM3 AMG
 inference/dota-obb-specialist.md|inference|Ultralytics YOLO26m-obb default with YOLO11n low-VRAM fallback
+inference/fair1m-obb-specialist.md|inference|FAIR1M-2.0 37-class fine-grained OBB specialist; operator-baked checkpoint, DOTA-excluding gate
 inference/dinov3-embeddings.md|inference|DINOv3 ViT-L SAT-493M re-ID embedding head
 inference/embed-endpoint.md|inference|POST /embed for standalone DINOv3-SAT vectors; used by reference DB baker
 inference/remoteclip-verifier.md|inference|optional RemoteCLIP crop verifier; scores candidate labels only
@@ -132,6 +133,7 @@ operations/auth-and-ldap-setup.md|operations,auth|env-bootstrap admin, Admin->Au
 operations/llm-ava-configuration.md|operations|OPENAI_API_BASE pointing at vLLM/Ollama, graceful degradation
 operations/reference-corpora-bake.md|operations,backend|assets-image bake of reference corpora; auto-seed lifespan; admin re-seed; drop-in tarballs
 operations/calibration-shipping.md|operations,backend,inference|assets-image bake of per-detector temperatures; calibration_data volume; measurement -> rebuild flow
+operations/fair1m-bake.md|operations,inference|FAIR1M-2.0 fine-grained OBB checkpoint: dataset, training (~12h), bake-and-rsync into inference-weights volume
 decisions/borders-vs-graticule-split.md|decision,frontend|LayerPanel "Tactical Grid" split into Borders (admin GeoJSON) and Graticule (coordinate grid)
 decisions/cached-forward-device-normalise.md|decision,sam3|multi-GPU _get_img_feats crash: pin thread-local CUDA device so SAM3 collator builds img_ids right
 decisions/disable-addmm-cuda-lt.md|decision,gpu|routes nn.Linear off cuBLAS-Lt to dodge A100/cu130 corruption bug
@@ -174,6 +176,7 @@ decisions/why-deconflicted-detection-prompts.md|decision,ontology|one object per
 decisions/why-detection-boxes-use-polygon-map.md|decision,frontend|box layer is per-feature <Polygon> map; <GeoJSON> canvas layer silently failed to paint
 decisions/why-dinov3-sat-only.md|decision|DINOv3 ViT-L SAT-493M keeps re-ID quality without DINOv3_LVD NaNs
 decisions/why-evidence-ranked-detections.md|decision|confirmed objects require source, verifier, physics, and SAR evidence signals
+decisions/why-fair1m-specialist.md|decision,inference|FAIR1M-2.0 37-class OBB specialist; ship plumbing, defer the operator-baked checkpoint
 decisions/why-fmv-track-consolidation.md|decision,fmv|post-inference pass stitches windows/prompts; overlap_index removed; temporal-support class vote
 decisions/why-generic-labels-when-unverified.md|decision,backend,ontology|generic DOTA-OBB labels render as "(generic)" until verifier confirms; kills fabricated defence labels
 decisions/why-grounding-dino-auto-gated.md|decision|forcing GDINO drops mAP via NMS suppression of DOTA detections

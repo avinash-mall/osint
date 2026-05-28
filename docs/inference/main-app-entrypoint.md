@@ -44,7 +44,7 @@ FastAPI app for the GPU inference service. Holds request handlers (`/health`, `/
 | `metadata.text_prompts` | precision defaults | Strings to text-prompt SAM3. Explicit empty list → 400 unless `prompt_boxes` supplied |
 | `metadata.ontology_branch` | none (full vocab) | Ontology branch id; in `SAM3_DEFAULT_PROMPT_SOURCE=ontology` mode, scopes the fetched vocabulary to that branch + descendants. Ignored when `text_prompts` is given |
 | `metadata.prompt_boxes` | `[]` | Box prompts: `[{bbox: cxcywh_norm, class: str}, ...]` |
-| `metadata.enabled_layers` | profile defaults | Subset of `sam3, dota_obb, grounding_dino, remoteclip, dinov3_sat, prithvi, terramind`. `yoloe`, `yoloe_pf`, and `yoloe_seg` are rejected on image endpoints because YOLOE is FMV-only. See [decisions/removed-yoloe-imagery.md](../decisions/removed-yoloe-imagery.md). |
+| `metadata.enabled_layers` | profile defaults | Subset of `sam3, dota_obb, fair1m_obb, grounding_dino, remoteclip, dinov3_sat, prithvi, terramind`. `yoloe`, `yoloe_pf`, and `yoloe_seg` are rejected on image endpoints because YOLOE is FMV-only. See [decisions/removed-yoloe-imagery.md](../decisions/removed-yoloe-imagery.md). |
 | `metadata.hls_timesteps` | `1` | Set `3` for HLS multi-temporal crop classifier |
 
 Per-detection output includes `source_layer` (`sam3`, `dota_obb`, `grounding_dino`, etc.) → backend calibration + NMS provenance distinguish detector families. When `remoteclip` is loaded + enabled (default-on for the imagery profile as of T1.6), detections from layers in `REMOTECLIP_VERIFIER_LAYERS` (default `sam3, grounding_dino`) also include `semantic_verifier` + `semantic_margin` for backend evidence ranking; DOTA-OBB is deliberately excluded — see [decisions/why-remoteclip-default-on.md](../decisions/why-remoteclip-default-on.md). Response includes `debug_counts` (`prompt_count`, `candidates_by_layer`, `suppressed_by_nms`, `suppressed_by_policy`) for false-positive triage.
@@ -66,7 +66,7 @@ Streams `application/x-ndjson`, one record per frame × track.
 - Image `/detect` and `/detect_raw` with `enabled_layers` containing `yoloe`, `yoloe_pf`, or `yoloe_seg` → 400; use `/detect_video` for YOLOE FMV tracking.
 - Explicit empty `metadata.text_prompts` → 400 in image detection (prevents accidental broad fallback).
 - `SAM3_DEFAULT_PROMPT_SOURCE=ontology` restores backend default prompts; backend unreachable → callers get 503.
-- Specialist layers skipped (not failed) when relevance gates don't pass; forced flags (`force_dota_obb`, `force_grounding_dino`) override for experiments.
+- Specialist layers skipped (not failed) when relevance gates don't pass; forced flags (`force_dota_obb`, `force_fair1m_obb`, `force_grounding_dino`) override for experiments.
 
 ## Cross-references
 

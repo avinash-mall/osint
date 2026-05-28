@@ -117,6 +117,11 @@ inference/models/*
 # extracted trees, manifests the operator generated).
 /reference-corpora-input/*
 !/reference-corpora-input/.gitkeep
+
+# FAIR1M-OBB weights are operator-baked, not source-controlled (~80 MB).
+# Drop-in lives at assets/static/inference-weights/fair1m/. See
+# docs/operations/fair1m-bake.md.
+/assets/static/inference-weights/fair1m/*.pt
 *_logs.txt
 *_output.txt
 build_*.txt

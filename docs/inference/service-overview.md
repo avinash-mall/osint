@@ -18,6 +18,7 @@ Single FastAPI service bundling every model the platform uses:
 | Prithvi-EO-2.0 (flood/burn) | `ibm-nasa-geospatial/Prithvi-EO-V2-300M` | [prithvi_heads.py](../../inference-sam3/prithvi_heads.py) |
 | TerraMind v1 (S1→S2) | IBM TerraMind | [terramind.py](../../inference-sam3/terramind.py) |
 | DOTA-OBB | Ultralytics `yolo26m-obb.pt` (`yolo11n-obb.pt` fallback) | [dota_obb.py](../../inference-sam3/dota_obb.py) |
+| FAIR1M-OBB (fine-grained, operator-baked) | `yolo11m-obb-fair1m.pt` (see [operations/fair1m-bake.md](../operations/fair1m-bake.md)) | [fair1m_obb.py](../../inference-sam3/fair1m_obb.py) |
 | Grounding-DINO | `IDEA-Research/grounding-dino-*` | [grounding_dino.py](../../inference-sam3/grounding_dino.py) |
 | RemoteCLIP verifier | `chendelong/RemoteCLIP` | [remoteclip_verifier.py](../../inference-sam3/remoteclip_verifier.py) |
 

@@ -70,6 +70,15 @@
       "files": [
         {"path": "/models/torch/ultralytics/mobileclip2_b.ts", "lfs": false, "sha256": null}
       ]
+    },
+    "fair1m/yolo11m-obb-fair1m": {
+      "role": "obb_fine_grained_aerial",
+      "gated": false,
+      "license": "Operator-baked from FAIR1M-2.0 dataset (GaoFen Challenge, CC-BY-NC-SA 4.0 attribution required)",
+      "note": "Trained checkpoint is NOT shipped with the repo. Operators bake it from the FAIR1M-2.0 dataset following docs/operations/fair1m-bake.md (Ultralytics yolo11m-obb base, 100 epochs, imgsz=1024). The runner gracefully no-ops when the file is absent (inference-sam3/fair1m_obb.py:load returns model=None). Place the resulting .pt at assets/static/inference-weights/fair1m/yolo11m-obb-fair1m.pt; the runtime resolves it from FAIR1M_OBB_WEIGHTS_DIR (default /data/inference-weights/fair1m).",
+      "files": [
+        {"path": "yolo11m-obb-fair1m.pt", "lfs": true, "sha256": null}
+      ]
     }
   }
 }

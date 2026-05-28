@@ -28,6 +28,8 @@ import torch
 
 import dota_obb
 import embedding
+import fair1m_gate
+import fair1m_obb
 import fusion
 import grounding_dino
 import grounding_dino_gate
@@ -187,6 +189,11 @@ SAM3_LOAD_TERRAMIND  = _flag("SAM3_LOAD_TERRAMIND",  _DEFAULT)
 # DEFENCE_YOLO was removed: produced 1297 false positives across 26 DOTA val
 # chips with no true positives (see docs/inference_layer_comparison*).
 SAM3_LOAD_DOTA_OBB        = _flag("SAM3_LOAD_DOTA_OBB",        _DEFAULT)
+# FAIR1M-2.0 fine-grained OBB specialist (37 sub-classes: airframe families,
+# warship/cargo-ship sub-types, dump truck / tractor etc.). Default-on for
+# imagery: the runner returns an empty bundle when no weights are baked, so
+# absence is harmless on fresh installs. See docs/operations/fair1m-bake.md.
+SAM3_LOAD_FAIR1M_OBB      = _flag("SAM3_LOAD_FAIR1M_OBB",      _DEFAULT)
 # Phase 8.38: Grounding-DINO default-OFF. Only +0.0144 mAP improvement on
 # DOTA-v1.0 for +241 ms cumulative cost (see docs/inference_layer_comparison.md).
 # The auto-gate in grounding_dino_gate.py keeps it from loading when prompts
@@ -242,6 +249,7 @@ PROFILE_COMPONENTS: dict[str, tuple[str, ...]] = {
         "prithvi" if SAM3_LOAD_PRITHVI else None,
         "terramind" if SAM3_LOAD_TERRAMIND else None,
         "dota_obb" if SAM3_LOAD_DOTA_OBB else None,
+        "fair1m_obb" if SAM3_LOAD_FAIR1M_OBB else None,
         "grounding_dino" if SAM3_LOAD_GROUNDING_DINO else None,
         "remoteclip" if SAM3_LOAD_REMOTECLIP else None,
     ),
@@ -280,7 +288,7 @@ psutil.cpu_percent(interval=None)
 
 _HEALTH_COMPONENT_SLUGS = (
     "sam3_image", "sam3_video", "dinov3_sat", "prithvi", "terramind",
-    "dota_obb", "grounding_dino", "yoloe_pf", "yoloe_seg",
+    "dota_obb", "fair1m_obb", "grounding_dino", "yoloe_pf", "yoloe_seg",
 )
 _METRIC_WINDOW = int(os.getenv("SAM3_METRIC_WINDOW", "200"))
 _metrics_lock = threading.Lock()
@@ -576,6 +584,8 @@ def _build_component(name: str, device: str) -> Any:
         return terramind.load(device)
     if name == "dota_obb":
         return dota_obb.load(device)
+    if name == "fair1m_obb":
+        return fair1m_obb.load(device)
     if name == "grounding_dino":
         return grounding_dino.load(device)
     if name == "remoteclip":
@@ -595,6 +605,7 @@ def _empty_bundle(device: str) -> dict[str, Any]:
         "prithvi": None,
         "terramind": None,
         "dota_obb": None,
+        "fair1m_obb": None,
         "grounding_dino": None,
         "remoteclip": None,
         "yoloe": None,
@@ -784,6 +795,7 @@ def _system_stats() -> dict[str, Any]:
 def _version_snapshot(bundle: dict[str, Any] | None = None) -> dict[str, Any]:
     versions = dict(sam3_runner.versions())
     versions["dota_obb"] = dota_obb.model_versions((bundle or {}).get("dota_obb"))
+    versions["fair1m_obb"] = fair1m_obb.model_versions((bundle or {}).get("fair1m_obb"))
     versions["remoteclip"] = remoteclip_verifier.model_versions((bundle or {}).get("remoteclip"))
     return versions
 
@@ -818,6 +830,7 @@ def health() -> dict[str, Any]:
             "prithvi": SAM3_LOAD_PRITHVI,
             "terramind": SAM3_LOAD_TERRAMIND,
             "dota_obb": SAM3_LOAD_DOTA_OBB,
+            "fair1m_obb": SAM3_LOAD_FAIR1M_OBB,
             "grounding_dino": SAM3_LOAD_GROUNDING_DINO,
             "remoteclip": SAM3_LOAD_REMOTECLIP,
             "yoloe": SAM3_LOAD_YOLOE,
@@ -1013,6 +1026,26 @@ async def _detect_pipeline(
         candidates_by_layer["dota_obb"] = len(dota_candidates)
     else:
         candidates_by_layer.setdefault("dota_obb", 0)
+
+    # FAIR1M-OBB: fine-grained aerial sub-classes (Boeing 737, A330, Warship,
+    # Dump Truck, ...). Gate fires only when prompts touch FAIR1M vocabulary
+    # not already covered by DOTA-OBB. Operator override via
+    # metadata.force_fair1m_obb=true. See docs/inference/fair1m-obb-specialist.md.
+    force_fair1m = bool(meta.get("force_fair1m_obb", False))
+    if (
+        bundle.get("fair1m_obb")
+        and (force_fair1m or _layer_active("fair1m_obb"))
+        and (not isinstance(prompt_boxes, list))
+        and fair1m_gate.should_run_fair1m(prompts, force=force_fair1m)
+    ):
+        with _track("fair1m_obb"):
+            fair1m_candidates = await run_in_threadpool(
+                fair1m_obb.run, bundle["fair1m_obb"], chip3, fair1m_obb.FAIR1M_OBB_THRESHOLD,
+            )
+        layer_candidates.extend(_tag_candidates("fair1m_obb", fair1m_candidates))
+        candidates_by_layer["fair1m_obb"] = len(fair1m_candidates)
+    else:
+        candidates_by_layer.setdefault("fair1m_obb", 0)
 
     gd_force = bool(meta.get("force_grounding_dino", False))
     gd_explicit = "grounding_dino" in _enabled
@@ -1617,6 +1650,7 @@ def _bundle_components(bundle: dict[str, Any]) -> dict[str, Any]:
         "prithvi_heads": list(prithvi_bundle.get("loaded_heads") or []),
         "terramind": bundle.get("terramind") is not None,
         "dota_obb": _model_loaded(bundle.get("dota_obb")),
+        "fair1m_obb": _model_loaded(bundle.get("fair1m_obb")),
         "grounding_dino": _model_loaded(bundle.get("grounding_dino")),
         "yoloe": bool(yoloe_bundle.get("pf") or yoloe_bundle.get("seg")),
         "yoloe_pf": yoloe_bundle.get("pf") is not None,
