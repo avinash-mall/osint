@@ -1,0 +1,13 @@
+{
+  "_README": "Per-detector temperature for confidence calibration. T=1.0 is the identity transform (no rescaling). Run `python scripts/measure_calibration_ece.py` against a representative slice, copy the suggested temperatures from docs/calibration_ece.json into this file, then rebuild assets and restart backend. See docs/operations/calibration-shipping.md.",
+  "_measured_at": null,
+  "_measured_against": null,
+  "temperatures": {
+    "sam3": 1.0,
+    "dota_obb": 1.0,
+    "grounding_dino": 1.0,
+    "yoloe": 1.0,
+    "sar_cfar": 1.0,
+    "fair1m_obb": 1.0
+  }
+}

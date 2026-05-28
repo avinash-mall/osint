@@ -54,7 +54,18 @@ def _load_temperatures() -> dict[str, float]:
     def _ingest(raw: Any, source: str) -> None:
         if not isinstance(raw, dict):
             return
-        for key, value in raw.items():
+        # Accept both shapes:
+        #   { "temperatures": { "sam3": 0.8, ... }, "_measured_at": ... }
+        #   { "sam3": 0.8, "dota_obb": 1.1, ... }
+        # The wrapped form (as shipped from assets/static/calibration/) wins
+        # when both keys exist — it lets us carry _README / _measured_at
+        # metadata alongside the actual map without polluting the lookup.
+        inner = raw.get("temperatures") if isinstance(raw.get("temperatures"), dict) else raw
+        for key, value in inner.items():
+            if str(key).startswith("_"):
+                # Skip metadata keys (_README, _measured_at, _measured_against)
+                # in the flat-shape case.
+                continue
             try:
                 t = float(value)
             except (TypeError, ValueError):

@@ -41,4 +41,29 @@ else
     fi
 fi
 
+# Calibration temperatures — same rsync-when-digest-differs flow as
+# reference-chips. The backend mounts the named volume RO at
+# /data/calibration/ and backend/calibration.py reads
+# model_temperatures.json from there (absent file = identity transform).
+readonly CALIB_BAKED=/opt/baked-calibration
+readonly CALIB_MOUNTED=/usr/share/nginx/html/calibration
+
+if [ ! -d "${CALIB_BAKED}" ]; then
+    echo "[entrypoint] calibration: no baked calibration at ${CALIB_BAKED} — bake step missing" >&2
+elif [ ! -f "${CALIB_BAKED}/MANIFEST.sha256" ]; then
+    echo "[entrypoint] calibration: ${CALIB_BAKED}/MANIFEST.sha256 missing — skipping rsync" >&2
+else
+    mkdir -p "${CALIB_MOUNTED}"
+    calib_baked_digest=$(cat "${CALIB_BAKED}/MANIFEST.sha256" 2>/dev/null | head -n1)
+    calib_mounted_digest=$(cat "${CALIB_MOUNTED}/MANIFEST.sha256" 2>/dev/null | head -n1 || true)
+
+    if [ "${calib_baked_digest}" = "${calib_mounted_digest}" ] && [ -n "${calib_baked_digest}" ]; then
+        echo "[entrypoint] calibration: volume matches image (digest=${calib_baked_digest:0:12}) — skip rsync"
+    else
+        echo "[entrypoint] calibration: rsync ${CALIB_BAKED}/ → ${CALIB_MOUNTED}/ (image=${calib_baked_digest:0:12} volume=${calib_mounted_digest:0:12:-empty})"
+        rsync -a --delete --delete-after "${CALIB_BAKED}/" "${CALIB_MOUNTED}/"
+        echo "[entrypoint] calibration: rsync done"
+    fi
+fi
+
 exec "$@"

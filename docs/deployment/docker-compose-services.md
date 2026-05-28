@@ -27,9 +27,27 @@
 - **Inference is its own image** — CUDA stack is heavy (~14 GB image), unrelated to the backend's Python runtime.
 - **`llm-local-proxy` is a separate compose profile** (only started with `--profile llm-proxy`) — a `socat` forwarder so containers can reach a host-side vLLM/Ollama bound to `127.0.0.1`.
 
+## Named volumes
+
+| Volume | RW writer | RO readers | Purpose |
+|---|---|---|---|
+| `neo4j_data` | `neo4j` | — | Graph DB persistence |
+| `pg_data` | `postgis` | — | Relational DB persistence |
+| `imagery_data` | `backend`, `worker` | `titiler`, `inference-sam3` | COGs, chips |
+| `fmv_data` | `backend`, `worker` | `nginx`, `inference-sam3` | FMV clips + HLS |
+| `dataset_data` | `backend`, `worker` | — | Training-set storage |
+| `reference_corpora_data` | `assets` | `backend`, `worker` | Reference chips bake (mounts at `/opt/reference-corpora`) |
+| `calibration_data` | `assets` | `backend`, `worker` | Per-detector temperatures bake (mounts at `/data/calibration`) |
+| `dem_data` | `dem-assets` (init container) | `backend`, `worker` | GLO-30 DEM mosaic |
+| `osrm_data` | `osrm-assets` (init container) | `osrm` | Planet OSRM MLD dataset |
+
+`reference_corpora_data` and `calibration_data` follow the same bake-then-rsync pattern: the `assets` image holds the canonical content at an un-mounted staging path (`/opt/baked-reference-chips/`, `/opt/baked-calibration/`); the assets entrypoint rsyncs onto the named volume on every container start, digest-gated by `MANIFEST.sha256`. See [operations/calibration-shipping.md](../operations/calibration-shipping.md).
+
 ## Cross-references
 
 - [architecture/service-topology.md](../architecture/service-topology.md)
 - [nginx-gateway-and-tile-cache.md](nginx-gateway-and-tile-cache.md)
 - [offline-airgap-deployment.md](offline-airgap-deployment.md)
 - [volume-mounts-and-paths.md](volume-mounts-and-paths.md)
+- [../operations/reference-corpora-bake.md](../operations/reference-corpora-bake.md)
+- [../operations/calibration-shipping.md](../operations/calibration-shipping.md)

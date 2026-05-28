@@ -110,6 +110,17 @@ RUN --mount=type=cache,target=/cache/reference-corpora \
         && echo "skipped" > /work/static/reference-chips/MANIFEST.sha256 \
     ; fi
 
+# Per-detector calibration temperatures. The JSON + MANIFEST live under
+# assets/static/calibration/ (already in /seed/ via the earlier COPY) and are
+# staged into /work/static/calibration/ here so the final stage can land them
+# at an un-mounted /opt/baked-calibration/ path. Operator-measured
+# temperatures replace the placeholder T=1.0 values — see
+# docs/operations/calibration-shipping.md.
+RUN mkdir -p /work/static/calibration \
+ && if [ -d /seed/calibration ]; then cp -an /seed/calibration/. /work/static/calibration/ || true; fi \
+ && test -f /work/static/calibration/model_temperatures.json \
+ && test -f /work/static/calibration/MANIFEST.sha256
+
 # ------------------------------------------------------------------ final
 FROM nginx:1.27.3-alpine
 
@@ -127,6 +138,11 @@ COPY --from=fetcher /work/static/fonts/   /usr/share/nginx/html/fonts/
 # "image rebuilt with new corpora; volume still has old set" stale-volume
 # case that the e2e verify flagged.
 COPY --from=fetcher /work/static/reference-chips/ /opt/baked-reference-chips/
+# Calibration JSON lands at an UN-mounted staging path. Same pattern as
+# reference-chips: the entrypoint rsyncs it onto the calibration_data named
+# volume on startup, and the backend mounts that volume RO at
+# /data/calibration/. See docs/operations/calibration-shipping.md.
+COPY --from=fetcher /work/static/calibration/ /opt/baked-calibration/
 
 COPY assets/scripts/entrypoint.sh /usr/local/bin/sentinel-assets-entrypoint
 RUN chmod +x /usr/local/bin/sentinel-assets-entrypoint
@@ -136,12 +152,14 @@ RUN test -f /usr/share/nginx/html/basemap/0/0/0.png \
  && test -f /usr/share/nginx/html/fonts/ibm-plex-sans-400.woff2 \
  && test -s /usr/share/nginx/html/basemap/ATTRIBUTION.txt \
  && test -s /usr/share/nginx/html/terrain/ATTRIBUTION.txt \
- && test -f /opt/baked-reference-chips/MANIFEST.sha256
+ && test -f /opt/baked-reference-chips/MANIFEST.sha256 \
+ && test -f /opt/baked-calibration/MANIFEST.sha256
 
 HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
     CMD wget -qO- http://127.0.0.1/healthz \
      && wget -q -O /dev/null http://127.0.0.1/basemap/0/0/0.png \
      && wget -q -O /dev/null http://127.0.0.1/terrain/0/0/0.png \
+     && wget -q -O /dev/null http://127.0.0.1/calibration/model_temperatures.json \
      || exit 1
 
 EXPOSE 80

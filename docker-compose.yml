@@ -92,6 +92,11 @@ services:
       # selectively from here into /data/datasets/reference-chips/ before
       # running the bake.
       - reference_corpora_data:/opt/reference-corpora:ro
+      # Read-only mount of the baked per-detector calibration temperatures.
+      # backend/calibration.py reads model_temperatures.json from here and
+      # falls back to identity transform when the file is missing. See
+      # docs/operations/calibration-shipping.md.
+      - calibration_data:/data/calibration:ro
     # Strict readiness: hit /api/health and require {"healthy": true}. The
     # endpoint returns healthy=true only when neo4j AND postgis are both
     # reachable, so the check fails until the FastAPI lifespan completes
@@ -441,6 +446,10 @@ services:
       - dataset_data:/data/datasets
       - dem_data:/data/dem:ro
       - reference_corpora_data:/opt/reference-corpora:ro
+      # Same calibration file as the backend; worker imports
+      # backend/calibration.py via worker.celery_app and benefits from the
+      # identical temperature map.
+      - calibration_data:/data/calibration:ro
     # `celery inspect ping` proves the worker is connected to the broker AND
     # answering control messages. `pgrep -f celery` only proved the process
     # existed — a worker that crashed mid-task but kept the parent alive
@@ -513,8 +522,12 @@ services:
       # rsyncs from the image-baked /opt/baked-reference-chips/ on startup
       # when the volume is empty or its MANIFEST.sha256 lags the image.
       - reference_corpora_data:/usr/share/nginx/html/reference-chips
+      # Same bake-then-rsync flow for per-detector temperatures. Backend +
+      # worker mount this RO at /data/calibration; nginx also serves it at
+      # /calibration/ for the healthcheck below.
+      - calibration_data:/usr/share/nginx/html/calibration
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz && wget -q -O /dev/null http://127.0.0.1/basemap/0/0/0.png && wget -q -O /dev/null http://127.0.0.1/terrain/0/0/0.png || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz && wget -q -O /dev/null http://127.0.0.1/basemap/0/0/0.png && wget -q -O /dev/null http://127.0.0.1/terrain/0/0/0.png && wget -q -O /dev/null http://127.0.0.1/calibration/model_temperatures.json || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -616,5 +629,10 @@ volumes:
   fmv_data:
   dataset_data:
   reference_corpora_data:
+  # Per-detector calibration temperatures. assets bakes
+  # model_temperatures.json + MANIFEST.sha256 into the image, its entrypoint
+  # rsyncs them onto this volume on start, and backend + worker mount RO at
+  # /data/calibration. See docs/operations/calibration-shipping.md.
+  calibration_data:
   dem_data:
   osrm_data:

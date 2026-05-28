@@ -131,6 +131,7 @@ operations/health-monitoring.md|operations|Health Dashboard, /api/health, replic
 operations/auth-and-ldap-setup.md|operations,auth|env-bootstrap admin, Admin->Auth LDAP form, test bind workflows
 operations/llm-ava-configuration.md|operations|OPENAI_API_BASE pointing at vLLM/Ollama, graceful degradation
 operations/reference-corpora-bake.md|operations,backend|assets-image bake of reference corpora; auto-seed lifespan; admin re-seed; drop-in tarballs
+operations/calibration-shipping.md|operations,backend,inference|assets-image bake of per-detector temperatures; calibration_data volume; measurement -> rebuild flow
 decisions/borders-vs-graticule-split.md|decision,frontend|LayerPanel "Tactical Grid" split into Borders (admin GeoJSON) and Graticule (coordinate grid)
 decisions/cached-forward-device-normalise.md|decision,sam3|multi-GPU _get_img_feats crash: pin thread-local CUDA device so SAM3 collator builds img_ids right
 decisions/disable-addmm-cuda-lt.md|decision,gpu|routes nn.Linear off cuBLAS-Lt to dodge A100/cu130 corruption bug
