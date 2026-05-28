@@ -14,6 +14,14 @@ type MockOptions = {
     original_class?: string;
     parent_class?: string;
     branch_id?: string;
+    /**
+     * Task 1.3 — detector-provenance overrides so visual specs can assert the
+     * [DETECTOR] chip and the ProvenancePanel ensemble block without re-mocking
+     * the whole inference pipeline.
+     */
+    source_layer?: string;
+    wbf_member_sources?: string[];
+    wbf_member_count?: number;
     metadata_extra?: Record<string, unknown>;
   };
 };
@@ -61,6 +69,10 @@ function buildGeoJSON(overrides: MockOptions['detectionOverrides'] = {}) {
         // displayLabel() / labelQuality() helpers can read them directly.
         display_label: overrides?.display_label,
         label_quality: overrides?.label_quality,
+        // Task 1.3 — detector provenance fields read by detectionProvenance().
+        source_layer: overrides?.source_layer,
+        wbf_member_sources: overrides?.wbf_member_sources,
+        wbf_member_count: overrides?.wbf_member_count,
         metadata: {
           designation: 'Track Alpha',
           branch_id: overrides?.branch_id || 'vehicles',
@@ -74,6 +86,9 @@ function buildGeoJSON(overrides: MockOptions['detectionOverrides'] = {}) {
           threshold_profile: 'imagery',
           display_label: overrides?.display_label,
           label_quality: overrides?.label_quality,
+          source_layer: overrides?.source_layer,
+          wbf_member_sources: overrides?.wbf_member_sources,
+          wbf_member_count: overrides?.wbf_member_count,
           ...(overrides?.metadata_extra || {}),
         },
       },

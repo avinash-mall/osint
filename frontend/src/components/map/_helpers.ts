@@ -70,6 +70,78 @@ export function labelQuality(props: any): LabelQuality | undefined {
   return undefined;
 }
 
+/**
+ * Task 1.3 — display-friendly names for backend ``source_layer`` values.
+ * Worker persists raw layer identifiers (sam3, dota_obb, …); the analyst-
+ * facing surface needs the rendered product names. Unknown values fall
+ * through to an uppercased version of the raw identifier so future detectors
+ * still render readable provenance.
+ */
+const SOURCE_LAYER_LABELS: Record<string, string> = {
+  sam3: 'SAM 3',
+  dota_obb: 'DOTA-OBB',
+  grounding_dino: 'Grounding-DINO',
+  yoloe: 'YOLOE',
+  sar_cfar: 'CFAR (SAR)',
+};
+
+function prettySourceLayer(raw: string): string {
+  if (!raw) return 'unknown';
+  return SOURCE_LAYER_LABELS[raw] ?? raw.toUpperCase();
+}
+
+export type DetectionProvenance = {
+  primary: string;
+  partners: string[];
+  summary: string;
+  tooltip: string;
+};
+
+/**
+ * Task 1.3 — surface detector provenance for a detection's properties.
+ *
+ * ``primary``  : display-friendly name of ``source_layer``.
+ * ``partners`` : the OTHER ``wbf_member_sources`` (primary excluded) mapped
+ *                through ``SOURCE_LAYER_LABELS``. Empty for single-detector.
+ * ``summary``  : compact chip text — "Detected by: <primary> alone" or
+ *                "Detected by: <primary> + <partners>".
+ * ``tooltip``  : longer analyst-facing tooltip distinguishing the LAE-80C
+ *                single-detector caveat from multi-detector WBF agreement.
+ *
+ * Lives alongside ``labelQuality`` / ``detectionDisplayLabel`` — the
+ * SelectionPanel header reads this to render the [DETECTOR] chip.
+ */
+export function detectionProvenance(props: any): DetectionProvenance {
+  const p = props || {};
+  const rawPrimary = String(p.source_layer ?? p.metadata?.source_layer ?? '');
+  const primary = prettySourceLayer(rawPrimary);
+
+  const rawMembers: string[] = Array.isArray(p.wbf_member_sources)
+    ? p.wbf_member_sources
+    : Array.isArray(p.metadata?.wbf_member_sources)
+      ? p.metadata.wbf_member_sources
+      : [];
+  const partners = rawMembers
+    .map((m: any) => String(m))
+    .filter((m: string) => m && m !== rawPrimary)
+    .map(prettySourceLayer);
+
+  const summary = partners.length === 0
+    ? `Detected by: ${primary} alone`
+    : `Detected by: ${primary} + ${partners.join(' + ')}`;
+
+  const memberCount = Number(p.wbf_member_count ?? p.metadata?.wbf_member_count);
+  const n = Number.isFinite(memberCount) && memberCount > 0
+    ? memberCount
+    : partners.length + 1;
+
+  const tooltip = partners.length === 0
+    ? 'Single-detector call. SAM 3 text-only on overhead imagery has known limits (LAE-80C: F1 ≤ 28%). Treat as unverified unless corroborated.'
+    : `Multi-detector agreement: ${n} detectors agreed on this region (WBF). Higher confidence than single-detector calls.`;
+
+  return { primary, partners, summary, tooltip };
+}
+
 export function detectionClassKeys(feature: any): string[] {
   const props = feature?.properties || {};
   return Array.from(new Set(

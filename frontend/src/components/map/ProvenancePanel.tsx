@@ -3,8 +3,9 @@
  * back to the raster + model + taxonomy version that produced it.
  */
 
-import { Database, Layers, Tag } from 'lucide-react';
+import { Cpu, Database, Layers, Tag } from 'lucide-react';
 import { EmbeddingBadge, ModalityBadge, Panel } from '../atoms';
+import { detectionProvenance } from './_helpers';
 
 export default function ProvenancePanel({ selectedDetection }: { selectedDetection: any | null }) {
   if (!selectedDetection) {
@@ -20,6 +21,9 @@ export default function ProvenancePanel({ selectedDetection }: { selectedDetecti
   const meta = p.metadata || {};
   const modality = (meta.modality || meta.sensor || 'rgb') as any;
   const embedding = (meta.embedding_head || (meta.embedding ? 'sat' : 'none')) as any;
+  // Task 1.3 — surface detector ensemble alongside the existing model panel.
+  const provenance = detectionProvenance(p);
+  const wbfMemberCount = Number(meta.wbf_member_count ?? p.wbf_member_count ?? 1);
 
   return (
     <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -104,6 +108,39 @@ export default function ProvenancePanel({ selectedDetection }: { selectedDetecti
         )}
         <Kv label="Threshold profile" value={meta.threshold_profile || '—'} mono />
         <Kv label="Class threshold" value={meta.class_threshold != null ? Number(meta.class_threshold).toFixed(2) : '—'} mono />
+      </Panel>
+
+      <Panel
+        title={
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <Cpu size={13} /> Detector ensemble
+          </span>
+        }
+      >
+        <Kv label="Primary detector" value={provenance.primary} mono />
+        <Kv
+          label="Fusion partners"
+          value={provenance.partners.length ? provenance.partners.join(', ') : '— (single-detector)'}
+          mono
+        />
+        <Kv label="WBF members" value={Number.isFinite(wbfMemberCount) ? wbfMemberCount : 1} mono />
+        <Kv
+          label="Mask IoU (fusion)"
+          value={meta.fusion_mask_iou != null ? Number(meta.fusion_mask_iou).toFixed(2) : '—'}
+          mono
+        />
+        <div
+          style={{
+            marginTop: 6,
+            fontStyle: 'italic',
+            fontSize: 10.5,
+            color: 'var(--ink-3)',
+            lineHeight: 1.4,
+          }}
+        >
+          Multi-detector agreement raises confidence. Single-detector calls are advisory until a
+          second detector or analyst confirms.
+        </div>
       </Panel>
 
       <Panel

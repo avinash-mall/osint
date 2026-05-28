@@ -1,8 +1,8 @@
 # Selection Panel — Right Rail
 
 **Path:** [frontend/src/components/map/SelectionPanel.tsx](../../frontend/src/components/map/SelectionPanel.tsx)
-**Lines:** ~699
-**Depends on:** [ObjectDetailsForm.tsx](../../frontend/src/components/ObjectDetailsForm.tsx), [IdentificationPanel.tsx](../../frontend/src/components/map/IdentificationPanel.tsx), [services/analytics.ts](../../frontend/src/services/analytics.ts), [_helpers.ts](../../frontend/src/components/map/_helpers.ts) `displayLabel` / `labelQuality`, backend `/api/detections`, `/api/analytics`, and `/api/reports`
+**Lines:** ~720
+**Depends on:** [ObjectDetailsForm.tsx](../../frontend/src/components/ObjectDetailsForm.tsx), [IdentificationPanel.tsx](../../frontend/src/components/map/IdentificationPanel.tsx), [services/analytics.ts](../../frontend/src/services/analytics.ts), [_helpers.ts](../../frontend/src/components/map/_helpers.ts) `displayLabel` / `labelQuality` / `detectionProvenance`, backend `/api/detections`, `/api/analytics`, and `/api/reports`
 
 ## Purpose
 
@@ -42,6 +42,25 @@ fabricated specific defence label. `labelQuality(props)` drives an inline
 
 See [decisions/why-generic-labels-when-unverified.md](../decisions/why-generic-labels-when-unverified.md)
 for the backend policy that resolves both fields.
+
+## Detector provenance chip (Task 1.3)
+
+A third inline chip sits next to the title and surfaces *which detector
+produced the call*. It reads `detectionProvenance(props)` from
+[_helpers.ts](../../frontend/src/components/map/_helpers.ts), which resolves
+`source_layer` and `wbf_member_sources` (top-level or under `metadata`) into a
+display-friendly primary name plus any fusion partners.
+
+| State | Chip | Tooltip |
+|---|---|---|
+| Single-detector (no `wbf_member_sources`) | `sentinel-tag` (neutral grey) `[Cpu] SAM 3` (`data-testid="detector-provenance-chip"`) | "Single-detector call. SAM 3 text-only on overhead imagery has known limits (LAE-80C: F1 ≤ 28%). Treat as unverified unless corroborated." |
+| Multi-detector WBF (≥1 partner) | `sentinel-tag info` (blue) `[Cpu] SAM 3 +1` | "Multi-detector agreement: N detectors agreed on this region (WBF). Higher confidence than single-detector calls." |
+
+The `+N` suffix shows the partner count; full partner names live in the
+ProvenancePanel "Detector ensemble" block — see
+[map-review-similar-provenance.md](map-review-similar-provenance.md). Layer-id
+to display-name mapping (`sam3`, `dota_obb`, `grounding_dino`, `yoloe`,
+`sar_cfar`) lives in `SOURCE_LAYER_LABELS` inside `_helpers.ts`.
 
 ## Failure modes
 

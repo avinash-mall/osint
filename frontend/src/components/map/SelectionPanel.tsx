@@ -22,6 +22,7 @@ import {
   Activity,
   ChevronRight,
   CircleHelp,
+  Cpu,
   Crosshair,
   FileDown,
   GitBranch,
@@ -42,6 +43,7 @@ import type { OntologyBranch } from '../../utils/useOntology';
 import {
   detectionCategoryForFeature,
   detectionDisplayLabel,
+  detectionProvenance,
   featureCentroid,
   featureLatLonBounds,
   labelQuality,
@@ -379,6 +381,25 @@ export default function SelectionPanel(props: Props) {
                       );
                     }
                     return null;
+                  })()}
+                  {(() => {
+                    // Task 1.3 — [DETECTOR] provenance chip. Blue when ≥1
+                    // fusion partner (multi-detector agreement is the
+                    // trusted state); neutral grey when alone.
+                    const prov = detectionProvenance(detProps);
+                    const fused = prov.partners.length > 0;
+                    return (
+                      <span
+                        data-testid="detector-provenance-chip"
+                        className={`sentinel-tag ${fused ? 'info' : ''} uppercase`}
+                        title={prov.tooltip}
+                        style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                      >
+                        <Cpu size={10} />
+                        {prov.primary}
+                        {fused ? ` +${prov.partners.length}` : ''}
+                      </span>
+                    );
                   })()}
                 </div>
                 <div className="mt-3 flex items-center gap-2">
