@@ -179,8 +179,9 @@ def test_dry_run_reports_planned_chip_count(
     )
     assert exit_code == 0
     captured = capsys.readouterr()
-    # 3 uploads x 2 chips = 6 planned
-    assert "6" in captured.out or "6" in captured.err
+    # 3 uploads; the 128 px fixtures are smaller than the 1008 px chip size,
+    # so the M-2 cap kicks in and each upload emits a single chip (3 total).
+    assert "3" in captured.out or "3" in captured.err
 
 
 def test_empty_data_dir_exits_zero_with_warning(
@@ -202,3 +203,45 @@ def test_empty_data_dir_exits_zero_with_warning(
     assert exit_code == 0
     captured = capsys.readouterr()
     assert "no" in (captured.out + captured.err).lower()
+
+
+def test_colliding_upload_ids_are_skipped_with_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Two COGs whose pre-underscore prefix matches must not overwrite each other."""
+    import logging
+
+    data_dir = tmp_path / "imagery" / "processed"
+    data_dir.mkdir(parents=True)
+    # Both COGs share the prefix "dup" before the first underscore — under the
+    # old behaviour their chips would map to identical filenames and the second
+    # COG would silently overwrite the first.
+    _make_fake_cog(data_dir / "dup_first_cog.tif")
+    _make_fake_cog(data_dir / "dup_second_cog.tif")
+
+    out_dir = tmp_path / "triage_out"
+    caplog.set_level(logging.WARNING, logger="build_triage_set")
+
+    exit_code = build_triage_set.main(
+        [
+            "--source", "data-dir",
+            "--data-dir", str(data_dir),
+            "--out", str(out_dir),
+            "--max-uploads", "5",
+            "--chips-per-upload", "1",
+        ]
+    )
+    assert exit_code == 0
+
+    # Exactly one chip survives — the collider was skipped, not overwritten.
+    pngs = sorted((out_dir / "chips").glob("*.png"))
+    assert len(pngs) == 1, f"Expected 1 PNG (collision skipped), got {len(pngs)}"
+    assert pngs[0].name == "dup_0.png"
+
+    # The warning trail names the colliding upload id.
+    collision_msgs = [
+        rec.message for rec in caplog.records
+        if "collides with previous" in rec.message
+    ]
+    assert collision_msgs, "Expected a collision warning to be logged"
+    assert "dup" in collision_msgs[0]

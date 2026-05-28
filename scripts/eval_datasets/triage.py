@@ -25,11 +25,13 @@ it without changes to the per-chip evaluation logic.
 """
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 from typing import Generator
 
 import yaml
+from PIL import Image
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -38,6 +40,7 @@ import yaml
 def iter_triage(
     triage_dir: Path | str,
     rgb_only: bool = True,
+    max_chips: int | None = None,
 ) -> Generator[tuple[bytes, str, list[str], list[dict]], None, None]:
     """Yield (chip_bytes, modality, prompts, ground_truth) tuples from a triage set.
 
@@ -50,6 +53,10 @@ def iter_triage(
         When True (default), only yield chips whose sidecar JSON reports
         ``modality == "rgb"``. The first round of the detection-quality plan
         is RGB-optical only; pass ``rgb_only=False`` to evaluate every chip.
+    max_chips:
+        If set, stop after yielding this many chips. Matches the cap semantics
+        on ``iter_dota`` / ``iter_hls_burn`` / ``iter_sen1floods`` /
+        ``iter_sar_synth`` so the comparison driver's dispatch stays uniform.
 
     Yields
     ------
@@ -95,7 +102,11 @@ def iter_triage(
     chips_dir = triage_path / "chips"
     rows = document.get("chips") or []
 
+    emitted = 0
     for row in rows:
+        if max_chips is not None and emitted >= max_chips:
+            return
+
         chip_name = row.get("chip")
         if not chip_name:
             continue
@@ -114,8 +125,15 @@ def iter_triage(
             continue
 
         chip_bytes = chip_path.read_bytes()
-        width = int(meta.get("width", 0)) or _png_width(chip_bytes)
-        height = int(meta.get("height", 0)) or _png_height(chip_bytes)
+        width = int(meta.get("width", 0))
+        height = int(meta.get("height", 0))
+        if not width or not height:
+            # Sidecar JSON is the primary source; fall back to a one-line
+            # Pillow read for legacy chips written without dimensions.
+            with Image.open(io.BytesIO(chip_bytes)) as img:
+                pil_w, pil_h = img.size
+            width = width or pil_w
+            height = height or pil_h
 
         expected: list[str] = [str(lbl) for lbl in (row.get("expected_labels") or [])]
         prompts = sorted(set(expected))
@@ -125,6 +143,7 @@ def iter_triage(
         ]
 
         yield chip_bytes, modality, prompts, ground_truth
+        emitted += 1
 
 
 # ---------------------------------------------------------------------------
@@ -141,17 +160,3 @@ def _load_sidecar(chip_path: Path) -> dict:
             return json.load(fh) or {}
     except (OSError, ValueError):
         return {}
-
-
-def _png_width(png_bytes: bytes) -> int:
-    """Best-effort PNG width parser (IHDR is always the first chunk)."""
-    # IHDR starts at byte 16 (8 signature + 4 length + 4 type)
-    if len(png_bytes) < 24 or png_bytes[:8] != b"\x89PNG\r\n\x1a\n":
-        return 0
-    return int.from_bytes(png_bytes[16:20], "big")
-
-
-def _png_height(png_bytes: bytes) -> int:
-    if len(png_bytes) < 28 or png_bytes[:8] != b"\x89PNG\r\n\x1a\n":
-        return 0
-    return int.from_bytes(png_bytes[20:24], "big")

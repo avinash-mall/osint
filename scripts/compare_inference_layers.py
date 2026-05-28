@@ -887,12 +887,11 @@ def _iter_slice(
             raise ValueError(
                 "--slice triage requires --triage-set <path-to-triage-dir>"
             )
-        count = 0
-        for tup in iter_triage(Path(triage_dir), rgb_only=triage_rgb_only):
-            if max_chips and count >= max_chips:
-                break
-            yield tup
-            count += 1
+        yield from iter_triage(
+            Path(triage_dir),
+            rgb_only=triage_rgb_only,
+            max_chips=max_chips,
+        )
     else:
         raise ValueError(
             f"Unknown slice: {slice_name!r}. "

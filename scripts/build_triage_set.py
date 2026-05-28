@@ -53,6 +53,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
+from PIL import Image
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -125,9 +127,13 @@ def _extract_chips_from_cog(
         if chips_per_upload == 1:
             origins = [(0, 0)]
         elif width <= chip_size:
-            # Same window repeated; the chips will be identical, which is fine
-            # for synthetic / very-small fixtures used in tests.
-            origins = [(0, 0) for _ in range(chips_per_upload)]
+            # Raster too small for distinct windows along the X axis; emit a
+            # single chip rather than N identical duplicates.
+            log.info(
+                "raster %s too small for %d distinct chips; emitting 1",
+                cog_path.name, chips_per_upload,
+            )
+            origins = [(0, 0)]
         else:
             stride_x = max(1, (width - chip_size) // max(1, chips_per_upload - 1))
             origins = [
@@ -232,6 +238,61 @@ Re-run after each detection-quality change and diff the per-class metrics.
 """
 
 
+def _normalise_sources(
+    sources: list[tuple[Path | dict, str]],
+) -> list[tuple[Path, str, dict]]:
+    """Normalise mixed (data-dir/api) sources to ``(cog_path, upload_id, extra_meta)``.
+
+    Both source modes ultimately resolve to a COG path on disk plus an
+    upload_id; api rows also contribute an ``upload_row`` extra that is merged
+    into each chip's sidecar metadata. Collapsing them here lets the chip
+    write loop stay branch-free.
+
+    Drops api rows whose ``file_path`` is missing or not on disk (with a
+    warning). Drops later collisions when two COGs resolve to the same
+    upload_id — the chip filenames would otherwise overwrite silently.
+    """
+    normalised: list[tuple[Path, str, dict]] = []
+    seen_ids: set[str] = set()
+    for source, mode in sources:
+        if mode == "data-dir":
+            cog_path: Path = source  # type: ignore[assignment]
+            upload_id = _upload_id_from_cog(cog_path)
+            extra_meta: dict = {}
+        elif mode == "api":
+            row: dict = source  # type: ignore[assignment]
+            cog_path_str = (row.get("file_path") or "").strip()
+            if not cog_path_str:
+                log.warning("api row missing file_path; skipping: %s", row.get("upload_id"))
+                continue
+            cog_path = Path(cog_path_str)
+            if not cog_path.exists():
+                log.warning("api row file_path not on disk; skipping: %s", cog_path)
+                continue
+            upload_id = row.get("upload_id") or _upload_id_from_cog(cog_path)
+            extra_meta = {
+                "upload_row": {
+                    "upload_id": row.get("upload_id"),
+                    "filename": row.get("filename"),
+                    "status": row.get("status"),
+                }
+            }
+        else:
+            log.warning("unknown source mode %r; skipping", mode)
+            continue
+
+        if upload_id in seen_ids:
+            log.warning(
+                "upload_id %s collides with previous; skipping %s",
+                upload_id, cog_path,
+            )
+            continue
+        seen_ids.add(upload_id)
+        normalised.append((cog_path, upload_id, extra_meta))
+
+    return normalised
+
+
 def _write_triage_set(
     out_dir: Path,
     sources: list[tuple[Path | dict, str]],
@@ -243,55 +304,22 @@ def _write_triage_set(
     yaml_rows: list[dict] = []
     chips_written = 0
 
-    for source, mode in sources:
-        if mode == "data-dir":
-            cog_path: Path = source  # type: ignore[assignment]
-            upload_id = _upload_id_from_cog(cog_path)
-            for chip_idx, rgb, meta in _extract_chips_from_cog(cog_path, chips_per_upload):
-                chip_name = f"{upload_id}_{chip_idx}.png"
-                yaml_rows.append({
-                    "chip": chip_name,
-                    "sensor": meta["sensor"],
-                    "expected_labels": [],
-                })
-                if not dry_run:
-                    _write_png(chips_dir / chip_name, rgb)
-                    (chips_dir / f"{upload_id}_{chip_idx}.json").write_text(
-                        json.dumps(meta, indent=2)
-                    )
-                chips_written += 1
-        elif mode == "api":
-            # api mode: rely on the upload row's metadata to find the COG, then
-            # delegate to data-dir extraction. Keeps a single code path for the
-            # chip generation step.
-            row: dict = source  # type: ignore[assignment]
-            cog_path_str = (row.get("file_path") or "").strip()
-            if not cog_path_str:
-                log.warning("api row missing file_path; skipping: %s", row.get("upload_id"))
-                continue
-            cog_path = Path(cog_path_str)
-            if not cog_path.exists():
-                log.warning("api row file_path not on disk; skipping: %s", cog_path)
-                continue
-            upload_id = row.get("upload_id") or _upload_id_from_cog(cog_path)
-            for chip_idx, rgb, meta in _extract_chips_from_cog(cog_path, chips_per_upload):
-                meta["upload_row"] = {
-                    "upload_id": row.get("upload_id"),
-                    "filename": row.get("filename"),
-                    "status": row.get("status"),
-                }
-                chip_name = f"{upload_id}_{chip_idx}.png"
-                yaml_rows.append({
-                    "chip": chip_name,
-                    "sensor": meta["sensor"],
-                    "expected_labels": [],
-                })
-                if not dry_run:
-                    _write_png(chips_dir / chip_name, rgb)
-                    (chips_dir / f"{upload_id}_{chip_idx}.json").write_text(
-                        json.dumps(meta, indent=2)
-                    )
-                chips_written += 1
+    for cog_path, upload_id, extra_meta in _normalise_sources(sources):
+        for chip_idx, rgb, meta in _extract_chips_from_cog(cog_path, chips_per_upload):
+            if extra_meta:
+                meta.update(extra_meta)
+            chip_name = f"{upload_id}_{chip_idx}.png"
+            yaml_rows.append({
+                "chip": chip_name,
+                "sensor": meta["sensor"],
+                "expected_labels": [],
+            })
+            if not dry_run:
+                _write_png(chips_dir / chip_name, rgb)
+                (chips_dir / f"{upload_id}_{chip_idx}.json").write_text(
+                    json.dumps(meta, indent=2)
+                )
+            chips_written += 1
 
     if dry_run:
         log.info(
@@ -324,39 +352,9 @@ def _write_triage_set(
 
 
 def _write_png(path: Path, rgb_array) -> None:
-    """Write an RGB uint8 numpy array to ``path`` as PNG.
-
-    Prefers Pillow, falls back to a stdlib-only writer so the script stays
-    usable in stripped environments.
-    """
+    """Write an RGB uint8 numpy array to ``path`` as PNG (Pillow required)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        from PIL import Image
-        Image.fromarray(rgb_array).save(path, format="PNG")
-        return
-    except ImportError:
-        pass
-
-    # Minimal stdlib PNG writer (RGB8)
-    import struct
-    import zlib
-    height, width = rgb_array.shape[:2]
-    raw = bytearray()
-    for y in range(height):
-        raw.append(0)
-        raw.extend(bytes(rgb_array[y].tobytes()))
-    compressed = zlib.compress(bytes(raw))
-
-    def _chunk(tag: bytes, data: bytes) -> bytes:
-        head = struct.pack(">I", len(data)) + tag + data
-        return head + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
-
-    path.write_bytes(
-        b"\x89PNG\r\n\x1a\n"
-        + _chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
-        + _chunk(b"IDAT", compressed)
-        + _chunk(b"IEND", b"")
-    )
+    Image.fromarray(rgb_array).save(path, format="PNG")
 
 
 # ---------------------------------------------------------------------------

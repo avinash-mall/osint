@@ -1,8 +1,8 @@
 # `scripts/build_triage_set.py` — Production-Image Triage Benchmark Builder
 
 **Path:** [scripts/build_triage_set.py](../../scripts/build_triage_set.py)
-**Lines:** ~510
-**Depends on:** `rasterio`, `PIL` (optional), `pyyaml`, `requests`; reads
+**Lines:** ~508
+**Depends on:** `rasterio`, `Pillow`, `pyyaml`, `requests`; reads
 `/data/imagery/processed/*_cog.tif` (mounted via the `imagery_data` docker
 volume) or the backend's `GET /api/ingest/uploads` endpoint.
 Also depends on [scripts/eval_datasets/triage.py](../../scripts/eval_datasets/triage.py)
@@ -39,12 +39,14 @@ sees, not the raw COG.
 
 ## Key symbols
 
-- [`_pick_recent_uploads(data_dir, max_uploads)`](../../scripts/build_triage_set.py#L71-L83) — newest-mtime `*_cog.tif` sort.
-- [`_upload_id_from_cog(cog_path)`](../../scripts/build_triage_set.py#L85-L94) — extracts the `<upload-id>` prefix.
-- [`_extract_chips_from_cog(cog_path, chips_per_upload)`](../../scripts/build_triage_set.py#L98-L153) — windowed read + percentile stretch.
-- [`_pick_recent_uploads_via_api(api_url, session_cookie, max_uploads)`](../../scripts/build_triage_set.py#L177-L200) — API-mode fallback.
-- [`_write_triage_set(out_dir, sources, chips_per_upload, dry_run)`](../../scripts/build_triage_set.py#L235-L324) — materialises chips + sidecars + `annotations.yaml` + `README.md`.
-- [`main(argv)`](../../scripts/build_triage_set.py#L451-L506) — CLI entry point; `--triage-set` flag on
+- [`_pick_recent_uploads(data_dir, max_uploads)`](../../scripts/build_triage_set.py#L73-L84) — newest-mtime `*_cog.tif` sort.
+- [`_upload_id_from_cog(cog_path)`](../../scripts/build_triage_set.py#L87-L97) — extracts the `<upload-id>` prefix.
+- [`_extract_chips_from_cog(cog_path, chips_per_upload)`](../../scripts/build_triage_set.py#L100-L156) — windowed read + percentile stretch; caps at 1 chip when the raster is smaller than the chip size (logged).
+- [`_pick_recent_uploads_via_api(api_url, session_cookie, max_uploads)`](../../scripts/build_triage_set.py#L183-L203) — API-mode fallback.
+- [`_normalise_sources(sources)`](../../scripts/build_triage_set.py#L241-L293) — collapses data-dir / api inputs to uniform `(cog_path, upload_id, extra_meta)` triples; detects upload_id collisions and skips later colliders with a warning.
+- [`_write_triage_set(out_dir, sources, chips_per_upload, dry_run)`](../../scripts/build_triage_set.py#L296-L351) — single shared write loop over normalised sources; emits chips + sidecars + `annotations.yaml` + `README.md`.
+- [`_write_png(path, rgb_array)`](../../scripts/build_triage_set.py#L354-L357) — Pillow PNG writer (required dependency, no stdlib fallback).
+- [`main(argv)`](../../scripts/build_triage_set.py#L449-L503) — CLI entry point; `--triage-set` flag on
   the comparison driver consumes the output.
 
 ## Inputs / Outputs
@@ -69,8 +71,11 @@ sees, not the raw COG.
 - Empty data-dir → warning, exit 0 (no crash).
 - API mode without a cookie → `RuntimeError` from
   `_pick_recent_uploads_via_api`.
-- Missing PIL → falls back to a stdlib-only PNG writer so the script keeps
-  working in stripped images.
+- Two COGs whose pre-underscore prefix matches → warning, second one skipped
+  (chip filenames would otherwise overwrite silently).
+- Raster narrower than the 1008 px chip size → emits a single chip with an
+  info log; the request for N chips is honoured down to 1.
+- Pillow missing → import-time `ImportError`. Pillow is a required dep.
 - Backend not reachable in API mode → `requests` exception propagates.
 
 ## Cross-references
