@@ -63,6 +63,19 @@ ships in the commit; the actual measurement is operator-scheduled.
   they don't double-detect.
 - **No dataset converter.** `scripts/prepare_fair1m_dataset.py` is left
   as a runbook TODO with the conversion outline.
+- **FAIR1M detections are never RemoteCLIP-verified.** By symmetry with
+  DOTA-OBB's exclusion (`REMOTECLIP_VERIFIER_LAYERS=sam3,grounding_dino`),
+  FAIR1M's closed-vocab calls are not second-guessed by the verifier. The
+  consequence: FAIR1M detections will surface in the UI with the
+  `inferred` label-quality (default) chip, never the `[VERIFIED]` chip
+  that T1.2 reserves for `semantic_margin >= LABEL_VERIFIER_MARGIN_FLOOR`.
+  This is intentional — FAIR1M's training distribution is the source of
+  truth for its 37 classes, and asking an open-vocab CLIP variant to
+  re-rank a "Boeing 737" detection would be the same precision-loss the
+  GDINO auto-gate addresses ([decisions/why-grounding-dino-auto-gated.md]).
+  Future work could add a `TRUSTED_SOURCE_LAYERS` set to
+  `label_quality_for` so closed-vocab specialists default to `verified`,
+  but that decision belongs with a measured ablation, not this scaffold.
 
 ## Measured impact (expected, not yet confirmed)
 

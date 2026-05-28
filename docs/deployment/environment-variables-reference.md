@@ -58,7 +58,8 @@ Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 | `DETECTION_THRESHOLD_PROFILE` | `defence_precision` | Informational label |
 | `GLOBAL_CONFIDENCE_FLOOR` | `0.35` | Single floor across all classes |
 | `HIGH_CONFIDENCE_THRESHOLD` | `0.65` | When to tag `high_confidence` |
-| `PER_CLASS_CONFIDENCE_OVERRIDES` | `{}` | JSON map of class-specific floors |
+| `PER_CLASS_CONFIDENCE_OVERRIDES` | `{}` | JSON map of class-specific floors. Merges on top of `DEFAULT_PER_CLASS_THRESHOLDS` (T1.5) — see [why-transportation-floor-raised.md](../decisions/why-transportation-floor-raised.md) |
+| `LABEL_VERIFIER_MARGIN_FLOOR` | `0.10` | Minimum `semantic_margin` for a detection to be promoted to `label_quality="verified"` (T1.2). Couples T1.2 label-quality policy ↔ T1.6 RemoteCLIP verifier ↔ T2.8 fusion. RemoteCLIP's own `passed` flag uses `REMOTECLIP_MARGIN_THRESHOLD=0.05`; this backend-side floor is 2× stricter. See [why-generic-labels-when-unverified.md](../decisions/why-generic-labels-when-unverified.md) |
 | `REFERENCE_ID_AUTO_THRESHOLD` | `0.85` | Reference Embedding DB auto-identify cosine floor; top-1 candidate above this threshold auto-writes `platform_*` to `object_details`. Read at worker process start — `docker compose restart worker` to apply changes. See [decisions/why-auto-write-with-threshold.md](../decisions/why-auto-write-with-threshold.md). |
 
 ## Worker / Imagery
