@@ -25,7 +25,12 @@ python scripts/compare_inference_layers.py \
 - `--restart-cmd` + `--restart-wait-timeout` — between configs, restart the inference container to free SAM3 VRAM cleanly. Required when switching profiles.
 - `--force-grounding-dino` — disables [the gate](../inference/grounding-dino-gate.md) so the harness can measure GDINO's impact on common-vocab prompts.
 - `--ontology-mode` (+ `--ontology-url`, `--ontology-branch`) — for the `dota` slice, replaces each chip's ground-truth class names (an oracle the operator never has) with the live ontology default-prompt vocabulary fetched from the backend. Measures detection quality the way an analyst actually sees it. `--ontology-branch` takes a comma-separated list of branch ids; the union of those branches' scoped subsets is used, modelling a scene-relevant vocabulary.
+- `--triage-set <DIR>` — production-image benchmark: load chips from an analyst-curated triage set built by [`scripts/build_triage_set.py`](build-triage-set.md). Implies `--slice triage`. Add `--include-non-rgb` to evaluate SAR / multispectral chips too (default is RGB only).
 - `--dry-run` — verify report generation without a live service.
+
+## Slices
+
+`--slice` accepts `dota`, `hls_burn`, `sen1floods`, `sar`, `embedding`, `triage`, or `all`. The `triage` slice is the operator-facing production benchmark; the others run on the academic eval datasets fetched by [`scripts/fetch_eval_datasets.py`](fetch-eval-datasets.md).
 
 ## Oracle prompts vs `--ontology-mode`
 

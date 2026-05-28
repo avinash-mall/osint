@@ -53,6 +53,7 @@ from eval_datasets.dota import iter_dota  # noqa: E402
 from eval_datasets.hls_burn import iter_hls_burn  # noqa: E402
 from eval_datasets.sar_synth import iter_sar_synth  # noqa: E402
 from eval_datasets.sen1floods import iter_sen1floods  # noqa: E402
+from eval_datasets.triage import iter_triage  # noqa: E402
 from eval_metrics.box_metrics import compute_box_metrics  # noqa: E402
 from eval_metrics.label_normalizer import normalize  # noqa: E402
 from eval_metrics.mask_metrics import chip_level_iou, POSITIVE_LABELS  # noqa: E402
@@ -869,6 +870,8 @@ def _iter_slice(
     slice_name: str,
     max_chips: int,
     layers_path: str | None,
+    triage_dir: str | None = None,
+    triage_rgb_only: bool = True,
 ) -> Iterator[tuple[bytes, str, list[str], Any]]:
     if slice_name in ("dota", "embedding"):
         # embedding slice uses DOTA chips for RGB layers
@@ -879,8 +882,22 @@ def _iter_slice(
         yield from iter_sen1floods(labels_path=layers_path, max_chips=max_chips)
     elif slice_name == "sar":
         yield from iter_sar_synth(labels_path=layers_path, max_chips=max_chips)
+    elif slice_name == "triage":
+        if not triage_dir:
+            raise ValueError(
+                "--slice triage requires --triage-set <path-to-triage-dir>"
+            )
+        count = 0
+        for tup in iter_triage(Path(triage_dir), rgb_only=triage_rgb_only):
+            if max_chips and count >= max_chips:
+                break
+            yield tup
+            count += 1
     else:
-        raise ValueError(f"Unknown slice: {slice_name!r}. Choices: dota, hls_burn, sen1floods, sar, embedding, all")
+        raise ValueError(
+            f"Unknown slice: {slice_name!r}. "
+            "Choices: dota, hls_burn, sen1floods, sar, embedding, triage, all"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1677,8 +1694,13 @@ def run(args: argparse.Namespace) -> int:
     # Load chips once
     # ------------------------------------------------------------------
     log.info("Loading chips from slice '%s' ...", slice_name)
+    triage_dir = getattr(args, "triage_set", None)
+    triage_rgb_only = not getattr(args, "triage_include_non_rgb", False)
     chips: list[tuple[bytes, str, list[str], Any]] = list(
-        _iter_slice(slice_name, max_chips, layers_path)
+        _iter_slice(
+            slice_name, max_chips, layers_path,
+            triage_dir=triage_dir, triage_rgb_only=triage_rgb_only,
+        )
     )
     if not chips:
         log.warning("No chips loaded — check dataset path.")
@@ -1891,13 +1913,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--slice",
-        choices=["dota", "hls_burn", "sen1floods", "sar", "embedding", "all"],
+        choices=["dota", "hls_burn", "sen1floods", "sar", "embedding", "triage", "all"],
         default="dota",
         help=(
             "Dataset slice to evaluate (default: dota). "
             "Choices: dota (box detectors), hls_burn / sen1floods (PRITHVI segmenter heads), "
             "sar (synthetic 2-band SAR for TERRAMIND latency only), "
             "embedding (DINOV3_SAT / TERRAMIND embedding latency), "
+            "triage (analyst-curated production-image benchmark; see "
+            "scripts/build_triage_set.py), "
             "all (runs dota + hls_burn + embedding and combines into one full report)."
         ),
     )
@@ -2016,6 +2040,26 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional ontology branch id to scope the --ontology-mode vocabulary.",
     )
+    # Tier-0 triage benchmark — analyst-curated chips pulled from the operator's
+    # own recent uploads. See scripts/build_triage_set.py.
+    parser.add_argument(
+        "--triage-set",
+        dest="triage_set",
+        default=None,
+        help=(
+            "Path to a triage-set directory produced by build_triage_set.py. "
+            "When set, forces --slice triage."
+        ),
+    )
+    parser.add_argument(
+        "--include-non-rgb",
+        dest="triage_include_non_rgb",
+        action="store_true",
+        help=(
+            "For --slice triage: include non-RGB chips (SAR / multispectral). "
+            "By default only RGB chips are evaluated."
+        ),
+    )
     return parser
 
 
@@ -2088,6 +2132,9 @@ def _check_regression_gate(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    # --triage-set is a convenience flag that pins --slice to triage.
+    if getattr(args, "triage_set", None):
+        args.slice = "triage"
     rc = run(args)
     if rc == 0:
         rc = _check_regression_gate(args)

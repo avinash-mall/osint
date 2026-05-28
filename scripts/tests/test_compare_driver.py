@@ -328,3 +328,66 @@ def test_dry_run_all_slice_produces_full_report(tmp_path: Path) -> None:
     assert "segmenter_results" in data
     assert "embedding_results" in data
     assert data["slice"] == "all"
+
+
+def test_dry_run_triage_set(tmp_path: Path) -> None:
+    """--triage-set wires through to iter_triage and produces a Box Detectors report."""
+    import struct
+    import zlib
+
+    import yaml
+
+    # Build a minimal on-disk triage set
+    triage_dir = tmp_path / "triage"
+    chips_dir = triage_dir / "chips"
+    chips_dir.mkdir(parents=True)
+
+    def _png(w: int = 32, h: int = 32) -> bytes:
+        def chunk(tag: bytes, data: bytes) -> bytes:
+            head = struct.pack(">I", len(data)) + tag + data
+            return head + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        raw = b""
+        for _ in range(h):
+            raw += b"\x00" + bytes([180] * w * 3)
+        compressed = zlib.compress(raw)
+        return (
+            b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", compressed)
+            + chunk(b"IEND", b"")
+        )
+
+    (chips_dir / "u1_0.png").write_bytes(_png())
+    (chips_dir / "u1_0.json").write_text(
+        '{"modality":"rgb","sensor":"optical","width":32,"height":32}'
+    )
+    (triage_dir / "annotations.yaml").write_text(
+        yaml.safe_dump(
+            {"chips": [{"chip": "u1_0.png", "sensor": "optical",
+                        "expected_labels": ["aircraft"]}]}
+        )
+    )
+
+    report_path = tmp_path / "triage_report.md"
+    json_path = tmp_path / "triage_report.json"
+
+    exit_code = _run_main(
+        [
+            "--dry-run",
+            "--triage-set", str(triage_dir),
+            "--max-chips", "5",
+            "--output", str(report_path),
+            "--json-output", str(json_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert report_path.exists()
+    content = report_path.read_text(encoding="utf-8")
+    assert "## Box Detectors" in content
+
+    import json as _json
+    data = _json.loads(json_path.read_text(encoding="utf-8"))
+    assert data["slice"] == "triage"
+    assert "results" in data
+    assert len(data["results"]) > 0
