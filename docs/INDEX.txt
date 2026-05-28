@@ -158,6 +158,7 @@ decisions/why-celery-task-from-lifespan.md|decision,backend|first place lifespan
 decisions/why-basemap-overlay-composition.md|decision,frontend|imagery is bottom ground-truth; BASE/TERRAIN are reference overlays on top; opacity fades overlay
 decisions/why-basemap-z14-cap.md|decision,frontend,deployment|offline bake to z=14 + overlay unmounts above; imagery is source of truth past z=14
 decisions/why-bbox-toggle-removed.md|decision,frontend|BBOX toggle removed; detection boxes always render, GEOM toolbar defaults to OBB
+decisions/why-branch-scoped-default.md|decision,frontend,ontology|imagery ingest UX defaults to branch-scoped prompts (~15-25 vs ~131); 15x F1 gain per LAE-80C
 decisions/why-custom-tour-engine.md|decision,frontend|Map workspace Product Tour built in-repo; no react-joyride/intro.js/shepherd dependency
 decisions/why-geom-prithvi-in-layerpanel.md|decision,frontend|GEOM box-mode + Prithvi overlay toggles moved from top toolbar into LayerPanel Overlays section
 decisions/why-glo30-as-default-dem.md|decision,deployment|Copernicus GLO-30 (30 m, ~150 GB) chosen for tactical worldwide viewshed/LOS

@@ -27,9 +27,10 @@ import {
   type OntologyBranch,
   type OntologyObject,
 } from '../utils/useOntology';
+import { promptsForAllBranches, promptsForBranch } from '../utils/promptsForBranch';
 import { BRANCH_ICON_BY_KEY, ObjectIcon } from '../utils/branchIcons';
 import type { BranchIconKey } from '../utils/defenceOntology';
-import { CircleHelp } from 'lucide-react';
+import { AlertTriangle, CircleHelp } from 'lucide-react';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -52,6 +53,17 @@ function branchIconComponent(iconKey: string | null | undefined) {
 }
 
 type MediaType = 'imagery' | 'fmv';
+/**
+ * Vocabulary-scope mode for the imagery upload prompt set.
+ *
+ *  - `branch`      → derive `text_prompts` from one selected top-level
+ *                    branch (default; ~15-25 prompts; precision win).
+ *  - `cherry-pick` → operator hand-picks individual objects from the tree
+ *                    (the legacy behaviour).
+ *  - `all`         → flatten every branch into one prompt list (~131 prompts;
+ *                    explicit opt-out, warned in the UI).
+ */
+type ScopeMode = 'branch' | 'cherry-pick' | 'all';
 
 const FMV_FILE_ACCEPT = '.mp4,.mov,.ts,.mkv,.m4v';
 const FMV_SIDECAR_ACCEPT = '.srt,.klv,.csv';
@@ -77,6 +89,11 @@ export default function IngestConnect() {
   const [uploadJobs, setUploadJobs] = useState<UploadJob[]>([]);
   const [expandedBranches, setExpandedBranches] = useState<Set<string>>(() => new Set());
   const [incompatibleNotice, setIncompatibleNotice] = useState<string | null>(null);
+  // Vocabulary-scope selector: `branch` is the default (LAE-80C aerial study
+  // measured ~15x F1 gain going from open-vocab fan-out → branch-scoped). See
+  // docs/decisions/why-branch-scoped-default.md.
+  const [scopeMode, setScopeMode] = useState<ScopeMode>('branch');
+  const [scopedBranchId, setScopedBranchId] = useState<string | null>(null);
 
   const sensorTag: Sensor = uploadSensorToTag(sensorType);
   const sensorPipeline = useMemo(() => pipelineForSensor(sensorType), [sensorType]);
@@ -99,6 +116,17 @@ export default function IngestConnect() {
     setExpandedBranches((current) => {
       if (current.size > 0) return current;
       return new Set([ontologyBranches[0].id]);
+    });
+  }, [ontologyBranches]);
+
+  // Default the branch-scope selector to the first top-level branch once the
+  // tree arrives, and re-anchor it if a sensor switch removes the previous
+  // selection from the visible tree.
+  useEffect(() => {
+    if (!ontologyBranches.length) return;
+    setScopedBranchId((current) => {
+      if (current && ontologyBranches.some((b) => b.id === current)) return current;
+      return ontologyBranches[0].id;
     });
   }, [ontologyBranches]);
 
@@ -131,10 +159,10 @@ export default function IngestConnect() {
     || null;
 
   const customPrompts = useMemo(() => parseCustomPrompts(customObjects), [customObjects]);
-  // Real prompts to send to SAM 3. Sentinel "__prithvi_*__" / aux markers are
-  // dropped here — they live in the JSON only to surface specialist-model
-  // outputs (Prithvi burn / flood / crop) in the legend, not to be sent as
-  // text prompts to the SAM 3 inference service.
+  // Cherry-picked prompts from the tree + the operator's custom textarea.
+  // Sentinel "__prithvi_*__" / aux markers are dropped here — they live in
+  // the JSON only to surface specialist-model outputs (Prithvi burn / flood
+  // / crop) in the legend, not to be sent as text prompts to SAM 3.
   const selectedPrompts = useMemo(() => {
     const seen = new Set<string>();
     const prompts = [
@@ -151,6 +179,40 @@ export default function IngestConnect() {
       return true;
     });
   }, [customPrompts, selectedDefenceIds]);
+
+  const scopedBranch = useMemo(
+    () => ontologyBranches.find((b) => b.id === scopedBranchId) || null,
+    [ontologyBranches, scopedBranchId],
+  );
+
+  // Prompts that will actually be sent to /api/ingest/upload, derived from
+  // `scopeMode`. In `branch` mode, an optional cherry-picked subset *within*
+  // that branch narrows the list further; if the operator has not touched
+  // the tree, the full branch slice is used.
+  const effectivePrompts = useMemo(() => {
+    if (scopeMode === 'cherry-pick') return selectedPrompts;
+    if (scopeMode === 'all') return promptsForAllBranches(ontologyBranches);
+    // branch
+    if (!scopedBranch) return [];
+    const branchPrompts = promptsForBranch(scopedBranch, true);
+    if (selectedDefenceIds.size === 0) return branchPrompts;
+    // Operator narrowed the branch — intersect selections with the branch's
+    // own object set.
+    const branchObjIds = new Set(branchObjectIds(scopedBranch));
+    const restricted = Array.from(selectedDefenceIds)
+      .filter((id) => branchObjIds.has(id))
+      .map((id) => defenceObjectById.get(id)?.prompt)
+      .filter((value): value is string => Boolean(value))
+      .filter(isSam3Prompt);
+    if (restricted.length === 0) return branchPrompts;
+    const seen = new Set<string>();
+    return restricted.filter((p) => {
+      const k = p.toLowerCase();
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  }, [scopeMode, selectedPrompts, ontologyBranches, scopedBranch, selectedDefenceIds, defenceObjectById]);
 
   const searchTerm = objectSearch.trim().toLowerCase();
   // The hook delivers a tree pre-filtered by sensor on the server side
@@ -275,8 +337,15 @@ export default function IngestConnect() {
         form.append('sensor_type', sensorType);
         form.append('modality', sensorPipeline.modality);
         form.append('enabled_layers', JSON.stringify(sensorPipeline.enabledLayers));
-        if (selectedPrompts.length > 0) {
-          form.append('text_prompts', JSON.stringify(selectedPrompts));
+        // Branch-scoped is the default; record the mission branch even when
+        // we also send text_prompts so the worker has provenance and the
+        // backend can audit scope use. The backend ignores ontology_branch
+        // when explicit text_prompts win (per inference resolve_prompts).
+        if (scopeMode === 'branch' && scopedBranchId) {
+          form.append('ontology_branch', scopedBranchId);
+        }
+        if (effectivePrompts.length > 0) {
+          form.append('text_prompts', JSON.stringify(effectivePrompts));
         }
       } else {
         // FMV: route through /api/fmv/clips so the sidecar (KLV/SRT) is
@@ -627,8 +696,10 @@ export default function IngestConnect() {
             )}
             <button
               onClick={uploadImage}
-              disabled={!file || uploading}
+              disabled={!file || uploading || (mediaType === 'imagery' && ontologyBranches.length === 0)}
+              title={mediaType === 'imagery' && ontologyBranches.length === 0 ? 'Loading ontology…' : undefined}
               className="flex-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed rounded px-4 py-3 text-sm font-bold uppercase tracking-wider flex items-center justify-center gap-2"
+              data-testid="ingest-upload-button"
             >
               <DatabaseZap className="w-4 h-4" /> Upload &amp; Process
             </button>
@@ -649,6 +720,27 @@ export default function IngestConnect() {
             {mediaType === 'fmv' && (
               <span className="border border-slate-600 bg-slate-800/40 text-slate-300 px-2 py-0.5 rounded uppercase">
                 {fmvPromptMode}
+              </span>
+            )}
+            {mediaType === 'imagery' && (
+              <span
+                data-testid="scope-status-chip"
+                title="Active vocabulary scope — branch-scoped is the precision default (~15-25 prompts vs ~131 unscoped)"
+                className={`border px-2 py-0.5 rounded uppercase tracking-wider ${
+                  scopeMode === 'all'
+                    ? 'border-amber-500/50 bg-amber-500/10 text-amber-200'
+                    : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-200'
+                }`}
+              >
+                {scopeMode === 'branch' && (
+                  <>[Branch: {scopedBranch?.label || '—'}] {effectivePrompts.length} prompts</>
+                )}
+                {scopeMode === 'cherry-pick' && (
+                  <>[Cherry-pick] {effectivePrompts.length} prompts</>
+                )}
+                {scopeMode === 'all' && (
+                  <>[All branches] {effectivePrompts.length} prompts ⚠</>
+                )}
               </span>
             )}
           </div>
@@ -679,20 +771,37 @@ export default function IngestConnect() {
         </div>
 
         {mediaType === 'imagery' && (
+          <ScopeModeSelector
+            mode={scopeMode}
+            setMode={setScopeMode}
+            branches={ontologyBranches}
+            scopedBranchId={scopedBranchId}
+            setScopedBranchId={setScopedBranchId}
+            promptCount={effectivePrompts.length}
+          />
+        )}
+
+        {mediaType === 'imagery' && (
         <div className="border border-slate-800 bg-slate-900/70 rounded">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
             <div className="flex items-center gap-3">
               <ShieldCheck className="w-5 h-5 text-blue-400" />
               <div>
-                <div className="text-xs font-bold uppercase tracking-wider text-slate-200">Detection Objects</div>
+                <div className="text-xs font-bold uppercase tracking-wider text-slate-200">
+                  {scopeMode === 'branch'
+                    ? `Refine ${scopedBranch?.label || 'branch'} (optional)`
+                    : 'Detection Objects'}
+                </div>
                 <div className="font-mono text-[10px] text-slate-500">
-                  Pick what SAM3 should look for &middot; filtered for <span className="text-blue-300">{sensorTag.toUpperCase()}</span>
+                  {scopeMode === 'branch'
+                    ? <>Branch slice already sent &middot; tick a subset to narrow further</>
+                    : <>Pick what SAM3 should look for &middot; filtered for <span className="text-blue-300">{sensorTag.toUpperCase()}</span></>}
                 </div>
               </div>
             </div>
             <div className="flex items-center gap-2 font-mono text-[10px]">
               <span className="border border-blue-500/40 bg-blue-500/10 text-blue-300 px-2 py-1 rounded">
-                {selectedPrompts.length} prompts
+                {effectivePrompts.length} prompts
               </span>
               <button
                 type="button"
@@ -724,7 +833,10 @@ export default function IngestConnect() {
               />
             </div>
             <div className="ingest-object-tree space-y-2 pr-1">
-              {ontologyBranches.map((branch) => renderBranch(branch))}
+              {(scopeMode === 'branch' && scopedBranch
+                ? [scopedBranch]
+                : ontologyBranches
+              ).map((branch) => renderBranch(branch))}
             </div>
             <label className="block">
               <span className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-300">Custom Objects</span>
@@ -736,9 +848,17 @@ export default function IngestConnect() {
               />
             </label>
             <div className="font-mono text-[10px] text-slate-500">
-              {selectedPrompts.length
-                ? `${selectedPrompts.length} prompts will override the default profile.`
-                : 'No object override selected. Upload will use the default satellite prompt profile.'}
+              {scopeMode === 'branch' && (
+                <>Branch-scoped: {effectivePrompts.length} prompts from <span className="text-blue-300">{scopedBranch?.label || '—'}</span> will be sent.</>
+              )}
+              {scopeMode === 'cherry-pick' && (
+                effectivePrompts.length
+                  ? `${effectivePrompts.length} cherry-picked prompts will override the default profile.`
+                  : 'No object override selected. Upload will use the default satellite prompt profile.'
+              )}
+              {scopeMode === 'all' && (
+                <>Full vocabulary fan-out: {effectivePrompts.length} prompts will be sent.</>
+              )}
             </div>
           </div>
         </div>
@@ -774,6 +894,117 @@ export default function IngestConnect() {
         {uploadStatus && !showProgressBar && (
           <div className="border border-slate-800 bg-slate-900 rounded px-4 py-3 text-sm font-mono text-blue-300">
             {uploadStatus}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------- */
+/*  Vocabulary-scope selector                                              */
+/* ---------------------------------------------------------------------- */
+
+interface ScopeModeSelectorProps {
+  mode: ScopeMode;
+  setMode: (m: ScopeMode) => void;
+  branches: OntologyBranch[];
+  scopedBranchId: string | null;
+  setScopedBranchId: (id: string) => void;
+  promptCount: number;
+}
+
+function ScopeModeSelector({
+  mode,
+  setMode,
+  branches,
+  scopedBranchId,
+  setScopedBranchId,
+  promptCount,
+}: ScopeModeSelectorProps) {
+  const branchCounts = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const b of branches) m.set(b.id, promptsForBranch(b, true).length);
+    return m;
+  }, [branches]);
+
+  const MODE_BUTTONS: { key: ScopeMode; label: string; title: string }[] = [
+    { key: 'branch',      label: 'Mission branch',     title: 'Scope detection to one mission branch. ~15-25 prompts. Default. LAE-80C aerial study measured ~15x F1 gain over open-vocab fan-out.' },
+    { key: 'cherry-pick', label: 'Cherry-pick objects', title: 'Hand-pick individual objects across the ontology. Legacy behaviour.' },
+    { key: 'all',         label: 'All branches',       title: 'Send the full vocabulary (~131 prompts). High false-positive rate; exploratory passes only.' },
+  ];
+
+  return (
+    <div
+      className="border border-slate-800 bg-slate-900/70 rounded"
+      data-testid="scope-mode-selector"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 px-4 py-3">
+        <div className="min-w-0">
+          <div className="text-xs font-bold uppercase tracking-wider text-slate-200">Vocabulary scope</div>
+          <div className="font-mono text-[10px] text-slate-500">
+            Branch-scoped is the precision default &middot; <span className="text-emerald-300">{promptCount} prompts</span>
+          </div>
+        </div>
+        <div className="inline-flex border border-slate-700 rounded overflow-hidden">
+          {MODE_BUTTONS.map(({ key, label, title }) => (
+            <button
+              key={key}
+              type="button"
+              title={title}
+              data-testid={`scope-mode-${key}`}
+              onClick={() => setMode(key)}
+              className={`px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider ${
+                mode === key
+                  ? 'bg-blue-500/20 text-blue-200'
+                  : 'bg-slate-900 text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="px-4 py-3">
+        {mode === 'branch' && (
+          branches.length === 0 ? (
+            <div className="font-mono text-[11px] text-slate-500">Loading ontology…</div>
+          ) : (
+            <label className="flex flex-col gap-1.5">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Mission branch</span>
+              <select
+                data-testid="scope-branch-select"
+                value={scopedBranchId || ''}
+                onChange={(e) => setScopedBranchId(e.target.value)}
+                className="bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm"
+              >
+                {branches.map((b) => {
+                  const count = branchCounts.get(b.id) ?? 0;
+                  return (
+                    <option key={b.id} value={b.id}>
+                      {b.label} ({count} prompt{count === 1 ? '' : 's'})
+                    </option>
+                  );
+                })}
+              </select>
+            </label>
+          )
+        )}
+        {mode === 'cherry-pick' && (
+          <div className="font-mono text-[11px] text-slate-400">
+            Pick individual objects in the tree below. The selection becomes the prompt set.
+          </div>
+        )}
+        {mode === 'all' && (
+          <div
+            data-testid="scope-all-warning"
+            className="flex items-start gap-2 border border-amber-500/40 bg-amber-500/10 text-amber-200 text-xs px-3 py-2 rounded"
+          >
+            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+            <span>
+              Full ontology fan-out (~{promptCount} prompts). Higher false-positive rate per
+              LAE-80C — use only for exploratory passes.
+            </span>
           </div>
         )}
       </div>
