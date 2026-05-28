@@ -37,9 +37,43 @@ DEFAULT_MODEL_VERSION = os.getenv("MODEL_VERSION", "open-vocab-multi-model")
 # for buckets whose measured precision is unacceptable at the global default.
 # Source: docs/benchmarks/detection-quality-ontology-mode-2026-05-22.md.
 # See docs/decisions/why-transportation-floor-raised.md for the rationale.
+#
+# Keys are **runtime canonical labels** (output of ``backend.ontology.normalize``,
+# i.e. ``_canonical(object.label)`` for object matches or ``_canonical(branch.label)``
+# for branch-matcher fallbacks). They are NOT the benchmark's collapsed bucket
+# names (``"transportation"``, ``"other"``); those exist only in the offline
+# evaluator at ``scripts/eval_metrics/label_normalizer.py``
+# (``_BRANCH_ID_TO_CANONICAL``) and never appear as the runtime ``parent_class``.
+#
+# To populate this dict we (a) enumerate the seed objects under the
+# ``Transportation_Terrain`` branch (whose ``parent_class`` is the object's own
+# canonical label) and (b) include ``"unknown"`` as the runtime catch-all that
+# the benchmark collapses to ``"other"``. See the decision doc for the full
+# bucket → runtime-label mapping.
 DEFAULT_PER_CLASS_THRESHOLDS: dict[str, float] = {
-    "transportation": 0.55,  # 100% recall / 3.5% precision at floor=0.40 — flood of FPs
-    "other":          0.50,  # 22% recall / 27% precision — generic catch-all needs head-room
+    # === Benchmark "transportation" bucket — 100% recall / 3.5% precision @ 0.40 ===
+    # Runtime canonical labels of every object under the ``Transportation_Terrain``
+    # seed branch. The benchmark's ``label_normalizer.normalize`` routes each of
+    # these to the ``"transportation"`` bucket via ``_BRANCH_ID_TO_CANONICAL``.
+    "expressway_service_area": 0.55,
+    "road_bridge":             0.55,
+    "railway_bridge":          0.55,
+    "bridge":                  0.55,
+    "overpass":                0.55,
+    "port":                    0.55,
+    "interchange":             0.55,
+    "roundabout":              0.55,
+    "toll_booth":              0.55,
+    "border_checkpoint":       0.55,
+
+    # === Benchmark "other" bucket — 22% recall / 27% precision @ 0.40 ===
+    # Runtime catch-all is ``parent_class="unknown"`` (the fallback in
+    # ``ontology.normalize`` when no branch/object matches AND the input is
+    # empty). Raising the unknown floor reduces noise from unmatched
+    # open-vocab prompts. Note: the seed normalizer also returns ``"other"``
+    # for empty input, so we include it for symmetry/defence-in-depth.
+    "unknown": 0.50,
+    "other":   0.50,
 }
 
 

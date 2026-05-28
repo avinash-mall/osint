@@ -1,7 +1,7 @@
 # `backend/detection_policy.py` — Precision Open-Vocab Filter Policy
 
 **Path:** [backend/detection_policy.py](../../backend/detection_policy.py)
-**Lines:** ~390
+**Lines:** ~430
 **Depends on:** [backend/ontology.py](../../backend/ontology.py), [backend/database.py](../../backend/database.py), env `GLOBAL_CONFIDENCE_FLOOR`, `PER_CLASS_CONFIDENCE_OVERRIDES`, `DETECTION_THRESHOLD_PROFILE`, `LABEL_VERIFIER_MARGIN_FLOOR`
 
 ## Purpose
@@ -11,24 +11,24 @@ Single policy module: should a raw `/detect` detection be emitted, what is its `
 ## Why this design
 
 - **Open-vocabulary, precision default** — every label first-class ([decisions/why-open-vocabulary.md](../decisions/why-open-vocabulary.md)). Default profile `defence_precision`, `GLOBAL_CONFIDENCE_FLOOR=0.40` (raised from 0.35 to cut false positives — see [decisions/why-deconflicted-detection-prompts.md](../decisions/why-deconflicted-detection-prompts.md)); operators lower the floor or use `PER_CLASS_CONFIDENCE_OVERRIDES`.
-- **Per-class floor defaults** — `DEFAULT_PER_CLASS_THRESHOLDS` ships code-level floors for buckets whose measured precision is unacceptable at the global default (`transportation=0.55`, `other=0.50`); merged below env + DB so operator overrides always win. See [decisions/why-transportation-floor-raised.md](../decisions/why-transportation-floor-raised.md).
+- **Per-class floor defaults** — `DEFAULT_PER_CLASS_THRESHOLDS` ships code-level floors for the **runtime canonical `parent_class` labels** (not the benchmark's collapsed bucket names) whose measured precision is unacceptable at the global default: every object under the `Transportation_Terrain` seed branch gets `0.55`, and the ontology fallback `unknown` gets `0.50`. Merged below env + DB so operator overrides always win. See [decisions/why-transportation-floor-raised.md](../decisions/why-transportation-floor-raised.md) for the bucket → runtime-label mapping and the trap that ate the first attempt.
 - **`parent_class_for_label` = public bucket assignment** — used by imagery worker, FMV worker, UI category facets, graph type-matching queries. Falls back to the normalized label when no parent matches.
 - **Policy cached** — `active_detection_policy()` reads `PER_CLASS_CONFIDENCE_OVERRIDES` from DB once, reuses; `invalidate_policy_cache()` called by inference router on overrides PUT.
 
 ## Key symbols
 
-- [`DEFAULT_PER_CLASS_THRESHOLDS`](../../backend/detection_policy.py#L40-L48) — code-shipped per-parent floors (`transportation=0.55`, `other=0.50`); env + DB overrides win.
-- [`normalize_label`](../../backend/detection_policy.py#L52) — wraps `ontology._canonical`.
-- [`strip_source_prefix`](../../backend/detection_policy.py#L59) — removes `"sam3:"`, `"yoloe:"`, etc.
-- [`parent_class_for_label`](../../backend/detection_policy.py#L68) — **the** public function; clusters into broad open buckets.
-- [`active_detection_policy`](../../backend/detection_policy.py#L174) — reads defaults + env + DB overrides → dict; precedence `defaults < env < DB`.
-- [`invalidate_policy_cache`](../../backend/detection_policy.py#L196).
-- [`threshold_for_parent`](../../backend/detection_policy.py#L202) — `class_thresholds[parent]` with global-floor fallback.
-- [`detection_decision`](../../backend/detection_policy.py#L210) — `{emit: bool, reasons: list[str]}` per detection.
-- [`should_emit_detection`](../../backend/detection_policy.py#L252) — boolean shortcut.
-- [`DOTA_OBB_GENERIC_CLASSES`](../../backend/detection_policy.py#L278) — the 18 deliberately-generic DOTA-OBB v1 categories, pre-normalised. Task 1.2 anchor.
-- [`label_quality_for`](../../backend/detection_policy.py#L305) — classifies a detection's display trust as `verified` / `inferred` / `generic`. See [decisions/why-generic-labels-when-unverified.md](../decisions/why-generic-labels-when-unverified.md).
-- [`display_label_for`](../../backend/detection_policy.py#L340) — returns `(display_label, label_quality)`; suppresses fabricated specific labels on unverified DOTA-OBB generics.
+- [`DEFAULT_PER_CLASS_THRESHOLDS`](../../backend/detection_policy.py#L36-L78) — code-shipped per-parent floors, keyed by runtime canonical `parent_class` (the 10 objects under `Transportation_Terrain` plus the `unknown` fallback); env + DB overrides win.
+- [`normalize_label`](../../backend/detection_policy.py#L86) — wraps `ontology._canonical`.
+- [`strip_source_prefix`](../../backend/detection_policy.py#L93) — removes `"sam3:"`, `"yoloe:"`, etc.
+- [`parent_class_for_label`](../../backend/detection_policy.py#L102) — **the** public function; clusters into broad open buckets.
+- [`active_detection_policy`](../../backend/detection_policy.py#L208) — reads defaults + env + DB overrides → dict; precedence `defaults < env < DB`.
+- [`invalidate_policy_cache`](../../backend/detection_policy.py#L230).
+- [`threshold_for_parent`](../../backend/detection_policy.py#L236) — `class_thresholds[parent]` with global-floor fallback.
+- [`detection_decision`](../../backend/detection_policy.py#L244) — `{emit: bool, reasons: list[str]}` per detection.
+- [`should_emit_detection`](../../backend/detection_policy.py#L286) — boolean shortcut.
+- [`DOTA_OBB_GENERIC_CLASSES`](../../backend/detection_policy.py#L312) — the 18 deliberately-generic DOTA-OBB v1 categories, pre-normalised. Task 1.2 anchor.
+- [`label_quality_for`](../../backend/detection_policy.py#L339) — classifies a detection's display trust as `verified` / `inferred` / `generic`. See [decisions/why-generic-labels-when-unverified.md](../decisions/why-generic-labels-when-unverified.md).
+- [`display_label_for`](../../backend/detection_policy.py#L374) — returns `(display_label, label_quality)`; suppresses fabricated specific labels on unverified DOTA-OBB generics.
 
 ## Inputs / Outputs
 

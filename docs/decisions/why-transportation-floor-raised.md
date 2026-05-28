@@ -46,12 +46,28 @@ gives it.
 ## Decision
 
 Ship a `DEFAULT_PER_CLASS_THRESHOLDS` constant in
-`backend/detection_policy.py`:
+`backend/detection_policy.py` whose keys are **runtime canonical
+parent_class values** (the output of `backend.ontology.normalize`), not the
+benchmark harness's collapsed bucket names. See the next section for the
+mapping rule that lets us enumerate which runtime labels belong in each
+benchmark bucket.
 
 ```python
 DEFAULT_PER_CLASS_THRESHOLDS: dict[str, float] = {
-    "transportation": 0.55,
-    "other":          0.50,
+    # transportation bucket — every object under Transportation_Terrain
+    "expressway_service_area": 0.55,
+    "road_bridge":             0.55,
+    "railway_bridge":          0.55,
+    "bridge":                  0.55,
+    "overpass":                0.55,
+    "port":                    0.55,
+    "interchange":             0.55,
+    "roundabout":              0.55,
+    "toll_booth":              0.55,
+    "border_checkpoint":       0.55,
+    # other bucket — the ontology fallback when no branch matches
+    "unknown": 0.50,
+    "other":   0.50,
 }
 ```
 
@@ -70,7 +86,61 @@ the merged `class_thresholds` dict as `env_per_class_confidence_overrides`,
 so the admin UI surfaces the new defaults automatically with an ENV badge
 the moment the worker reloads.
 
-`GLOBAL_CONFIDENCE_FLOOR` stays at 0.40 — only the two named buckets move.
+`GLOBAL_CONFIDENCE_FLOOR` stays at 0.40 — only the named labels move.
+
+## Runtime key mapping — the trap that ate the first attempt
+
+The first cut of this change shipped the dict with two keys —
+`"transportation"` and `"other"` — copied straight from the benchmark
+report's headline table. That was wrong, and it made the change a **silent
+no-op in production**. The bug:
+
+* The runtime `parent_class` field is set by
+  [`backend.ontology.normalize()`](../../backend/ontology.py#L302-L410). For
+  an object match it is `_canonical(object.label)` (e.g. `"bridge"`,
+  `"overpass"`, `"expressway_service_area"`). For a branch-matcher fallback
+  it is `_canonical(branch.label)` (e.g. `"transportation_terrain"`). The
+  string `"transportation"` is **never** emitted as a runtime
+  `parent_class`.
+* `"transportation"` and `"other"` live exclusively in
+  [`scripts/eval_metrics/label_normalizer.py`](../../scripts/eval_metrics/label_normalizer.py)
+  as values in `_BRANCH_ID_TO_CANONICAL`. The benchmark harness uses that
+  table to *collapse* the live ontology branches into ~17 headline-friendly
+  buckets before scoring precision/recall. Runtime never imports that
+  module.
+* So `threshold_for_parent("bridge", policy)` was falling through to the
+  global 0.40 floor — exactly the behaviour the change was meant to fix —
+  even though the original five unit tests passed (they fed the magic
+  string `"transportation"` back to the lookup, so they verified the dict
+  shape, not the production chain).
+
+The fix: enumerate the runtime canonical labels the benchmark routes to
+each bucket, and key the dict by those.
+
+| Benchmark bucket | Runtime canonical labels (the `parent_class` values shipped in this dict)                                                                                              | Source                                                       |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `transportation` | `expressway_service_area`, `road_bridge`, `railway_bridge`, `bridge`, `overpass`, `port`, `interchange`, `roundabout`, `toll_booth`, `border_checkpoint`               | Every object under `Transportation_Terrain` in [defenceOntology.seed.json](../../backend/scripts/seeds/defenceOntology.seed.json) |
+| `other`          | `unknown`                                                                                                                                                              | [`backend/ontology.py#L401`](../../backend/ontology.py#L401) — the `fallback_parent` value when no branch/object matches |
+
+The bucket → runtime-label routing was verified by running
+`scripts/eval_metrics/label_normalizer.normalize(L)` for every distinct
+`parent_class` observed in the live PostGIS `detections.metadata` field on
+2026-05-28. Labels in other buckets (`vehicle` → `battle_damage`,
+`vehicle_lot` → `military_installation`, `trailer` /
+`vehicle_maintenance_yard` / `shipping_container_lot` → `logistics`)
+intentionally **do not** receive raised floors here — only the
+`transportation` and `other` buckets failed their precision targets in the
+2026-05-22 benchmark.
+
+The benchmark string `"other"` is included as a key alongside `"unknown"`
+for symmetry and defence-in-depth: if a future caller passes the string
+through `threshold_for_parent` directly, it still hits the intended floor.
+
+## Re-tune trigger
+
+After FAIR1M specialist lands (T2.7), re-run the triage benchmark; if any
+per-bucket precision is still < 0.50, revisit floor or proceed with the
+bucket-split.
 
 ## What was deliberately NOT done
 
