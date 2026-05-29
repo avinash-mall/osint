@@ -28,10 +28,11 @@ FROM ghcr.io/project-osrm/osrm-backend:v6.0.0 AS fetcher
 ARG OSRM_ENABLED=1
 ARG PLANET_PBF_URL=https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf
 
-# osrm-backend image is slim and does not ship curl by default.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+# osrm-backend v6 is alpine-based; the upstream image does not ship curl.
+# The bake script also has a defensive install fallback, but installing
+# here keeps the build deterministic and gives the cache mount layer
+# something cheap to invalidate on.
+RUN apk add --no-cache curl ca-certificates bash
 
 WORKDIR /build
 COPY scripts/build_offline_osrm.sh /build/build_offline_osrm.sh

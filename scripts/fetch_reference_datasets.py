@@ -630,10 +630,28 @@ def _main(argv: list[str]) -> int:
     }
     print(json.dumps(summary, indent=2))
     # Build must NOT fail just because one optional adapter erred — exit 0
-    # unless we wrote zero chips overall (almost certainly a misconfig).
+    # unless this run truly has no usable corpora on disk. A BuildKit cache
+    # mount carrying up-to-date markers from a prior successful bake is the
+    # common case where chips_written totals 0 but the chip tree under
+    # ``args.out`` is fully populated; the next stage's `cp -an` will then
+    # copy that cache content out. Only treat zero new chips AND zero
+    # on-disk chips as a real misconfig.
     if summary["totals"]["chips_total"] == 0:
-        logger.error("fetch_reference_datasets produced 0 chips across all adapters — build aborted")
-        return 1
+        on_disk_chips = sum(1 for _ in args.out.rglob("*.png")) \
+                      + sum(1 for _ in args.out.rglob("*.jpg")) \
+                      + sum(1 for _ in args.out.rglob("*.jpeg"))
+        if on_disk_chips == 0:
+            logger.error(
+                "fetch_reference_datasets produced 0 chips and the output tree at %s is empty — "
+                "build aborted (no usable corpora; check HF_TOKEN, drop-in trees, or network)",
+                args.out,
+            )
+            return 1
+        logger.warning(
+            "0 chips written this run, but %d chip files already exist in %s "
+            "(BuildKit cache from a prior bake) — proceeding",
+            on_disk_chips, args.out,
+        )
     return 0
 
 

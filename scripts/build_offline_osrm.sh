@@ -33,10 +33,18 @@ if [ ! -f "${PROFILE}" ]; then
     exit 2
 fi
 
-# osrm-backend image is slim and may not ship curl. Install on first run.
+# osrm-backend v6 is alpine-based; install curl via apk if missing. Earlier
+# osrm-backend tags were debian-based — fall back to apt-get for those.
 if ! command -v curl >/dev/null 2>&1; then
     log "installing curl"
-    apt-get update -qq && apt-get install -y --no-install-recommends curl ca-certificates
+    if command -v apk >/dev/null 2>&1; then
+        apk add --no-cache curl ca-certificates
+    elif command -v apt-get >/dev/null 2>&1; then
+        apt-get update -qq && apt-get install -y --no-install-recommends curl ca-certificates
+    else
+        echo "FATAL: no curl and no package manager (apk/apt-get) to install it" >&2
+        exit 2
+    fi
 fi
 
 # 1. Fetch planet PBF.
@@ -83,11 +91,15 @@ du -sh "${DATA_DIR}"/* 2>/dev/null || true
 # Emit MANIFEST.sha256 — single digest over (sorted artifact name, size) pairs.
 # The osrm-assets entrypoint compares this against the volume's manifest to
 # decide whether to rsync. We hash names + sizes (not contents) to keep this
-# step fast on the multi-hundred-GB output.
+# step fast on the multi-hundred-GB output. Avoid GNU-only `find -printf`
+# since this script runs inside the alpine-based osrm-backend image.
 log "writing MANIFEST.sha256"
 (
     cd "${DATA_DIR}"
-    find . -maxdepth 1 -type f \( -name 'planet.osrm*' -o -name '*.osm.pbf' \) -printf '%f\t%s\n' \
+    for f in planet.osrm* *.osm.pbf; do
+        [ -f "$f" ] || continue
+        printf '%s\t%s\n' "$f" "$(stat -c '%s' "$f" 2>/dev/null || wc -c <"$f")"
+    done \
         | sort \
         | sha256sum \
         | awk '{print $1}' > MANIFEST.sha256
