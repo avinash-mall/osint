@@ -3,7 +3,7 @@ architecture/system-overview.md|arch|nginx:3000 sole entry; routes /api,/ws,/til
 architecture/data-flow-imagery.md|arch,imagery|COG translate -> chip -> /detect -> georef -> evidence-rank -> PostGIS persist
 architecture/data-flow-fmv.md|arch,fmv|HLS transcode -> KLV/SRT telemetry -> /detect_video NDJSON -> fmv_detections
 architecture/component-boundaries.md|arch|process/file boundaries: backend, worker, inference-sam3, frontend
-architecture/service-topology.md|arch,deployment|docker-compose service graph, internal DNS, exposed ports
+architecture/service-topology.md|arch,deployment|docker-compose service graph, bake-profile bakers, internal DNS, exposed ports
 architecture/link-graph-redesign.md|arch|4-phase Link Graph redesign as analyst reasoning surface: Investigation/Evidence/Ontology modes, projectors, NEAR/SAME_AS
 backend/main-app-entrypoint.md|backend,fastapi|main.py mounts routers, lifespan migrations, session middleware, FMV prompt fallback
 backend/api-routes-reference.md|backend,router|route table by tag: auth/graph/detections/fmv/ontology/analytics/ai
@@ -110,15 +110,19 @@ frontend/admin-auth-ldap.md|frontend,auth|AdminAuthTab.tsx LDAP config form with
 frontend/admin-reference-platforms.md|frontend|admin tab to browse reference platforms with chip thumbnails
 frontend/utils-ontology-and-icons.md|frontend,ontology|branchIcons, detectionTaxonomy, iconLibrary, useOntology
 frontend/services-analytics.md|frontend|services/analytics.ts job submission types
-deployment/docker-compose-services.md|deployment|service-by-service docker-compose.yml reference
+deployment/assets-dockerfile.md|deployment|assets nginx image: fonts/reference/calibration baked in; basemap+terrain via bind mount
+deployment/baker-dem-dockerfile.md|deployment|bakers/dem/Dockerfile: runtime baker for GLO-30 DEM into ./assets/dem
+deployment/baker-osrm-dockerfile.md|deployment|bakers/osrm/Dockerfile: runtime baker for OSRM MLD into ./assets/osrm
+deployment/baker-tiles-dockerfile.md|deployment|bakers/tiles/Dockerfile: shared runtime baker for basemap+terrain tiles
+deployment/docker-compose-services.md|deployment|service-by-service docker-compose.yml reference including bake-profile bakers
 deployment/inference-gpu-dockerfile.md|deployment,inference|GPU inference image build and offline model bake steps
 deployment/nginx-gateway-and-tile-cache.md|deployment|nginx conf: routes, 24h tile cache, HLS streaming
-deployment/offline-airgap-deployment.md|deployment|build-once / load-and-go runbook, no DNS at runtime
+deployment/offline-airgap-deployment.md|deployment|buildx prune -> bake -> build -> ship ./assets runbook, no DNS at runtime
 deployment/gpu-profile-detection.md|deployment,gpu|configure_host.py picks CUDA/PyTorch/arch-list per GPU
 deployment/environment-variables-reference.md|deployment|every variable .env.example exposes, grouped by subsystem
-deployment/dem-glo30-bake.md|deployment|operator runbook for the worldwide Copernicus GLO-30 DEM bake
-deployment/osrm-planet-bake.md|deployment|operator runbook for the planet OSRM extract/partition/customize bake
-deployment/volume-mounts-and-paths.md|deployment|/data/imagery, /data/fmv, /data/datasets, dem_data, osrm_data
+deployment/dem-glo30-bake.md|deployment|operator runbook: dem-baker runtime container writes GLO-30 into ./assets/dem
+deployment/osrm-planet-bake.md|deployment|operator runbook: osrm-baker runtime container writes OSRM MLD into ./assets/osrm
+deployment/volume-mounts-and-paths.md|deployment|/data/imagery, /data/fmv, /data/datasets, ./assets/dem, ./assets/osrm bind mounts
 operations/celery-queues-and-tasks.md|operations,celery|imagery + default queues, task name table, retry policy
 operations/celery-beat-schedule.md|operations,celery|worker_beat scheduler, periodic feed polling, observation cleanup
 operations/websocket-event-channels.md|operations|topic list: ingest_progress, fmv_detections_complete, ontology_updated
@@ -164,6 +168,7 @@ decisions/why-bbox-toggle-removed.md|decision,frontend|BBOX toggle removed; dete
 decisions/why-branch-scoped-default.md|decision,frontend,ontology|imagery ingest UX defaults to branch-scoped prompts (~15-25 vs ~131); 15x F1 gain per LAE-80C
 decisions/why-custom-tour-engine.md|decision,frontend|Map workspace Product Tour built in-repo; no react-joyride/intro.js/shepherd dependency
 decisions/why-geom-prithvi-in-layerpanel.md|decision,frontend|GEOM box-mode + Prithvi overlay toggles moved from top toolbar into LayerPanel Overlays section
+decisions/why-dem-osrm-as-sibling-baker-images.md|decision,deployment|superseded: DEM+OSRM as sibling build-time images; replaced by runtime bake profile
 decisions/why-glo30-as-default-dem.md|decision,deployment|Copernicus GLO-30 (30 m, ~150 GB) chosen for tactical worldwide viewshed/LOS
 decisions/why-candidate-edges-persisted.md|decision,backend|persist CANDIDATE_DETECTED_AS in Neo4j on candidate creation; makes pending edges Cypher-traversable
 decisions/why-category-presence-gate.md|decision,sam3|SegEarth-OV-3-style 0.40 filter suppresses absent concepts
@@ -190,6 +195,7 @@ decisions/why-precision-first-inference-defaults.md|decision|bounded prompt defa
 decisions/why-preload-imagery-on-startup.md|decision,inference,deployment|inference-sam3 lifespan preloads imagery so healthcheck sees model_loaded; SAM3_SKIP_PRELOAD opts out
 decisions/why-reject-double-review-with-409.md|decision,backend|approve/reject UPDATE guarded WHERE status='pending'; 409 with prior reviewer instead of silent overwrite
 decisions/why-remoteclip-default-on.md|decision,inference|RemoteCLIP verifier default-on for imagery; gated to sam3/grounding_dino source layers
+decisions/why-runtime-bakers-into-assets.md|decision,deployment|geo-assets moved to runtime bake profile; BuildKit cache-mount rollback + OOM drove this
 decisions/why-sam3-as-foundation.md|decision,sam3|open-vocabulary segmentation across RGB/MSI/SAR with native API
 decisions/why-sar-confidence-cap.md|decision,imagery|SAR detections via TerraMind synthetic proxy capped at 0.85
 decisions/why-sat-tiles-cap-at-native-zoom.md|decision,imagery,frontend|SAT TileLayer maxNativeZoom from COG GSD + nginx cache relax kills zoom-in blur
@@ -218,8 +224,8 @@ benchmarks/detection-quality-ontology-mode-2026-05-22.md|benchmark|DOTA-v1.0 ont
 benchmarks/detection-quality-scoped-2026-05-22.md|benchmark|DOTA-v1.0 branch-scoped vocab (87 prompts): sam3+dota_obb 0.55 mAP, ~45% lower latency vs unscoped
 benchmarks/sam3-perf-phases.md|benchmark,sam3|phaseA/A3/BC profiling progression in bench/sam3_*.json
 scripts/configure-host-gpu.md|scripts,gpu|reads nvidia-smi, writes SENTINEL GENERATED block to .env
-scripts/build-offline-basemap.md|scripts,deployment|Carto Dark z=0..14 pre-fetch (~13 GB) into assets/static/basemap
-scripts/build-offline-terrain.md|scripts,deployment|OpenTopoMap z=0..14 terrain tiles (~22 GB) for analytics overlays
+scripts/build-offline-basemap.md|scripts,deployment|Carto Dark z=0..14 pre-fetch; runs inside basemap-baker container into ./assets/static/basemap
+scripts/build-offline-terrain.md|scripts,deployment|OpenTopoMap z=0..14 terrain tiles; runs inside terrain-baker container into ./assets/static/terrain
 scripts/build-triage-set.md|scripts,benchmark|Tier-0 analyst triage benchmark from /data/imagery/processed or /api/ingest/uploads
 scripts/fetch-eval-datasets.md|scripts,benchmark|DOTA-v1.0 + Sen1Floods11 from HF with idempotent gating
 scripts/compare-inference-layers.md|scripts,benchmark|main benchmark CLI: layer configs, repeats, restart-cmd

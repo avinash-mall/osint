@@ -89,8 +89,9 @@ log "bake complete; contents of ${DATA_DIR}:"
 du -sh "${DATA_DIR}"/* 2>/dev/null || true
 
 # Emit MANIFEST.sha256 — single digest over (sorted artifact name, size) pairs.
-# The osrm-assets entrypoint compares this against the volume's manifest to
-# decide whether to rsync. We hash names + sizes (not contents) to keep this
+# Written for air-gap integrity and inspection; operators can compare this
+# against the manifest on the air-gap copy to confirm the dataset was
+# transferred intact. We hash names + sizes (not contents) to keep this
 # step fast on the multi-hundred-GB output. Avoid GNU-only `find -printf`
 # since this script runs inside the alpine-based osrm-backend image.
 log "writing MANIFEST.sha256"

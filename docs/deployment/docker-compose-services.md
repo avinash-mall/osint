@@ -17,8 +17,12 @@
 | `redis` | `redis:8-alpine` | internal 6379 | Celery broker |
 | `titiler` | `ghcr.io/developmentseed/titiler:2.0.2` | internal 8080 | COG tile server |
 | `martin` | `ghcr.io/maplibre/martin:1.9.1` | internal 3000 | PostGIS → MVT |
-| `assets` | `sentinel-assets:offline` | internal 80 | offline basemap + fonts |
+| `assets` | `sentinel-assets:offline` | internal 80 | fonts, reference-corpora, calibration; binds `./assets/static/{basemap,terrain}` RO |
 | `llm-local-proxy` *(profile `llm-proxy`)* | `alpine/socat:1.8.0.3` | host 18001 | optional socat forwarder |
+| `osrm-baker` *(profile `bake`)* | `sentinel-osrm-baker` | — | runtime baker; writes OSRM MLD into `./assets/osrm`; exits 0 |
+| `dem-baker` *(profile `bake`)* | `sentinel-dem-baker` | — | runtime baker; writes GLO-30 tiles into `./assets/dem`; exits 0 |
+| `basemap-baker` *(profile `bake`)* | `sentinel-tiles-baker` | — | runtime baker; writes Carto Dark tiles into `./assets/static/basemap`; exits 0 |
+| `terrain-baker` *(profile `bake`)* | `sentinel-tiles-baker` | — | runtime baker; writes OpenTopoMap tiles into `./assets/static/terrain`; exits 0 |
 
 ## Why this layout
 
@@ -38,10 +42,14 @@
 | `dataset_data` | `backend`, `worker` | — | Training-set storage |
 | `reference_corpora_data` | `assets` | `backend`, `worker` | Reference chips bake (mounts at `/opt/reference-corpora`) |
 | `calibration_data` | `assets` | `backend`, `worker` | Per-detector temperatures bake (mounts at `/data/calibration`) |
-| `dem_data` | `dem-assets` (init container) | `backend`, `worker` | GLO-30 DEM mosaic |
-| `osrm_data` | `osrm-assets` (init container) | `osrm` | Planet OSRM MLD dataset |
+| `./assets/dem` (host bind) | `dem-baker` (`bake` profile) | `backend`, `worker` | GLO-30 DEM mosaic; read-only at runtime |
+| `./assets/osrm` (host bind) | `osrm-baker` (`bake` profile) | `osrm` | Planet OSRM MLD dataset; read-only at runtime |
+| `./assets/static/basemap` (host bind) | `basemap-baker` (`bake` profile) | `assets` | Carto Dark tiles; read-only at runtime |
+| `./assets/static/terrain` (host bind) | `terrain-baker` (`bake` profile) | `assets` | OpenTopoMap tiles; read-only at runtime |
 
-`reference_corpora_data` and `calibration_data` follow the same bake-then-rsync pattern: the `assets` image holds the canonical content at an un-mounted staging path (`/opt/baked-reference-chips/`, `/opt/baked-calibration/`); the assets entrypoint rsyncs onto the named volume on every container start, digest-gated by `MANIFEST.sha256`. See [operations/calibration-shipping.md](../operations/calibration-shipping.md).
+`reference_corpora_data` and `calibration_data` follow the bake-then-rsync pattern: the `assets` image holds the canonical content at an un-mounted staging path (`/opt/baked-reference-chips/`, `/opt/baked-calibration/`); the assets entrypoint rsyncs onto the named volume on every container start, digest-gated by `MANIFEST.sha256`. See [operations/calibration-shipping.md](../operations/calibration-shipping.md).
+
+The four geo-asset bind mounts (`./assets/dem`, `./assets/osrm`, `./assets/static/basemap`, `./assets/static/terrain`) are written by the `bake`-profile baker services and read read-only by the runtime stack. See [decisions/why-runtime-bakers-into-assets.md](../decisions/why-runtime-bakers-into-assets.md).
 
 ## Cross-references
 

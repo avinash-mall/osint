@@ -127,10 +127,11 @@ def build_vrt(root: Path) -> Path:
 def write_manifest(root: Path) -> Path:
     """Emit MANIFEST.sha256 — a single digest over (sorted filename, size) pairs.
 
-    The dem-assets entrypoint compares this digest against the volume's
-    MANIFEST.sha256 to decide whether to rsync. Hashing only names + sizes
-    keeps the build step fast (no need to re-read 150 GB) while still
-    catching tile-set changes.
+    Written for air-gap integrity and inspection; operators can compare the
+    manifest on the connected build host against the air-gap copy to confirm
+    the tile set was transferred intact. Hashing only names + sizes keeps
+    this step fast (no need to re-read 150 GB) while still catching
+    tile-set changes.
     """
     import hashlib
     tiles_dir = root / "glo30"

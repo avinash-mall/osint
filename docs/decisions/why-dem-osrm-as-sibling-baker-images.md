@@ -1,7 +1,7 @@
 # Why DEM + OSRM ship as sibling baker images, not folded into `assets`
 
 **Decision date:** 2026-05-28
-**Status:** active
+**Status:** superseded — see [why-runtime-bakers-into-assets.md](why-runtime-bakers-into-assets.md) (2026-05-30)
 
 ## Context
 
@@ -28,12 +28,9 @@ The reference-corpora bake stays in `assets`.
 - **Three baker images instead of one.** Slight increase in compose complexity (two new services), and three `docker save | gzip` tarballs instead of one. Acceptable given the order-of-magnitude size difference between corpora and DEM/OSRM.
 - **No HTTP-served fallback for DEM.** The basemap/terrain tile pyramids in `assets` are HTTP-served by nginx (frontend tile requests). The DEM is NOT served over HTTP — it lives only on the `dem_data` volume. This is correct: rasterio reads DEM via filesystem I/O, not vsi-curl, because random access into a 150 GB VRT mosaic is much faster over a local mount than over HTTP-range-reads.
 
-## How to apply
+## How to apply (superseded)
 
-- DEM bake context: [`dem-assets/`](../../dem-assets/). Built automatically by `docker compose up -d --build`.
-- OSRM bake context: [`osrm-assets/`](../../osrm-assets/). Same.
-- Both bake scripts ([`scripts/build_offline_dem.py`](../../scripts/build_offline_dem.py), [`scripts/build_offline_osrm.sh`](../../scripts/build_offline_osrm.sh)) are unchanged — they were already invoked from a Compose service; now they're invoked from a Dockerfile RUN against a BuildKit cache mount.
-- Entrypoints ([`dem-assets/scripts/entrypoint.sh`](../../dem-assets/scripts/entrypoint.sh), [`osrm-assets/scripts/entrypoint.sh`](../../osrm-assets/scripts/entrypoint.sh)) implement the same MANIFEST.sha256 rsync-on-mismatch pattern as [`assets/scripts/entrypoint.sh`](../../assets/scripts/entrypoint.sh).
+This section describes the original build-time pattern, which has been replaced. The `dem-assets/` and `osrm-assets/` directories have been removed. See [why-runtime-bakers-into-assets.md](why-runtime-bakers-into-assets.md) for the current operator workflow using `bakers/dem/` and `bakers/osrm/` with the `bake` Compose profile.
 
 ## Related
 
