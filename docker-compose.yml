@@ -592,68 +592,80 @@ services:
       retries: 5
       start_period: 30s
 
-  # Auto-bake worldwide Copernicus GLO-30 DEM into the image during
-  # `docker compose up -d --build`. The fetch runs inside the Dockerfile
-  # against a BuildKit cache mount; on container start the entrypoint
-  # rsyncs the baked tree onto the host bind mount at ./assets/dem and
-  # exits. The backend + worker mount the same ./assets/dem RO and read
-  # the VRT.
-  #
-  # The host bind mount means the dataset survives `docker system prune`
-  # and ships as a plain folder — copy ./assets/dem to an air-gap machine
-  # and `docker compose up -d` works without re-baking.
-  #
-  # First-build wallclock is dominated by the ~150 GB fetch; subsequent
-  # rebuilds are seconds via the cache mount. See
-  # docs/deployment/dem-glo30-bake.md.
-  #
-  # Smoke-build hook: `DEM_ENABLED=0 docker compose build dem-assets` skips
-  # the bake (image holds an empty MANIFEST.sha256=skipped and the
-  # entrypoint no-ops; backend serves 503 for viewshed/LOS).
-  dem-assets:
+  # dem-assets / osrm-assets build-time bakers were replaced by runtime
+  # baker services (dem-baker / osrm-baker) under the `bake` profile —
+  # see the end of this file and docs/decisions/why-runtime-bakers-into-assets.md.
+
+  # ---------------------------------------------------------------------
+  # Asset bakers (Compose profile `bake`). Run ONCE on a connected host to
+  # populate ./assets, then ship ./assets to the air-gapped target. They are
+  # hidden from the default `docker compose up` (air-gap rule). Each writes
+  # directly to its host bind mount, so a crash/Ctrl-C/OOM never rolls back —
+  # re-run to resume. See docs/deployment/{osrm-planet,dem-glo30}-bake.md.
+  osrm-baker:
+    profiles: ["bake"]
     build:
       context: .
-      dockerfile: dem-assets/Dockerfile
-      args:
-        DEM_ENABLED: "${DEM_ENABLED:-1}"
-        DEM_CONCURRENCY: "${DEM_CONCURRENCY:-8}"
-        DEM_LAT_MIN: "${DEM_LAT_MIN:--90}"
-        DEM_LAT_MAX: "${DEM_LAT_MAX:-90}"
-        DEM_LON_MIN: "${DEM_LON_MIN:--180}"
-        DEM_LON_MAX: "${DEM_LON_MAX:-180}"
-    image: sentinel-dem-assets:offline
+      dockerfile: bakers/osrm/Dockerfile
+    image: sentinel-osrm-baker:offline
     restart: "no"
+    environment:
+      DATA_DIR: /data
+      PROFILE: /opt/car.lua
+      PLANET_PBF_URL: "${PLANET_PBF_URL:-https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf}"
+    volumes:
+      - ./assets/osrm:/data
+
+  dem-baker:
+    profiles: ["bake"]
+    build:
+      context: .
+      dockerfile: bakers/dem/Dockerfile
+    image: sentinel-dem-baker:offline
+    restart: "no"
+    command:
+      - python3
+      - /app/build_offline_dem.py
+      - --out=/data/dem
+      - --concurrency=${DEM_CONCURRENCY:-8}
+      - --lat-min=${DEM_LAT_MIN:--90}
+      - --lat-max=${DEM_LAT_MAX:-90}
+      - --lon-min=${DEM_LON_MIN:--180}
+      - --lon-max=${DEM_LON_MAX:-180}
     volumes:
       - ./assets/dem:/data/dem
 
-  # Auto-bake planet OSRM into the image during
-  # `docker compose up -d --build`. The fetch + extract/partition/customize
-  # pipeline runs inside the Dockerfile against a BuildKit cache mount; on
-  # container start the entrypoint rsyncs the planet.osrm* artifacts onto
-  # the host bind mount at ./assets/osrm and exits. The runtime `osrm`
-  # service then mounts the same ./assets/osrm RO and serves /route/v1/*.
-  #
-  # The host bind mount means the dataset survives `docker system prune`
-  # and ships as a plain folder — copy ./assets/osrm to an air-gap machine
-  # and `docker compose up -d` works without re-baking.
-  #
-  # First-build wallclock includes an ~80 GB PBF fetch plus ~3-6 h of
-  # osrm-extract; subsequent rebuilds are seconds via the cache mount.
-  # See docs/deployment/osrm-planet-bake.md.
-  #
-  # Smoke-build hook: `OSRM_ENABLED=0 docker compose build osrm-assets`
-  # skips the bake.
-  osrm-assets:
+  basemap-baker:
+    profiles: ["bake"]
     build:
       context: .
-      dockerfile: osrm-assets/Dockerfile
-      args:
-        OSRM_ENABLED: "${OSRM_ENABLED:-1}"
-        PLANET_PBF_URL: "${PLANET_PBF_URL:-https://planet.openstreetmap.org/pbf/planet-latest.osm.pbf}"
-    image: sentinel-osrm-assets:offline
+      dockerfile: bakers/tiles/Dockerfile
+    image: sentinel-tiles-baker:offline
     restart: "no"
+    command:
+      - python
+      - /app/build_offline_basemap.py
+      - --out=/out
+      - --zoom=${BASEMAP_ZOOM:-0-10}
+      - --concurrency=${BASEMAP_CONCURRENCY:-16}
     volumes:
-      - ./assets/osrm:/data
+      - ./assets/static/basemap:/out
+
+  terrain-baker:
+    profiles: ["bake"]
+    build:
+      context: .
+      dockerfile: bakers/tiles/Dockerfile
+    image: sentinel-tiles-baker:offline
+    restart: "no"
+    command:
+      - python
+      - /app/build_offline_terrain.py
+      - --out=/out
+      - --zoom=${TERRAIN_ZOOM:-0-10}
+      - --concurrency=${TERRAIN_CONCURRENCY:-4}
+    volumes:
+      - ./assets/static/terrain:/out
 
 volumes:
   neo4j_data:
