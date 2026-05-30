@@ -78,8 +78,6 @@ services:
         condition: service_healthy
       inference-sam3:
         condition: service_healthy
-      dem-assets:
-        condition: service_completed_successfully
     volumes:
       - ./backend:/app
       - imagery_data:/data/imagery
@@ -445,8 +443,6 @@ services:
         condition: service_healthy
       inference-sam3:
         condition: service_healthy
-      dem-assets:
-        condition: service_completed_successfully
     volumes:
       - ./backend:/app
       - imagery_data:/data/imagery
@@ -534,8 +530,13 @@ services:
       # worker mount this RO at /data/calibration; nginx also serves it at
       # /calibration/ for the healthcheck below.
       - calibration_data:/usr/share/nginx/html/calibration
+      # Basemap + terrain tile pyramids served from the host bind mount
+      # (populated by basemap-baker / terrain-baker). Empty until baked —
+      # nginx returns 404 for tiles and the relaxed healthcheck still passes.
+      - ./assets/static/basemap:/usr/share/nginx/html/basemap:ro
+      - ./assets/static/terrain:/usr/share/nginx/html/terrain:ro
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz && wget -q -O /dev/null http://127.0.0.1/basemap/0/0/0.png && wget -q -O /dev/null http://127.0.0.1/terrain/0/0/0.png && wget -q -O /dev/null http://127.0.0.1/calibration/model_temperatures.json || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/healthz && wget -q -O /dev/null http://127.0.0.1/calibration/model_temperatures.json || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -580,9 +581,6 @@ services:
     image: ghcr.io/project-osrm/osrm-backend:v6.0.0
     restart: unless-stopped
     command: osrm-routed --algorithm mld /data/planet.osrm
-    depends_on:
-      osrm-assets:
-        condition: service_completed_successfully
     volumes:
       - ./assets/osrm:/data:ro
     healthcheck:
