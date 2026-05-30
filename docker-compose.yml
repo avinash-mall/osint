@@ -86,8 +86,8 @@ services:
       # Worldwide Copernicus GLO-30 DEM mosaic (tiles + VRT). Persisted on
       # the host at ./assets/dem so the data survives `docker system prune`
       # and ships standalone — copy the folder to another machine, no
-      # `docker save` required. Populated by the `dem-assets` init container
-      # on first start via rsync from its baked /opt/baked-dem/. Read-only
+      # `docker save` required. Populated by the `dem-baker` service
+      # (Compose `bake` profile) writing straight into this folder. Read-only
       # at runtime — see docs/deployment/dem-glo30-bake.md.
       - ./assets/dem:/data/dem:ro
       # Read-only mount of the baked reference-corpora chip tree, populated
