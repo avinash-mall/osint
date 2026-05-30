@@ -18,10 +18,6 @@
 # ---------------------------------------------------------------- fetcher
 FROM python:3.11-slim AS fetcher
 
-ARG BASEMAP_ZOOM=0-10
-ARG BASEMAP_CONCURRENCY=16
-ARG TERRAIN_ZOOM=0-10
-ARG TERRAIN_CONCURRENCY=4
 ARG PLEX_VERSION=@ibm/plex-sans@1.1.0
 ARG PLEX_MONO_VERSION=@ibm/plex-mono@1.1.0
 
@@ -45,8 +41,6 @@ RUN if [ "${REFERENCE_CORPORA_ENABLED}" = "1" ]; then \
     ; fi
 
 WORKDIR /build
-COPY scripts/build_offline_basemap.py        /build/build_offline_basemap.py
-COPY scripts/build_offline_terrain.py        /build/build_offline_terrain.py
 COPY scripts/fetch_reference_datasets.py     /build/fetch_reference_datasets.py
 COPY scripts/manifests/                      /build/manifests/
 COPY backend/scripts/stage_dota_chips.py     /build/backend-scripts/stage_dota_chips.py
@@ -62,28 +56,6 @@ RUN mkdir -p /work/static \
  && cp /build/fetch_fonts.sh /stage/assets/scripts/fetch_fonts.sh \
  && chmod +x /stage/assets/scripts/fetch_fonts.sh \
  && if [ -d /seed/fonts ]; then cp -an /seed/fonts/. /stage/assets/static/fonts/ || true; fi
-
-# Basemap tiles — into a cache mount so re-runs are seconds, then
-# mirrored into /work for stage 2 to COPY.
-RUN --mount=type=cache,target=/cache/basemap \
-    if [ -d /seed/basemap ]; then cp -an /seed/basemap/. /cache/basemap/ || true; fi \
- && python /build/build_offline_basemap.py \
-        --zoom        "${BASEMAP_ZOOM}" \
-        --concurrency "${BASEMAP_CONCURRENCY}" \
-        --out         /cache/basemap \
- && mkdir -p /work/static/basemap \
- && cp -an /cache/basemap/. /work/static/basemap/
-
-# Terrain tiles — separate cache mount, lower concurrency by default
-# because OpenTopoMap rate-limits more aggressively than CARTO.
-RUN --mount=type=cache,target=/cache/terrain \
-    if [ -d /seed/terrain ]; then cp -an /seed/terrain/. /cache/terrain/ || true; fi \
- && python /build/build_offline_terrain.py \
-        --zoom        "${TERRAIN_ZOOM}" \
-        --concurrency "${TERRAIN_CONCURRENCY}" \
-        --out         /cache/terrain \
- && mkdir -p /work/static/terrain \
- && cp -an /cache/terrain/. /work/static/terrain/
 
 # Fonts — tiny payload, no cache mount needed.
 RUN PLEX_VERSION="${PLEX_VERSION}" PLEX_MONO_VERSION="${PLEX_MONO_VERSION}" \
@@ -129,8 +101,6 @@ RUN apk add --no-cache rsync bash
 COPY assets/nginx.conf            /etc/nginx/conf.d/default.conf
 # Tiles + fonts go directly into the served root (these stay baked in the
 # image since nothing mounts over them).
-COPY --from=fetcher /work/static/basemap/ /usr/share/nginx/html/basemap/
-COPY --from=fetcher /work/static/terrain/ /usr/share/nginx/html/terrain/
 COPY --from=fetcher /work/static/fonts/   /usr/share/nginx/html/fonts/
 # Reference chips go into an UN-mounted staging path. The entrypoint rsyncs
 # them into /usr/share/nginx/html/reference-chips/ on first start when the
@@ -147,18 +117,12 @@ COPY --from=fetcher /work/static/calibration/ /opt/baked-calibration/
 COPY assets/scripts/entrypoint.sh /usr/local/bin/sentinel-assets-entrypoint
 RUN chmod +x /usr/local/bin/sentinel-assets-entrypoint
 
-RUN test -f /usr/share/nginx/html/basemap/0/0/0.png \
- && test -f /usr/share/nginx/html/terrain/0/0/0.png \
- && test -f /usr/share/nginx/html/fonts/ibm-plex-sans-400.woff2 \
- && test -s /usr/share/nginx/html/basemap/ATTRIBUTION.txt \
- && test -s /usr/share/nginx/html/terrain/ATTRIBUTION.txt \
+RUN test -f /usr/share/nginx/html/fonts/ibm-plex-sans-400.woff2 \
  && test -f /opt/baked-reference-chips/MANIFEST.sha256 \
  && test -f /opt/baked-calibration/MANIFEST.sha256
 
 HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
     CMD wget -qO- http://127.0.0.1/healthz \
-     && wget -q -O /dev/null http://127.0.0.1/basemap/0/0/0.png \
-     && wget -q -O /dev/null http://127.0.0.1/terrain/0/0/0.png \
      && wget -q -O /dev/null http://127.0.0.1/calibration/model_temperatures.json \
      || exit 1
 
