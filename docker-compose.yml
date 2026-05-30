@@ -85,11 +85,13 @@ services:
       - imagery_data:/data/imagery
       - fmv_data:/data/fmv
       - dataset_data:/data/datasets
-      # Worldwide Copernicus GLO-30 DEM mosaic (tiles + VRT). Populated by
-      # the `dem-assets` init container on first start via rsync from its
-      # baked /opt/baked-dem/. Read-only at runtime — see
-      # docs/deployment/dem-glo30-bake.md.
-      - dem_data:/data/dem:ro
+      # Worldwide Copernicus GLO-30 DEM mosaic (tiles + VRT). Persisted on
+      # the host at ./assets/dem so the data survives `docker system prune`
+      # and ships standalone — copy the folder to another machine, no
+      # `docker save` required. Populated by the `dem-assets` init container
+      # on first start via rsync from its baked /opt/baked-dem/. Read-only
+      # at runtime — see docs/deployment/dem-glo30-bake.md.
+      - ./assets/dem:/data/dem:ro
       # Read-only mount of the baked reference-corpora chip tree, populated
       # by the `assets` service on startup. The seed worker task copies
       # selectively from here into /data/datasets/reference-chips/ before
@@ -450,7 +452,7 @@ services:
       - imagery_data:/data/imagery
       - fmv_data:/data/fmv
       - dataset_data:/data/datasets
-      - dem_data:/data/dem:ro
+      - ./assets/dem:/data/dem:ro
       - reference_corpora_data:/opt/reference-corpora:ro
       # Same calibration file as the backend; worker imports
       # backend/calibration.py via worker.celery_app and benefits from the
@@ -564,18 +566,16 @@ services:
       timeout: 5s
       retries: 5
 
-  # Planet-scale routing sidecar. Reads a pre-built MLD OSRM dataset from the
-  # `osrm_data` named volume (produced by the `osrm-baker` service below) and
-  # serves the standard OSRM HTTP API on port 5000 inside the Compose network.
-  # The backend's `routing.py` talks to this service over HTTP. Pinned for
-  # reproducible air-gap shipping — update the digest after a connected-host
-  # `docker pull ghcr.io/project-osrm/osrm-backend:v6.0.0` and record it in
-  # docs/deployment/osrm-planet-bake.md.
+  # Planet-scale routing sidecar. Reads a pre-built MLD OSRM dataset from
+  # ./assets/osrm on the host (populated by `osrm-assets` on first compose
+  # up) and serves the standard OSRM HTTP API on port 5000 inside the
+  # Compose network. The backend's `routing.py` talks to this service over
+  # HTTP. Pinned for reproducible air-gap shipping — update the digest after
+  # a connected-host `docker pull ghcr.io/project-osrm/osrm-backend:v6.0.0`
+  # and record it in docs/deployment/osrm-planet-bake.md.
   #
-  # Soft dependency from the backend: if `osrm_data` is empty, this service
-  # fails to start, the backend still comes up, and the /api/analytics/routes
-  # endpoint returns 503 "Routes unavailable" until the operator runs
-  # `docker compose --profile bake-osrm up osrm-baker`.
+  # The host bind mount (./assets/osrm) means the dataset survives Docker
+  # prunes and can be copied to an air-gap machine as a plain folder.
   osrm:
     image: ghcr.io/project-osrm/osrm-backend:v6.0.0
     restart: unless-stopped
@@ -584,7 +584,7 @@ services:
       osrm-assets:
         condition: service_completed_successfully
     volumes:
-      - osrm_data:/data:ro
+      - ./assets/osrm:/data:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null 'http://127.0.0.1:5000/route/v1/driving/0,0;0.001,0.001?overview=false&alternatives=false&steps=false' || exit 1"]
       interval: 15s
@@ -595,8 +595,13 @@ services:
   # Auto-bake worldwide Copernicus GLO-30 DEM into the image during
   # `docker compose up -d --build`. The fetch runs inside the Dockerfile
   # against a BuildKit cache mount; on container start the entrypoint
-  # rsyncs the baked tree onto the `dem_data` named volume and exits.
-  # The backend + worker mount `dem_data:/data/dem:ro` and read the VRT.
+  # rsyncs the baked tree onto the host bind mount at ./assets/dem and
+  # exits. The backend + worker mount the same ./assets/dem RO and read
+  # the VRT.
+  #
+  # The host bind mount means the dataset survives `docker system prune`
+  # and ships as a plain folder — copy ./assets/dem to an air-gap machine
+  # and `docker compose up -d` works without re-baking.
   #
   # First-build wallclock is dominated by the ~150 GB fetch; subsequent
   # rebuilds are seconds via the cache mount. See
@@ -619,14 +624,18 @@ services:
     image: sentinel-dem-assets:offline
     restart: "no"
     volumes:
-      - dem_data:/data/dem
+      - ./assets/dem:/data/dem
 
   # Auto-bake planet OSRM into the image during
   # `docker compose up -d --build`. The fetch + extract/partition/customize
   # pipeline runs inside the Dockerfile against a BuildKit cache mount; on
   # container start the entrypoint rsyncs the planet.osrm* artifacts onto
-  # the `osrm_data` named volume and exits. The runtime `osrm` service
-  # then mounts that volume RO and serves /route/v1/*.
+  # the host bind mount at ./assets/osrm and exits. The runtime `osrm`
+  # service then mounts the same ./assets/osrm RO and serves /route/v1/*.
+  #
+  # The host bind mount means the dataset survives `docker system prune`
+  # and ships as a plain folder — copy ./assets/osrm to an air-gap machine
+  # and `docker compose up -d` works without re-baking.
   #
   # First-build wallclock includes an ~80 GB PBF fetch plus ~3-6 h of
   # osrm-extract; subsequent rebuilds are seconds via the cache mount.
@@ -644,7 +653,7 @@ services:
     image: sentinel-osrm-assets:offline
     restart: "no"
     volumes:
-      - osrm_data:/data
+      - ./assets/osrm:/data
 
 volumes:
   neo4j_data:
@@ -658,5 +667,7 @@ volumes:
   # rsyncs them onto this volume on start, and backend + worker mount RO at
   # /data/calibration. See docs/operations/calibration-shipping.md.
   calibration_data:
-  dem_data:
-  osrm_data:
+  # dem_data and osrm_data named volumes were removed; the GLO-30 DEM mosaic
+  # and the planet OSRM dataset now live on the host at ./assets/dem and
+  # ./assets/osrm so they survive `docker system prune` and ship as plain
+  # folders. See docs/deployment/{dem-glo30,osrm-planet}-bake.md.

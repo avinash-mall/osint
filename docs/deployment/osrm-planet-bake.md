@@ -1,12 +1,12 @@
 # Planet OSRM Bake
 
-The planet OSRM MLD dataset that backs `/api/analytics/routes` is **baked automatically** during `docker compose up -d --build` on a connected host. Once the build is done, the resulting `sentinel-osrm-assets:offline` image holds ~150-200 GB of OSRM artifacts and is air-gappable via `docker save | gzip`. No separate profile invocation is required.
+The planet OSRM MLD dataset that backs `/api/analytics/routes` is **baked automatically** during `docker compose up -d --build` on a connected host. The baked `planet.osrm*` artifacts then land on the host filesystem at `./assets/osrm/`, where they survive `docker system prune` and ship as a plain folder — copy `./assets/osrm/` to another machine, no `docker save` required.
 
 ## How it works
 
 - [osrm-assets/Dockerfile](../../osrm-assets/Dockerfile) — multi-stage build. The fetcher stage uses the upstream `ghcr.io/project-osrm/osrm-backend:v6.0.0` image and runs [`scripts/build_offline_osrm.sh`](../../scripts/build_offline_osrm.sh) against a BuildKit cache mount at `/cache/osrm`. The script curl-downloads `planet-latest.osm.pbf`, then runs `osrm-extract -p /opt/car.lua`, `osrm-partition`, and `osrm-customize` to produce the MLD dataset. The final stage is an alpine image holding the baked artifacts at `/opt/baked-osrm/`.
-- [osrm-assets/scripts/entrypoint.sh](../../osrm-assets/scripts/entrypoint.sh) — on first container start, rsyncs `/opt/baked-osrm/` onto the `osrm_data` named volume (mounted at `/data`). Subsequent starts compare `MANIFEST.sha256` and no-op when matching. Exits 0 either way.
-- [docker-compose.yml](../../docker-compose.yml) — the runtime `osrm` service waits via `depends_on: { osrm-assets: { condition: service_completed_successfully } }` before running `osrm-routed --algorithm mld /data/planet.osrm`.
+- [osrm-assets/scripts/entrypoint.sh](../../osrm-assets/scripts/entrypoint.sh) — on first container start, rsyncs `/opt/baked-osrm/` onto the bind-mounted host folder at `./assets/osrm/`. Subsequent starts compare `MANIFEST.sha256` and no-op when matching. Exits 0 either way.
+- [docker-compose.yml](../../docker-compose.yml) — the runtime `osrm` service bind-mounts `./assets/osrm:/data:ro` and waits via `depends_on: { osrm-assets: { condition: service_completed_successfully } }` before running `osrm-routed --algorithm mld /data/planet.osrm`.
 
 ## Prerequisites
 
@@ -72,6 +72,26 @@ The map workspace's Analytics panel should show `ROUTING · OK` in the bottom ch
 
 ## Air-gap shipping
 
+The data lives at `./assets/osrm/` on the host. Two options:
+
+**Option A — ship the host folder (recommended):**
+
+```bash
+# on connected host
+tar -C ./assets -cf - osrm | zstd -T0 -o sentinel-osrm.tar.zst
+# also save the OSRM runtime image (it has osrm-routed itself, no data)
+docker save ghcr.io/project-osrm/osrm-backend:v6.0.0 | gzip > osrm-backend.tar.gz
+
+# on air-gap host
+zstd -dc sentinel-osrm.tar.zst | tar -C ./assets -xf -
+gunzip -c osrm-backend.tar.gz | docker load
+docker compose up -d   # no --build
+```
+
+The runtime `osrm` service reads directly from `./assets/osrm/`; the `osrm-assets` init container sees `MANIFEST.sha256` matches and skips its rsync. The `sentinel-osrm-assets:offline` image is **not required** on the air-gap host in this mode.
+
+**Option B — ship the docker image:**
+
 ```bash
 # on connected host
 docker save sentinel-osrm-assets:offline ghcr.io/project-osrm/osrm-backend:v6.0.0 \
@@ -79,10 +99,10 @@ docker save sentinel-osrm-assets:offline ghcr.io/project-osrm/osrm-backend:v6.0.
 
 # on air-gap host
 gunzip -c sentinel-osrm.tar.gz | docker load
-docker compose up -d   # no --build
+docker compose up -d   # init container rsyncs image → ./assets/osrm on first start
 ```
 
-The volume is re-seeded from the image automatically; the runtime `osrm` service starts after the seed completes.
+The init container populates `./assets/osrm/` from the image on first start; the runtime `osrm` service then comes up against it.
 
 ## Cross-references
 

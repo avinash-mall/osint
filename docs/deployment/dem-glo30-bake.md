@@ -1,12 +1,12 @@
 # Worldwide DEM Bake — Copernicus GLO-30
 
-The worldwide Copernicus GLO-30 (30 m) DEM is **baked automatically** during `docker compose up -d --build` on a connected host. Once the build is done, the resulting `sentinel-dem-assets:offline` image holds ~150 GB of tile mosaic and is air-gappable via `docker save | gzip`. No separate profile invocation is required.
+The worldwide Copernicus GLO-30 (30 m) DEM is **baked automatically** during `docker compose up -d --build` on a connected host. The baked tiles + VRT then land on the host filesystem at `./assets/dem/`, where they survive `docker system prune` and ship as a plain folder — copy `./assets/dem/` to another machine, no `docker save` required.
 
 ## How it works
 
 - [dem-assets/Dockerfile](../../dem-assets/Dockerfile) — multi-stage build. The fetcher stage uses `ghcr.io/osgeo/gdal:ubuntu-small-3.9.2` and runs [`scripts/build_offline_dem.py`](../../scripts/build_offline_dem.py) against a BuildKit cache mount at `/cache/dem`. The final stage is an alpine image holding the baked tiles at `/opt/baked-dem/`.
-- [dem-assets/scripts/entrypoint.sh](../../dem-assets/scripts/entrypoint.sh) — on first container start, rsyncs `/opt/baked-dem/` onto the `dem_data` named volume (mounted at `/data/dem`). Subsequent starts compare `MANIFEST.sha256` and no-op when the volume matches the image. Exits 0 either way.
-- [docker-compose.yml](../../docker-compose.yml) `backend` + `worker` services wait via `depends_on: { dem-assets: { condition: service_completed_successfully } }`.
+- [dem-assets/scripts/entrypoint.sh](../../dem-assets/scripts/entrypoint.sh) — on first container start, rsyncs `/opt/baked-dem/` onto the bind-mounted host folder at `./assets/dem/`. Subsequent starts compare `MANIFEST.sha256` and no-op when the folder already matches the image. Exits 0 either way.
+- [docker-compose.yml](../../docker-compose.yml) `backend` + `worker` services bind-mount `./assets/dem:/data/dem:ro` and wait via `depends_on: { dem-assets: { condition: service_completed_successfully } }`.
 
 ## Prerequisites
 
@@ -69,16 +69,33 @@ The map workspace's Analytics panel should show `DEM · OK` in the bottom chip.
 
 ## Air-gap shipping
 
+The data lives at `./assets/dem/` on the host. Two options:
+
+**Option A — ship the host folder (recommended):**
+
+```bash
+# on connected host
+tar -C ./assets -cf - dem | zstd -T0 -o sentinel-dem.tar.zst
+
+# on air-gap host (with the source repo already in place)
+zstd -dc sentinel-dem.tar.zst | tar -C ./assets -xf -
+docker compose up -d   # no --build, no rsync, just runs
+```
+
+The runtime backend reads directly from `./assets/dem/`; the `dem-assets` init container sees `MANIFEST.sha256` matches and skips its rsync. The `sentinel-dem-assets:offline` image is **not required** on the air-gap host in this mode — the data is self-sufficient.
+
+**Option B — ship the docker image:**
+
 ```bash
 # on connected host
 docker save sentinel-dem-assets:offline | gzip > sentinel-dem-assets.tar.gz
 
 # on air-gap host
 gunzip -c sentinel-dem-assets.tar.gz | docker load
-docker compose up -d   # no --build
+docker compose up -d   # init container rsyncs image → ./assets/dem on first start
 ```
 
-The volume is re-seeded from the image automatically.
+The init container populates `./assets/dem/` from the image on first start.
 
 ## Attribution
 
