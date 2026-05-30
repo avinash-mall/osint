@@ -1,16 +1,13 @@
 # syntax=docker/dockerfile:1.7
 #
-# Air-gap assets image: serves the offline basemap pyramid, OpenTopoMap
-# terrain pyramid, and IBM Plex webfonts. The fetchers run inside the
-# build, so a fresh clone needs only `docker compose up -d --build` — no
-# host-side pre-bake required.
-#
-# BuildKit cache mounts (/cache/basemap, /cache/terrain) persist the
-# multi-GB tile fetches across rebuilds; only the first build pays the
-# full wallclock cost.
-#
-# Override either zoom range for a quick smoke build:
-#   BASEMAP_ZOOM=0-4 TERRAIN_ZOOM=0-4 docker compose up -d --build assets
+# Air-gap assets image: an nginx server for the basemap + terrain tile
+# pyramids, IBM Plex webfonts, reference-corpora chips, and per-detector
+# calibration. Fonts/reference/calibration are baked in at build time;
+# the basemap + terrain pyramids are NO LONGER baked here — they are
+# fetched by the runtime basemap-baker / terrain-baker services (Compose
+# `bake` profile) into ./assets/static/{basemap,terrain} and bind-mounted
+# read-only into this container's nginx root. See
+# docs/decisions/why-runtime-bakers-into-assets.md.
 #
 # Build context is the repo root (compose passes `context: .`) so the
 # fetcher scripts under scripts/ are reachable.
