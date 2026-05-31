@@ -38,7 +38,6 @@ import {
   Polyline,
   Popup,
   TileLayer,
-  ZoomControl,
 } from 'react-leaflet';
 
 import {
@@ -270,7 +269,6 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
             mapInstance.current = m?.leafletElement || m || null;
           }}
         >
-          <ZoomControl position="bottomright" />
           <MapBoundsUpdater onBoundsChange={setMapBounds} />
           <MapCursorTracker onCursorChange={setCursor} />
           <MapZoomTracker onZoomChange={setMapZoom} />
