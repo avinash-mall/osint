@@ -6,11 +6,12 @@ import logging
 import os
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from auth import SessionUser, require_admin
 from change_detection import compute_change
-from database import postgis_db
+from database import db, postgis_db
 from geometry import parse_bbox
 from imagery_metadata import native_max_zoom
 
@@ -105,6 +106,49 @@ def get_imagery_tiles(pass_id: int):
         titiler_url = os.getenv("PUBLIC_TITILER_URL", "/tiles")
         tile_url = f"{titiler_url}/cog/tiles/WebMercatorQuad/{{z}}/{{x}}/{{y}}?url={row['file_path']}"
         return {"pass_id": pass_id, "tile_url": tile_url, "file_path": row["file_path"]}
+
+
+@router.delete("/api/imagery/{pass_id}")
+def delete_imagery(pass_id: int, user: SessionUser = Depends(require_admin)):
+    """Hard-delete a satellite pass: its detections + the pass row (PostGIS), the
+    COG file on disk, and the matching Neo4j SatellitePass/Detection nodes.
+
+    Mirrors ``worker.clear_existing_detections``' PostGIS+Neo4j cascade. File and
+    graph cleanup are best-effort so a half-missing artifact still frees the row.
+    """
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("SELECT file_path FROM satellite_passes WHERE id = %s", (pass_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Satellite pass not found")
+        file_path = row["file_path"]
+        cursor.execute("SELECT id FROM detections WHERE pass_id = %s", (pass_id,))
+        det_ids = [r["id"] for r in cursor.fetchall()]
+        cursor.execute("DELETE FROM detections WHERE pass_id = %s", (pass_id,))
+        cursor.execute("DELETE FROM satellite_passes WHERE id = %s", (pass_id,))
+
+    if file_path:
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except OSError:
+            logger.warning("delete_imagery: could not remove %s", file_path, exc_info=True)
+
+    try:
+        with db.get_session() as neo:
+            if det_ids:
+                neo.run(
+                    "MATCH (d:Detection) WHERE d.postgis_id IN $ids DETACH DELETE d",
+                    {"ids": det_ids},
+                )
+            neo.run(
+                "MATCH (sp:SatellitePass {postgis_id: $pid}) DETACH DELETE sp",
+                {"pid": pass_id},
+            )
+    except Exception:  # noqa: BLE001 — graph cleanup must not fail the delete
+        logger.warning("delete_imagery: Neo4j cleanup failed for pass %s", pass_id, exc_info=True)
+
+    return {"id": pass_id, "deleted": True, "detections_removed": len(det_ids)}
 
 
 @router.get("/api/imagery/{pass_id}/bands")

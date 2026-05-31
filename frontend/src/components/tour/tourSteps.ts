@@ -115,6 +115,13 @@ export const TOUR_STEPS: TourStep[] = [
     placement: 'right',
   },
   {
+    id: 'imagery-delete',
+    selector: '[data-tour="imagery-delete"]',
+    title: 'Delete an imagery pass',
+    body: 'Admins can permanently remove a scene — its detections, the graph nodes, and the on-disk file — after a confirmation. Use to clear test uploads or superseded collections; this cannot be undone.',
+    placement: 'right',
+  },
+  {
     id: 'analytics-tools',
     selector: '[data-tour="analytics-tools"]',
     title: 'Analytics layer toggles',

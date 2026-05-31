@@ -8,7 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test:visual": "playwright test",
-    "test:visual:update": "playwright test --update-snapshots"
+    "test:visual:update": "playwright test --update-snapshots",
+    "test:e2e": "playwright test --config playwright.live.config.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",

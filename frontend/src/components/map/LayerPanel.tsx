@@ -15,6 +15,7 @@
  *   - Imagery list (sat scenes; clicking one drives selectedImagery)
  */
 
+import { useState } from 'react';
 import {
   Check,
   ChevronDown,
@@ -27,7 +28,9 @@ import {
   RefreshCw,
   Satellite,
   Search,
+  Trash2,
 } from 'lucide-react';
+import { ConfirmDialog } from '../atoms';
 import {
   categoryFor,
   type DetectionCategoryId,
@@ -126,6 +129,7 @@ type Props = {
   /* Imagery list */
   selectedImagery: number | null;
   setSelectedImagery: (id: number | null) => void;
+  onDeleteImagery?: (id: number) => void | Promise<void>;
 };
 
 /**
@@ -215,7 +219,10 @@ export default function LayerPanel({
   soloDetectionClass,
   selectedImagery,
   setSelectedImagery,
+  onDeleteImagery,
 }: Props) {
+  const [pendingImageryDelete, setPendingImageryDelete] = useState<any | null>(null);
+  const [imageryDeleteBusy, setImageryDeleteBusy] = useState(false);
   const liveLayerRows = [
     { key: 'satellite',  label: 'Satellite Imagery', metric: imagery.length,        colorVar: 'var(--color-sentinel-info)'   },
     { key: 'detections', label: 'AI Detections',     metric: visibleDetectionCount, colorVar: 'var(--color-sentinel-accent)' },
@@ -560,28 +567,58 @@ export default function LayerPanel({
               <span>Imagery</span>
             </div>
             {imagery.slice(0, 10).map((img) => (
-              <button
-                key={img.id}
-                type="button"
-                onClick={() => {
-                  const next = selectedImagery === img.id ? null : img.id;
-                  setSelectedImagery(next);
-                  if (next !== null) setActiveBaseLayer('sat');
-                }}
-                className={`sentinel-row w-full grid-cols-[1fr_auto] text-left ${selectedImagery === img.id ? 'selected' : ''}`}
-              >
-                <span className="min-w-0">
-                  <span className="block truncate text-xs text-slate-200">{img.name}</span>
-                  <span className="block truncate font-mono text-[10px] text-sentinel-muted">
-                    {img.sensor_type} / {img.cloud_cover ?? 0}% cloud
+              <div key={img.id} className="flex items-stretch">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = selectedImagery === img.id ? null : img.id;
+                    setSelectedImagery(next);
+                    if (next !== null) setActiveBaseLayer('sat');
+                  }}
+                  className={`sentinel-row min-w-0 flex-1 grid-cols-[1fr_auto] text-left ${selectedImagery === img.id ? 'selected' : ''}`}
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-xs text-slate-200">{img.name}</span>
+                    <span className="block truncate font-mono text-[10px] text-sentinel-muted">
+                      {img.sensor_type} / {img.cloud_cover ?? 0}% cloud
+                    </span>
                   </span>
-                </span>
-                <span className="sentinel-tag info">SAT</span>
-              </button>
+                  <span className="sentinel-tag info">SAT</span>
+                </button>
+                {onDeleteImagery && (
+                  <button
+                    type="button"
+                    data-tour="imagery-delete"
+                    title="Delete imagery scene"
+                    aria-label={`Delete imagery ${img.name}`}
+                    onClick={() => setPendingImageryDelete(img)}
+                    className="grid w-8 place-items-center border-b border-l border-sentinel-line text-sentinel-muted hover:text-red-400"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
             ))}
           </div>
         )}
       </div>
+
+      {pendingImageryDelete && (
+        <ConfirmDialog
+          title="Delete imagery scene?"
+          body={`Permanently removes "${pendingImageryDelete.name}", its detections, and the file. This cannot be undone.`}
+          confirmLabel="Delete"
+          destructive
+          busy={imageryDeleteBusy}
+          onClose={() => { if (!imageryDeleteBusy) setPendingImageryDelete(null); }}
+          onConfirm={async () => {
+            if (!onDeleteImagery) return;
+            setImageryDeleteBusy(true);
+            try { await onDeleteImagery(pendingImageryDelete.id); }
+            finally { setImageryDeleteBusy(false); setPendingImageryDelete(null); }
+          }}
+        />
+      )}
     </section>
   );
 }

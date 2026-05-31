@@ -1255,6 +1255,16 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
         bundle = _next_bundle()
         t0 = mark("model_queue", t0)
 
+        # Guard the profile-swap race: a concurrent FMV /load can swap the pool
+        # to a bundle without sam3_image between _ensure_profile() above and here.
+        # Fail with an honest 503 (the worker treats it as retryable backpressure)
+        # instead of dereferencing None deep in run_text_prompts/run_box_prompts.
+        if bundle.get("sam3_image") is None:
+            raise HTTPException(
+                status_code=503,
+                detail=f"sam3_image not resident (profile={_current_profile}); retry",
+            )
+
         # Compute unavailable layers now that we have the bundle.
         _unavailable = [l for l in _enabled if l not in ("sam3",) and not bundle.get(l)]
 

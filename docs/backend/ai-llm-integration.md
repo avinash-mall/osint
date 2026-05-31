@@ -1,8 +1,8 @@
 # `backend/ai.py` — LLM Client (Ava)
 
 **Path:** [backend/ai.py](../../backend/ai.py)
-**Lines:** ~204
-**Depends on:** Env `OPENAI_API_BASE`, `OPENAI_API_KEY` (default `dummy`), `OPENAI_MODEL` (default `google/gemma-4-31b-it`)
+**Lines:** ~208
+**Depends on:** Env `OPENAI_API_BASE`, `OPENAI_API_KEY` (default `dummy`), `OPENAI_MODEL` (default `google/gemma-4-31b-it`), `LLM_JSON_TIMEOUT_SECONDS` (default 60)
 
 ## Purpose
 
@@ -13,6 +13,7 @@ OpenAI-compatible chat-completions client for: analyst Q&A, structured extractio
 - **Graceful degradation** — every entry raises `AIUnavailable` when endpoint unset/unreachable. Routes catch → 503 stable shape; rest of app unaffected.
 - **Read-only DB intent** — [`get_ai_response`](../../backend/ai.py#L136) builds context by reading DB but never lets the LLM generate/execute Cypher/SQL. Arbitrary LLM-driven queries = critical injection vector.
 - **JSON-mode fallback ladder** — `get_llm_json` → `extract_json_object`: native JSON mode → markdown code-fenced JSON → strict prose-wrapped JSON. Tests: [backend/tests/test_ai_json_parsing.py](../../backend/tests/test_ai_json_parsing.py).
+- **Longer timeout for the JSON path** — `get_llm_json` defaults to `LLM_JSON_TIMEOUT_SECONDS` (60s), not the 8s used for short free-text. Generating hundreds of structured-JSON tokens routinely blew the old 8s budget and surfaced as a spurious 503 on `/api/ai/extract|link`; nginx `/api/` allows 300s so 60s is safe.
 - **Multiple chat URLs tried** — `_chat_completion_urls` covers `/v1/chat/completions`, `/chat/completions`, bare `/completions` → same client works against different self-hosted runtimes without config.
 
 ## Key symbols

@@ -21,6 +21,7 @@ Holds the FastAPI application object. Mounts the 19 routers (including `referenc
 - [`require_session_on_mutations`](../../backend/main.py#L106-L123) — the middleware.
 - [`app.include_router(...)`](../../backend/main.py#L197-L215) — router mount block; **add new routers here**.
 - [`upload_fmv_clip`](../../backend/main.py#L939) — `/api/fmv/clips` upload path; HLS transcode + telemetry extraction happen before `process_fmv` dispatch.
+- [`delete_fmv_clip`](../../backend/main.py#L1145) — `DELETE /api/fmv/clips/{id}`, admin-only hard delete: drops `fmv_detections`+`fmv_frames`+`fmv_clips` rows, `rmtree`s the clip upload dir (video+HLS+sidecars), `DETACH DELETE`s the Neo4j clip/detection nodes (file/graph best-effort). See [decisions/why-deletable-imagery-and-clips.md](../decisions/why-deletable-imagery-and-clips.md).
 - [`get_detection_classes`](../../backend/main.py#L1247) — Detection Classes summary for the map panel; returns deterministic labels, ontology rollups, branch breakdowns, and optional non-authoritative LLM advisory metadata.
 - [`FMV_FALLBACK_PROMPTS`](../../backend/main.py#L935) — precision-first fallback for FMV PCS uploads without explicit prompts.
 

@@ -780,6 +780,8 @@ def run_text_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompt
     """
     from sam3_perf import stage_timer
 
+    if bundle.get("sam3_image") is None:
+        raise RuntimeError("sam3_image model not resident in bundle (profile not loaded)")
     if timings is None:
         timings = {}
     prompts = list(prompts)
@@ -1160,6 +1162,8 @@ def run_box_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompt_
     Prompts are evaluated independently (state is reset between entries) so
     that returned masks/boxes correspond 1:1 to the input list.
     """
+    if bundle.get("sam3_image") is None:
+        raise RuntimeError("sam3_image model not resident in bundle (profile not loaded)")
     processor = bundle["sam3_image"]["processor"]
     device = bundle.get("device", "cpu")
     pil_image = Image.fromarray(image_rgb_uint8)

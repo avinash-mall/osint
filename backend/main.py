@@ -1142,6 +1142,50 @@ def list_fmv_clips():
     return {"clips": clips}
 
 
+@app.delete("/api/fmv/clips/{clip_id}")
+def delete_fmv_clip(clip_id: int, user: SessionUser = Depends(require_admin)):
+    """Hard-delete an FMV clip: its fmv_detections + fmv_frames + clip row
+    (PostGIS), the on-disk clip directory (video + HLS + sidecars), and the
+    matching Neo4j nodes. File and graph cleanup are best-effort."""
+    ensure_platform_tables()
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("SELECT file_path FROM fmv_clips WHERE id = %s", (clip_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="FMV clip not found")
+        file_path = row["file_path"]
+        cursor.execute("SELECT id FROM fmv_detections WHERE clip_id = %s", (clip_id,))
+        det_ids = [r["id"] for r in cursor.fetchall()]
+        cursor.execute("DELETE FROM fmv_detections WHERE clip_id = %s", (clip_id,))
+        cursor.execute("DELETE FROM fmv_frames WHERE clip_id = %s", (clip_id,))
+        cursor.execute("DELETE FROM fmv_clips WHERE id = %s", (clip_id,))
+
+    # Remove the whole clip directory (each upload lives in its own uuid dir).
+    if file_path:
+        try:
+            clip_dir = Path(file_path).parent
+            fmv_root = Path(os.getenv("FMV_PATH", "/data/fmv")).resolve()
+            if clip_dir.resolve().parent == fmv_root and clip_dir.exists():
+                shutil.rmtree(clip_dir, ignore_errors=True)
+            else:
+                Path(file_path).unlink(missing_ok=True)
+        except OSError:
+            logger.warning("delete_fmv_clip: could not remove files for clip %s", clip_id, exc_info=True)
+
+    try:
+        with db.get_session() as neo:
+            if det_ids:
+                neo.run(
+                    "MATCH (d:FmvDetection) WHERE d.postgis_id IN $ids DETACH DELETE d",
+                    {"ids": det_ids},
+                )
+            neo.run("MATCH (c:FmvClip {postgis_id: $cid}) DETACH DELETE c", {"cid": clip_id})
+    except Exception:  # noqa: BLE001 — graph cleanup must not fail the delete
+        logger.warning("delete_fmv_clip: Neo4j cleanup failed for clip %s", clip_id, exc_info=True)
+
+    return {"id": clip_id, "deleted": True, "detections_removed": len(det_ids)}
+
+
 @app.get("/api/fmv/clips/{clip_id}")
 def get_fmv_clip(clip_id: int):
     ensure_platform_tables()

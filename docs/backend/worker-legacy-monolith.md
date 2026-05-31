@@ -70,6 +70,7 @@ FMV tasks consume `/detect_video` NDJSON. SAM3 + YOLOE entries preserve `source_
 
 ## Failure modes
 
+- **FMV leaves the GPU on `fmv`, then reverts.** `process_fmv` loads the `fmv` profile (`_ensure_fmv_profile`) and, in its `finally`, calls `_revert_inference_profile(session, "imagery")` — best-effort, 409-tolerant — so the COP's imagery detection isn't left degraded after a clip is processed. A 409 (another FMV session live) correctly keeps `fmv`. See [decisions/why-revert-inference-after-fmv.md](../decisions/why-revert-inference-after-fmv.md).
 - `/detect` 4xx/5xx per chip → increments failed chip counts; worker continues other chips.
 - Detections below the active policy floor → counted in `suppressed_by_policy`, not persisted.
 - Evidence ranking never drops detections; weak rows persisted as `candidate`/`discovery` metadata.

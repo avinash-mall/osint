@@ -25,3 +25,6 @@ dist-ssr
 
 playwright-report
 test-results
+
+# Live e2e auth state (contains a real session cookie — never commit)
+tests/e2e/.auth

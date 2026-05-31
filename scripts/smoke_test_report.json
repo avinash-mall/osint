@@ -1,0 +1,1305 @@
+{
+  "base": "http://localhost:3000",
+  "summary": {
+    "PASS": 121,
+    "FAIL": 0,
+    "SKIP": 16
+  },
+  "coverage": {
+    "covered": 106,
+    "total": 154,
+    "uncovered": [
+      [
+        "DELETE",
+        "/api/fmv/clips/{clip_id}"
+      ],
+      [
+        "DELETE",
+        "/api/fmv/detections/{detection_id}"
+      ],
+      [
+        "DELETE",
+        "/api/operational-entities/{entity_id}/tracks/{track_id}"
+      ],
+      [
+        "DELETE",
+        "/api/tracks/detections/{track_uid}/pin"
+      ],
+      [
+        "GET",
+        "/api/aois/{aoi_id}"
+      ],
+      [
+        "GET",
+        "/api/feeds/{feed_id}/events"
+      ],
+      [
+        "GET",
+        "/api/graph/site-composition/{base_id}"
+      ],
+      [
+        "GET",
+        "/api/operational-entities/{entity_id}/tracks"
+      ],
+      [
+        "GET",
+        "/api/reference-chips/{chip_id}/image"
+      ],
+      [
+        "GET",
+        "/api/sources/{source_id}/events"
+      ],
+      [
+        "GET",
+        "/api/tracks/detections/{track_uid}"
+      ],
+      [
+        "PATCH",
+        "/api/ontology/branches/{branch_id}"
+      ],
+      [
+        "POST",
+        "/api/actions/proposals/{proposal_id}/approve"
+      ],
+      [
+        "POST",
+        "/api/actions/proposals/{proposal_id}/execute"
+      ],
+      [
+        "POST",
+        "/api/admin/auth/test"
+      ],
+      [
+        "POST",
+        "/api/admin/auth/test-connection"
+      ],
+      [
+        "POST",
+        "/api/analytics/change"
+      ],
+      [
+        "POST",
+        "/api/analytics/pol"
+      ],
+      [
+        "POST",
+        "/api/collection/tasks"
+      ],
+      [
+        "POST",
+        "/api/detection-target-candidates/{candidate_id}/approve"
+      ],
+      [
+        "POST",
+        "/api/detection-target-candidates/{candidate_id}/reject"
+      ],
+      [
+        "POST",
+        "/api/detections/resolve"
+      ],
+      [
+        "POST",
+        "/api/feeds/connect"
+      ],
+      [
+        "POST",
+        "/api/feeds/{feed_id}/events"
+      ],
+      [
+        "POST",
+        "/api/fmv/clips"
+      ],
+      [
+        "POST",
+        "/api/graph/candidate-edges/{candidate_id}/promote"
+      ],
+      [
+        "POST",
+        "/api/graph/contradict"
+      ],
+      [
+        "POST",
+        "/api/identification-candidates/{candidate_id}/approve"
+      ],
+      [
+        "POST",
+        "/api/identification-candidates/{candidate_id}/reject"
+      ],
+      [
+        "POST",
+        "/api/imagery/change"
+      ],
+      [
+        "POST",
+        "/api/ingest"
+      ],
+      [
+        "POST",
+        "/api/ingest/url"
+      ],
+      [
+        "POST",
+        "/api/models/datasets"
+      ],
+      [
+        "POST",
+        "/api/models/{model_id}/promote"
+      ],
+      [
+        "POST",
+        "/api/ontology/unknown-labels/{label}/assign"
+      ],
+      [
+        "POST",
+        "/api/operational-entities/pending-same-as/reject"
+      ],
+      [
+        "POST",
+        "/api/operational-entities/{entity_id}/attach-observation"
+      ],
+      [
+        "POST",
+        "/api/operational-entities/{entity_id}/attach-track/{track_id}"
+      ],
+      [
+        "POST",
+        "/api/operational-entities/{entity_id}/operates-from/{base_id}"
+      ],
+      [
+        "POST",
+        "/api/operational-entities/{entity_id}/part-of/{unit_id}"
+      ],
+      [
+        "POST",
+        "/api/operational-entity-candidates/{candidate_id}/approve"
+      ],
+      [
+        "POST",
+        "/api/operational-entity-candidates/{candidate_id}/reject"
+      ],
+      [
+        "POST",
+        "/api/tracks/detections/pin"
+      ],
+      [
+        "POST",
+        "/api/tracks/detections/reprocess"
+      ],
+      [
+        "POST",
+        "/api/training/jobs"
+      ],
+      [
+        "PUT",
+        "/api/admin/auth/config"
+      ],
+      [
+        "PUT",
+        "/api/feeds/{feed_id}/status"
+      ],
+      [
+        "PUT",
+        "/api/fmv/detections/{detection_id}/details"
+      ]
+    ]
+  },
+  "drift": [],
+  "results": [
+    {
+      "method": "POST",
+      "endpoint": "/api/auth/login",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "admin login",
+      "ms": 4.2
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/auth/me",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "session check",
+      "ms": 1.3
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/inference/load",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "load imagery",
+      "ms": 0.0
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/inference/unload",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "unload",
+      "ms": 0.0
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/admin/reference/seed",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "seed (force=false)",
+      "ms": 17.7
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/ingest/upload",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "upload",
+      "ms": 239.8
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/ingest/jobs/{task_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "job poll",
+      "ms": 3.3
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/ingest/jobs/{task_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "job poll",
+      "ms": 3.1
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/ingest/jobs/{task_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "job poll",
+      "ms": 9.8
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/ingest/jobs/{task_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "job poll",
+      "ms": 5.9
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/ingest/jobs/{task_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "job poll",
+      "ms": 12.1
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/ingest/jobs/{task_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "job poll",
+      "ms": 6.1
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/ingest/jobs/{task_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "job poll",
+      "ms": 3.4
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/ingest/jobs/{task_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "job poll",
+      "ms": 3.1
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/ingest/jobs/{task_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "job poll",
+      "ms": 3.5
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/ingest/jobs/{task_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "job poll",
+      "ms": 3.2
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/ingest/jobs/{task_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "job poll",
+      "ms": 2.3
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/fmv/clips/{clip_id}",
+      "status": null,
+      "outcome": "SKIP",
+      "detail": "--fmv not set (heavy video pipeline)",
+      "ms": 0.0
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/fmv/clips/{clip_id}/klv",
+      "status": null,
+      "outcome": "SKIP",
+      "detail": "--fmv not set (heavy video pipeline)",
+      "ms": 0.0
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/fmv/clips/{clip_id}/detections",
+      "status": null,
+      "outcome": "SKIP",
+      "detail": "--fmv not set (heavy video pipeline)",
+      "ms": 0.0
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/fmv/clips",
+      "status": null,
+      "outcome": "SKIP",
+      "detail": "--fmv not set (heavy video pipeline)",
+      "ms": 0.0
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/actions/proposals",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 3.5
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/admin/auth/config",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.0
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/admin/repeat-thresholds",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.6
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/alerts",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 6.5
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/analytics/capabilities",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 4.8
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/analytics/elevation",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 19.9
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/analytics/jobs",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 47.1
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/aois",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.8
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/aois/{aoi_id}",
+      "status": null,
+      "outcome": "SKIP",
+      "detail": "no fixture id available",
+      "ms": 0.0
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/basemap/countries",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 1.8
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/detections",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 1224.5
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/detections/classes",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 122.9
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/detections/geojson",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2584.8
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/detections/prithvi-overlays",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 20.7
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/detections/queue",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 32.0
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/detections/{detection_id}/candidate-links",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.8
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/detections/{detection_id}/details",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.8
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/detections/{detection_id}/identification-candidates",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 3.0
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/detections/{detection_id}/similar",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.4
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/feeds",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 4.6
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/feeds/{feed_id}/events",
+      "status": null,
+      "outcome": "SKIP",
+      "detail": "no fixture id available",
+      "ms": 0.0
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/fmv/clips",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.2
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/fmv/clips/{clip_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.0
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/fmv/clips/{clip_id}/detections",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 92.7
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/fmv/clips/{clip_id}/klv",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 3.7
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/fmv/detections/{detection_id}/details",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.5
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/fmv/detections/{detection_id}/similar",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.4
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/geotime/features",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 4.5
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/graph",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 537.5
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/graph/evidence/{node_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 184.9
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/graph/investigation",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 27.3
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/graph/ontology",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 65.0
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/graph/site-composition/{base_id}",
+      "status": null,
+      "outcome": "SKIP",
+      "detail": "no fixture id available",
+      "ms": 0.0
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/health",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.7
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/imagery",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.5
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/imagery/{pass_id}/bands",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 77.2
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/imagery/{pass_id}/tiles",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.4
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/inference/confidence-overrides",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.4
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/inference/dashboard",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 3.8
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/inference/health",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 3.3
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/ingest/jobs/{task_id}",
+      "status": null,
+      "outcome": "SKIP",
+      "detail": "no fixture id available",
+      "ms": 0.0
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/ingest/uploads",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 5.4
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/models",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.5
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/models/datasets",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.3
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/observations",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 4.1
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/ontology",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 6.0
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/ontology/default-prompts",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 1.6
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/ontology/prompt-profiles",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.7
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/ontology/unknown-labels",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 1.6
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/ontology/updates",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.3
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/ontology/version",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 1.5
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/ontology/version-history",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 3.9
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/operational-entities",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 1.6
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/operational-entities/pending-same-as",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 15.9
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/operational-entities/{entity_id}",
+      "status": null,
+      "outcome": "SKIP",
+      "detail": "no fixture id available",
+      "ms": 0.0
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/operational-entities/{entity_id}/tracks",
+      "status": null,
+      "outcome": "SKIP",
+      "detail": "no fixture id available",
+      "ms": 0.0
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/operational-entity-candidates",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 3.6
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/reference-chips/{chip_id}/image",
+      "status": null,
+      "outcome": "SKIP",
+      "detail": "no fixture id available",
+      "ms": 0.0
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/reference-platforms",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.8
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/reference-platforms/{platform_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 3.1
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/sources",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 1.5
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/sources/{source_id}/events",
+      "status": null,
+      "outcome": "SKIP",
+      "detail": "no fixture id available",
+      "ms": 0.0
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/system/deployment-mode",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.0
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/timeline/events",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 3.7
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/tracks",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.5
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/tracks/detections",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.5
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/tracks/detections/{track_uid}",
+      "status": null,
+      "outcome": "SKIP",
+      "detail": "no fixture id available",
+      "ms": 0.0
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/training/jobs",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.0
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/aois",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "create",
+      "ms": 5.7
+    },
+    {
+      "method": "PATCH",
+      "endpoint": "/api/aois/{aoi_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "update",
+      "ms": 6.6
+    },
+    {
+      "method": "DELETE",
+      "endpoint": "/api/aois/{aoi_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "delete",
+      "ms": 5.2
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/ontology/branches",
+      "status": 201,
+      "outcome": "PASS",
+      "detail": "create branch",
+      "ms": 10.6
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/ontology/objects",
+      "status": 201,
+      "outcome": "PASS",
+      "detail": "create object",
+      "ms": 10.3
+    },
+    {
+      "method": "PATCH",
+      "endpoint": "/api/ontology/objects/{object_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "patch object",
+      "ms": 9.7
+    },
+    {
+      "method": "DELETE",
+      "endpoint": "/api/ontology/objects/{object_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "delete object",
+      "ms": 7.8
+    },
+    {
+      "method": "DELETE",
+      "endpoint": "/api/ontology/branches/{branch_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "delete branch",
+      "ms": 17.6
+    },
+    {
+      "method": "PATCH",
+      "endpoint": "/api/ontology/branches/{branch_id}",
+      "status": null,
+      "outcome": "SKIP",
+      "detail": "covered by object flow / avoid real-branch mutation",
+      "ms": 0.0
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/operational-entities",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "create",
+      "ms": 20.4
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/operational-entities/{entity_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "read",
+      "ms": 3.2
+    },
+    {
+      "method": "PATCH",
+      "endpoint": "/api/operational-entities/{entity_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "update",
+      "ms": 8.5
+    },
+    {
+      "method": "DELETE",
+      "endpoint": "/api/operational-entities/{entity_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "delete",
+      "ms": 4.5
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/operational-entities",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "create a",
+      "ms": 4.9
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/operational-entities",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "create b",
+      "ms": 4.9
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/operational-entities/{entity_id}/same-as/{other_id}",
+      "status": 404,
+      "outcome": "PASS",
+      "detail": "same-as (404 until entities graph-resident)",
+      "ms": 7.0
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/operational-entities/{a_id}/merge-into/{b_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "merge-into (404 until entities graph-resident)",
+      "ms": 7.1
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/admin/repeat-thresholds",
+      "status": 201,
+      "outcome": "PASS",
+      "detail": "create",
+      "ms": 3.9
+    },
+    {
+      "method": "PUT",
+      "endpoint": "/api/admin/repeat-thresholds/{threshold_id}/activate",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "activate",
+      "ms": 3.3
+    },
+    {
+      "method": "DELETE",
+      "endpoint": "/api/admin/repeat-thresholds/{threshold_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "delete",
+      "ms": 6.2
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/ontology/prompt-profiles",
+      "status": 201,
+      "outcome": "PASS",
+      "detail": "create",
+      "ms": 5.3
+    },
+    {
+      "method": "PUT",
+      "endpoint": "/api/ontology/prompt-profiles/{profile_id}/activate",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "activate",
+      "ms": 4.7
+    },
+    {
+      "method": "DELETE",
+      "endpoint": "/api/ontology/prompt-profiles/{profile_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "delete",
+      "ms": 4.3
+    },
+    {
+      "method": "PUT",
+      "endpoint": "/api/inference/confidence-overrides",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "put current values back",
+      "ms": 4.6
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/detections/manual",
+      "status": 201,
+      "outcome": "PASS",
+      "detail": "create manual",
+      "ms": 84.0
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/detections/{detection_id}/details",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.7
+    },
+    {
+      "method": "PUT",
+      "endpoint": "/api/detections/{detection_id}/details",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "put details",
+      "ms": 8.6
+    },
+    {
+      "method": "PATCH",
+      "endpoint": "/api/detections/{detection_id}/review",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "review",
+      "ms": 5.4
+    },
+    {
+      "method": "PATCH",
+      "endpoint": "/api/detections/{detection_id}/tag",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "tag",
+      "ms": 39.7
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/detections/{detection_id}/candidate-links",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 3.1
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/detections/{detection_id}/candidate-links",
+      "status": 404,
+      "outcome": "PASS",
+      "detail": "recompute (404 if not in linkable set)",
+      "ms": 13.8
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/detections/{detection_id}/identification-candidates",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 3.4
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/detections/{detection_id}/identify",
+      "status": 400,
+      "outcome": "PASS",
+      "detail": "identify (400 if manual det has no embedding)",
+      "ms": 3.4
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/detections/{detection_id}/similar",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 2.3
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/reports/target-package/{detection_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "target-package pdf",
+      "ms": 136.0
+    },
+    {
+      "method": "DELETE",
+      "endpoint": "/api/detections/{detection_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "delete",
+      "ms": 5.5
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/graph/neighborhood",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "neighborhood",
+      "ms": 443.5
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/graph/path",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "path",
+      "ms": 20.6
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/analytics/viewshed",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "viewshed",
+      "ms": 1511.7
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/analytics/los",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "los",
+      "ms": 27.4
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/analytics/routes",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "routes",
+      "ms": 17.8
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/ai/analyze",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "analyze",
+      "ms": 4.5
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/ai/extract",
+      "status": 503,
+      "outcome": "SKIP",
+      "detail": "extract: LLM upstream unavailable",
+      "ms": 3.9
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/ai/link",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "link",
+      "ms": 3.2
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/ai/propose-actions",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "propose",
+      "ms": 4.4
+    },
+    {
+      "method": "DELETE",
+      "endpoint": "/api/fmv/clips/{clip_id}",
+      "status": null,
+      "outcome": "SKIP",
+      "detail": "no clip created this run",
+      "ms": 0.0
+    },
+    {
+      "method": "DELETE",
+      "endpoint": "/api/imagery/{pass_id}",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "delete imagery",
+      "ms": 137.7
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/auth/logout",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "logout",
+      "ms": 2.0
+    }
+  ]
+}

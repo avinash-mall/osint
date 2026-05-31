@@ -62,6 +62,7 @@ Streams `application/x-ndjson`, one record per frame × track.
 
 ## Failure modes
 
+- **Profile-swap race → 503, not a crash.** `/detect` auto-heals to the imagery profile, then guards `bundle.get("sam3_image") is None` before running prompts: a concurrent FMV `/load` can swap the pool to `fmv` (no `sam3_image`) between the ensure and the run, which used to crash with `TypeError: 'NoneType' object is not subscriptable`. Now it raises 503 (retryable backpressure). `run_text_prompts`/`run_box_prompts` carry the same guard. See [decisions/why-503-on-unloaded-component.md](../decisions/why-503-on-unloaded-component.md).
 - Invalid JSON metadata treated as `{}` for `/detect`; missing prompts then use precision defaults.
 - Image `/detect` and `/detect_raw` with `enabled_layers` containing `yoloe`, `yoloe_pf`, or `yoloe_seg` → 400; use `/detect_video` for YOLOE FMV tracking.
 - Explicit empty `metadata.text_prompts` → 400 in image detection (prevents accidental broad fallback).

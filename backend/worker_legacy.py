@@ -2912,6 +2912,32 @@ def _ensure_fmv_profile(session: requests.Session, clip_id: int, max_wait_s: flo
     return health
 
 
+def _revert_inference_profile(session: requests.Session, profile: str = "imagery",
+                              max_wait_s: float = 30.0) -> None:
+    """Best-effort: switch the inference service back to ``profile`` after FMV work.
+
+    FMV processing leaves the single GPU pool on the ``fmv`` profile, which has no
+    sam3_image, so the COP's imagery detection degrades until something reloads it.
+    Reverting here returns the resting state to ``imagery``. Best-effort by design:
+    a 409 means another FMV session is still in flight and correctly keeps ``fmv``,
+    so we just give up quietly rather than fight it. Never raises — a failed revert
+    must not fail the FMV task itself."""
+    deadline = time.time() + max_wait_s
+    while time.time() < deadline:
+        try:
+            resp = session.post(
+                f"{INFERENCE_SAM3_URL}/load", params={"profile": profile}, timeout=600,
+            )
+            if resp.status_code == 200:
+                return
+            if resp.status_code == 409:
+                # Another FMV session is busy; leaving it on fmv is correct.
+                return
+            time.sleep(2)
+        except requests.RequestException:
+            time.sleep(2)
+
+
 def _update_clip_tracking(clip_id: int, **fields) -> None:
     """Merge tracking_* fields into fmv_clips.metadata jsonb. Best-effort —
     failures here shouldn't kill the tracking task."""
@@ -3289,6 +3315,9 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
         )
         raise
     finally:
+        # FMV left the GPU pool on the fmv profile; return the resting state to
+        # imagery so the COP's imagery detection keeps working. Best-effort.
+        _revert_inference_profile(session, "imagery")
         session.close()
 
 

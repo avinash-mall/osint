@@ -15,9 +15,10 @@ import {
   Play,
   SkipBack,
   SkipForward,
+  Trash2,
 } from 'lucide-react';
 import { useEventStream } from '../hooks/useEventStream';
-import { AffGlyph, KeyboardShortcutSheet, type Affiliation, type ShortcutBinding } from './atoms';
+import { AffGlyph, ConfirmDialog, KeyboardShortcutSheet, type Affiliation, type ShortcutBinding } from './atoms';
 import {
   categoryFor,
   detectionClassLabel,
@@ -371,6 +372,12 @@ export default function FmvPlayer({
       );
     }
   }, []);
+
+  const handleDeleteClip = useCallback(async (clipId: number) => {
+    await axios.delete(`${API_URL}/api/fmv/clips/${clipId}`);
+    setSelectedId((current) => (current === clipId ? null : current));
+    await fetchClips();
+  }, [fetchClips]);
 
   const fetchFrames = useCallback(async (clipId: number) => {
     try {
@@ -2133,6 +2140,7 @@ export default function FmvPlayer({
                 onRetry={fetchClips}
                 selectedId={selectedId}
                 setSelectedId={setSelectedId}
+                onDeleteClip={user?.role === 'admin' ? handleDeleteClip : undefined}
               />
             )}
             {sideTab === 'detail' && selectedDetectionId != null && (() => {
@@ -2232,14 +2240,18 @@ function ClipsTab({
   onRetry,
   selectedId,
   setSelectedId,
+  onDeleteClip,
 }: {
   clips: Clip[];
   clipsError: string | null;
   onRetry: () => void;
   selectedId: number | null;
   setSelectedId: (id: number) => void;
+  onDeleteClip?: (id: number) => void | Promise<void>;
 }) {
   const accent = 'var(--accent)';
+  const [pendingDelete, setPendingDelete] = useState<Clip | null>(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   return (
     <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
       {/* CLIP LIBRARY */}
@@ -2288,48 +2300,82 @@ function ClipsTab({
             clip.status === 'ready' ? 'ok' :
             clip.status === 'error' ? 'crit' : 'unknown';
           return (
-            <button
-              className="clip-row"
-              key={clip.id}
-              type="button"
-              onClick={() => setSelectedId(clip.id)}
-              style={{
-                display: 'grid',
-                gridTemplateColumns: '24px 1fr auto',
-                gap: 10,
-                width: '100%',
-                padding: '8px 0',
-                borderTop: '1px solid var(--line)',
-                background: selected ? `color-mix(in oklab, ${accent} 9%, transparent)` : 'transparent',
-                border: 0,
-                borderBottom: '1px solid var(--line)',
-                cursor: 'pointer',
-                textAlign: 'left',
-                color: 'var(--ink-0)',
-              }}
-            >
-              <Film size={13} style={{ color: selected ? accent : 'var(--ink-2)' }} />
-              <div style={{ minWidth: 0 }}>
-                <div
+            <div key={clip.id} style={{ display: 'flex', alignItems: 'stretch', borderBottom: '1px solid var(--line)' }}>
+              <button
+                className="clip-row"
+                type="button"
+                onClick={() => setSelectedId(clip.id)}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '24px 1fr auto',
+                  gap: 10,
+                  flex: 1,
+                  minWidth: 0,
+                  padding: '8px 0',
+                  borderTop: '1px solid var(--line)',
+                  background: selected ? `color-mix(in oklab, ${accent} 9%, transparent)` : 'transparent',
+                  border: 0,
+                  cursor: 'pointer',
+                  textAlign: 'left',
+                  color: 'var(--ink-0)',
+                }}
+              >
+                <Film size={13} style={{ color: selected ? accent : 'var(--ink-2)' }} />
+                <div style={{ minWidth: 0 }}>
+                  <div
+                    style={{
+                      fontSize: 12,
+                      fontWeight: selected ? 600 : 500,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {clip.name}
+                  </div>
+                  <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)' }}>
+                    {fmt(clip.duration_seconds)} {clip.width && clip.height ? `· ${clip.width}×${clip.height}` : ''}
+                  </div>
+                </div>
+                <span className={`tag ${statusTone}`}>{clip.status}</span>
+              </button>
+              {onDeleteClip && (
+                <button
+                  type="button"
+                  data-tour="clip-delete"
+                  title="Delete clip"
+                  aria-label={`Delete clip ${clip.name}`}
+                  onClick={() => setPendingDelete(clip)}
                   style={{
-                    fontSize: 12,
-                    fontWeight: selected ? 600 : 500,
-                    overflow: 'hidden',
-                    textOverflow: 'ellipsis',
-                    whiteSpace: 'nowrap',
+                    display: 'grid', placeItems: 'center', width: 34,
+                    background: 'transparent', border: 0, borderTop: '1px solid var(--line)',
+                    color: 'var(--ink-2)', cursor: 'pointer',
                   }}
                 >
-                  {clip.name}
-                </div>
-                <div className="mono" style={{ fontSize: 10, color: 'var(--ink-3)' }}>
-                  {fmt(clip.duration_seconds)} {clip.width && clip.height ? `· ${clip.width}×${clip.height}` : ''}
-                </div>
-              </div>
-              <span className={`tag ${statusTone}`}>{clip.status}</span>
-            </button>
+                  <Trash2 size={13} />
+                </button>
+              )}
+            </div>
           );
         })}
       </div>
+
+      {pendingDelete && (
+        <ConfirmDialog
+          title="Delete clip?"
+          body={`Permanently removes "${pendingDelete.name}", its detections, telemetry, and video files. This cannot be undone.`}
+          confirmLabel="Delete"
+          destructive
+          busy={deleteBusy}
+          onClose={() => { if (!deleteBusy) setPendingDelete(null); }}
+          onConfirm={async () => {
+            if (!onDeleteClip) return;
+            setDeleteBusy(true);
+            try { await onDeleteClip(pendingDelete.id); }
+            finally { setDeleteBusy(false); setPendingDelete(null); }
+          }}
+        />
+      )}
     </div>
   );
 }

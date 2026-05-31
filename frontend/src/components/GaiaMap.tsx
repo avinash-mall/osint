@@ -711,6 +711,12 @@ export default function GaiaMap({
     await Promise.all([fetchDetectionClasses(), fetchDetectionFeatures()]);
   }, [fetchDetectionClasses, fetchDetectionFeatures]);
 
+  const handleDeleteImagery = useCallback(async (passId: number) => {
+    await axios.delete(`${API_URL}/api/imagery/${passId}`);
+    setSelectedImagery((current) => (current === passId ? null : current));
+    await Promise.all([fetchImagery(), fetchDetections()]);
+  }, [fetchImagery, fetchDetections]);
+
   useEffect(() => { fetchData(); }, [fetchData]);
   useEffect(() => { fetchImagery(); }, [fetchImagery]);
   useEffect(() => { fetchDetectionClasses(); }, [fetchDetectionClasses]);
@@ -1065,6 +1071,7 @@ export default function GaiaMap({
         prithviOverlays={prithviOverlays}
         setPrithviOverlays={setPrithviOverlays}
         imagery={imagery}
+        onDeleteImagery={user?.role === 'admin' ? handleDeleteImagery : undefined}
         visibleDetectionCount={visibleDetectionCount}
         tracksCount={data.tracks.length}
         staticCount={data.static.length}

@@ -26,9 +26,15 @@ Visual regression for major workspaces — screenshots committed under `tests/sc
 
 ## Not tested here
 
-Full e2e (upload → ingest → detection rendering) is too slow for CI — a benchmark concern, see [benchmark-harness.md](benchmark-harness.md).
+This tier stubs every route via `mockApi.ts`, so it cannot catch wiring/integration
+bugs (auth gating, route mounting, DB/inference round-trips). Those are covered by the
+**live tier** — see [live-e2e-playwright.md](live-e2e-playwright.md) (UI) and
+[scripts/smoke-test-live-api.md](../scripts/smoke-test-live-api.md) (API), which drive
+the real nginx:3000 stack. Full upload → ingest → detection-render remains a benchmark
+concern, see [benchmark-harness.md](benchmark-harness.md).
 
 ## Cross-references
 
 - [frontend/VISUAL_TESTING.md](../../frontend/VISUAL_TESTING.md)
+- [testing/live-e2e-playwright.md](live-e2e-playwright.md) — the live-backend e2e tier this complements
 - [conventions/adding-a-new-admin-tab.md](../conventions/adding-a-new-admin-tab.md) — visual testing expectations for new tabs

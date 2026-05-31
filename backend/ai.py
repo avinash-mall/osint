@@ -11,6 +11,10 @@ load_dotenv()
 OPENAI_API_BASE = os.getenv("OPENAI_API_BASE")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "google/gemma-4-31b-it")
+# Structured-JSON extraction asks the model for hundreds of tokens; an 8s budget
+# (fine for short free-text) routinely times out and surfaced as a spurious 503
+# on /api/ai/extract|link. nginx /api/ allows 300s, so 60s is well within budget.
+LLM_JSON_TIMEOUT_SECONDS = float(os.getenv("LLM_JSON_TIMEOUT_SECONDS", "60"))
 
 
 class AIUnavailable(RuntimeError):
@@ -92,7 +96,8 @@ def get_llm_text(
     raise AIUnavailable("LLM classification request failed.") from last_error
 
 
-def get_llm_json(prompt: str, system: str = "", max_tokens: int = 500, timeout_seconds: float = 8) -> dict:
+def get_llm_json(prompt: str, system: str = "", max_tokens: int = 500,
+                 timeout_seconds: float = LLM_JSON_TIMEOUT_SECONDS) -> dict:
     content = get_llm_text(prompt, system=system, max_tokens=max_tokens, temperature=0, timeout_seconds=timeout_seconds)
     parsed = extract_json_object(content)
     if not isinstance(parsed, dict):
