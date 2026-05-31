@@ -62,4 +62,4 @@ untouched for audit and future re-promotion.
 - [backend-routers/inference-router.md](../backend-routers/inference-router.md) — PUT confidence overrides
 - [frontend/admin-conf-overrides.md](../frontend/admin-conf-overrides.md)
 - [inference/dota-obb-specialist.md](../inference/dota-obb-specialist.md) — the 18 generic categories
-- [inference/remoteclip-verifier.md](../inference/remoteclip-verifier.md) — verifier that lifts `generic → verified`
+- [decisions/removed-fair1m-and-remoteclip.md](../decisions/removed-fair1m-and-remoteclip.md) — the RemoteCLIP verifier that fed `generic → verified` was removed; `semantic_margin` now always absent (labels stay `inferred`/`generic`)

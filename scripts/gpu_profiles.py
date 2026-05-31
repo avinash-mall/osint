@@ -95,6 +95,17 @@ class GpuBuildProfile:
     # session activations. Tune down for cards with fast HBM bandwidth.
     sam3_multiplex_min_vram_mib: int = 20_480
 
+    # --- Loading policy (hot vs dynamic) ---
+    # Cards at or above this total VRAM run the "hot" policy: every model the
+    # profile permits stays resident, no swap latency (honours the profile's
+    # own sam3_preload_* fields). Below it, configure_host emits the "dynamic"
+    # policy — models load on demand per *modality* profile (imagery_rgb /
+    # imagery_msi / imagery_sar / fmv, split in inference-sam3/main.py) so only
+    # one modality's models are resident at a time. 24 GiB is the floor at which
+    # the full imagery union fits SAM3 + every specialist with inference
+    # headroom. See docs/decisions/why-dynamic-modality-loading-on-tight-vram.md.
+    sam3_hot_load_min_vram_mib: int = 24_576
+
     # --- Optional satellite-intelligence models ---
     # Master switch; individual flags below are only honoured when this is True.
     # Disabling saves ~3.5 GiB VRAM and ~290 ms/chip (sum of all three heads).
@@ -171,7 +182,23 @@ class GpuBuildProfile:
         multiplex_ok = self.use_multiplex and (
             vram_mib is None or vram_mib >= self.sam3_multiplex_min_vram_mib
         )
+        # Loading-policy gate (see sam3_hot_load_min_vram_mib). Roomy cards run
+        # "hot" (everything the profile permits resident, honouring its own
+        # preload choice). Tight cards run "dynamic": no preload, per-modality
+        # profiles. Grounding-DINO stays available on all cards — it is
+        # runtime auto-gated (only fires on novel-vocab prompts) so it costs
+        # nothing on the common path. See
+        # docs/decisions/why-grounding-dino-auto-gated.md.
+        hot_load = vram_mib is None or vram_mib >= self.sam3_hot_load_min_vram_mib
+        if hot_load:
+            preload_models = self.sam3_preload_models
+            preload_profile = self.sam3_preload_profile
+        else:
+            preload_models = False
+            preload_profile = ""
         env: dict[str, str] = {
+            # Loading policy (informational; consumed by ops dashboards/docs)
+            "SAM3_LOAD_POLICY": "hot" if hot_load else "dynamic",
             # Precision & compilation
             "SAM3_ENABLE_TF32": "1" if self.enable_tf32 else "0",
             "SAM3_COMPILE_IMAGE": "1" if self.compile_image else "0",
@@ -187,15 +214,21 @@ class GpuBuildProfile:
             "SAM3_LOAD_DINOV3_SAT": "1" if self.sam3_load_dinov3_sat else "0",
             "SAM3_LOAD_PRITHVI": "1" if self.sam3_load_prithvi else "0",
             "SAM3_LOAD_TERRAMIND": "1" if self.sam3_load_terramind else "0",
-            # Specialist detectors
+            # Specialist detectors.
             "SAM3_LOAD_DOTA_OBB": "1" if self.sam3_load_dota_obb else "0",
             "SAM3_LOAD_GROUNDING_DINO": "1" if self.sam3_load_grounding_dino else "0",
             "SAM3_LOAD_YOLOE": "1" if self.sam3_load_yoloe else "0",
             # Embedding & batching
             "SAM3_EMBED_DETECTIONS": "1" if self.sam3_embed_detections else "0",
             "SAM3_BATCHED_TEXT_CHUNK_SIZE": str(self.sam3_batched_text_chunk_size),
-            "SAM3_PRELOAD_MODELS": "1" if self.sam3_preload_models else "0",
-            "SAM3_PRELOAD_PROFILE": self.sam3_preload_profile,
+            "SAM3_PRELOAD_MODELS": "1" if preload_models else "0",
+            "SAM3_PRELOAD_PROFILE": preload_profile,
+            # Resting profile the inference lifespan loads at startup (keeps the
+            # healthcheck's model_loaded=true). Tight cards rest on the light
+            # per-modality RGB profile (fits VRAM); the first MSI/SAR/FMV
+            # request swaps to its own profile. Roomy cards rest on the full
+            # imagery union. Never the union on a tight card — that OOMs.
+            "SAM3_RESTING_PROFILE": "imagery" if hot_load else "imagery_rgb",
             # Memory allocator
             "PYTORCH_CUDA_ALLOC_CONF": self.pytorch_cuda_alloc_conf,
             # PyTorch 2.8+ renamed PYTORCH_CUDA_ALLOC_CONF → PYTORCH_ALLOC_CONF
@@ -594,14 +627,16 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         # 16 GiB cards (RTX 5070 Ti: 15.9 GiB < 20 GiB threshold) and on for
         # 24+ GiB cards (RTX 5090: 32 GiB). compile_video stays off —
         # SAM3's branchy paths still trip the compiler on this arch.
-        # Terramind (~6 GiB) is disabled by default: it's a SAR→optical
-        # synthesis model only used on Sentinel-1 SAR ingest, and loading
-        # it alongside sam3_image+dinov3_sat+prithvi+heads exhausts the
-        # 16 GiB budget on /detect calls (measured OOM 2026-05-12 on an
-        # austin1.tif Optical chip when all 6 models were resident).
-        # Operators on 24+ GiB consumer Blackwells (RTX 5090 32 GiB) can
-        # override SAM3_LOAD_TERRAMIND=1 in .env after running
-        # configure_host.py.
+        # Loading on 16 GiB consumer Blackwell (RTX 5070 Ti, 5080) is the
+        # *dynamic* policy: the runtime VRAM gate (< sam3_hot_load_min_vram_mib)
+        # makes inference-sam3 load one modality profile at a time
+        # (imagery_rgb / imagery_msi / imagery_sar), so Terramind, Prithvi and
+        # DINOv3-SAT only go resident for the modality that needs them — no
+        # single profile exhausts the 16 GiB budget (the 2026-05-12 OOM was the
+        # monolithic profile loading every model at once). Terramind is
+        # therefore safe to enable now (resident only on SAR ingest). 24+ GiB
+        # consumer Blackwells (RTX 5090 32 GiB) cross the hot-load threshold and
+        # keep everything resident.
         enable_tf32=True,
         compile_image=False,
         compile_video=False,
@@ -611,7 +646,7 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_load_optional_models=True,
         sam3_load_dinov3_sat=True,
         sam3_load_prithvi=True,
-        sam3_load_terramind=False,
+        sam3_load_terramind=True,
         sam3_load_dota_obb=True,
         sam3_load_grounding_dino=True,
         sam3_embed_detections=True,

@@ -24,6 +24,5 @@ Evidence ranking keeps the open-vocabulary policy intact while making confirmati
 ## Cross-references
 
 - [backend/detection-evidence.md](../backend/detection-evidence.md)
-- [inference/remoteclip-verifier.md](../inference/remoteclip-verifier.md)
 - [inference/dota-obb-specialist.md](../inference/dota-obb-specialist.md)
 - [decisions/why-open-vocabulary.md](why-open-vocabulary.md)

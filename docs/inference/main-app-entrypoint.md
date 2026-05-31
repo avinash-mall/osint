@@ -10,7 +10,7 @@ FastAPI app for the GPU inference service. Holds request handlers (`/health`, `/
 
 ## Why this design
 
-`/detect` is precision-first by default: explicit `metadata.text_prompts` always win; explicit empty `text_prompts` → 400; omitted prompts → small sensor-specific default set unless `SAM3_DEFAULT_PROMPT_SOURCE=ontology` opts back into the backend ontology fan-out. In that ontology fan-out, `metadata.ontology_branch` scopes the vocabulary to one branch + descendants — a smaller, scene-relevant prompt set that is the primary lever against open-vocabulary false positives. Candidates may optionally receive RemoteCLIP verifier metadata, but the verifier never proposes detections. See [why-precision-first-inference-defaults.md](../decisions/why-precision-first-inference-defaults.md), [why-deconflicted-detection-prompts.md](../decisions/why-deconflicted-detection-prompts.md).
+`/detect` is precision-first by default: explicit `metadata.text_prompts` always win; explicit empty `text_prompts` → 400; omitted prompts → small sensor-specific default set unless `SAM3_DEFAULT_PROMPT_SOURCE=ontology` opts back into the backend ontology fan-out. In that ontology fan-out, `metadata.ontology_branch` scopes the vocabulary to one branch + descendants — a smaller, scene-relevant prompt set that is the primary lever against open-vocabulary false positives. Omitted prompts now resolve to a richer common-target precision set (building/vehicle/car/aircraft/ship/road/…) so a no-prompt upload still detects the usual GEOINT objects. See [why-precision-first-inference-defaults.md](../decisions/why-precision-first-inference-defaults.md), [why-deconflicted-detection-prompts.md](../decisions/why-deconflicted-detection-prompts.md).
 
 ## Key symbols (request handlers)
 
@@ -26,13 +26,14 @@ FastAPI app for the GPU inference service. Holds request handlers (`/health`, `/
 
 ## Key symbols (internal)
 
-- [`lifespan`](../../inference-sam3/main.py#L121) — async contextmanager passed to `FastAPI(...)`, runs `preload_models_on_startup()` on boot. Replaces deprecated `@app.on_event("startup")`.
+- [`lifespan`](../../inference-sam3/main.py#L123) — async contextmanager passed to `FastAPI(...)`, runs `preload_models_on_startup()` on boot, then ensures `SAM3_RESTING_PROFILE` (default `imagery`; `imagery_rgb` on dynamic-VRAM cards) is resident for the healthcheck. Replaces deprecated `@app.on_event("startup")`.
 - `_track` — context-manager recording per-stage timings into `/health`.
 - [`resolve_prompts`](../../inference-sam3/main.py#L460-L508) — prompt resolution ladder.
 - [`_reject_image_yoloe_layers`](../../inference-sam3/main.py#L277-L283) — rejects image `/detect` requests that try to enable FMV-only YOLOE layers.
 - [`_prompts_relevant_to_dota`](../../inference-sam3/main.py#L521-L523) — gate input for DOTA-OBB.
 - [`_tag_candidates`](../../inference-sam3/main.py#L526-L527) — carries per-layer provenance (`source_layer`) through fusion.
-- [`_build_component`](../../inference-sam3/main.py#L548-L569), [`_load_profile`](../../inference-sam3/main.py#L608-L642), [`_ensure_profile`](../../inference-sam3/main.py#L645-L660) — profile pool lifecycle.
+- [`_build_component`](../../inference-sam3/main.py#L602-L612), [`_load_profile`](../../inference-sam3/main.py#L665-L699), [`_ensure_profile`](../../inference-sam3/main.py#L702-L728) — profile pool lifecycle. `_ensure_profile` short-circuits when a resident superset (`imagery` union or `all`) already covers the requested profile's components, so hot cards never reload.
+- [`_profile_for_modality`](../../inference-sam3/main.py#L730-L744) — maps a `/detect` request `modality` (`rgb`/`multispectral`/`sar`) to its per-modality imagery profile (`imagery_rgb`/`imagery_msi`/`imagery_sar`); `/detect` and `/detect_raw` route through it so tight-VRAM cards hold one modality's models at a time. See [decisions/why-dynamic-modality-loading-on-tight-vram.md](../decisions/why-dynamic-modality-loading-on-tight-vram.md).
 - [`_version_snapshot`](../../inference-sam3/main.py#L768-L772) — combines SAM3, OBB, verifier version metadata.
 
 ## /detect request contract
@@ -44,10 +45,10 @@ FastAPI app for the GPU inference service. Holds request handlers (`/health`, `/
 | `metadata.text_prompts` | precision defaults | Strings to text-prompt SAM3. Explicit empty list → 400 unless `prompt_boxes` supplied |
 | `metadata.ontology_branch` | none (full vocab) | Ontology branch id; in `SAM3_DEFAULT_PROMPT_SOURCE=ontology` mode, scopes the fetched vocabulary to that branch + descendants. Ignored when `text_prompts` is given |
 | `metadata.prompt_boxes` | `[]` | Box prompts: `[{bbox: cxcywh_norm, class: str}, ...]` |
-| `metadata.enabled_layers` | profile defaults | Subset of `sam3, dota_obb, fair1m_obb, grounding_dino, remoteclip, dinov3_sat, prithvi, terramind`. `yoloe`, `yoloe_pf`, and `yoloe_seg` are rejected on image endpoints because YOLOE is FMV-only. See [decisions/removed-yoloe-imagery.md](../decisions/removed-yoloe-imagery.md). |
+| `metadata.enabled_layers` | profile defaults | Subset of `sam3, dota_obb, grounding_dino, dinov3_sat, prithvi, terramind`. `yoloe`, `yoloe_pf`, and `yoloe_seg` are rejected on image endpoints because YOLOE is FMV-only. See [decisions/removed-yoloe-imagery.md](../decisions/removed-yoloe-imagery.md). |
 | `metadata.hls_timesteps` | `1` | Set `3` for HLS multi-temporal crop classifier |
 
-Per-detection output includes `source_layer` (`sam3`, `dota_obb`, `grounding_dino`, etc.) → backend calibration + NMS provenance distinguish detector families. When `remoteclip` is loaded + enabled (default-on for the imagery profile as of T1.6), detections from layers in `REMOTECLIP_VERIFIER_LAYERS` (default `sam3, grounding_dino`) also include `semantic_verifier` + `semantic_margin` for backend evidence ranking; DOTA-OBB is deliberately excluded — see [decisions/why-remoteclip-default-on.md](../decisions/why-remoteclip-default-on.md). Response includes `debug_counts` (`prompt_count`, `candidates_by_layer`, `suppressed_by_nms`, `suppressed_by_policy`) for false-positive triage.
+Per-detection output includes `source_layer` (`sam3`, `dota_obb`, `grounding_dino`, etc.) → backend calibration + NMS provenance distinguish detector families. Response includes `debug_counts` (`prompt_count`, `candidates_by_layer`, `suppressed_by_nms`, `suppressed_by_policy`) for false-positive triage. (The RemoteCLIP verifier that previously emitted `semantic_verifier`/`semantic_margin` was removed — see [decisions/removed-fair1m-and-remoteclip.md](../decisions/removed-fair1m-and-remoteclip.md).)
 
 ## /detect_video request contract
 
@@ -67,7 +68,7 @@ Streams `application/x-ndjson`, one record per frame × track.
 - Image `/detect` and `/detect_raw` with `enabled_layers` containing `yoloe`, `yoloe_pf`, or `yoloe_seg` → 400; use `/detect_video` for YOLOE FMV tracking.
 - Explicit empty `metadata.text_prompts` → 400 in image detection (prevents accidental broad fallback).
 - `SAM3_DEFAULT_PROMPT_SOURCE=ontology` restores backend default prompts; backend unreachable → callers get 503.
-- Specialist layers skipped (not failed) when relevance gates don't pass; forced flags (`force_dota_obb`, `force_fair1m_obb`, `force_grounding_dino`) override for experiments.
+- Specialist layers skipped (not failed) when relevance gates don't pass; forced flags (`force_dota_obb`, `force_grounding_dino`) override for experiments.
 
 ## Cross-references
 

@@ -2,8 +2,17 @@
 
 Given two ``satellite_passes`` row IDs, opens both COGs with rasterio, resamples
 to the intersection of their footprints on a common grid, computes a per-pixel
-absolute difference (mean over bands), thresholds it, and polygonises the
-resulting mask into GeoJSON features.
+change map, thresholds it, and polygonises the resulting mask into GeoJSON.
+
+Two methods share the same resample → mask → polygonise spine:
+
+* ``"diff"`` (default, optical) — normalised absolute difference (mean over
+  the first ≤3 bands), thresholded as a fraction of the peak difference.
+* ``"sar_logratio"`` — Sentinel-1 multi-temporal change: the dB log-ratio
+  ``10·log10((after+ε)/(before+ε))`` on the VV band, despeckled, thresholded in
+  dB. Sees flood / damage / disturbance through cloud and at night. Adapted in
+  concept from ShadowBroker's SAR layer; clean-room implementation of the
+  standard log-ratio formula. See docs/backend/change-detection-raster.md.
 
 Designed to be cheap (CPU-only, single-thread) and bounded by
 ``CHANGE_DET_MAX_PIXELS``. Returns ``None`` if either pass is missing or has no
@@ -21,6 +30,7 @@ import rasterio
 from rasterio.features import shapes as rio_shapes
 from rasterio.warp import Resampling, reproject
 from rasterio.windows import from_bounds
+from scipy import ndimage
 from shapely.geometry import box, mapping, shape
 
 from database import postgis_db
@@ -46,6 +56,48 @@ CHANGE_DET_THRESHOLD = _env_float("CHANGE_DET_THRESHOLD", 0.18)
 CHANGE_DET_MAX_PIXELS = _env_int("CHANGE_DET_MAX_PIXELS", 1024 * 1024)  # 1 MP
 CHANGE_DET_MIN_AREA_PX = _env_int("CHANGE_DET_MIN_AREA_PX", 64)
 CHANGE_DET_SIMPLIFY_TOL = _env_float("CHANGE_DET_SIMPLIFY_TOLERANCE_DEG", 0.0002)
+
+# SAR log-ratio knobs. Threshold is in dB on |10·log10(after/before)|; a 3 dB
+# change is ~2x backscatter, a robust default for flood/damage detection. The
+# despeckle window suppresses single-pixel speckle before thresholding.
+CHANGE_DET_SAR_THRESHOLD_DB = _env_float("CHANGE_DET_SAR_THRESHOLD_DB", 3.0)
+CHANGE_DET_SAR_DESPECKLE = _env_int("CHANGE_DET_SAR_DESPECKLE", 3)
+
+
+def _polygonize_mask(
+    mask: np.ndarray, diff_norm: np.ndarray, bounds: tuple[float, float, float, float],
+    width: int, height: int, *, label: str,
+) -> list[dict]:
+    """Vectorise a uint8 ``mask`` into simplified GeoJSON Features.
+
+    Shared by every change method: each method produces ``mask`` (changed=1) and
+    a 0..1 ``diff_norm`` magnitude map; this turns them into scored polygons.
+    """
+    min_lon, min_lat, max_lon, max_lat = bounds
+    transform = rasterio.transform.from_bounds(min_lon, min_lat, max_lon, max_lat, width, height)
+    features: list[dict] = []
+    for geom_raw, value in rio_shapes(mask, transform=transform):
+        if int(value) != 1:
+            continue
+        geom = shape(geom_raw)
+        if geom.is_empty:
+            continue
+        geom_simplified = geom.simplify(CHANGE_DET_SIMPLIFY_TOL, preserve_topology=True)
+        if geom_simplified.is_empty:
+            continue
+        minx, miny, maxx, maxy = geom_simplified.bounds
+        col_start = max(0, int((minx - min_lon) / (max_lon - min_lon) * width))
+        col_end = min(width, int((maxx - min_lon) / (max_lon - min_lon) * width) + 1)
+        row_start = max(0, int((max_lat - maxy) / (max_lat - min_lat) * height))
+        row_end = min(height, int((max_lat - miny) / (max_lat - min_lat) * height) + 1)
+        sub = diff_norm[row_start:row_end, col_start:col_end]
+        score = float(sub.mean()) if sub.size else 0.0
+        features.append({
+            "type": "Feature",
+            "geometry": mapping(geom_simplified),
+            "properties": {"score": round(score, 4), "label": label},
+        })
+    return features
 
 
 def _load_pass(pass_id: int) -> Optional[dict]:
@@ -94,9 +146,52 @@ def _resample_window(src_path: str, bounds: tuple[float, float, float, float], t
     return dst
 
 
-def compute_change(before_id: int, after_id: int) -> Optional[dict]:
+def _change_map_optical(before_arr: np.ndarray, after_arr: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+    """Optical change: normalised mean absolute difference over bands.
+
+    Returns ``(diff_norm 0..1, mask uint8, threshold)``.
+    """
+    diff = np.abs(after_arr.astype(np.float32) - before_arr.astype(np.float32))
+    diff_mean = diff.mean(axis=0)
+    peak = float(diff_mean.max()) or 1.0
+    diff_norm = diff_mean / peak
+    mask = (diff_norm >= CHANGE_DET_THRESHOLD).astype(np.uint8)
+    return diff_norm, mask, peak
+
+
+def _change_map_sar(before_arr: np.ndarray, after_arr: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+    """SAR multi-temporal change via the dB log-ratio on the VV (first) band.
+
+    ``ratio_dB = 10·log10((after+ε)/(before+ε))`` flags both brightening
+    (e.g. new structures, rough water) and darkening (e.g. flooding, which
+    specularly reflects radar away). A light median despeckle suppresses speckle
+    before the |dB| threshold. Returns ``(diff_norm 0..1, mask uint8, peak_dB)``.
+
+    Clean-room implementation of the standard log-ratio operator; only band 1
+    (VV) is used so it works whether the GRD is single- or dual-pol.
+    """
+    eps = 1e-3
+    before_vv = np.clip(before_arr[0].astype(np.float32), 0.0, None)
+    after_vv = np.clip(after_arr[0].astype(np.float32), 0.0, None)
+    ratio_db = 10.0 * np.log10((after_vv + eps) / (before_vv + eps))
+    if CHANGE_DET_SAR_DESPECKLE >= 2:
+        ratio_db = ndimage.median_filter(ratio_db, size=CHANGE_DET_SAR_DESPECKLE)
+    abs_db = np.abs(ratio_db)
+    peak = float(abs_db.max()) or 1.0
+    mask = (abs_db >= CHANGE_DET_SAR_THRESHOLD_DB).astype(np.uint8)
+    # diff_norm in 0..1 for per-feature scoring, normalised by the peak magnitude.
+    diff_norm = abs_db / peak
+    return diff_norm, mask, peak
+
+
+_METHODS = {"diff", "sar_logratio"}
+
+
+def compute_change(before_id: int, after_id: int, method: str = "diff") -> Optional[dict]:
     if before_id == after_id:
         return None
+    if method not in _METHODS:
+        method = "diff"
     before = _load_pass(before_id)
     after = _load_pass(after_id)
     if not before or not after:
@@ -121,71 +216,38 @@ def compute_change(before_id: int, after_id: int) -> Optional[dict]:
     width = max(64, min(max_side, 1024))
     height = max(64, int(width / aspect))
 
-    before_arr = _resample_window(before["file_path"], (min_lon, min_lat, max_lon, max_lat), (height, width))
-    after_arr = _resample_window(after["file_path"], (min_lon, min_lat, max_lon, max_lat), (height, width))
+    bounds = (min_lon, min_lat, max_lon, max_lat)
+    before_arr = _resample_window(before["file_path"], bounds, (height, width))
+    after_arr = _resample_window(after["file_path"], bounds, (height, width))
     if before_arr is None or after_arr is None:
         return None
 
-    diff = np.abs(after_arr.astype(np.float32) - before_arr.astype(np.float32))
-    diff_mean = diff.mean(axis=0)
-    peak = float(diff_mean.max()) or 1.0
-    diff_norm = diff_mean / peak
+    if method == "sar_logratio":
+        diff_norm, mask, peak = _change_map_sar(before_arr, after_arr)
+        mode = "sar_logratio"
+        threshold = CHANGE_DET_SAR_THRESHOLD_DB
+        label = "sar_change"
+        peak_key, peak_val = "peak_diff_db", round(peak, 2)
+    else:
+        diff_norm, mask, peak = _change_map_optical(before_arr, after_arr)
+        mode = "raster_diff"
+        threshold = CHANGE_DET_THRESHOLD
+        label = "raster_change"
+        peak_key, peak_val = "peak_diff", peak
 
-    mask = (diff_norm >= CHANGE_DET_THRESHOLD).astype(np.uint8)
-    if mask.sum() < CHANGE_DET_MIN_AREA_PX:
-        return {
-            "type": "FeatureCollection",
-            "features": [],
-            "mode": "raster_diff",
-            "summary": {
-                "before_pass_id": before_id,
-                "after_pass_id": after_id,
-                "bounds": [min_lon, min_lat, max_lon, max_lat],
-                "threshold": CHANGE_DET_THRESHOLD,
-                "peak_diff": peak,
-                "changed_pixels": int(mask.sum()),
-            },
-        }
-
-    transform = rasterio.transform.from_bounds(min_lon, min_lat, max_lon, max_lat, width, height)
-    features: list[dict] = []
-    for geom_raw, value in rio_shapes(mask, transform=transform):
-        if int(value) != 1:
-            continue
-        geom = shape(geom_raw)
-        if geom.is_empty:
-            continue
-        geom_simplified = geom.simplify(CHANGE_DET_SIMPLIFY_TOL, preserve_topology=True)
-        if geom_simplified.is_empty:
-            continue
-        # Compute mean diff inside the polygon's bounding box (cheap approximation).
-        minx, miny, maxx, maxy = geom_simplified.bounds
-        col_start = max(0, int((minx - min_lon) / (max_lon - min_lon) * width))
-        col_end = min(width, int((maxx - min_lon) / (max_lon - min_lon) * width) + 1)
-        row_start = max(0, int((max_lat - maxy) / (max_lat - min_lat) * height))
-        row_end = min(height, int((max_lat - miny) / (max_lat - min_lat) * height) + 1)
-        sub = diff_norm[row_start:row_end, col_start:col_end]
-        score = float(sub.mean()) if sub.size else 0.0
-        features.append({
-            "type": "Feature",
-            "geometry": mapping(geom_simplified),
-            "properties": {
-                "score": round(score, 4),
-                "label": "raster_change",
-            },
-        })
-
-    return {
-        "type": "FeatureCollection",
-        "features": features,
-        "mode": "raster_diff",
-        "summary": {
-            "before_pass_id": before_id,
-            "after_pass_id": after_id,
-            "bounds": [min_lon, min_lat, max_lon, max_lat],
-            "threshold": CHANGE_DET_THRESHOLD,
-            "peak_diff": peak,
-            "changed_pixels": int(mask.sum()),
-            "feature_count": len(features),
-        },
+    summary = {
+        "before_pass_id": before_id,
+        "after_pass_id": after_id,
+        "method": method,
+        "bounds": [min_lon, min_lat, max_lon, max_lat],
+        "threshold": threshold,
+        peak_key: peak_val,
+        "changed_pixels": int(mask.sum()),
     }
+
+    if mask.sum() < CHANGE_DET_MIN_AREA_PX:
+        return {"type": "FeatureCollection", "features": [], "mode": mode, "summary": summary}
+
+    features = _polygonize_mask(mask, diff_norm, bounds, width, height, label=label)
+    summary["feature_count"] = len(features)
+    return {"type": "FeatureCollection", "features": features, "mode": mode, "summary": summary}

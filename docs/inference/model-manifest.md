@@ -17,7 +17,6 @@ Single JSON file listing every model weight the inference service uses: HuggingF
   "prithvi_burn":   {"repo": "ibm-nasa-...",       "revision": "...", "gated": false, "files": [...]},
   "terramind":      {"repo": "ibm-...",            "revision": "...", "gated": false, "files": [...]},
   "grounding_dino": {"repo": "IDEA-Research/...",  "revision": "...", "gated": false, "files": [...]},
-  "remoteclip":     {"repo": "chendelong/RemoteCLIP", "revision": "...", "gated": false, "files": [...]},
   "yoloe":          {"local": "yoloe-26x-seg.pt"},
   "yoloe_pf":       {"local": "yoloe-26x-seg-pf.pt"},
   "dota_obb":       {"local": "yolo26m-obb.pt"}
@@ -29,7 +28,7 @@ Single JSON file listing every model weight the inference service uses: HuggingF
 - **Pinned revisions** — reproducibility for air-gap deploys: same build run twice → identical model behavior because revisions are SHAs not tags.
 - **Gating column** — build can skip gated weights when `HF_TOKEN` absent, or set `SAM3_WEIGHTS_SOURCE=mirror` to use the `1038lab/sam3` mirror.
 - **Local-file entries** — weights bundled in the image (YOLOE, DOTA-OBB), not fetched from the Hub.
-- **Verifier entries** (RemoteCLIP) — baked for offline use and loaded by default for the imagery profile (`SAM3_LOAD_REMOTECLIP=1`); per-detection verify gated by `REMOTECLIP_VERIFIER_LAYERS` so DOTA-OBB is not second-guessed. See [decisions/why-remoteclip-default-on.md](../decisions/why-remoteclip-default-on.md).
+- The FAIR1M-OBB detector and RemoteCLIP verifier were removed (2026-05-31) — see [decisions/removed-fair1m-and-remoteclip.md](../decisions/removed-fair1m-and-remoteclip.md).
 
 ## Cross-references
 

@@ -17,7 +17,7 @@ from ai import AIUnavailable, get_ai_response, get_llm_json
 from database import db, postgis_db
 from events import normalize_domain, publish_event, record_timeline_event
 from platform_schema import ensure_platform_tables
-from schemas import AIActionProposalRequest, AIAnalysisRequest, AnalyticsRequest
+from schemas import AIActionProposalRequest, AIAnalysisRequest, AnalyticsRequest, BriefAreaRequest
 
 logger = logging.getLogger(__name__)
 
@@ -316,3 +316,142 @@ def execute_action_proposal(proposal_id: int):
     record_timeline_event(executed.get("domain") or "WORKFLOW", "ai_action_executed", executed["title"], {"proposal_id": proposal_id, "result": result}, entity_id=executed.get("target_id"))
     publish_event("ops", {"type": "ai_action_executed", "proposal": executed})
     return {"proposal": executed, "result": result}
+
+
+# ---------------------------------------------------------------------------
+# Read-only AOI brief + map-control display directives (B1)
+#
+# "Brief this AOI" composes a situational digest from data the analyst already
+# has — detections within a radius + recent timeline events — and (when the LLM
+# is up) narrates it. It is pure *analysis*: no writes, so it lives inside the
+# human-approval model without adding a mutation surface. The response also
+# carries `display_actions` (e.g. fly_to the AOI centroid) that the map UI can
+# execute via the existing `sentinel:map-control` CustomEvent channel — the
+# read-only analogue of ShadowBroker's agent display queue.
+# ---------------------------------------------------------------------------
+
+
+def _summarize_detections(detections: list[dict]) -> dict:
+    """Pure: counts + top classes + confidence band from a detection list.
+
+    No DB / LLM — unit-testable in isolation.
+    """
+    by_class: dict[str, int] = {}
+    max_conf = 0.0
+    for d in detections:
+        cls = str(d.get("object_class") or "unknown")
+        by_class[cls] = by_class.get(cls, 0) + 1
+        try:
+            max_conf = max(max_conf, float(d.get("confidence") or 0.0))
+        except (TypeError, ValueError):
+            pass
+    top = sorted(by_class.items(), key=lambda kv: kv[1], reverse=True)[:6]
+    return {
+        "total": len(detections),
+        "classes": dict(top),
+        "distinct_classes": len(by_class),
+        "max_confidence": round(max_conf, 3),
+    }
+
+
+def _build_brief_prompt(lat: float, lon: float, radius_m: float, summary: dict, events: list[dict]) -> str:
+    """Pure: assemble the LLM narration prompt from the digest."""
+    cls_line = ", ".join(f"{k}×{v}" for k, v in summary["classes"].items()) or "no detections"
+    ev_line = "; ".join(str(e.get("title") or e.get("event_type") or "") for e in events[:8]) or "none"
+    return (
+        "Write a concise (3-4 sentence) intelligence brief for an analyst about a "
+        f"circular area of interest centred at {lat:.4f}, {lon:.4f} with radius "
+        f"{int(radius_m)} m. Detections in the area: {summary['total']} total "
+        f"({summary['distinct_classes']} distinct classes): {cls_line}. "
+        f"Recent activity: {ev_line}. State only what the data supports; do not invent."
+    )
+
+
+def _resolve_brief_observer(req: BriefAreaRequest) -> tuple[float, float]:
+    if req.aoi_id is not None:
+        with postgis_db.get_cursor() as cur:
+            cur.execute(
+                "SELECT ST_Y(ST_Centroid(geom)) AS lat, ST_X(ST_Centroid(geom)) AS lon "
+                "FROM aois WHERE id = %s",
+                (req.aoi_id,),
+            )
+            row = cur.fetchone()
+        if not row or row["lat"] is None:
+            raise HTTPException(status_code=404, detail=f"AOI {req.aoi_id} not found")
+        return float(row["lat"]), float(row["lon"])
+    if req.lat is not None and req.lon is not None:
+        return float(req.lat), float(req.lon)
+    raise HTTPException(status_code=400, detail="provide aoi_id or both lat and lon")
+
+
+def _detections_within(lat: float, lon: float, radius_m: float, limit: int = 200) -> list[dict]:
+    with postgis_db.get_cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, object_class, confidence,
+                   ST_Y(ST_Centroid(geom)) AS lat, ST_X(ST_Centroid(geom)) AS lon
+            FROM detections
+            WHERE ST_DWithin(geom::geography, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s)
+            ORDER BY confidence DESC NULLS LAST
+            LIMIT %s
+            """,
+            (lon, lat, radius_m, limit),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def _recent_timeline(limit: int = 20) -> list[dict]:
+    try:
+        with postgis_db.get_cursor() as cur:
+            cur.execute(
+                "SELECT event_type, title, created_at FROM timeline_events "
+                "ORDER BY created_at DESC LIMIT %s",
+                (limit,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+    except Exception:
+        return []
+
+
+@router.post("/api/ai/brief-area")
+def ai_brief_area(req: BriefAreaRequest):
+    """Read-only situational brief for an AOI / point + radius.
+
+    Returns a structured digest, an optional LLM narrative (degrades gracefully
+    when the model is offline), and `display_actions` for the map UI. No writes.
+    """
+    ensure_platform_tables()
+    lat, lon = _resolve_brief_observer(req)
+    radius_m = float(req.radius_m or 5000)
+
+    detections = _detections_within(lat, lon, radius_m)
+    events = _recent_timeline()
+    summary = _summarize_detections(detections)
+
+    narrative: Optional[str] = None
+    if req.narrate:
+        try:
+            narrative = get_ai_response(_build_brief_prompt(lat, lon, radius_m, summary, events))
+        except AIUnavailable:
+            narrative = None  # digest is still useful without the model
+
+    display_actions = [
+        {"action": "fly_to", "lat": lat, "lon": lon, "zoom": 13, "label": "AOI centre"},
+    ]
+    record_timeline_event(
+        "WORKFLOW", "ai_brief_area",
+        f"AOI brief: {summary['total']} detections within {int(radius_m)} m",
+        {"lat": lat, "lon": lon, "radius_m": radius_m, "aoi_id": req.aoi_id},
+    )
+    return {
+        "brief": {
+            "center": {"lat": lat, "lon": lon},
+            "radius_m": radius_m,
+            "summary": summary,
+            "recent_events": events[:8],
+            "narrative": narrative,
+        },
+        "display_actions": display_actions,
+        "policy": "read_only",
+        "status": "ok",
+    }

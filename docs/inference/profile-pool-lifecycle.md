@@ -2,15 +2,24 @@
 
 ## Purpose
 
-How `inference-sam3` loads, holds, frees model bundles. Three profiles cover the operational matrix; switching across them is the **only** safe way to free SAM3's VRAM.
+How `inference-sam3` loads, holds, frees model bundles. Profiles cover the operational matrix; switching across them is the **only** safe way to free SAM3's VRAM.
 
 ## Profiles
 
+`imagery` is split into per-modality sub-profiles so a tight-VRAM GPU (`SAM3_LOAD_POLICY=dynamic`)
+keeps only one modality's models resident. `/detect` auto-routes by request `modality` via
+`_profile_for_modality`; the `imagery` union and `all` are resident supersets that satisfy any
+subset request without a reload (hot cards). See
+[decisions/why-dynamic-modality-loading-on-tight-vram.md](../decisions/why-dynamic-modality-loading-on-tight-vram.md).
+
 | Profile | Components | Used by | VRAM (FP16) |
 |---|---|---|---|
-| `imagery` | `sam3_image`, `dinov3_sat`, `prithvi`, `terramind`, `dota_obb`, `grounding_dino`, optional `remoteclip` | Imagery ingest | ~23 GB with all components before verifier |
-| `fmv` | `sam3_image`, `sam3_video` (multiplex), `dota_obb`, `yoloe` | FMV ingest | ~12 GB |
-| `all` | Union of both | 40+ GiB datacenter GPUs | ~30+ GB |
+| `imagery_rgb` | `sam3_image`, `dinov3_sat`, `dota_obb`, `grounding_dino` (auto-gated) | RGB imagery ingest | ~5 GB (rgb-only set) |
+| `imagery_msi` | `sam3_image`, `dinov3_sat`, `prithvi` | Multispectral ingest | ~6 GB |
+| `imagery_sar` | `sam3_image`, `dinov3_sat`, `terramind`, `dota_obb` | SAR ingest | ~7 GB |
+| `imagery` | Union of the three above | Hot cards / `/load?profile=imagery` | ~23 GB with every component |
+| `fmv` | `sam3_image`, `sam3_video` (multiplex), `dota_obb`, `yoloe` | FMV ingest | ~9 GB measured (16 GiB card) |
+| `all` | Union of imagery + fmv | 40+ GiB datacenter GPUs | ~30+ GB |
 
 ## Per-GPU replication
 
@@ -53,7 +62,7 @@ Most production deployments preload one profile via `SAM3_PRELOAD_MODELS=1` + `S
 
 ## Lifespan-level imagery preload
 
-After the explicit `preload_models_on_startup()` step (gated by `SAM3_PRELOAD_MODELS`), the lifespan unconditionally calls `_ensure_profile("imagery")` so the pool is non-empty by the time the compose healthcheck runs. This keeps the strict healthcheck (`model_loaded AND not model_error`) honest on GPU profiles where `configure_host.py` left `SAM3_PRELOAD_MODELS=0`. Opt out with `SAM3_SKIP_PRELOAD=1` on memory-constrained GPUs that need to load on first request. See [why-preload-imagery-on-startup.md](../decisions/why-preload-imagery-on-startup.md).
+After the explicit `preload_models_on_startup()` step (gated by `SAM3_PRELOAD_MODELS`), the lifespan calls `_ensure_profile(SAM3_RESTING_PROFILE)` so the pool is non-empty by the time the compose healthcheck runs. This keeps the strict healthcheck (`model_loaded AND not model_error`) honest on GPU profiles where `configure_host.py` left `SAM3_PRELOAD_MODELS=0`. `SAM3_RESTING_PROFILE` defaults to the full `imagery` union (hot cards) but `configure_host.py` sets it to **`imagery_rgb`** on dynamic-policy cards — the light per-modality profile that fits a tight GPU at startup while still reporting `model_loaded=true`; the first MSI/SAR/FMV request swaps to that modality's profile. (`SAM3_SKIP_PRELOAD=1` still fully opts out of the lifespan preload.) See [why-preload-imagery-on-startup.md](../decisions/why-preload-imagery-on-startup.md) and [why-dynamic-modality-loading-on-tight-vram.md](../decisions/why-dynamic-modality-loading-on-tight-vram.md).
 
 ## Cross-references
 

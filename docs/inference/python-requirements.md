@@ -10,13 +10,12 @@ Lists inference-service Python packages installed after PyTorch + SAM3 are alrea
 
 ## Why this design
 
-PyTorch pinned by GPU profile, installed before this file. Domain libraries then install from one small requirements file. `open_clip_torch` included only so the optional RemoteCLIP verifier can load baked weights; verifier disabled → it doesn't participate in `/detect`.
+PyTorch pinned by GPU profile, installed before this file. Domain libraries then install from one small requirements file.
 
 ## Key symbols
 
 - `transformers` — Grounding-DINO + DINOv3-SAT loader dependency.
 - `ultralytics` — DOTA-OBB + YOLOE runtime.
-- `open_clip_torch` — optional RemoteCLIP verifier runtime.
 
 ## Inputs / Outputs
 
@@ -29,4 +28,3 @@ Dependency resolution failures stop image build. Runtime stays offline — packa
 ## Cross-references
 
 - [deployment/inference-gpu-dockerfile.md](../deployment/inference-gpu-dockerfile.md)
-- [remoteclip-verifier.md](remoteclip-verifier.md)

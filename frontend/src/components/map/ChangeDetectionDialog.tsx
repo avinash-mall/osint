@@ -35,13 +35,19 @@ type ChangeResult = {
   summary: {
     before_pass_id: number;
     after_pass_id: number;
+    method?: string;
     bounds: [number, number, number, number];
     threshold: number;
-    peak_diff: number;
+    peak_diff?: number;
+    peak_diff_db?: number;
     changed_pixels: number;
     feature_count?: number;
   };
 };
+
+/** Change-detection method. "diff" = optical normalised difference (default);
+ *  "sar_logratio" = Sentinel-1 dB log-ratio (flood/damage through cloud/night). */
+type ChangeMethod = 'diff' | 'sar_logratio';
 
 type Props = {
   before: Pass;
@@ -57,14 +63,17 @@ type State =
 
 export default function ChangeDetectionDialog({ before, after, onClose }: Props) {
   const [state, setState] = useState<State>({ kind: 'loading' });
+  const [method, setMethod] = useState<ChangeMethod>('diff');
 
   useEffect(() => {
     let cancelled = false;
+    setState({ kind: 'loading' });
     (async () => {
       try {
         const { data } = await axios.post<ChangeResult>(`${API_URL}/api/imagery/change`, {
           before_pass_id: before.id,
           after_pass_id: after.id,
+          method,
         });
         if (cancelled) return;
         if (!data || data.features.length === 0) {
@@ -81,7 +90,7 @@ export default function ChangeDetectionDialog({ before, after, onClose }: Props)
       }
     })();
     return () => { cancelled = true; };
-  }, [before.id, after.id]);
+  }, [before.id, after.id, method]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -155,6 +164,29 @@ export default function ChangeDetectionDialog({ before, after, onClose }: Props)
             <X size={12}/>
           </button>
         </header>
+
+        {/* Method selector — optical diff vs SAR dB log-ratio. Changing it
+            re-runs the diff (the effect depends on `method`). */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 8,
+          padding: '10px 16px', borderBottom: '1px solid var(--line)',
+        }}>
+          <span className="label-mono" style={{ fontSize: 10 }}>METHOD</span>
+          {([['diff', 'Optical'], ['sar_logratio', 'SAR (dB log-ratio)']] as const).map(([k, label]) => (
+            <button
+              key={k}
+              type="button"
+              className={`btn xs ${method === k ? 'primary' : 'ghost'}`}
+              disabled={state.kind === 'loading'}
+              onClick={() => setMethod(k)}
+              title={k === 'sar_logratio'
+                ? 'Sentinel-1 dB log-ratio — flood/damage/disturbance through cloud and at night'
+                : 'Optical normalised difference (default)'}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
 
         {/* Body */}
         <div style={{ padding: 16, minHeight: 200 }} aria-live="polite">
@@ -242,8 +274,10 @@ function ResultBody({ result }: { result: ChangeResult }) {
     }}>
       <Stat label="Features" value={result.features.length.toLocaleString()}/>
       <Stat label="Changed pixels" value={summary.changed_pixels.toLocaleString()}/>
-      <Stat label="Peak diff" value={summary.peak_diff.toFixed(3)}/>
-      <Stat label="Threshold" value={summary.threshold.toFixed(2)}/>
+      {summary.peak_diff_db != null
+        ? <Stat label="Peak Δ (dB)" value={summary.peak_diff_db.toFixed(2)}/>
+        : <Stat label="Peak diff" value={(summary.peak_diff ?? 0).toFixed(3)}/>}
+      <Stat label={summary.peak_diff_db != null ? 'Threshold (dB)' : 'Threshold'} value={summary.threshold.toFixed(2)}/>
       <Stat label="AOI"
         value={`${summary.bounds[0].toFixed(3)}, ${summary.bounds[1].toFixed(3)} → ${summary.bounds[2].toFixed(3)}, ${summary.bounds[3].toFixed(3)}`}
         wide

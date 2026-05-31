@@ -70,8 +70,8 @@ FMV tasks consume `/detect_video` NDJSON. SAM3 + YOLOE entries preserve `source_
 
 ## Failure modes
 
-- **FMV leaves the GPU on `fmv`, then reverts.** `process_fmv` loads the `fmv` profile (`_ensure_fmv_profile`) and, in its `finally`, calls `_revert_inference_profile(session, "imagery")` — best-effort, 409-tolerant — so the COP's imagery detection isn't left degraded after a clip is processed. A 409 (another FMV session live) correctly keeps `fmv`. See [decisions/why-revert-inference-after-fmv.md](../decisions/why-revert-inference-after-fmv.md).
-- `/detect` 4xx/5xx per chip → increments failed chip counts; worker continues other chips.
+- **FMV leaves the GPU on `fmv`, then reverts.** `process_fmv` loads the `fmv` profile (`_ensure_fmv_profile`) and, in its `finally`, calls `_revert_inference_profile(session, "imagery_rgb")` — best-effort, 409-tolerant — so the COP's imagery detection isn't left degraded after a clip is processed (reverts to the light RGB profile, not the full union, so tight-VRAM cards don't OOM). A 409 (another FMV session live) correctly keeps `fmv`. See [decisions/why-revert-inference-after-fmv.md](../decisions/why-revert-inference-after-fmv.md).
+- `/detect` 4xx/5xx per chip → increments failed chip counts; worker continues other chips. **But if *every* attempted chip fails** (`failed_chips == processed_chips > 0`, e.g. inference OOMs on every forward), `process_satellite_imagery` raises → the upload finishes `status='failed'` (with the error on the job) instead of finalizing `ready` with zero detections. See [decisions/why-dynamic-modality-loading-on-tight-vram.md](../decisions/why-dynamic-modality-loading-on-tight-vram.md).
 - Detections below the active policy floor → counted in `suppressed_by_policy`, not persisted.
 - Evidence ranking never drops detections; weak rows persisted as `candidate`/`discovery` metadata.
 - Missing FMV prompts no longer launch a single `"object"` session; precision fallback launches the bounded `FMV_DEFAULT_PROMPTS` list.

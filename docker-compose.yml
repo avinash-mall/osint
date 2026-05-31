@@ -315,16 +315,16 @@ services:
       # with zero true positives (see docs/inference_layer_comparison.md).
       SAM3_LOAD_DOTA_OBB:        ${SAM3_LOAD_DOTA_OBB:-1}
       SAM3_LOAD_GROUNDING_DINO:  ${SAM3_LOAD_GROUNDING_DINO:-1}
-      # Default-on as of T1.6 — see docs/decisions/why-remoteclip-default-on.md
-      SAM3_LOAD_REMOTECLIP:      ${SAM3_LOAD_REMOTECLIP:-1}
+      # Loading policy: "dynamic" (tight VRAM) rests on the light per-modality
+      # RGB profile and loads one modality profile at a time; "hot" rests on
+      # the full imagery union. SAM3_RESTING_PROFILE is the startup profile.
+      # See docs/decisions/why-dynamic-modality-loading-on-tight-vram.md.
+      SAM3_RESTING_PROFILE:      ${SAM3_RESTING_PROFILE:-imagery}
+      SAM3_LOAD_POLICY:          ${SAM3_LOAD_POLICY:-hot}
       DOTA_OBB_MODEL_ID:         ${DOTA_OBB_MODEL_ID:-yolo26m-obb.pt}
       GROUNDING_DINO_REPO_ID:    ${GROUNDING_DINO_REPO_ID:-IDEA-Research/grounding-dino-tiny}
       GROUNDING_DINO_THRESHOLD:  ${GROUNDING_DINO_THRESHOLD:-0.20}
       GROUNDING_DINO_TEXT_THRESHOLD: ${GROUNDING_DINO_TEXT_THRESHOLD:-0.15}
-      REMOTECLIP_MODEL_ID:       ${REMOTECLIP_MODEL_ID:-chendelong/RemoteCLIP}
-      REMOTECLIP_ARCH:           ${REMOTECLIP_ARCH:-ViT-B-32}
-      REMOTECLIP_MARGIN_THRESHOLD: ${REMOTECLIP_MARGIN_THRESHOLD:-0.05}
-      REMOTECLIP_LOCAL_FILES_ONLY: ${REMOTECLIP_LOCAL_FILES_ONLY:-1}
       # Category-level presence gate (SegEarth-OV-3 idea). 0.0 disables.
       # 0.40 suppresses prompts whose best mask still has weak presence,
       # which is what produces hallucinated detections on absent concepts.

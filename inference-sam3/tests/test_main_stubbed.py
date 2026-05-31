@@ -57,7 +57,6 @@ def setup_function():
         "terramind": None,
         "dota_obb": {"model": object()},
         "grounding_dino": {"model": object()},
-        "remoteclip": None,
     })
 
 
@@ -281,43 +280,3 @@ def test_grounding_dino_requires_explicit_enable_for_uncommon_prompt(monkeypatch
 
     assert resp2.status_code == 200
     assert mock_gdino.call_count == 1
-
-
-def test_remoteclip_verifier_only_scores_existing_detections(monkeypatch):
-    main._pool[0]["remoteclip"] = {"model": object()}
-
-    def fake_text(bundle, chip, prompts, threshold, timings=None):
-        mask = np.zeros(chip.shape[:2], dtype=bool)
-        mask[2:14, 2:14] = True
-        return [(mask, [2, 2, 14, 14], 0.75, prompts[0])]
-
-    monkeypatch.setattr(main.sam3_runner, "run_text_prompts", fake_text)
-    mock_verify = MagicMock(return_value={
-        "enabled": True,
-        "passed": True,
-        "semantic_margin": 0.18,
-        "top_labels": [{"label": "ship", "score": 0.9}],
-    })
-    monkeypatch.setattr(main.remoteclip_verifier, "verify", mock_verify)
-
-    img = Image.new("RGB", (24, 24), color=(10, 20, 30))
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-
-    client = TestClient(main.app)
-    resp = client.post(
-        "/detect",
-        files={"image": ("chip.png", buf.getvalue(), "image/png")},
-        data={
-            "metadata": (
-                '{"modality":"rgb","text_prompts":["ship"],'
-                '"enabled_layers":["sam3","remoteclip"]}'
-            )
-        },
-    )
-
-    assert resp.status_code == 200
-    payload = resp.json()
-    assert len(payload["detections"]) == 1
-    assert payload["detections"][0]["semantic_margin"] == 0.18
-    assert mock_verify.call_count == 1

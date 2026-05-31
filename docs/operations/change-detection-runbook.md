@@ -12,6 +12,23 @@
 - `POST /api/imagery/change` — bounded to the intersection of the two passes. Returns polygons in pixel/geographic space.
 - `POST /api/analytics/change` — accepts an AOI polygon; backend selects the most recent two passes overlapping the AOI.
 
+## Method: optical vs SAR
+
+Both endpoints accept an optional `method`:
+
+- **`diff`** (default, optical) — normalised band difference; needs cloud-free optical passes.
+- **`sar_logratio`** — Sentinel-1 dB log-ratio on VV; sees flood/damage/disturbance through cloud and at night. Use on cloudy AOIs, nocturnal events, or to corroborate an optical call.
+
+```
+POST /api/imagery/change   {"before_pass_id": 12, "after_pass_id": 34}                       # optical
+POST /api/imagery/change   {"before_pass_id": 12, "after_pass_id": 34, "method": "sar_logratio"}
+POST /api/analytics/change {"before_pass_id": 12, "after_pass_id": 34, "method": "sar_logratio"}
+```
+
+In the UI, the change dialog has an **Optical / SAR** METHOD toggle (switching re-runs the diff). SAR summaries report `peak_diff_db` and `mode: "sar_logratio"`; optical reports `peak_diff` and `mode: "raster_diff"`.
+
+SAR tuning: `CHANGE_DET_SAR_THRESHOLD_DB` (default 3.0 ≈ 2× backscatter; raise to ~6 for deep change only), `CHANGE_DET_SAR_DESPECKLE` (median window px, default 3; <2 disables).
+
 ## How the result is rendered
 
 Result polygons returned as GeoJSON, overlaid as a new ephemeral map layer. Click a polygon for:

@@ -18,11 +18,16 @@ Single FastAPI service bundling every model the platform uses:
 | Prithvi-EO-2.0 (flood/burn) | `ibm-nasa-geospatial/Prithvi-EO-V2-300M` | [prithvi_heads.py](../../inference-sam3/prithvi_heads.py) |
 | TerraMind v1 (S1→S2) | IBM TerraMind | [terramind.py](../../inference-sam3/terramind.py) |
 | DOTA-OBB | Ultralytics `yolo26m-obb.pt` (`yolo11n-obb.pt` fallback) | [dota_obb.py](../../inference-sam3/dota_obb.py) |
-| FAIR1M-OBB (fine-grained, operator-baked) | `yolo11m-obb-fair1m.pt` (see [operations/fair1m-bake.md](../operations/fair1m-bake.md)) | [fair1m_obb.py](../../inference-sam3/fair1m_obb.py) |
-| Grounding-DINO | `IDEA-Research/grounding-dino-*` | [grounding_dino.py](../../inference-sam3/grounding_dino.py) |
-| RemoteCLIP verifier | `chendelong/RemoteCLIP` | [remoteclip_verifier.py](../../inference-sam3/remoteclip_verifier.py) |
+| Grounding-DINO (auto-gated, novel vocab) | `IDEA-Research/grounding-dino-*` | [grounding_dino.py](../../inference-sam3/grounding_dino.py) |
 
-Runtime memory pool holds one of three **profiles** swappable via `/load?profile=`. See [profile-pool-lifecycle.md](profile-pool-lifecycle.md).
+Runtime memory pool holds one **profile** at a time, swappable via `/load?profile=`. Profiles
+are `fmv`, the per-modality imagery profiles `imagery_rgb` / `imagery_msi` / `imagery_sar`, the
+`imagery` union (all three), and `all` (everything). `/detect` auto-routes to the per-modality
+profile via `_profile_for_modality(modality)`; a resident superset (`imagery` or `all`) serves
+any subset without a reload. On tight-VRAM cards (`SAM3_LOAD_POLICY=dynamic`) only one modality
+profile is resident at a time so a 16 GiB GPU can serve RGB/MSI/SAR/FMV by swapping. See
+[profile-pool-lifecycle.md](profile-pool-lifecycle.md) and
+[decisions/why-dynamic-modality-loading-on-tight-vram.md](../decisions/why-dynamic-modality-loading-on-tight-vram.md).
 
 ## Endpoints
 
@@ -31,7 +36,7 @@ Runtime memory pool holds one of three **profiles** swappable via `/load?profile
 | `GET` | `/health` | Loaded models, replicas, active requests, model versions, VRAM |
 | `GET` | `/health/memory` | Per-component memory snapshot |
 | `POST` | `/health/memory/reset` | Clear PyTorch caching allocator |
-| `POST` | `/load?profile=` | Force-load `imagery` / `fmv` / `all` |
+| `POST` | `/load?profile=` | Force-load `imagery_rgb` / `imagery_msi` / `imagery_sar` / `imagery` / `fmv` / `all` |
 | `POST` | `/unload` | Tear down and respawn (only reliable way to free SAM3 VRAM) |
 | `POST` | `/detect` | Per-chip image segmentation (multipart `image` + JSON `metadata`) |
 | `POST` | `/detect_video` | FMV tracking — multipart `video`; streams `application/x-ndjson` |
@@ -44,7 +49,6 @@ Full per-modality request contract: [main-app-entrypoint.md](main-app-entrypoint
 |---|---|
 | SAM 3 + SAM 3.1 video + DINOv3-SAT-L + DOTA-OBB + GDINO + YOLOE (FMV/all profile) | ~12 GB |
 | + Prithvi + TerraMind | ~22 GB (24 GB+ card required) |
-| + RemoteCLIP verifier (default-on as of T1.6, imagery profile only) | +~1.5 GB |
 
 Per-component flags: [main-app-entrypoint.md](main-app-entrypoint.md) and the env table in [deployment/environment-variables-reference.md](../deployment/environment-variables-reference.md).
 

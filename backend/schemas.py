@@ -390,6 +390,8 @@ class AnalyticsRequest(BaseModel):
     # Change-detection: both IDs are required for real raster differencing.
     before_pass_id: Optional[int] = None
     after_pass_id: Optional[int] = None
+    # Change-detection method: "diff" (optical, default) or "sar_logratio" (Sentinel-1 dB).
+    method: Optional[str] = None
 
 
 class TrainingJobCreate(BaseModel):
@@ -410,6 +412,16 @@ class AIAnalysisRequest(BaseModel):
     context: dict = Field(default_factory=dict)
 
 
+class BriefAreaRequest(BaseModel):
+    """Body for ``POST /api/ai/brief-area`` — read-only AOI situational brief."""
+
+    aoi_id: Optional[int] = None
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    radius_m: Optional[float] = 5000
+    narrate: bool = True  # set False to skip the LLM narrative and return the digest only
+
+
 class AIActionProposalRequest(BaseModel):
     prompt: str
     domain: Optional[str] = None
@@ -417,3 +429,29 @@ class AIActionProposalRequest(BaseModel):
     target_id: Optional[str] = None
     payload: dict = Field(default_factory=dict)
     risk_level: str = "low"
+
+
+# ---------------------------------------------------------------------------
+# Satellites (offline overpass prediction)
+# ---------------------------------------------------------------------------
+
+
+class TleImportRequest(BaseModel):
+    """Body for ``POST /api/satellites/tle`` — air-gap TLE import."""
+
+    text: str = Field(..., description="Raw 2-line or 3-line TLE text (one or many sets)")
+    source: Optional[str] = Field(None, description="Provenance label, e.g. 'celestrak-active-2026-05-31'")
+
+
+class OverpassRequest(BaseModel):
+    """Body for ``POST /api/satellites/passes`` — predict overpasses over an AOI/point."""
+
+    norad_ids: Optional[List[int]] = Field(None, description="Limit to these NORAD ids; default all stored")
+    aoi_id: Optional[int] = None
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    start: Optional[str] = Field(None, description="ISO8601 UTC; default now")
+    end: Optional[str] = Field(None, description="ISO8601 UTC; default start + hours")
+    hours: int = 24
+    min_elevation_deg: float = 10.0
+    step_s: int = 30

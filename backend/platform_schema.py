@@ -90,6 +90,28 @@ def ensure_collection_tables() -> None:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_collection_tasks_status ON collection_tasks(status)")
 
 
+def ensure_satellite_tables() -> None:
+    """TLE storage for offline overpass prediction (satellite_overpass.py).
+
+    Holds analyst-imported Two-Line Element sets keyed by NORAD id. Latest import
+    per object wins (``ON CONFLICT``); ``source`` records provenance of the
+    air-gap import. No spatial column — propagation is computed on read.
+    """
+    with postgis_db.get_cursor(commit=True) as cursor:
+        acquire_schema_xact_lock(cursor)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS satellite_tles (
+                norad_id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL DEFAULT '',
+                line1 TEXT NOT NULL,
+                line2 TEXT NOT NULL,
+                epoch TIMESTAMP WITH TIME ZONE,
+                source TEXT,
+                imported_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            )
+        """)
+
+
 def ensure_platform_tables() -> None:
     """Run every platform migration once per process. Cached via a module flag."""
     global _platform_schema_ready
@@ -102,6 +124,7 @@ def ensure_platform_tables() -> None:
 
         ensure_feed_tables()
         ensure_collection_tables()
+        ensure_satellite_tables()
         with postgis_db.get_cursor(commit=True) as cursor:
             acquire_schema_xact_lock(cursor)
             cursor.execute("""

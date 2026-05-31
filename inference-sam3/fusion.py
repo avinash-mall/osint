@@ -24,7 +24,6 @@ BACKEND_DIR = Path(__file__).resolve().parents[1] / "backend"
 _DEFAULT_WBF_WEIGHTS: dict[str, float] = {
     "sam3":           0.5,
     "dota_obb":       1.0,
-    "fair1m_obb":     1.0,
     "grounding_dino": 0.3,
     "yoloe":          0.5,
     "sar_cfar":       0.7,

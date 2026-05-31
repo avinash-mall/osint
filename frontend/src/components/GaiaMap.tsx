@@ -48,6 +48,7 @@ import MapStage, { type MapHandle } from './map/MapStage';
 import ProductTour from './tour/ProductTour';
 import { useProductTour } from '../hooks/useProductTour';
 import SelectionPanel from './map/SelectionPanel';
+import SatellitesPanel from './map/SatellitesPanel';
 import TimeMachineBar from './map/TimeMachineBar';
 import { useAuth } from '../hooks/useAuth';
 import {
@@ -210,7 +211,13 @@ export default function GaiaMap({
     los: null,
     routes: null,
   });
-  const [rightTab, setRightTab] = useState<'details' | 'analytics' | 'similar' | 'tracks'>('details');
+  // Satellite overpass planning (A1). Observer is picked on the map; the ground
+  // track is drawn as a Leaflet polyline. State lives here so MapStage can render
+  // the track and SelectionPanel can host the panel without owning the service.
+  const [satObserver, setSatObserver] = useState<{ lat: number; lon: number } | null>(null);
+  const [satPickActive, setSatPickActive] = useState(false);
+  const [satGroundTrack, setSatGroundTrack] = useState<[number, number][] | null>(null);
+  const [rightTab, setRightTab] = useState<'details' | 'analytics' | 'satellites' | 'similar' | 'tracks'>('details');
   const [overlaysOpen, setOverlaysOpen] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   // Modern shell: each side panel can be collapsed to a 36 px floating handle so
@@ -802,6 +809,21 @@ export default function GaiaMap({
     return () => window.removeEventListener('sentinel:jump-to-detection', handler);
   }, [detectionsGeoJSON, pendingPick]);
 
+  // AI map-control display directives (B1). The read-only "brief this AOI" path
+  // drives the map by dispatching `sentinel:map-control` events — the in-app,
+  // approval-safe analogue of an agent display queue. Only view-changing
+  // actions are honoured here (no create/edit/delete).
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.action === 'fly_to' && detail.lat != null && detail.lon != null) {
+        mapStageRef.current?.flyTo?.(Number(detail.lat), Number(detail.lon), detail.zoom);
+      }
+    };
+    window.addEventListener('sentinel:map-control', handler);
+    return () => window.removeEventListener('sentinel:map-control', handler);
+  }, []);
+
   // Consume cross-workspace navigation: when the user clicks "Open on GEOINT"
   // from Ontology or FMV we land here with a detectionId or className. Select
   // the matching detection, fit the map to it, then notify the parent so the
@@ -1171,6 +1193,9 @@ export default function GaiaMap({
         analyticsResults={analyticsResults}
         pendingPick={pendingPick}
         setLastMapClick={setLastMapClick}
+        satPickActive={satPickActive}
+        onSatPick={(lat, lon) => { setSatObserver({ lat, lon }); setSatPickActive(false); }}
+        satGroundTrack={satGroundTrack}
         basemapGeoJSON={basemapGeoJSON}
         setMapBounds={setMapBounds}
         setMapZoom={setMapZoom}
@@ -1581,6 +1606,14 @@ export default function GaiaMap({
         setActiveLayers={setActiveLayers}
         analyticsResults={analyticsResults}
         setAnalyticsResults={setAnalyticsResults}
+        satellitesSlot={
+          <SatellitesPanel
+            observer={satObserver}
+            pickActive={satPickActive}
+            onRequestPick={() => setSatPickActive((v) => !v)}
+            onGroundTrack={(coords) => setSatGroundTrack(coords)}
+          />
+        }
         data={data}
         isActionBusy={isActionBusy}
         actionStatus={actionStatus}

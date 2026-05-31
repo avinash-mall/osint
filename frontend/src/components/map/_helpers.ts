@@ -80,7 +80,6 @@ export function labelQuality(props: any): LabelQuality | undefined {
 const SOURCE_LAYER_LABELS: Record<string, string> = {
   sam3: 'SAM 3',
   dota_obb: 'DOTA-OBB',
-  fair1m_obb: 'FAIR1M-OBB',
   grounding_dino: 'Grounding-DINO',
   yoloe: 'YOLOE',
   sar_cfar: 'CFAR (SAR)',

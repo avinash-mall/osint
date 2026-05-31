@@ -1036,6 +1036,9 @@ def _run_text_prompts_cached_batched(
 
     candidates: list[tuple[np.ndarray, list[float], float, str]] = []
     chunk_size = max(1, SAM3_BATCHED_TEXT_CHUNK_SIZE)
+    total_chunks = 0
+    failed_chunks = 0
+    last_exc: Exception | None = None
 
     with bundle["lock"], _device_ctx(device), _inference_mode(), _autocast_ctx(device), _sdpa_ctx():
         # ---- Encode the image ONCE for the whole request ----
@@ -1061,10 +1064,15 @@ def _run_text_prompts_cached_batched(
         # ---- Iterate chunks: build a tiny batch (no image work), reuse cache ----
         for offset in range(0, len(prompts), chunk_size):
             chunk = prompts[offset:offset + chunk_size]
+            total_chunks += 1
             # Degrade gracefully: a single failing chunk (e.g. GPU OOM on a
             # content-heavy tile) is logged and skipped so the tile still
             # returns the detections from the chunks that did succeed, rather
             # than 500-ing the whole /detect_raw request and blanking the tile.
+            # But if EVERY chunk fails (e.g. the GPU profile over-committed VRAM
+            # so no SAM3 forward fits), we must NOT report a clean empty result
+            # — that masked a real misconfig as "no objects found" and let the
+            # upload finalize as `ready` with zero detections. Raise below.
             try:
                 query_labels: dict[int, str] = {}
                 chunk_dp = Datapoint(
@@ -1120,11 +1128,23 @@ def _run_text_prompts_cached_batched(
                     processed = postprocessor.process_results(output, chunk_batch.find_metadatas)
                 candidates.extend(_collect_batched_candidates(processed, query_labels))
             except Exception as exc:
+                failed_chunks += 1
+                last_exc = exc
                 logger.warning(
                     "sam3 cached-batched chunk failed (offset=%d, labels=%s): %s",
                     offset, chunk, exc,
                 )
                 continue
+
+    # Every chunk failed → this was not "no objects found", it was a failed
+    # inference (typically GPU OOM from an over-committed model set). Raise so
+    # /detect(_raw) returns a non-200 and the worker marks the upload failed
+    # instead of finalizing it `ready` with zero detections.
+    if total_chunks > 0 and failed_chunks == total_chunks:
+        raise RuntimeError(
+            f"SAM3 batched inference failed on all {total_chunks} text chunks "
+            f"(last error: {last_exc})"
+        ) from last_exc
 
     return candidates
 

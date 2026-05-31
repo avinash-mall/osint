@@ -1,21 +1,17 @@
 from __future__ import annotations
 
-import json
-import re
-from pathlib import Path
-
-
-BACKEND_DIR = Path(__file__).resolve().parents[1]
+import ai
 
 
 def load_ai_json_helpers():
-    path = BACKEND_DIR / "ai.py"
-    source = path.read_text(encoding="utf-8")
-    start = source.index("class AIUnavailable")
-    end = source.index("def get_ai_response", start)
-    namespace = {"json": json, "re": re}
-    exec(source[start:end], namespace)
-    return namespace
+    """Expose the JSON helpers under the dict shape the tests already use.
+
+    Previously this exec'd a *line-sliced* fragment of ai.py in a bare namespace,
+    which broke whenever the slice referenced a module-level constant defined
+    outside it (e.g. ``LLM_JSON_TIMEOUT_SECONDS`` used as a default arg). Importing
+    the module is offline-safe (no network/DB at import) and not brittle.
+    """
+    return {"extract_json_object": ai.extract_json_object, "AIUnavailable": ai.AIUnavailable}
 
 
 def test_extract_json_object_accepts_strict_json():

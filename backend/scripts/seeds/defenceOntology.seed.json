@@ -239,11 +239,6 @@
           "id": "Hut_or_Tent",
           "label": "Hut or Tent",
           "prompt": "hut or tent"
-        },
-        {
-          "id": "Helipad",
-          "label": "Helipad",
-          "prompt": "helipad"
         }
       ]
     },
@@ -395,9 +390,9 @@
           "prompt": "airport terminal"
         },
         {
-          "id": "Storage_Tank",
-          "label": "Storage Tank",
-          "prompt": "storage tank"
+          "id": "Helipad",
+          "label": "Helipad",
+          "prompt": "helipad"
         },
         {
           "id": "Fixed_Wing_Aircraft",
@@ -670,6 +665,11 @@
           "id": "Oil_or_Gas_Facility",
           "label": "Oil or Gas Facility",
           "prompt": "oil or gas facility"
+        },
+        {
+          "id": "Storage_Tank",
+          "label": "Storage Tank",
+          "prompt": "storage tank"
         },
         {
           "id": "Nuclear_Powerplant",

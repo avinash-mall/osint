@@ -10,7 +10,7 @@ Build the GPU inference image, pre-bake model weights so the runtime service run
 
 ## Why this design
 
-Image downloads Python dependencies + optional model weights at build time; runtime containers use the populated `/models` cache. DOTA bake stages both `yolo26m-obb.pt` and `yolo11n-obb.pt`; RemoteCLIP baked best-effort for verifier deployments but stays runtime-disabled by default.
+Image downloads Python dependencies + optional model weights at build time; runtime containers use the populated `/models` cache. DOTA bake stages both `yolo26m-obb.pt` and `yolo11n-obb.pt`. (The RemoteCLIP verifier bake was removed — see [decisions/removed-fair1m-and-remoteclip.md](../decisions/removed-fair1m-and-remoteclip.md).)
 
 ## Key symbols
 

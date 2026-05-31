@@ -69,7 +69,7 @@ def run_change_detection(req: AnalyticsRequest):
         result = {"type": "FeatureCollection", "features": features, "mode": "fixture_no_passes"}
     else:
         try:
-            result = compute_change(int(req.before_pass_id), int(req.after_pass_id))
+            result = compute_change(int(req.before_pass_id), int(req.after_pass_id), req.method or "diff")
         except Exception as exc:
             logger.warning("change: rasterio diff failed for passes %s/%s: %s", req.before_pass_id, req.after_pass_id, exc)
             raise HTTPException(status_code=503, detail=f"Change detection unavailable: {exc}") from exc

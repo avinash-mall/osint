@@ -28,14 +28,11 @@ import torch
 
 import dota_obb
 import embedding
-import fair1m_gate
-import fair1m_obb
 import fusion
 import grounding_dino
 import grounding_dino_gate
 import multispectral
 import prithvi_heads
-import remoteclip_verifier
 import sam3_runner
 import sar
 import terramind
@@ -130,11 +127,16 @@ async def lifespan(app: FastAPI):
     # restores the prior "load on demand" behavior for constrained GPUs.
     if os.getenv("SAM3_SKIP_PRELOAD", "0").strip().lower() not in {"1", "true", "yes", "on"}:
         if not _pool:
+            # Rest on SAM3_RESTING_PROFILE (default the full "imagery" union).
+            # Tight-VRAM cards set this to "imagery_rgb" so startup fits the
+            # GPU budget while still reporting model_loaded=true; MSI/SAR/FMV
+            # requests swap to their own modality profile on first use.
+            resting = os.getenv("SAM3_RESTING_PROFILE", "imagery").strip() or "imagery"
             try:
-                logger.info("lifespan: ensuring imagery profile resident for healthcheck")
-                _ensure_profile("imagery")
+                logger.info("lifespan: ensuring %s profile resident for healthcheck", resting)
+                _ensure_profile(resting)
             except Exception as exc:  # noqa: BLE001 — startup must not crash
-                logger.error("lifespan imagery preload failed: %s", exc)
+                logger.error("lifespan %s preload failed: %s", resting, exc)
     yield
 
 
@@ -189,35 +191,12 @@ SAM3_LOAD_TERRAMIND  = _flag("SAM3_LOAD_TERRAMIND",  _DEFAULT)
 # DEFENCE_YOLO was removed: produced 1297 false positives across 26 DOTA val
 # chips with no true positives (see docs/inference_layer_comparison*).
 SAM3_LOAD_DOTA_OBB        = _flag("SAM3_LOAD_DOTA_OBB",        _DEFAULT)
-# FAIR1M-2.0 fine-grained OBB specialist (37 sub-classes: airframe families,
-# warship/cargo-ship sub-types, dump truck / tractor etc.). Default-on for
-# imagery: the runner returns an empty bundle when no weights are baked, so
-# absence is harmless on fresh installs. See docs/operations/fair1m-bake.md.
-SAM3_LOAD_FAIR1M_OBB      = _flag("SAM3_LOAD_FAIR1M_OBB",      _DEFAULT)
 # Phase 8.38: Grounding-DINO default-OFF. Only +0.0144 mAP improvement on
 # DOTA-v1.0 for +241 ms cumulative cost (see docs/inference_layer_comparison.md).
 # The auto-gate in grounding_dino_gate.py keeps it from loading when prompts
 # are already covered by SAM3+DOTA-OBB. Operators wanting open-vocab recall on
 # truly novel labels can re-enable with SAM3_LOAD_GROUNDING_DINO=1.
 SAM3_LOAD_GROUNDING_DINO  = _flag("SAM3_LOAD_GROUNDING_DINO",  "0")
-# RemoteCLIP-style verifier never proposes detections; it only scores existing
-# crops and emits `semantic_margin` for backend label-quality promotion. Default
-# flipped 0 → 1 in T1.6 — weights are baked into the image (Dockerfile.gpu) and
-# the per-detection cost is gated by source_layer below, so DOTA-OBB's
-# closed-vocab calls aren't second-guessed. See
-# docs/decisions/why-remoteclip-default-on.md.
-SAM3_LOAD_REMOTECLIP      = _flag("SAM3_LOAD_REMOTECLIP",      "1")
-# Which source layers the RemoteCLIP verifier is allowed to second-guess.
-# DOTA-OBB is excluded because its closed-vocab 18 classes are stronger than
-# open-vocab text matching for those categories (same auto-gate logic as
-# docs/decisions/why-grounding-dino-auto-gated.md). Override via
-# REMOTECLIP_VERIFIER_LAYERS=comma,separated,list.
-_REMOTECLIP_VERIFIER_LAYERS_RAW = os.getenv(
-    "REMOTECLIP_VERIFIER_LAYERS", "sam3,grounding_dino"
-)
-REMOTECLIP_VERIFIER_LAYERS: frozenset[str] = frozenset(
-    s.strip().lower() for s in _REMOTECLIP_VERIFIER_LAYERS_RAW.split(",") if s.strip()
-)
 # YOLOE-26x open-vocabulary segmentation specialist used by the standalone
 # FMV tracker. Bundles both -pf (prompt-free) and -seg (text-prompted)
 # checkpoints; intentionally not loaded by the imagery profile.
@@ -243,18 +222,41 @@ PROFILE_COMPONENTS: dict[str, tuple[str, ...]] = {
         "dota_obb" if SAM3_LOAD_DOTA_OBB else None,
         "yoloe" if SAM3_LOAD_YOLOE else None,
     ) if c),
-    "imagery": (
+    # Per-modality imagery profiles. On tight-VRAM cards (dynamic loading
+    # policy, SAM3_LOAD_POLICY=dynamic) only ONE of these is resident at a
+    # time, so the modality-specific heavies (prithvi for multispectral,
+    # terramind for SAR) never share VRAM with each other or with the RGB
+    # detectors. `_profile_for_modality` routes /detect by request modality;
+    # `_ensure_profile`'s "all"-superset short-circuit keeps hot cards (that
+    # preload "all") reload-free. sam3_image + dinov3_sat are common to all
+    # three (DINOv3-SAT powers re-ID embeddings + the /embed endpoint).
+    "imagery_rgb": tuple(c for c in (
+        "sam3_image",
+        "dinov3_sat" if SAM3_LOAD_DINOV3_SAT else None,
+        "dota_obb" if SAM3_LOAD_DOTA_OBB else None,
+        "grounding_dino" if SAM3_LOAD_GROUNDING_DINO else None,
+    ) if c),
+    "imagery_msi": tuple(c for c in (
         "sam3_image",
         "dinov3_sat" if SAM3_LOAD_DINOV3_SAT else None,
         "prithvi" if SAM3_LOAD_PRITHVI else None,
+    ) if c),
+    "imagery_sar": tuple(c for c in (
+        "sam3_image",
+        "dinov3_sat" if SAM3_LOAD_DINOV3_SAT else None,
         "terramind" if SAM3_LOAD_TERRAMIND else None,
         "dota_obb" if SAM3_LOAD_DOTA_OBB else None,
-        "fair1m_obb" if SAM3_LOAD_FAIR1M_OBB else None,
-        "grounding_dino" if SAM3_LOAD_GROUNDING_DINO else None,
-        "remoteclip" if SAM3_LOAD_REMOTECLIP else None,
-    ),
+    ) if c),
 }
-PROFILE_COMPONENTS["imagery"] = tuple(c for c in PROFILE_COMPONENTS["imagery"] if c)
+# "imagery" stays as the union of the per-modality profiles — the resting
+# profile used by hot cards and by `POST /load?profile=imagery` (admin / FMV
+# revert). On dynamic cards the auto-heal path routes to the per-modality
+# profiles instead, so the union is only loaded when explicitly requested.
+PROFILE_COMPONENTS["imagery"] = tuple(sorted({
+    component
+    for name in ("imagery_rgb", "imagery_msi", "imagery_sar")
+    for component in PROFILE_COMPONENTS[name]
+}))
 
 # "all" is the union of every other profile's components — used by big GPUs
 # (40-80 GiB datacenter cards) that want both fmv and imagery served without
@@ -288,7 +290,7 @@ psutil.cpu_percent(interval=None)
 
 _HEALTH_COMPONENT_SLUGS = (
     "sam3_image", "sam3_video", "dinov3_sat", "prithvi", "terramind",
-    "dota_obb", "fair1m_obb", "grounding_dino", "yoloe_pf", "yoloe_seg",
+    "dota_obb", "grounding_dino", "yoloe_pf", "yoloe_seg",
 )
 _METRIC_WINDOW = int(os.getenv("SAM3_METRIC_WINDOW", "200"))
 _metrics_lock = threading.Lock()
@@ -440,10 +442,23 @@ def get_ontology_optical_labels() -> frozenset[str]:
     return frozenset(p.strip().lower() for p in prompts if p and p.strip())
 
 
+# Bounded precision-first defaults used when a request omits text_prompts (and
+# is not in ontology fan-out mode). Kept deliberately small — a scene-relevant
+# common-target set, NOT the full ~130-class ontology — but rich enough that an
+# upload with no explicit prompts still detects the usual GEOINT objects instead
+# of the anaemic 4-word list that returned almost nothing. Operators override
+# per-sensor with SAM3_PRECISION_DEFAULT_PROMPTS; full fan-out stays available
+# via SAM3_DEFAULT_PROMPT_SOURCE=ontology. See
+# docs/decisions/why-precision-first-inference-defaults.md.
 _PRECISION_DEFAULT_PROMPTS: dict[str, tuple[str, ...]] = {
-    "optical": ("vehicle", "ship", "aircraft", "building"),
-    "multispectral": ("vehicle", "ship", "aircraft", "building"),
-    "sar": ("ship", "vehicle"),
+    "optical": (
+        "building", "vehicle", "car", "truck", "bus", "aircraft", "helicopter",
+        "ship", "boat", "road", "bridge", "storage tank", "shipping container",
+    ),
+    "multispectral": (
+        "building", "vehicle", "aircraft", "ship", "road", "bridge", "storage tank",
+    ),
+    "sar": ("ship", "vehicle", "building", "storage tank", "aircraft", "bridge"),
 }
 
 
@@ -584,12 +599,8 @@ def _build_component(name: str, device: str) -> Any:
         return terramind.load(device)
     if name == "dota_obb":
         return dota_obb.load(device)
-    if name == "fair1m_obb":
-        return fair1m_obb.load(device)
     if name == "grounding_dino":
         return grounding_dino.load(device)
-    if name == "remoteclip":
-        return remoteclip_verifier.load(device)
     if name == "yoloe":
         return yoloe.load(device)
     raise ValueError(f"unknown component: {name}")
@@ -605,9 +616,7 @@ def _empty_bundle(device: str) -> dict[str, Any]:
         "prithvi": None,
         "terramind": None,
         "dota_obb": None,
-        "fair1m_obb": None,
         "grounding_dino": None,
-        "remoteclip": None,
         "yoloe": None,
     }
 
@@ -684,7 +693,32 @@ def _ensure_profile(profile: str) -> None:
         and set(PROFILE_COMPONENTS[profile]).issubset(PROFILE_COMPONENTS["all"])
     ):
         return
+    # A resident superset (e.g. the "imagery" union on a hot card, or "all")
+    # already satisfies any per-modality imagery request — serve without a
+    # reload so hot cards never pay swap latency.
+    if (
+        _current_profile in PROFILE_COMPONENTS
+        and _pool
+        and profile in PROFILE_COMPONENTS
+        and set(PROFILE_COMPONENTS[profile]).issubset(PROFILE_COMPONENTS[_current_profile])
+    ):
+        return
     _load_profile(profile)
+
+
+def _profile_for_modality(modality: str) -> str:
+    """Map a /detect request modality to its per-modality imagery profile.
+
+    On dynamic-loading cards this keeps only the requested modality's models
+    resident (RGB detectors vs Prithvi vs Terramind never co-resident). On hot
+    cards the "imagery"/"all" superset short-circuit in `_ensure_profile`
+    serves these without a reload."""
+    m = (modality or "rgb").lower()
+    if m == "multispectral":
+        return "imagery_msi"
+    if m == "sar":
+        return "imagery_sar"
+    return "imagery_rgb"
 
 
 def _next_bundle() -> dict[str, Any]:
@@ -795,8 +829,6 @@ def _system_stats() -> dict[str, Any]:
 def _version_snapshot(bundle: dict[str, Any] | None = None) -> dict[str, Any]:
     versions = dict(sam3_runner.versions())
     versions["dota_obb"] = dota_obb.model_versions((bundle or {}).get("dota_obb"))
-    versions["fair1m_obb"] = fair1m_obb.model_versions((bundle or {}).get("fair1m_obb"))
-    versions["remoteclip"] = remoteclip_verifier.model_versions((bundle or {}).get("remoteclip"))
     return versions
 
 
@@ -830,9 +862,7 @@ def health() -> dict[str, Any]:
             "prithvi": SAM3_LOAD_PRITHVI,
             "terramind": SAM3_LOAD_TERRAMIND,
             "dota_obb": SAM3_LOAD_DOTA_OBB,
-            "fair1m_obb": SAM3_LOAD_FAIR1M_OBB,
             "grounding_dino": SAM3_LOAD_GROUNDING_DINO,
-            "remoteclip": SAM3_LOAD_REMOTECLIP,
             "yoloe": SAM3_LOAD_YOLOE,
         },
         "uptime_s": round(time.time() - BOOT_TS, 1),
@@ -1027,26 +1057,6 @@ async def _detect_pipeline(
     else:
         candidates_by_layer.setdefault("dota_obb", 0)
 
-    # FAIR1M-OBB: fine-grained aerial sub-classes (Boeing 737, A330, Warship,
-    # Dump Truck, ...). Gate fires only when prompts touch FAIR1M vocabulary
-    # not already covered by DOTA-OBB. Operator override via
-    # metadata.force_fair1m_obb=true. See docs/inference/fair1m-obb-specialist.md.
-    force_fair1m = bool(meta.get("force_fair1m_obb", False))
-    if (
-        bundle.get("fair1m_obb")
-        and (force_fair1m or _layer_active("fair1m_obb"))
-        and (not isinstance(prompt_boxes, list))
-        and fair1m_gate.should_run_fair1m(prompts, force=force_fair1m)
-    ):
-        with _track("fair1m_obb"):
-            fair1m_candidates = await run_in_threadpool(
-                fair1m_obb.run, bundle["fair1m_obb"], chip3, fair1m_obb.FAIR1M_OBB_THRESHOLD,
-            )
-        layer_candidates.extend(_tag_candidates("fair1m_obb", fair1m_candidates))
-        candidates_by_layer["fair1m_obb"] = len(fair1m_candidates)
-    else:
-        candidates_by_layer.setdefault("fair1m_obb", 0)
-
     gd_force = bool(meta.get("force_grounding_dino", False))
     gd_explicit = "grounding_dino" in _enabled
     gd_should_run, gd_gated_reason = grounding_dino_gate.should_run_grounding_dino(
@@ -1099,29 +1109,6 @@ async def _detect_pipeline(
             valid_mask=valid_mask,
         )
         det["source_layer"] = source_layer
-        # Only verify SAM3 / Grounding-DINO open-vocab calls — DOTA-OBB's
-        # closed-vocab 18 classes are deliberately not second-guessed (same
-        # logic as decisions/why-grounding-dino-auto-gated.md). Override the
-        # gate via REMOTECLIP_VERIFIER_LAYERS.
-        if (
-            bundle.get("remoteclip")
-            and _layer_active("remoteclip")
-            and source_layer in REMOTECLIP_VERIFIER_LAYERS
-        ):
-            verifier_labels = [
-                str(label),
-                str(det.get("parent_class") or ""),
-                str(det.get("class") or ""),
-            ]
-            remoteclip_result = await run_in_threadpool(
-                remoteclip_verifier.verify,
-                bundle.get("remoteclip"),
-                chip3,
-                bbox_xyxy,
-                verifier_labels,
-            )
-            det["semantic_verifier"] = remoteclip_result
-            det["semantic_margin"] = remoteclip_result.get("semantic_margin")
         if meta.get("geo"):
             det["geo"] = {**meta["geo"], "obb_map_crs": None, "obb_map_geojson": None}
         if SAM3_EMBED_DETECTIONS and _layer_active("dinov3_sat") and bundle.get("dinov3_sat"):
@@ -1249,9 +1236,10 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
         t0 = mark("read_upload", started)
         modality = str(meta.get("modality") or "rgb").lower()
         # Auto-heal: if no profile is loaded (or the wrong one is loaded),
-        # swap to imagery before this request runs. The frontend normally
-        # calls /load on tab switch; this is the safety net.
-        _ensure_profile("imagery")
+        # swap to the modality's imagery profile before this request runs. On
+        # tight cards this loads only the models that modality needs; on hot
+        # cards the resident "imagery"/"all" superset is reused without reload.
+        _ensure_profile(_profile_for_modality(modality))
         bundle = _next_bundle()
         t0 = mark("model_queue", t0)
 
@@ -1311,7 +1299,8 @@ async def embed_endpoint(image: UploadFile = File(...)):
     Returns:
         {"model": str, "dim": 1024, "fp16_b64": str}
     """
-    _ensure_profile("imagery")
+    # Any imagery profile carries dinov3_sat; imagery_rgb is the lightest.
+    _ensure_profile("imagery_rgb")
     bundle = _next_bundle().get("dinov3_sat")
     if bundle is None:
         raise HTTPException(status_code=503, detail="dinov3_sat layer not loaded")
@@ -1403,7 +1392,9 @@ async def detect_raw(request: "Request"):  # type: ignore[name-defined]
         timings["read_upload"] = round((time.perf_counter() - started) * 1000, 3)
         t0 = time.perf_counter()
 
-        _ensure_profile("imagery")
+        # /detect_raw is the RGB fast path (raw uint8 chips); route to the RGB
+        # modality profile. MSI/SAR use the multipart /detect endpoint.
+        _ensure_profile("imagery_rgb")
         bundle = _next_bundle()
         timings["model_queue"] = round((time.perf_counter() - t0) * 1000, 3)
         t0 = time.perf_counter()
@@ -1669,7 +1660,6 @@ def _bundle_components(bundle: dict[str, Any]) -> dict[str, Any]:
         "prithvi_heads": list(prithvi_bundle.get("loaded_heads") or []),
         "terramind": bundle.get("terramind") is not None,
         "dota_obb": _model_loaded(bundle.get("dota_obb")),
-        "fair1m_obb": _model_loaded(bundle.get("fair1m_obb")),
         "grounding_dino": _model_loaded(bundle.get("grounding_dino")),
         "yoloe": bool(yoloe_bundle.get("pf") or yoloe_bundle.get("seg")),
         "yoloe_pf": yoloe_bundle.get("pf") is not None,

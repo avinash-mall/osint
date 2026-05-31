@@ -22,6 +22,8 @@ router = APIRouter()
 class ChangeRequest(BaseModel):
     before_pass_id: int
     after_pass_id: int
+    # "diff" (optical, default) or "sar_logratio" (Sentinel-1 dB log-ratio).
+    method: str = "diff"
 
 
 @router.post("/api/imagery/change")
@@ -35,7 +37,7 @@ def post_imagery_change(body: ChangeRequest):
     if body.before_pass_id == body.after_pass_id:
         raise HTTPException(status_code=400, detail="before/after passes must differ")
     try:
-        result = compute_change(body.before_pass_id, body.after_pass_id)
+        result = compute_change(body.before_pass_id, body.after_pass_id, body.method)
     except Exception as exc:  # rasterio I/O / projection failures
         logger.exception("change_detection failed for %s vs %s", body.before_pass_id, body.after_pass_id)
         raise HTTPException(status_code=503, detail=f"change detection unavailable: {exc}")
@@ -208,3 +210,51 @@ def get_basemap_countries():
         """)
         row = cursor.fetchone()
         return row["geojson"] if row else {"type": "FeatureCollection", "features": []}
+
+
+@router.get("/api/dossier")
+def get_area_dossier(
+    lat: float = Query(..., description="latitude"),
+    lon: float = Query(..., description="longitude"),
+):
+    """Offline right-click area dossier for a map point.
+
+    Resolves the country at (lat, lon) by point-in-polygon over the locally-baked
+    ``ne_countries`` table (name / admin / ISO3 / pop / GDP), and counts Sentinel's
+    own detections nearby. No internet, no Wikipedia/Wikidata — everything comes
+    from data already on the box, so it works air-gapped (Hard rule #8). This is
+    the offline analogue of ShadowBroker's online country dossier.
+    """
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT name, admin, iso_a3, pop_est, gdp_md_est
+            FROM ne_countries
+            WHERE ST_Contains(geom, ST_SetSRID(ST_MakePoint(%s, %s), 4326))
+            LIMIT 1
+            """,
+            (lon, lat),
+        )
+        country = cursor.fetchone()
+
+        # Detections within 25 km of the click — a quick "what have we seen here".
+        cursor.execute(
+            """
+            SELECT count(*) AS n
+            FROM detections
+            WHERE deleted_at IS NULL
+              AND ST_DWithin(
+                    geom::geography,
+                    ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography,
+                    25000)
+            """,
+            (lon, lat),
+        )
+        det = cursor.fetchone()
+
+    return {
+        "point": {"lat": lat, "lon": lon},
+        "country": dict(country) if country else None,
+        "detections_within_25km": int(det["n"]) if det else 0,
+        "source": "ne_countries (offline)",
+    }

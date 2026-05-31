@@ -6,7 +6,8 @@
 
 ## Purpose
 
-Four-tab right rail that appears when a detection is selected on the map.
+Five-tab right rail. Most tabs key off the selected detection; the **Sat** tab
+is detection-independent (overpass planning over any picked point).
 
 ## Tabs
 
@@ -14,6 +15,7 @@ Four-tab right rail that appears when a detection is selected on the map.
 |---|---|
 | **Details** | `ObjectDetailsForm` — threat, affiliation, notes, size estimation, original/canonical labels, provenance link. Identification subsection — see [identification-panel.md](identification-panel.md) — renders between Taxonomy and the cross-nav buttons. |
 | **Analytics** | Buttons for viewshed/LOS/route/change-detection from this detection's location |
+| **Sat** | Satellite overpass planning — an injected `satellitesSlot` node from GaiaMap (keeps this panel decoupled from the satellites service). Offline SGP4, observer pick, ground track. See [map-satellites-panel.md](map-satellites-panel.md). |
 | **Similar** | k-NN list of detections with similar embeddings (`GET /api/detections/{id}/similar`) |
 | **Actions** | Resolve-to-target, candidate-link suggestions, create target package, propose collection task |
 

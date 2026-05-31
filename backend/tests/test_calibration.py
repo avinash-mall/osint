@@ -35,7 +35,6 @@ EXPECTED_DETECTORS = {
     "grounding_dino",
     "yoloe",
     "sar_cfar",
-    "fair1m_obb",
 }
 
 

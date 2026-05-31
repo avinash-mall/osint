@@ -30,6 +30,5 @@ Missing geometry / size estimates → warnings, not exceptions. SAR synthetic-pr
 ## Cross-references
 
 - [worker-legacy-monolith.md](worker-legacy-monolith.md)
-- [inference/remoteclip-verifier.md](../inference/remoteclip-verifier.md)
 - [decisions/why-open-vocabulary.md](../decisions/why-open-vocabulary.md)
 - [decisions/why-evidence-ranked-detections.md](../decisions/why-evidence-ranked-detections.md)

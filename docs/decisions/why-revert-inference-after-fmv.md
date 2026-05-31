@@ -8,13 +8,18 @@
 ## Decision
 
 `process_fmv` loads the `fmv` profile via `_ensure_fmv_profile`, and now reverts the
-service to `imagery` in its `finally` block:
+service to the light `imagery_rgb` profile in its `finally` block:
 
 ```python
 finally:
-    _revert_inference_profile(session, "imagery")  # best-effort
+    _revert_inference_profile(session, "imagery_rgb")  # best-effort
     session.close()
 ```
+
+The default reverts to `imagery_rgb` (not the full `imagery` union) so a tight-VRAM card
+doesn't reload every imagery model — which would OOM. The next MSI/SAR `/detect` auto-heals
+to its own modality profile via `_profile_for_modality`. See
+[why-dynamic-modality-loading-on-tight-vram.md](why-dynamic-modality-loading-on-tight-vram.md).
 
 `_revert_inference_profile` mirrors `_ensure_fmv_profile`'s 409-tolerant retry but is
 best-effort and bounded (~30 s) and never raises: a 409 means another FMV session is

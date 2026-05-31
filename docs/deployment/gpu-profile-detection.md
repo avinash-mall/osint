@@ -23,6 +23,30 @@ Read `nvidia-smi`, resolve the matching CUDA / PyTorch / TorchVision / arch-list
 - `SAM3_ENABLE_TF32` (sm_80+ only)
 - `SAM3_CUDNN_BENCHMARK` (off on Turing; cu126 re-searches kernels)
 
+## Loading policy: hot vs dynamic (VRAM-gated)
+
+`runtime_env(vram_mib=…)` emits a **loading policy** based on measured total VRAM, gated at
+`sam3_hot_load_min_vram_mib` (default 24 GiB). This prevents the failure where a 16 GiB card
+loaded every model at once and OOMed on every SAM3 forward — see
+[decisions/why-dynamic-modality-loading-on-tight-vram.md](../decisions/why-dynamic-modality-loading-on-tight-vram.md).
+
+- **`SAM3_LOAD_POLICY=hot`** (VRAM ≥ threshold): honours the profile's own preload fields; the
+  full `imagery` model union stays resident, no swap latency. `SAM3_RESTING_PROFILE=imagery`.
+- **`SAM3_LOAD_POLICY=dynamic`** (VRAM < threshold): one **per-modality** profile resident at a
+  time. `SAM3_RESTING_PROFILE=imagery_rgb`; the inference service swaps to `imagery_msi`,
+  `imagery_sar`, or `fmv` on the first request of that modality (profiles in
+  `inference-sam3/main.py` `PROFILE_COMPONENTS`, routed by `_profile_for_modality`). No preload
+  (`SAM3_PRELOAD_MODELS=0`). All four modalities stay available — nothing is permanently lost.
+
+On dynamic cards the proven dead-weight detectors are also gated off (≈0 net-new boxes, real
+VRAM+latency): `SAM3_LOAD_GROUNDING_DINO=0`, `SAM3_LOAD_FAIR1M_OBB=0`, `SAM3_LOAD_REMOTECLIP=0`.
+`SAM3_LOAD_DINOV3_SAT/PRITHVI/TERRAMIND` stay enabled — the per-modality split keeps
+Prithvi/Terramind out of the RGB working set instead of dropping them.
+
+New flags written to `.env`: `SAM3_LOAD_POLICY`, `SAM3_RESTING_PROFILE`, `SAM3_LOAD_FAIR1M_OBB`,
+`SAM3_LOAD_REMOTECLIP`. The docker-compose `inference-sam3` `environment:` block must pass each
+through for it to reach the container.
+
 ## Preflight failure
 
 Preflight fails before build when a profile requires a newer host driver. E.g. Blackwell profile asks for driver 555.x+; on 535.x, `configure_host.py` reports the missing minimum and exits non-zero.

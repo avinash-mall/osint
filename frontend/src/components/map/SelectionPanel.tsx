@@ -27,6 +27,7 @@ import {
   FileDown,
   GitBranch,
   Navigation,
+  Satellite,
   Send,
   Shield,
   Sparkles,
@@ -63,7 +64,7 @@ import type { ActiveLayerMap } from './LayerPanel';
 
 const API_URL = (import.meta as any).env?.VITE_API_URL || '';
 
-export type SelectionRightTab = 'details' | 'analytics' | 'similar' | 'tracks';
+export type SelectionRightTab = 'details' | 'analytics' | 'satellites' | 'similar' | 'tracks';
 export type SelectionEditTab = 'edit' | 'review';
 
 export type SelectionPanelActions = {
@@ -118,6 +119,10 @@ type Props = {
   setActiveLayers: React.Dispatch<React.SetStateAction<ActiveLayerMap>>;
   analyticsResults: Record<string, AnalyticsResponse | null | undefined>;
   setAnalyticsResults: (updater: any) => void;
+
+  /* satellites tab — rendered node supplied by GaiaMap so this panel stays
+     decoupled from the satellites service. */
+  satellitesSlot?: React.ReactNode;
 
   /* tracks tab */
   data: { tracks: any[] };
@@ -231,6 +236,7 @@ export default function SelectionPanel(props: Props) {
 
   const rightHeader =
     rightTab === 'analytics' ? { Icon: Sparkles,    label: 'Analytics',     tag: 'ANALYTICS' } :
+    rightTab === 'satellites'? { Icon: Satellite,   label: 'Satellites',    tag: 'OVERPASS'  } :
     rightTab === 'similar'   ? { Icon: Crosshair,   label: 'Similar',       tag: 'NEAREST'   } :
     rightTab === 'tracks'    ? { Icon: Navigation,  label: 'Active Tracks', tag: 'TRACKS'    } :
                                { Icon: Crosshair,   label: selectedDetection ? `DET-${selectedDetection.properties?.id}` : 'Selection', tag: 'DETAIL' };
@@ -281,6 +287,7 @@ export default function SelectionPanel(props: Props) {
         {([
           ['details', 'Details'],
           ['analytics', 'Analytics'],
+          ['satellites', 'Sat'],
           ['similar', 'Similar'],
           ['tracks', 'Active Tracks'],
         ] as const).map(([k, label]) => {
@@ -374,7 +381,7 @@ export default function SelectionPanel(props: Props) {
                         <span
                           data-testid="label-quality-chip"
                           className="sentinel-tag ok uppercase"
-                          title="Confirmed by RemoteCLIP verifier (semantic_margin meets the configured floor)."
+                          title="Confirmed by a label verifier (semantic_margin meets the configured floor)."
                         >
                           verified
                         </span>

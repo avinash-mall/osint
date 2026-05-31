@@ -90,6 +90,7 @@ Link Graph redesign added the bulk of these — see [architecture/link-graph-red
 |---|---|---|
 | `POST` | `/api/analytics/change` · `viewshed` · `los` · `routes` · `pol` | [analytics-router.md](../backend-routers/analytics-router.md) |
 | `GET` | `/api/analytics/capabilities` · `/jobs` | [analytics-router.md](../backend-routers/analytics-router.md) |
+| `GET` `POST` | `/api/satellites/tle` · `/passes` · `/ground-track/{id}` | [satellites-router.md](../backend-routers/satellites-router.md) — offline SGP4 overpass |
 | `GET` `POST` | `/api/models` · `/datasets` · `/{id}/promote` · `/api/training/jobs` | [models-training-router.md](../backend-routers/models-training-router.md) — admin session required |
 | `GET` | `/api/feeds` · `/api/observations` · `/api/timeline/events` | [backend/main.py](../../backend/main.py) |
 | `POST` `PUT` | `/api/feeds/connect` · `/{id}/status` · `/events` | [backend/main.py](../../backend/main.py) |

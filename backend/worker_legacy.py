@@ -2912,13 +2912,16 @@ def _ensure_fmv_profile(session: requests.Session, clip_id: int, max_wait_s: flo
     return health
 
 
-def _revert_inference_profile(session: requests.Session, profile: str = "imagery",
+def _revert_inference_profile(session: requests.Session, profile: str = "imagery_rgb",
                               max_wait_s: float = 30.0) -> None:
     """Best-effort: switch the inference service back to ``profile`` after FMV work.
 
     FMV processing leaves the single GPU pool on the ``fmv`` profile, which has no
     sam3_image, so the COP's imagery detection degrades until something reloads it.
-    Reverting here returns the resting state to ``imagery``. Best-effort by design:
+    Reverting here returns the resting state to the (lightest) imagery profile —
+    ``imagery_rgb`` so tight-VRAM cards don't reload the full imagery union (which
+    would OOM); the next MSI/SAR /detect auto-heals to its own modality profile.
+    Best-effort by design:
     a 409 means another FMV session is still in flight and correctly keeps ``fmv``,
     so we just give up quietly rather than fight it. Never raises — a failed revert
     must not fail the FMV task itself."""
@@ -4781,6 +4784,21 @@ def process_satellite_imagery(
             on_chip_store=_store_chip,
         )
         inference_summary = inference_result["summary"]
+        # Guard: if EVERY attempted chip failed inference (e.g. the inference
+        # service OOMs on every SAM3 forward because the GPU profile loaded too
+        # many models), the pass has zero detections not because the scene is
+        # empty but because inference never ran. Fail loudly instead of
+        # finalizing `ready` with an empty result — the task's except handler
+        # records the error on the upload job. `processed_chips` excludes
+        # skipped (nodata) chips, so >0 means inference was genuinely attempted.
+        _processed = int(inference_summary.get("processed_chips") or 0)
+        _failed = int(inference_summary.get("failed_chips") or 0)
+        if _processed > 0 and _failed == _processed:
+            raise RuntimeError(
+                f"All {_processed} inference chips failed for pass {pass_id} "
+                "(see inference-sam3 logs; commonly GPU OOM from an over-committed "
+                "model set). Marking upload failed rather than ready-with-zero-detections."
+            )
         # Phase 5.20b: for SAR rasters, run the local CFAR detector after
         # the SAM3 / TerraMind chip pass. Always-on for SAR — operators who
         # want CFAR off explicitly can set ``SAR_CFAR_ENABLED=0``. Routes

@@ -59,7 +59,7 @@ Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 | `GLOBAL_CONFIDENCE_FLOOR` | `0.35` | Single floor across all classes |
 | `HIGH_CONFIDENCE_THRESHOLD` | `0.65` | When to tag `high_confidence` |
 | `PER_CLASS_CONFIDENCE_OVERRIDES` | `{}` | JSON map of class-specific floors. Merges on top of `DEFAULT_PER_CLASS_THRESHOLDS` (T1.5) — see [why-transportation-floor-raised.md](../decisions/why-transportation-floor-raised.md) |
-| `LABEL_VERIFIER_MARGIN_FLOOR` | `0.10` | Minimum `semantic_margin` for a detection to be promoted to `label_quality="verified"` (T1.2). Couples T1.2 label-quality policy ↔ T1.6 RemoteCLIP verifier ↔ T2.8 fusion. RemoteCLIP's own `passed` flag uses `REMOTECLIP_MARGIN_THRESHOLD=0.05`; this backend-side floor is 2× stricter. See [why-generic-labels-when-unverified.md](../decisions/why-generic-labels-when-unverified.md) |
+| `LABEL_VERIFIER_MARGIN_FLOOR` | `0.10` | Minimum `semantic_margin` for a detection to be promoted to `label_quality="verified"`. Generic verifier plumbing: no verifier currently emits `semantic_margin` (the RemoteCLIP verifier was removed), so labels stay `inferred`/`generic` until a future verifier feeds it. See [why-generic-labels-when-unverified.md](../decisions/why-generic-labels-when-unverified.md) |
 | `REFERENCE_ID_AUTO_THRESHOLD` | `0.85` | Reference Embedding DB auto-identify cosine floor; top-1 candidate above this threshold auto-writes `platform_*` to `object_details`. Read at worker process start — `docker compose restart worker` to apply changes. See [decisions/why-auto-write-with-threshold.md](../decisions/why-auto-write-with-threshold.md). |
 
 ## Worker / Imagery
@@ -86,6 +86,8 @@ Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 | `SAM3_IMAGE_MODEL_ID` | `facebook/sam3` | Image checkpoint label |
 | `SAM3_USE_MULTIPLEX` | `1` | SAM 3.1 multiplex video predictor |
 | `SAM3_PRELOAD_MODELS` / `SAM3_PRELOAD_PROFILE` | `0` / empty | Preload at startup |
+| `SAM3_LOAD_POLICY` | `hot` (dynamic on <24 GiB) | VRAM-gated loading policy written by `configure_host.py`. `dynamic` loads one per-modality profile at a time + drops dead-weight detectors. See [why-dynamic-modality-loading-on-tight-vram.md](../decisions/why-dynamic-modality-loading-on-tight-vram.md) |
+| `SAM3_RESTING_PROFILE` | `imagery` (`imagery_rgb` on dynamic) | Profile the lifespan loads at startup for the healthcheck |
 | `SAM3_COMPILE_IMAGE` / `SAM3_COMPILE_VIDEO` | `0` | Enable `torch.compile` |
 | `SAM3_WARM_UP_VIDEO` | `1` | One-frame priming after video load |
 | `SAM3_TEXT_THRESHOLD` | `0.50` | Min score for text-prompt detections |
@@ -111,18 +113,9 @@ Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 | `SAM3_LOAD_PRITHVI` | `0` | Prithvi flood/burn |
 | `SAM3_LOAD_TERRAMIND` | `1` | TerraMind S1→S2 |
 | `SAM3_LOAD_DOTA_OBB` | `1` | DOTA-OBB specialist |
-| `SAM3_LOAD_FAIR1M_OBB` | `1` | FAIR1M-2.0 fine-grained OBB specialist (37 aircraft / naval / vehicle sub-types). Plumbing default-on; runner returns a no-op bundle until operator bakes weights — see [fair1m-bake.md](../operations/fair1m-bake.md) |
 | `SAM3_LOAD_GROUNDING_DINO` | `0` | Grounding-DINO (auto-gated + explicitly enabled per request) |
-| `SAM3_LOAD_REMOTECLIP` | `1` | RemoteCLIP verifier; scores existing candidates only (never proposes). Default-on as of T1.6 — see [why-remoteclip-default-on.md](../decisions/why-remoteclip-default-on.md) |
-| `REMOTECLIP_VERIFIER_LAYERS` | `sam3,grounding_dino` | Source layers the verifier is allowed to second-guess; DOTA-OBB excluded to preserve its closed-vocab precision |
 | `SAM3_LOAD_YOLOE` | `1` | YOLOE-26x FMV tracker |
 | `DOTA_OBB_MODEL_ID` | `yolo26m-obb.pt` | Default OBB checkpoint; `yolo11n-obb.pt` for low-VRAM fallback |
-| `FAIR1M_OBB_MODEL_ID` | `yolo11m-obb-fair1m.pt` | FAIR1M-2.0 OBB checkpoint filename (operator-baked) |
-| `FAIR1M_OBB_THRESHOLD` / `FAIR1M_OBB_IOU` / `FAIR1M_OBB_IMGSZ` | `0.30` / `0.50` / `1024` | Per-prediction confidence floor / NMS IoU / inference image size |
-| `FAIR1M_OBB_WEIGHTS_DIR` | `/data/inference-weights/fair1m` | Mount point where the assets-image rsync deposits the operator-baked `.pt` |
-| `REMOTECLIP_MODEL_ID` / `REMOTECLIP_ARCH` | `chendelong/RemoteCLIP` / `ViT-B-32` | OpenCLIP-compatible verifier weights + architecture |
-| `REMOTECLIP_MARGIN_THRESHOLD` | `0.05` | Semantic margin required for verifier pass |
-| `REMOTECLIP_LOCAL_FILES_ONLY` | `1` | Prevent runtime downloads; verifier loads only baked/cache weights |
 | `EVIDENCE_MAX_ASPECT_RATIO` | `35` | Backend physical validator aspect-ratio ceiling |
 | `EVIDENCE_MIN_MASK_COMPACTNESS` / `EVIDENCE_MIN_VALID_FRACTION` | `0.015` / `0.20` | Backend evidence validator floors |
 | `FMV_DEFAULT_PROMPTS` | `vehicle,person,building` | Backend worker PCS fallback when an FMV upload omits prompts |

@@ -198,6 +198,7 @@ from routers import operational_entities as _operational_entities_router
 from routers import ontology as _ontology_router
 from routers import reference_platforms as _reference_platforms_router
 from routers import reports as _reports_router
+from routers import satellites as _satellites_router
 from routers import system as _system_router
 from routers import ws as _ws_router
 app.include_router(_admin_thresholds_router.router)
@@ -217,6 +218,7 @@ app.include_router(_operational_entities_router.router)
 app.include_router(_ontology_router.router)
 app.include_router(_reference_platforms_router.router)
 app.include_router(_reports_router.router)
+app.include_router(_satellites_router.router)
 app.include_router(_system_router.router)
 app.include_router(_ws_router.router)
 

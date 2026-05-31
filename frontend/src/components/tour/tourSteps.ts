@@ -185,6 +185,13 @@ export const TOUR_STEPS: TourStep[] = [
     body: 'Collapses every floating chrome panel to a 24-pixel hover lip, giving you a near-full-bleed map (F on the keyboard). Use during briefings or when studying imagery without distractions.',
     placement: 'left',
   },
+  {
+    id: 'visual-mode',
+    selector: '[data-tour="visual-mode"]',
+    title: 'Tactical visual mode',
+    body: 'Cycles a cosmetic colour filter over the map: DEFAULT → FLIR (thermal) → NVG (night-vision) → CRT (retro phosphor). Purely a display aid for low-light briefings or screenshots; it changes no data.',
+    placement: 'left',
+  },
 
   // ─────────────────────────────────────────────────────────────────────
   // Time-machine deep
@@ -356,6 +363,13 @@ export const TOUR_STEPS: TourStep[] = [
     selector: '[data-tour="analytics-capabilities"]',
     title: 'DEM · Routing graph status',
     body: 'Tells you whether the backend has a DEM and an OSMnx routing graph loaded. If either says NONE, the affected tools fall back to canned-shape fixtures — useful sanity check when results look suspicious.',
+    placement: 'left',
+  },
+  {
+    id: 'tab-satellites',
+    selector: '[data-tour="tab-satellites"]',
+    title: 'Satellites tab',
+    body: 'Plan collection windows offline: import TLEs (air-gap), pick an observer on the map, and predict upcoming overpasses with AOS/LOS and max elevation. Draw a satellite ground track on the map. Reach for it when scheduling the next pass over an AOI.',
     placement: 'left',
   },
   {

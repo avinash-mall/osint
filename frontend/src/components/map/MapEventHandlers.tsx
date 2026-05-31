@@ -74,6 +74,22 @@ export function MapClickPicker({
   return null;
 }
 
+/** Right-click (contextmenu) handler — fires ``onContext(lat, lon)`` for the
+ *  offline area dossier. Leaflet's default browser menu is suppressed by the
+ *  map container's own contextmenu handling. */
+export function MapContextHandler({
+  onContext,
+}: {
+  onContext: (lat: number, lon: number) => void;
+}) {
+  useMapEvents({
+    contextmenu(e) {
+      onContext(e.latlng.lat, e.latlng.lng);
+    },
+  });
+  return null;
+}
+
 export function MapBoundsUpdater({ onBoundsChange }: { onBoundsChange: (bounds: string) => void }) {
   const map = useMap();
   useEffect(() => {

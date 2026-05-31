@@ -18,6 +18,7 @@ import {
   EyeOff,
   HelpCircle,
   Minus,
+  Palette,
   Plus,
   Target,
 } from 'lucide-react';
@@ -69,11 +70,13 @@ import {
   DrawRectHandler,
   MapBoundsUpdater,
   MapClickPicker,
+  MapContextHandler,
   MapCursorTracker,
   MapFitToDetections,
   MapFitToImagery,
   MapZoomTracker,
 } from './MapEventHandlers';
+import { fetchDossier, type Dossier } from '../../services/dossier';
 import RangeRingsDialog from './RangeRingsDialog';
 import type { ActiveLayerMap, BaseLayer } from './LayerPanel';
 
@@ -89,6 +92,8 @@ export const BASEMAP_OVERLAY_MAX_ZOOM = 14;
 export type MapHandle = {
   /** Imperatively pan the map to a detection feature's bounds. */
   panToDetection: (feature: any) => void;
+  /** Fly to a lat/lon at an optional zoom (default 13). Used by AI map-control directives. */
+  flyTo: (lat: number, lon: number, zoom?: number) => void;
   /** Underlying Leaflet map (for ad-hoc consumers). */
   getMap: () => L.Map | null;
 };
@@ -126,6 +131,11 @@ export type Props = {
   analyticsResults: Record<string, AnalyticsResponse | null | undefined>;
   pendingPick: AnalyticsPick | null;
   setLastMapClick: (c: any) => void;
+
+  /* satellite overpass (A1) — observer pick + ground-track polyline */
+  satPickActive: boolean;
+  onSatPick: (lat: number, lon: number) => void;
+  satGroundTrack: [number, number][] | null;
 
   /* basemap countries layer */
   basemapGeoJSON: any;
@@ -185,6 +195,9 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
     analyticsResults,
     pendingPick,
     setLastMapClick,
+    satPickActive,
+    onSatPick,
+    satGroundTrack,
     basemapGeoJSON,
     setMapBounds,
     setMapZoom,
@@ -233,6 +246,27 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
     return () => window.removeEventListener('keydown', handler);
   }, []);
 
+  // B2 — tactical visual modes. A pure CSS filter applied to the Leaflet map
+  // pane, cycled by the top-right palette button: DEFAULT → FLIR (thermal) →
+  // NVG (night-vision green) → CRT (retro phosphor). Cosmetic only; no data
+  // changes, no network. The filter CSS lives in index.css under `.map-vmode-*`.
+  const VISUAL_MODES = ['default', 'flir', 'nvg', 'crt'] as const;
+  type VisualMode = (typeof VISUAL_MODES)[number];
+  const [visualMode, setVisualMode] = useState<VisualMode>('default');
+  const cycleVisualMode = () =>
+    setVisualMode((m) => VISUAL_MODES[(VISUAL_MODES.indexOf(m) + 1) % VISUAL_MODES.length]);
+
+  // Tier C — offline right-click area dossier. A contextmenu on the map fetches
+  // /api/dossier (country from baked ne_countries + nearby detection count) and
+  // shows a Leaflet popup at the click point. No internet.
+  const [dossier, setDossier] = useState<{ lat: number; lon: number; data: Dossier | null; loading: boolean } | null>(null);
+  const openDossier = (lat: number, lon: number) => {
+    setDossier({ lat, lon, data: null, loading: true });
+    fetchDossier(lat, lon)
+      .then((data) => setDossier({ lat, lon, data, loading: false }))
+      .catch(() => setDossier({ lat, lon, data: null, loading: false }));
+  };
+
   // F14 — wire the floating zoom controls to the live Leaflet instance.
   const zoomIn = () => mapInstance.current?.zoomIn();
   const zoomOut = () => mapInstance.current?.zoomOut();
@@ -240,6 +274,8 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
 
   useImperativeHandle(ref, () => ({
     getMap: () => mapInstance.current,
+    flyTo: (lat: number, lon: number, zoom?: number) =>
+      mapInstance.current?.flyTo([lat, lon], zoom ?? 13, { animate: true }),
     panToDetection: (feature: any) => {
       if (!mapInstance.current || !feature?.geometry) return;
       try {
@@ -259,7 +295,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
       className={`relative flex min-h-0 min-w-0 flex-col bg-sentinel-bg${focusMode ? ' map-focus-on' : ''}`}
       style={{ position: 'absolute', inset: 0 }}
     >
-      <div className="relative min-h-0 flex-1">
+      <div className={`relative min-h-0 flex-1 map-vmode-${visualMode}`}>
         <MapContainer
           center={[25.0, 55.0]}
           zoom={6}
@@ -276,6 +312,10 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
             pickFor={pendingPick}
             onPicked={(lat, lon, pickFor) => setLastMapClick({ lat, lon, pickFor })}
           />
+          <AnalyticsPickHandler<string>
+            pickFor={satPickActive ? 'satellites.observer' : null}
+            onPicked={(lat, lon) => onSatPick(lat, lon)}
+          />
           <DrawRectHandler
             enabled={drawMode}
             onFinish={(bounds) => {
@@ -290,6 +330,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
               setRangeRingMode(false);
             }}
           />
+          <MapContextHandler onContext={openDossier} />
           <MapFitToImagery imagery={selectedImageryData} />
           <MapFitToDetections geojson={filteredDetectionsGeoJSON} filterKey={detectionClassFilter} />
 
@@ -823,6 +864,54 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
               }}
             />
           )}
+
+          {/* Satellite sub-satellite ground track (A1). Stored as [lon, lat];
+              Leaflet wants [lat, lon]. Amber dashed polyline. */}
+          {satGroundTrack && satGroundTrack.length > 1 && (
+            <Polyline
+              key={`sat-track-${satGroundTrack.length}-${satGroundTrack[0][0]}`}
+              positions={satGroundTrack.map(([lon, lat]) => [lat, lon] as [number, number])}
+              pathOptions={{ color: '#ffb020', weight: 2, opacity: 0.85, dashArray: '6, 5' }}
+            />
+          )}
+
+          {/* Tier C — offline area dossier popup at the right-clicked point. */}
+          {dossier && (
+            <Popup
+              position={[dossier.lat, dossier.lon]}
+              eventHandlers={{ remove: () => setDossier(null) }}
+              className="sentinel-popup"
+            >
+              <div className="border border-sentinel-line bg-sentinel-panel p-2 text-slate-200" style={{ minWidth: 180 }}>
+                <div className="mb-2 border-b border-sentinel-line pb-1 text-xs font-bold uppercase tracking-wider">
+                  Area dossier
+                </div>
+                {dossier.loading ? (
+                  <div className="font-mono text-[11px] text-sentinel-muted">Loading…</div>
+                ) : dossier.data ? (
+                  <div className="space-y-1 font-mono text-[11px]">
+                    <div>
+                      <span className="text-sentinel-muted">COUNTRY </span>
+                      <span className="text-slate-100">{dossier.data.country?.name ?? '— (international waters)'}</span>
+                    </div>
+                    {dossier.data.country?.iso_a3 && (
+                      <div><span className="text-sentinel-muted">ISO3 </span>{dossier.data.country.iso_a3}</div>
+                    )}
+                    {dossier.data.country?.pop_est != null && (
+                      <div><span className="text-sentinel-muted">POP </span>{dossier.data.country.pop_est.toLocaleString()}</div>
+                    )}
+                    {dossier.data.country?.gdp_md_est != null && (
+                      <div><span className="text-sentinel-muted">GDP </span>${dossier.data.country.gdp_md_est.toLocaleString()}M</div>
+                    )}
+                    <div><span className="text-sentinel-muted">DETS ≤25km </span>{dossier.data.detections_within_25km}</div>
+                    <div className="text-sentinel-muted">{dossier.lat.toFixed(4)}, {dossier.lon.toFixed(4)}</div>
+                  </div>
+                ) : (
+                  <div className="font-mono text-[11px] text-sentinel-crit">Dossier unavailable</div>
+                )}
+              </div>
+            </Popup>
+          )}
         </MapContainer>
 
         {/* Floating overlays drawn on top of the map */}
@@ -899,11 +988,22 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
               type="button" onClick={() => setFocusMode((f) => !f)}
               data-tour="focus-mode"
               title="Focus map (F)" aria-label="Toggle focus mode" aria-pressed={focusMode}
-              className={`pointer-events-auto grid h-8 w-8 place-items-center ${
+              className={`pointer-events-auto grid h-8 w-8 place-items-center border-b border-sentinel-line ${
                 focusMode ? 'text-sentinel-accent' : 'text-sentinel-muted hover:text-white'
               }`}
             >
               {focusMode ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+            </button>
+            <button
+              type="button" onClick={cycleVisualMode}
+              data-tour="visual-mode"
+              title={`Visual mode: ${visualMode.toUpperCase()} (click to cycle DEFAULT/FLIR/NVG/CRT)`}
+              aria-label="Cycle tactical visual mode"
+              className={`pointer-events-auto grid h-8 w-8 place-items-center ${
+                visualMode !== 'default' ? 'text-sentinel-accent' : 'text-sentinel-muted hover:text-white'
+              }`}
+            >
+              <Palette className="h-4 w-4" />
             </button>
           </div>
 

@@ -100,7 +100,7 @@ and only those rows get the specific defence label.
 - [backend/detection-policy.md](../backend/detection-policy.md)
 - [decisions/why-deconflicted-detection-prompts.md](why-deconflicted-detection-prompts.md) — the prompt-level half of the fix
 - [decisions/why-open-vocabulary.md](why-open-vocabulary.md)
-- [inference/remoteclip-verifier.md](../inference/remoteclip-verifier.md) — the verifier that lifts `generic → verified`
+- [decisions/removed-fair1m-and-remoteclip.md](removed-fair1m-and-remoteclip.md) — the RemoteCLIP verifier that lifted `generic → verified` was removed
 - [inference/dota-obb-specialist.md](../inference/dota-obb-specialist.md) — the 18 generic classes
 - [backend/worker-legacy-monolith.md](../backend/worker-legacy-monolith.md)
 - [frontend/map-selection-panel.md](../frontend/map-selection-panel.md)

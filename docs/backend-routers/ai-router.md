@@ -6,7 +6,9 @@
 
 ## Purpose
 
-Routes that touch an LLM (Ava). All return a graceful "LLM unavailable" error when `OPENAI_API_BASE` is unset — the rest of the app works without it.
+Routes that touch an LLM (Ava). All return a graceful "LLM unavailable" error when `OPENAI_API_BASE` is unset — the rest of the app works without it. Every surface is **advisory**: it returns `policy: "human_approval_required"` / `"read_only"` or writes to a review queue — never an auto-applied mutation.
+
+`brief-area` (B1) is a **read-only** AOI situational digest (detections within a radius via `ST_DWithin` + recent timeline events, optionally LLM-narrated). It returns `display_actions` (e.g. `fly_to` the AOI centre) that the map UI runs via the `sentinel:map-control` CustomEvent — an approval-safe, in-app analogue of an agent display queue (no writes, no new mutation surface). See [decisions/why-readonly-ai-brief-and-map-control.md](../decisions/why-readonly-ai-brief-and-map-control.md).
 
 ## Endpoints
 
@@ -15,6 +17,7 @@ Routes that touch an LLM (Ava). All return a graceful "LLM unavailable" error wh
 | `POST` | `/api/ai/analyze` | [ai.py#L27](../../backend/routers/ai.py#L27) | `AIAnalysisRequest` — free-text analyst question over selected detections/area |
 | `POST` | `/api/ai/extract` | [ai.py#L54](../../backend/routers/ai.py#L54) | LLM extracts structured entities from raw text |
 | `POST` | `/api/ai/link` | [ai.py#L127](../../backend/routers/ai.py#L127) | LLM-ranked candidate-target link suggestions for a detection |
+| `POST` | `/api/ai/brief-area` | [ai.py#L319](../../backend/routers/ai.py#L319) | `BriefAreaRequest` — **read-only** AOI digest + `display_actions`; pure helpers `_summarize_detections` / `_build_brief_prompt` |
 | `POST` | `/api/ai/propose-actions` | [ai.py#L195](../../backend/routers/ai.py#L195) | `AIActionProposalRequest` — LLM suggests next-step analyst actions |
 | `GET` | `/api/actions/proposals` | [ai.py#L222](../../backend/routers/ai.py#L222) | List proposal queue |
 | `POST` | `/api/actions/proposals/{id}/approve` | [ai.py#L243](../../backend/routers/ai.py#L243) | Operator approves a proposal |
