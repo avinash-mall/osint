@@ -1,8 +1,8 @@
 # `backend/worker_legacy.py` — Monolithic Celery Tasks
 
 **Path:** [backend/worker_legacy.py](../../backend/worker_legacy.py)
-**Lines:** ~5477 (largest file in the repo)
-**Depends on:** Most of the rest of `backend/` plus `celery`, `requests`, `numpy`, `rasterio`, `cv2`
+**Lines:** ~5565 (largest file in the repo)
+**Depends on:** Most of the rest of `backend/` plus `celery`, `requests`, `numpy`, `rasterio`, `cv2`, `ipaddress`, `socket`, env `ALLOW_REMOTE_IMAGERY_URLS`, `REMOTE_IMAGERY_ALLOWED_HOSTS`, `REMOTE_IMAGERY_MAX_BYTES`
 
 ## Purpose
 
@@ -51,6 +51,8 @@ See [decisions/why-worker-legacy-monolith-kept.md](../decisions/why-worker-legac
 
 - `chip_to_uint8_rgb` — multispectral chip → 1008×1008 uint8 RGB SAM3 wants.
 - `chip_plan(...)` — slice a COG into chip windows with overlap; used by imagery pipeline and [backend/tests/test_chip_emitter.py](../../backend/tests/test_chip_emitter.py).
+- [`_remote_imagery_allowed`](../../backend/worker_legacy.py#L502-L528) — validates remote imagery hosts before worker-side HTTP(S) fetch.
+- [`resolve_input_path`](../../backend/worker_legacy.py#L531-L569) — resolves staged local paths and gated remote URLs into an input path.
 - SAM3 HTTP client constants (`INFERENCE_SAM3_URL`, timeouts).
 - NDJSON consumer for `/detect_video` (parses streaming response, yields per-frame records).
 - [`_calibration_tag_for_detection`](../../backend/worker_legacy.py#L662-L664) — chooses `source_layer` for detector-specific calibration.
@@ -66,12 +68,15 @@ Runs DB queries at **import time** (`DETECTION_POLICY = active_detection_policy(
 
 Imagery tasks emit per-pass summaries with `candidates_by_layer`, `suppressed_by_nms`, `suppressed_by_policy` from inference debug counts. Imagery pipeline calibrates raw confidence by `source_layer`, applies [detection-policy.md](detection-policy.md), georeferences OBBs, deduplicates across chips, applies [detection-evidence.md](detection-evidence.md), persists survivors to PostGIS. Still-image YOLOE was removed; imagery stays on the SAM3 sensor pipeline plus gated specialists.
 
+`process_satellite_imagery(image_url, ...)` accepts staged local paths by default. HTTP(S) `image_url` inputs are rejected unless remote ingestion is explicitly enabled and the host passes allowlist/IP checks.
+
 FMV tasks consume `/detect_video` NDJSON. SAM3 + YOLOE entries preserve `source_layer` in row metadata → downstream review distinguishes tracker families. `_insert_detection_rows` writes rows **raw** — window-seam + cross-prompt duplicates included; identity reconciled afterwards by `worker.consolidate_fmv` ([fmv-track-consolidation.md](fmv-track-consolidation.md)), which `process_fmv` dispatches once all windows finish. The earlier per-`(frame, class)` `overlap_index` dedup was removed — see [decisions/why-fmv-track-consolidation.md](../decisions/why-fmv-track-consolidation.md).
 
 ## Failure modes
 
 - **FMV leaves the GPU on `fmv`, then reverts.** `process_fmv` loads the `fmv` profile (`_ensure_fmv_profile`) and, in its `finally`, calls `_revert_inference_profile(session, "imagery_rgb")` — best-effort, 409-tolerant — so the COP's imagery detection isn't left degraded after a clip is processed (reverts to the light RGB profile, not the full union, so tight-VRAM cards don't OOM). A 409 (another FMV session live) correctly keeps `fmv`. See [decisions/why-revert-inference-after-fmv.md](../decisions/why-revert-inference-after-fmv.md).
 - `/detect` 4xx/5xx per chip → increments failed chip counts; worker continues other chips. **But if *every* attempted chip fails** (`failed_chips == processed_chips > 0`, e.g. inference OOMs on every forward), `process_satellite_imagery` raises → the upload finishes `status='failed'` (with the error on the job) instead of finalizing `ready` with zero detections. See [decisions/why-dynamic-modality-loading-on-tight-vram.md](../decisions/why-dynamic-modality-loading-on-tight-vram.md).
+- Remote HTTP(S) imagery URL while `ALLOW_REMOTE_IMAGERY_URLS=0`, not allowlisted, resolving to private/link-local/multicast/reserved IPs, or exceeding `REMOTE_IMAGERY_MAX_BYTES` → task fails before chip processing and removes partial remote downloads.
 - Detections below the active policy floor → counted in `suppressed_by_policy`, not persisted.
 - Evidence ranking never drops detections; weak rows persisted as `candidate`/`discovery` metadata.
 - Missing FMV prompts no longer launch a single `"object"` session; precision fallback launches the bounded `FMV_DEFAULT_PROMPTS` list.
@@ -94,3 +99,4 @@ Everything here is re-exported by [backend/worker/__init__.py](../../backend/wor
 - [decisions/why-generic-labels-when-unverified.md](../decisions/why-generic-labels-when-unverified.md)
 - [operations/celery-queues-and-tasks.md](../operations/celery-queues-and-tasks.md)
 - [conventions/adding-a-new-celery-task.md](../conventions/adding-a-new-celery-task.md)
+- [decisions/why-security-hardening-2026-05-31.md](../decisions/why-security-hardening-2026-05-31.md)

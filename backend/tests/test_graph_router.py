@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 import types
 from unittest.mock import MagicMock
@@ -70,7 +71,14 @@ def _client(monkeypatch, **kwargs):
     router = _load_router().router
     app = FastAPI()
     app.include_router(router)
-    return TestClient(app)
+    client = TestClient(app)
+    os.environ.setdefault("SESSION_SECRET", "test-session-secret-please-replace-1234567890abcdef")
+    from auth import SessionUser, create_session_cookie
+    client.cookies.set(
+        "sentinel_session",
+        create_session_cookie(SessionUser(username="alice", role="analyst")),
+    )
+    return client
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +364,6 @@ def test_contradict_writes_edge_and_returns_payload(monkeypatch):
             "actor_id": "elem-target-1",
             "detection_postgis_id": 42,
             "reason": "wrong class",
-            "analyst": "alice",
         },
     )
     assert resp.status_code == 200
@@ -370,7 +377,7 @@ def test_promote_returns_404_when_postgis_row_missing(monkeypatch):
     postgis_runs = {
         "execute": [None],
         "fetchall": [],
-        "fetchone": [None],
+        "fetchone": [None, None],
     }
     client = _client(
         monkeypatch,
@@ -409,7 +416,7 @@ def test_promote_returns_candidate_and_graph_payload(monkeypatch):
         postgis_runs=postgis_runs,
     )
 
-    resp = client.post("/api/graph/candidate-edges/7/promote", json={"analyst": "alice"})
+    resp = client.post("/api/graph/candidate-edges/7/promote", json={})
     assert resp.status_code == 200
     body = resp.json()
     assert body["success"] is True

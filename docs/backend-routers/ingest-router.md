@@ -16,9 +16,9 @@ Three ways to push data in: a URL, a disk path, or a direct upload. Imagery → 
 |---|---|---|---|---|
 | `GET` | `/uploads` | `/api/ingest/uploads` | [ingest.py#L177](../../backend/routers/ingest.py#L177) | List recent upload rows |
 | `GET` | `/jobs/{task_id}` | `/api/ingest/jobs/{task_id}` | [ingest.py#L195](../../backend/routers/ingest.py#L195) | Celery task status |
-| `POST` | `""` | `/api/ingest` | [ingest.py#L216](../../backend/routers/ingest.py#L216) | `IngestRequest` — path or URL already on the local shared volume |
+| `POST` | `""` | `/api/ingest` | [ingest.py#L266](../../backend/routers/ingest.py#L266) | `IngestRequest` — local shared-volume path by default; HTTP(S) imagery URLs require worker-side opt-in and allowlist |
 | `POST` | `/upload` | `/api/ingest/upload` | [ingest.py#L282](../../backend/routers/ingest.py#L282) | Multipart upload — imagery or FMV; classified by extension via [files.classify_upload](../../backend/files.py). Imagery accepts `text_prompts`, `ontology_branch`, `modality`, and `enabled_layers` for the SAM3 sensor pipeline; `model=yolo26` and YOLOE layers are rejected because YOLOE is FMV-only. FMV still accepts `model` (`sam3`/`yolo26`) and `prompt_mode` (`pcs`/`amg`): `model=yolo26` maps to worker mode `yoloe`; FMV `amg` clears prompts, while PCS parses `text_prompts` JSON/comma lists or falls back to bounded defaults. See [decisions/removed-yoloe-imagery.md](../decisions/removed-yoloe-imagery.md). |
-| `POST` | `/url` | `/api/ingest/url` | [ingest.py#L628](../../backend/routers/ingest.py#L628) | `IngestUrlRequest` — backend downloads from a remote URL |
+| `POST` | `/url` | `/api/ingest/url` | [ingest.py#L675](../../backend/routers/ingest.py#L675) | `IngestUrlRequest` — records a source URL/document row for later extraction |
 
 `POST /api/fmv/clips` (FMV-specific upload entry) lives in [backend/main.py](../backend/main-app-entrypoint.md); `/api/ingest/upload` keeps its own generic FMV branch for uploads submitted through the Ingest workspace.
 
@@ -29,11 +29,12 @@ Three ways to push data in: a URL, a disk path, or a direct upload. Imagery → 
 - **HLS transcode before Celery dispatch** → client streams the clip while detection runs. Worker emits `fmv_detections_complete` over WebSocket on finish.
 - **Upload job rows written synchronously** → UI progress bar populates before the Celery task starts.
 - **Generic FMV honors the operator's mode/model choice** → it validates `model` + `prompt_mode` before staging work and queues the same PCS/YOLOE worker modes used by `/api/fmv/clips`. Imagery deliberately rejects YOLOE and stays on the SAM3 sensor pipeline.
+- **Remote imagery fetch is opt-in** — air-gapped runtime remains staged-file-first; HTTP(S) `image_url` fetches require `ALLOW_REMOTE_IMAGERY_URLS=1` and pass worker-side network guards.
 
 ## Failure modes
 
 - Unrecognized media type → 415.
-- Malformed `IngestUrlRequest` URL → 400.
+- Remote HTTP(S) imagery URL while disabled/not allowlisted/private-IP/too large → worker task fails before chip processing.
 - Provider unavailable (inference-sam3 not loaded) → request still accepted; worker queues internally and retries — see [backend/provider-lifecycle.md](../backend/provider-lifecycle.md).
 - Disk full on shared volume → 507.
 - FMV telemetry missing/malformed → 422 and the staged clip/HLS directory is removed.
@@ -48,3 +49,4 @@ Three ways to push data in: a URL, a disk path, or a direct upload. Imagery → 
 - [operations/imagery-ingest-pipeline.md](../operations/imagery-ingest-pipeline.md)
 - [frontend/workspace-ingest.md](../frontend/workspace-ingest.md)
 - [decisions/removed-yoloe-imagery.md](../decisions/removed-yoloe-imagery.md)
+- [decisions/why-security-hardening-2026-05-31.md](../decisions/why-security-hardening-2026-05-31.md)

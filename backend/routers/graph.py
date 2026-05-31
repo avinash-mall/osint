@@ -18,8 +18,9 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from auth import SessionUser, get_current_user
 from database import db, postgis_db
 from graph_writes import (
     delete_candidate_detected_as,
@@ -30,7 +31,6 @@ from schemas import (
     GraphActionRequest,
     GraphContradictRequest,
     GraphPathRequest,
-    GraphPromoteRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -889,7 +889,10 @@ def get_graph_evidence(node_id: str, hops: int = Query(2, ge=1, le=3)):
 
 
 @router.post("/api/graph/contradict")
-def post_graph_contradict(req: GraphContradictRequest):
+def post_graph_contradict(
+    req: GraphContradictRequest,
+    user: SessionUser = Depends(get_current_user),
+):
     """Analyst flags evidence-against: write ``(actor)-[:CONTRADICTED_BY]->(:Detection)``.
 
     Workflow 4/5 — when the analyst opens a Detection in Evidence mode and
@@ -898,7 +901,7 @@ def post_graph_contradict(req: GraphContradictRequest):
     graph relationship. Used by [decisions/why-three-graph-modes.md](../../docs/decisions/why-three-graph-modes.md)
     to keep dissent traversable, not buried in a JSONB column.
     """
-    analyst = (req.analyst or "analyst").strip() or "analyst"
+    analyst = user.username
     ok = merge_contradicted_by(
         actor_element_id=req.actor_id,
         detection_postgis_id=req.detection_postgis_id,
@@ -918,8 +921,35 @@ def post_graph_contradict(req: GraphContradictRequest):
     }
 
 
+def _raise_candidate_edge_404_or_409(candidate_id: int) -> None:
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT id, status, reviewed_by, reviewed_at
+            FROM detection_target_candidates
+            WHERE id = %s
+            """,
+            (candidate_id,),
+        )
+        row = cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Candidate link not found")
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "error": "candidate already reviewed",
+            "status": row["status"],
+            "reviewed_by": row["reviewed_by"],
+            "reviewed_at": row["reviewed_at"].isoformat() if row["reviewed_at"] else None,
+        },
+    )
+
+
 @router.post("/api/graph/candidate-edges/{candidate_id}/promote")
-def promote_candidate_edge(candidate_id: int, req: GraphPromoteRequest = GraphPromoteRequest()):
+def promote_candidate_edge(
+    candidate_id: int,
+    user: SessionUser = Depends(get_current_user),
+):
     """Graph-side promotion: a pending `CANDIDATE_DETECTED_AS` becomes `DETECTED_AS`.
 
     Mirrors the effect of ``/api/detection-target-candidates/{id}/approve`` —
@@ -927,14 +957,14 @@ def promote_candidate_edge(candidate_id: int, req: GraphPromoteRequest = GraphPr
     sides updated so the analyst can drive the workflow from either the
     SelectionPanel (PostGIS-id-based) or the Investigation graph (graph-edge-based).
     """
-    analyst = (req.analyst or "analyst").strip() or "analyst"
+    analyst = user.username
 
     with postgis_db.get_cursor(commit=True) as cursor:
         cursor.execute(
             """
             UPDATE detection_target_candidates
             SET status = 'approved', reviewed_by = %s, reviewed_at = NOW(), updated_at = NOW()
-            WHERE id = %s
+            WHERE id = %s AND status = 'pending'
             RETURNING id, detection_id, target_id, target_name, score, reason, status,
                       evidence, reviewed_by, reviewed_at, created_at, updated_at
             """,
@@ -942,7 +972,7 @@ def promote_candidate_edge(candidate_id: int, req: GraphPromoteRequest = GraphPr
         )
         row = cursor.fetchone()
         if not row:
-            raise HTTPException(status_code=404, detail="Candidate link not found")
+            _raise_candidate_edge_404_or_409(candidate_id)
         updated = dict(row)
 
     promoted = promote_candidate_to_detected_as(candidate_id=candidate_id, reviewed_by=analyst)

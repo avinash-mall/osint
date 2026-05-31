@@ -1040,7 +1040,7 @@ export default function GaiaMap({
     setIsActionBusy(true);
     setActionStatus('Approving candidate link...');
     try {
-      await axios.post(`${API_URL}/api/detection-target-candidates/${candidateId}/approve`, { analyst: 'ui' }, { timeout: 12000 });
+      await axios.post(`${API_URL}/api/detection-target-candidates/${candidateId}/approve`, null, { timeout: 12000 });
       const detectionId = selectedDetection?.properties?.id;
       if (detectionId) await fetchCandidateLinks(detectionId);
       setActionStatus('Candidate approved and graph link created.');
@@ -1057,7 +1057,7 @@ export default function GaiaMap({
     setIsActionBusy(true);
     setActionStatus('Rejecting candidate link...');
     try {
-      await axios.post(`${API_URL}/api/detection-target-candidates/${candidateId}/reject`, { analyst: 'ui' }, { timeout: 12000 });
+      await axios.post(`${API_URL}/api/detection-target-candidates/${candidateId}/reject`, null, { timeout: 12000 });
       const detectionId = selectedDetection?.properties?.id;
       if (detectionId) await fetchCandidateLinks(detectionId);
       setActionStatus('Candidate rejected.');

@@ -61,8 +61,8 @@ services:
       - HIGH_CONFIDENCE_THRESHOLD=${HIGH_CONFIDENCE_THRESHOLD:-0.8}
       - MODEL_VERSION=${MODEL_VERSION:-sam3-open-vocab}
       - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-sentinel-dev-admin}
-      - SESSION_SECRET=${SESSION_SECRET:-dev-session-secret-replace-in-production}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env to a long random value}
+      - SESSION_SECRET=${SESSION_SECRET:?set SESSION_SECRET in .env to openssl rand -hex 32 output}
       - SESSION_TTL_HOURS=${SESSION_TTL_HOURS:-12}
       - FORCE_HTTPS=${FORCE_HTTPS:-0}
     env_file:
@@ -120,7 +120,7 @@ services:
     profiles:
       - llm-proxy
     network_mode: host
-    command: TCP-LISTEN:18001,fork,reuseaddr,bind=0.0.0.0 TCP:127.0.0.1:8000
+    command: TCP-LISTEN:18001,fork,reuseaddr,bind=127.0.0.1 TCP:127.0.0.1:8000
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 18001 || exit 1"]

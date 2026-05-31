@@ -54,7 +54,7 @@ Only port **3000** is exposed to the host. Every other service runs on the inter
 python scripts/configure_host.py
 
 # 2. Set HF_TOKEN in .env (required only when SAM3_WEIGHTS_SOURCE=official; gated)
-echo "HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" >> .env
+echo "HF_TOKEN=<huggingface-token>" >> .env
 
 # 3. Strong session secret and admin password
 echo "SESSION_SECRET=$(openssl rand -hex 32)"         >> .env

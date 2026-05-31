@@ -1,6 +1,6 @@
 # Why approve/reject returns 409 on a non-pending candidate
 
-**Decision:** Both [`POST /api/identification-candidates/{id}/approve`](../backend-routers/reference-platforms-router.md) and `.../reject` reject the operation with HTTP 409 (Conflict) when the target candidate is no longer in status `pending`. They do NOT idempotently no-op, and they do NOT overwrite the prior reviewer.
+**Decision:** Candidate review endpoints reject the operation with HTTP 409 (Conflict) when the target candidate is no longer in status `pending`. This covers [`POST /api/identification-candidates/{id}/approve`](../backend-routers/reference-platforms-router.md), detection-target candidate approve/reject, and graph-side candidate-edge promotion. They do NOT idempotently no-op, and they do NOT overwrite the prior reviewer.
 
 **Date:** 2026-05-27.
 
@@ -23,9 +23,13 @@ Three options were considered:
 
 ## How to apply
 
-- The guarded UPDATE pattern lives in [backend/routers/reference_platforms.py](../../backend/routers/reference_platforms.py): `WHERE id = %s AND status = 'pending'`, followed by a `RETURNING ...` clause. When `cur.fetchone()` returns `None`, the helper `_raise_404_or_409(cur, candidate_id)` disambiguates with one extra SELECT.
+- The guarded UPDATE pattern lives in [backend/routers/reference_platforms.py](../../backend/routers/reference_platforms.py) and [backend/main.py](../../backend/main.py): `WHERE id = %s AND status = 'pending'`, followed by a `RETURNING ...` clause. When `cur.fetchone()` returns `None`, a helper disambiguates 404 from already-reviewed 409 with one extra SELECT.
 - WebSocket `identification_approved`/`identification_rejected` events fire only after the UPDATE produces a row. On 409, no event is published — clients of the affected detection page learn about the prior reviewer via their normal candidate refresh after the 409 lands.
 
 ## Out of scope
 
 - **Cross-rank race.** Analyst A approves rank-1 then analyst B approves rank-2 of the same detection. Both succeed; `object_details.platform_name` reflects the last writer. The 409 guard does not cover this case — it only guards same-candidate races. Tracking issue if needed; not blocking.
+
+## Cross-references
+
+- [why-security-hardening-2026-05-31.md](why-security-hardening-2026-05-31.md)

@@ -94,7 +94,7 @@ def get_cors_origins() -> list[str]:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -131,7 +131,6 @@ from schemas import (
     AIAnalysisRequest,
     AnalyticsRequest,
     AuthTestRequest,
-    CandidateLinkDecision,
     CollectionTaskCreate,
     ConfidenceConfig,
     DetectionQuery,
@@ -2033,8 +2032,34 @@ def create_detection_candidate_links(detection_id: int):
     return {"success": True, "candidates": candidates}
 
 
+def _raise_detection_candidate_404_or_409(cursor, candidate_id: int) -> None:
+    cursor.execute(
+        """
+        SELECT id, status, reviewed_by, reviewed_at
+        FROM detection_target_candidates
+        WHERE id = %s
+        """,
+        (candidate_id,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Candidate link not found")
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "error": "candidate already reviewed",
+            "status": row["status"],
+            "reviewed_by": row["reviewed_by"],
+            "reviewed_at": row["reviewed_at"].isoformat() if row["reviewed_at"] else None,
+        },
+    )
+
+
 @app.post("/api/detection-target-candidates/{candidate_id}/approve")
-def approve_detection_target_candidate(candidate_id: int, req: CandidateLinkDecision = CandidateLinkDecision()):
+def approve_detection_target_candidate(
+    candidate_id: int,
+    user: SessionUser = Depends(get_current_user),
+):
     ensure_platform_tables()
     with postgis_db.get_cursor(commit=True) as cursor:
         cursor.execute("""
@@ -2042,19 +2067,22 @@ def approve_detection_target_candidate(candidate_id: int, req: CandidateLinkDeci
                    d.class, d.confidence, ST_X(d.centroid) AS lon, ST_Y(d.centroid) AS lat
             FROM detection_target_candidates c
             JOIN detections d ON d.id = c.detection_id
-            WHERE c.id = %s
+            WHERE c.id = %s AND c.status = 'pending'
         """, (candidate_id,))
         candidate = cursor.fetchone()
         if not candidate:
-            raise HTTPException(status_code=404, detail="Candidate link not found")
+            _raise_detection_candidate_404_or_409(cursor, candidate_id)
         candidate = dict(candidate)
         cursor.execute("""
             UPDATE detection_target_candidates
             SET status = 'approved', reviewed_by = %s, reviewed_at = NOW(), updated_at = NOW()
-            WHERE id = %s
+            WHERE id = %s AND status = 'pending'
             RETURNING id, detection_id, target_id, target_name, score, reason, status, evidence, reviewed_by, reviewed_at, created_at, updated_at
-        """, (req.analyst or "analyst", candidate_id))
-        updated = dict(cursor.fetchone())
+        """, (user.username, candidate_id))
+        row = cursor.fetchone()
+        if not row:
+            _raise_detection_candidate_404_or_409(cursor, candidate_id)
+        updated = dict(row)
 
     with db.get_session() as session:
         result = session.run("""
@@ -2083,7 +2111,7 @@ def approve_detection_target_candidate(candidate_id: int, req: CandidateLinkDeci
             "confidence": candidate["confidence"],
             "lat": candidate["lat"],
             "lon": candidate["lon"],
-            "reviewed_by": req.analyst or "analyst",
+            "reviewed_by": user.username,
         })
         if not result.single():
             raise HTTPException(status_code=409, detail="Approved candidate target could not be found in graph")
@@ -2100,18 +2128,21 @@ def approve_detection_target_candidate(candidate_id: int, req: CandidateLinkDeci
 
 
 @app.post("/api/detection-target-candidates/{candidate_id}/reject")
-def reject_detection_target_candidate(candidate_id: int, req: CandidateLinkDecision = CandidateLinkDecision()):
+def reject_detection_target_candidate(
+    candidate_id: int,
+    user: SessionUser = Depends(get_current_user),
+):
     ensure_platform_tables()
     with postgis_db.get_cursor(commit=True) as cursor:
         cursor.execute("""
             UPDATE detection_target_candidates
             SET status = 'rejected', reviewed_by = %s, reviewed_at = NOW(), updated_at = NOW()
-            WHERE id = %s
+            WHERE id = %s AND status = 'pending'
             RETURNING id, detection_id, target_id, target_name, score, reason, status, evidence, reviewed_by, reviewed_at, created_at, updated_at
-        """, (req.analyst or "analyst", candidate_id))
+        """, (user.username, candidate_id))
         row = cursor.fetchone()
         if not row:
-            raise HTTPException(status_code=404, detail="Candidate link not found")
+            _raise_detection_candidate_404_or_409(cursor, candidate_id)
         candidate = dict(row)
     delete_candidate_detected_as(
         detection_id=candidate["detection_id"],

@@ -12,6 +12,8 @@ curl -X POST http://localhost:3000/api/ingest \
 # Or upload + ingest from the UI: Admin → Upload imagery
 ```
 
+Remote HTTP(S) `image_url` ingest is disabled by default. For connected-host preparation only, set `ALLOW_REMOTE_IMAGERY_URLS=1`, optionally constrain `REMOTE_IMAGERY_ALLOWED_HOSTS`, and keep `REMOTE_IMAGERY_MAX_BYTES` sized for the staging volume.
+
 ## Sensor dropdown → modality + layers
 
 The sensor choice in the UI maps to the request body sent to `/detect`:
@@ -61,4 +63,6 @@ http://localhost:3000/basemap/{z}/{x}/{y}.png
 - [architecture/data-flow-imagery.md](../architecture/data-flow-imagery.md)
 - [backend-routers/ingest-router.md](../backend-routers/ingest-router.md)
 - [backend/worker-legacy-monolith.md](../backend/worker-legacy-monolith.md)
+- [deployment/environment-variables-reference.md](../deployment/environment-variables-reference.md)
+- [decisions/why-security-hardening-2026-05-31.md](../decisions/why-security-hardening-2026-05-31.md)
 - [frontend/workspace-ingest.md](../frontend/workspace-ingest.md)

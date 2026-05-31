@@ -35,11 +35,12 @@ Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 | Variable | Default | Description |
 |---|---|---|
 | `CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Allowed browser origins (dev only; production goes through nginx) |
-| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / `changeme-bootstrap-admin` | Bootstrap admin credentials |
-| `SESSION_SECRET` | required (≥ 16 chars) | HMAC key (`openssl rand -hex 32`) |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | `admin` / required | Bootstrap admin credentials; Compose fails fast when `ADMIN_PASSWORD` is unset/empty |
+| `SESSION_SECRET` | required (≥ 16 chars) | HMAC key (`openssl rand -hex 32`); Compose fails fast when unset/empty |
 | `SESSION_TTL_HOURS` | `12` | Cookie lifetime |
 | `FORCE_HTTPS` | `0` | Mark `sentinel_session` cookie `Secure` |
 | `LDAP_DEFAULT_HOST` / `_PORT` / `_BASE_DN` / `_BIND_DN` | empty | First-boot LDAP defaults (live values in DB) |
+| `MAX_UPLOAD_BYTES` | `10737418240` | Shared multipart upload cap (10 GiB default); over-limit writes return 413 and delete partial files |
 
 ## LLM (Ava)
 
@@ -74,6 +75,9 @@ Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 | `INFERENCE_CHIP_SPOOL_MAX_BYTES` | `4194304` | Spill encoded chip to disk above this size |
 | `INFERENCE_CHIP_TIMEOUT_S` | `600` | Per-request timeout |
 | `INFERENCE_READY_TIMEOUT_S` | `300` | Worker wait for inference `/health` |
+| `ALLOW_REMOTE_IMAGERY_URLS` | `0` | Enables worker-side HTTP(S) imagery fetch only on connected/prep hosts |
+| `REMOTE_IMAGERY_ALLOWED_HOSTS` | empty | Optional comma-separated host allowlist for remote imagery fetch |
+| `REMOTE_IMAGERY_MAX_BYTES` | `10737418240` | Remote imagery download cap before deleting partial files |
 | `CHANGE_DET_MAX_PIXELS` | `4000000` | Two-pass diff resolution cap |
 | `TRACKER_COST_WEIGHTS` | `{}` | JSON tracker cost-function weights |
 
@@ -119,12 +123,14 @@ Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 | `EVIDENCE_MAX_ASPECT_RATIO` | `35` | Backend physical validator aspect-ratio ceiling |
 | `EVIDENCE_MIN_MASK_COMPACTNESS` / `EVIDENCE_MIN_VALID_FRACTION` | `0.015` / `0.20` | Backend evidence validator floors |
 | `FMV_DEFAULT_PROMPTS` | `vehicle,person,building` | Backend worker PCS fallback when an FMV upload omits prompts |
+| `FMV_PROBE_TIMEOUT_S` | `30` | `ffprobe` timeout during synchronous FMV upload cataloging |
+| `FMV_TRANSCODE_TIMEOUT_S` | `900` | `ffmpeg` HLS stream-copy timeout before falling back to the raw clip |
 | `FMV_TRACKER_COST_WEIGHTS` | `{}` | JSON cost weights for FMV track consolidation (`iou`/`emb`/`gap`/`class`) — see [fmv-track-consolidation.md](../backend/fmv-track-consolidation.md) |
 | `FMV_TRACK_MIN_IOU` / `FMV_TRACK_MIN_EMB_SIM` | `0.30` / `0.55` | FMV consolidation association gates |
 | `FMV_TRACK_MAX_FRAME_GAP_SECONDS` | `2.0` | FMV consolidation temporal gate (bridges window seams) |
 | `FMV_TRACK_MATCH_THRESHOLD` / `FMV_TRACK_MERGE_IOU` | `1.50` / `0.55` | FMV consolidation Hungarian reject cutoff / co-temporal merge IoU |
 | `SAM3_HF_HUB_OFFLINE` / `SAM3_TRANSFORMERS_OFFLINE` | `1` | Offline mode |
-| `HF_TOKEN` | from .env | Required for gated weights |
+| `HF_TOKEN` | empty | Optional build-time token for gated weights; never commit a real token |
 | `DISABLE_ADDMM_CUDA_LT` | `1` | Route `nn.Linear` off cuBLAS-Lt (A100/cu130 bug) |
 | `SENTINEL_DEPLOYMENT_MODE` | `demo` | Login banner posture — `demo` \| `internal` \| `accredited`. Stock clone stays `demo`; operators opt in to a gov/mil banner. Served by `GET /api/system/deployment-mode`. |
 | `SENTINEL_DEPLOYMENT_LABEL` | _(per-mode default)_ | Overrides login banner text for `internal` / `accredited` deployments |
@@ -144,3 +150,4 @@ See [gpu-profile-detection.md](gpu-profile-detection.md).
 - [.env.offline.example](../../.env.offline.example) — air-gap variant
 - [decisions/disable-addmm-cuda-lt.md](../decisions/disable-addmm-cuda-lt.md)
 - [decisions/why-category-presence-gate.md](../decisions/why-category-presence-gate.md)
+- [decisions/why-security-hardening-2026-05-31.md](../decisions/why-security-hardening-2026-05-31.md)

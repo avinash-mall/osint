@@ -14,6 +14,13 @@ from pathlib import Path
 from typing import Optional
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
 def fmv_public_url(hls_path: Optional[str], file_path: str) -> str:
     """Translate an absolute on-disk path into the nginx ``/fmv/...`` URL
     rooted at ``FMV_PATH``. Returns the raw path on any error so the caller
@@ -38,6 +45,7 @@ def probe_video(path: Path) -> dict:
             check=True,
             text=True,
             capture_output=True,
+            timeout=_env_int("FMV_PROBE_TIMEOUT_S", 30),
         )
         data = json.loads(result.stdout or "{}")
     except Exception:
@@ -81,8 +89,11 @@ def transcode_hls(input_path: Path, clip_dir: Path) -> Optional[Path]:
             check=True,
             text=True,
             capture_output=True,
+            timeout=_env_int("FMV_TRANSCODE_TIMEOUT_S", 900),
         )
         return hls_path
     except Exception:
-        shutil.copy2(input_path, clip_dir / input_path.name)
+        fallback_path = clip_dir / input_path.name
+        if input_path.resolve() != fallback_path.resolve():
+            shutil.copy2(input_path, fallback_path)
         return None

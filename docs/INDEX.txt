@@ -85,6 +85,7 @@ inference/profile-pool-lifecycle.md|inference|imagery/fmv/all profiles with per-
 inference/model-manifest.md|inference|MODEL_MANIFEST.json: HF repos, revisions, gating, file lists
 inference/python-requirements.md|inference|inference-sam3 pip dependencies after PyTorch/SAM3 install
 frontend/app-and-routing.md|frontend|App.tsx mounts five workspaces under AuthProvider
+frontend/vite-build-config.md|frontend|Vite plugins, dev basemap proxy, and vendor chunk split
 frontend/shell-and-chrome.md|frontend|icon rail 64->224 px, command palette, status bar
 frontend/auth-hook.md|frontend,auth|useAuth.ts cookie-backed session with boot /api/auth/me probe
 frontend/chip-img-component.md|frontend|shared reference-chip thumbnail with onError fallback
@@ -215,6 +216,7 @@ decisions/why-sam3-as-foundation.md|decision,sam3|open-vocabulary segmentation a
 decisions/why-sar-confidence-cap.md|decision,imagery|SAR detections via TerraMind synthetic proxy capped at 0.85
 decisions/why-sar-logratio-change.md|decision,imagery|SAR change is a sar_logratio preset in compute_change (VV dB log-ratio), not a parallel pipeline
 decisions/why-sat-tiles-cap-at-native-zoom.md|decision,imagery,frontend|SAT TileLayer maxNativeZoom from COG GSD + nginx cache relax kills zoom-in blur
+decisions/why-security-hardening-2026-05-31.md|decision|fail-closed defaults: no committed tokens, required auth secrets, bounded uploads, gated remote imagery
 decisions/why-segearth-presence-filter.md|decision,sam3|SegEarth-OV3 score-distribution presence-ratio gate composed with legacy max-score gate; default mode=both
 decisions/why-standalone-embed-endpoint.md|decision|standalone /embed avoids /detect cost and keeps DB dep in backend
 decisions/why-stix-21-export.md|decision,backend|STIX 2.1 export mapped to GEOINT SDOs (identity/infrastructure), clean-room from OASIS spec

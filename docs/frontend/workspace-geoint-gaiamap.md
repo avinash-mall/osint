@@ -1,11 +1,16 @@
 # Geoint Workspace — `GaiaMap.tsx`
 
 **Path:** [frontend/src/components/GaiaMap.tsx](../../frontend/src/components/GaiaMap.tsx)
-**Lines:** ~1670
+**Lines:** ~1708
+**Depends on:** React hooks, `axios`, Leaflet/React-Leaflet components, map panels, ontology utilities, detection/imagery/analytics backend APIs
 
 ## Purpose
 
 The Common Operating Picture: a 2D Leaflet map with all detection layers, satellite passes, asset tracks, analytics overlays, and the panels driving them.
+
+## Why this design
+
+`GaiaMap` owns cross-panel map state because layer visibility, selected detections, candidate links, and graph handoff all need to stay synchronized with the Leaflet viewport. Candidate-link approve/reject now sends no analyst payload; the backend derives reviewer identity from the signed session.
 
 ## Layout
 
@@ -47,6 +52,20 @@ The Common Operating Picture: a 2D Leaflet map with all detection layers, satell
 
 The left Detection Classes list keeps `rawClass` as the hide/solo/API filter key. `displayLabel` is presentation-only; deterministic labels remain primary now that still-image YOLOE has been removed. LLM advisory text can still appear as secondary context in [LayerPanel](map-stage-and-layers.md).
 
+## Key symbols
+
+- [`approveCandidate`](../../frontend/src/components/GaiaMap.tsx#L1039-L1054) — approves a detection-target candidate link without sending client-side reviewer identity.
+- [`rejectCandidate`](../../frontend/src/components/GaiaMap.tsx#L1056-L1070) — rejects a detection-target candidate link without sending client-side reviewer identity.
+- [`fetchCandidateLinks`](../../frontend/src/components/GaiaMap.tsx#L971-L979) — refreshes candidate links after review actions.
+
+## Inputs / Outputs
+
+Reads detection GeoJSON, imagery pass metadata, class summaries, candidate links, and track feeds from backend APIs. Emits user actions through `axios` mutators for manual detections, review status, tags, pins, candidate-link decisions, and collection tasks.
+
+## Failure modes
+
+API errors are surfaced via panel/action status text while the map remains usable. Candidate-link 409s refresh through the normal candidate-link fetch path after a failed action; stale clients no longer overwrite `reviewed_by`.
+
 ## Cross-references
 
 - [map-stage-and-layers.md](map-stage-and-layers.md)
@@ -55,3 +74,5 @@ The left Detection Classes list keeps `rawClass` as the hide/solo/API filter key
 - [map-selection-panel.md](map-selection-panel.md)
 - [backend-routers/imagery-router.md](../backend-routers/imagery-router.md)
 - [backend-routers/detections-router.md](../backend-routers/detections-router.md)
+- [operations/candidate-link-approval.md](../operations/candidate-link-approval.md)
+- [decisions/why-analyst-username-from-session.md](../decisions/why-analyst-username-from-session.md)

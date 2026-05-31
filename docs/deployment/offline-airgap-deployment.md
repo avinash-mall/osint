@@ -10,8 +10,9 @@ The build-once / load-and-go runbook for disconnected sites. AI model weights ar
 # 1. Detect host GPU + driver and write build settings to .env
 python scripts/configure_host.py
 
-# 2. Set HF_TOKEN in .env (required only when SAM3_WEIGHTS_SOURCE=official)
-echo "HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" >> .env
+# 2. Set HF_TOKEN in .env only for the connected build host when gated weights are needed.
+#    Never commit real tokens to .env.example or docs.
+echo "HF_TOKEN=<huggingface-token>" >> .env
 
 # 3. Session secret + admin password
 echo "SESSION_SECRET=$(openssl rand -hex 32)" >> .env
@@ -44,7 +45,7 @@ gunzip -c sentinel-bundle.tar.gz | docker load
 docker compose up -d
 ```
 
-`./assets` is read-only at runtime — the stack never attempts outbound network access.
+`./assets` is read-only at runtime — the stack never attempts outbound network access. Remote HTTP(S) imagery ingest is disabled by default (`ALLOW_REMOTE_IMAGERY_URLS=0`) so disconnected deployments process staged local files under `/data/imagery`.
 
 ## What's baked in
 
@@ -91,4 +92,5 @@ The offline image bakes weights into the container. For day-to-day inference ite
 - [deployment/dem-glo30-bake.md](dem-glo30-bake.md)
 - [inference/model-manifest.md](../inference/model-manifest.md)
 - [environment-variables-reference.md](environment-variables-reference.md)
+- [decisions/why-security-hardening-2026-05-31.md](../decisions/why-security-hardening-2026-05-31.md)
 - [decisions/why-runtime-bakers-into-assets.md](../decisions/why-runtime-bakers-into-assets.md)

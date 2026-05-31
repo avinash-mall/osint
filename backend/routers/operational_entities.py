@@ -18,9 +18,10 @@ import re
 import uuid
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from auth import SessionUser, get_current_user
 from database import db, postgis_db
 from graph_writes import (
     delete_operational_entity,
@@ -67,10 +68,6 @@ class OperationalEntityUpdate(BaseModel):
     metadata: Optional[dict[str, Any]] = None
 
 
-class SameAsRequest(BaseModel):
-    analyst: Optional[str] = None
-
-
 class PendingSameAsRejectRequest(BaseModel):
     a_id: str
     b_id: str
@@ -84,8 +81,6 @@ class MergeIntoRequest(BaseModel):
     """
 
     resolutions: dict[str, str] = Field(default_factory=dict)
-    analyst: Optional[str] = None
-
 
 class AttachObservationRequest(BaseModel):
     observation_postgis_id: int
@@ -191,7 +186,10 @@ def get_operational_entity(entity_id: str):
 
 
 @router.post("/api/operational-entities")
-def create_operational_entity(body: OperationalEntityCreate):
+def create_operational_entity(
+    body: OperationalEntityCreate,
+    user: SessionUser = Depends(get_current_user),
+):
     ensure_platform_tables()
     kind = body.kind.lower()
     if kind not in _ALLOWED_KINDS:
@@ -204,15 +202,15 @@ def create_operational_entity(body: OperationalEntityCreate):
                 """
                 INSERT INTO operational_entities (id, kind, name, callsign, hull,
                                                   entity_class, unit_id, operates_from_base_id,
-                                                  metadata)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                                  metadata, created_by)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id, kind, name, callsign, hull, entity_class, unit_id,
                           operates_from_base_id, metadata, created_by, created_at
                 """,
                 (
                     entity_id, kind, body.name, body.callsign, body.hull,
                     body.entity_class, body.unit_id, body.operates_from_base_id,
-                    json.dumps(body.metadata),
+                    json.dumps(body.metadata), user.username,
                 ),
             )
         except Exception as exc:  # noqa: BLE001
@@ -284,7 +282,11 @@ def delete_operational_entity_route(entity_id: str):
 
 
 @router.post("/api/operational-entities/{entity_id}/attach-track/{track_id}")
-def attach_detection_track(entity_id: str, track_id: int, analyst: Optional[str] = None):
+def attach_detection_track(
+    entity_id: str,
+    track_id: int,
+    user: SessionUser = Depends(get_current_user),
+):
     """Phase 5.J: analyst links a detection_track to an operational entity.
 
     The next ``worker.tick_aggregate_entity_embeddings`` run will fold this
@@ -302,7 +304,7 @@ def attach_detection_track(entity_id: str, track_id: int, analyst: Optional[str]
             VALUES (%s, %s, %s)
             ON CONFLICT (entity_id, track_id) DO NOTHING
             """,
-            (entity_id, track_id, (analyst or "analyst").strip() or "analyst"),
+            (entity_id, track_id, user.username),
         )
     return {"success": True, "entity_id": entity_id, "track_id": track_id}
 
@@ -482,10 +484,13 @@ def list_entity_candidates(
 
 
 @router.post("/api/operational-entity-candidates/{candidate_id}/approve")
-def approve_entity_candidate(candidate_id: int, analyst: Optional[str] = None):
+def approve_entity_candidate(
+    candidate_id: int,
+    user: SessionUser = Depends(get_current_user),
+):
     """Approve a proposed entity: create the operational_entities row + project."""
     ensure_platform_tables()
-    analyst = (analyst or "analyst").strip() or "analyst"
+    analyst = user.username
     with postgis_db.get_cursor(commit=True) as cursor:
         cursor.execute(
             "SELECT id, entity_kind, proposed_name, proposed_metadata FROM entity_candidates WHERE id = %s AND status = 'pending'",
@@ -538,9 +543,12 @@ def approve_entity_candidate(candidate_id: int, analyst: Optional[str] = None):
 
 
 @router.post("/api/operational-entity-candidates/{candidate_id}/reject")
-def reject_entity_candidate(candidate_id: int, analyst: Optional[str] = None):
+def reject_entity_candidate(
+    candidate_id: int,
+    user: SessionUser = Depends(get_current_user),
+):
     ensure_platform_tables()
-    analyst = (analyst or "analyst").strip() or "analyst"
+    analyst = user.username
     with postgis_db.get_cursor(commit=True) as cursor:
         cursor.execute(
             """
@@ -563,7 +571,12 @@ _MERGEABLE_COLUMNS = (
 
 
 @router.post("/api/operational-entities/{a_id}/merge-into/{b_id}")
-def merge_entity_into(a_id: str, b_id: str, body: MergeIntoRequest = MergeIntoRequest()):
+def merge_entity_into(
+    a_id: str,
+    b_id: str,
+    body: MergeIntoRequest = MergeIntoRequest(),
+    user: SessionUser = Depends(get_current_user),
+):
     """Phase 5.H: merge two operational_entities rows after a SAME_AS approval.
 
     Reads both rows, applies the analyst's per-column resolution (default
@@ -574,7 +587,7 @@ def merge_entity_into(a_id: str, b_id: str, body: MergeIntoRequest = MergeIntoRe
     ensure_platform_tables()
     if a_id == b_id:
         raise HTTPException(status_code=400, detail="cannot merge an entity into itself")
-    analyst = (body.analyst or "analyst").strip() or "analyst"
+    analyst = user.username
 
     with postgis_db.get_cursor(commit=True) as cursor:
         cursor.execute(
@@ -637,7 +650,11 @@ def merge_entity_into(a_id: str, b_id: str, body: MergeIntoRequest = MergeIntoRe
 
 
 @router.post("/api/operational-entities/{entity_id}/same-as/{other_id}")
-def set_same_as(entity_id: str, other_id: str, body: SameAsRequest = SameAsRequest()):
+def set_same_as(
+    entity_id: str,
+    other_id: str,
+    user: SessionUser = Depends(get_current_user),
+):
     """Analyst approves: two operational entities are the same thing.
 
     Writes the canonical ``:SAME_AS`` edge (and deletes the matching
@@ -645,7 +662,7 @@ def set_same_as(entity_id: str, other_id: str, body: SameAsRequest = SameAsReque
     PostGIS rows — that's a follow-up action with conflict-resolution UI.
     """
     ensure_platform_tables()
-    analyst = (body.analyst or "analyst").strip() or "analyst"
+    analyst = user.username
     ok = merge_same_as(entity_a_id=entity_id, entity_b_id=other_id, merged_by=analyst)
     if not ok:
         raise HTTPException(status_code=404, detail="one or both entities not found in graph")

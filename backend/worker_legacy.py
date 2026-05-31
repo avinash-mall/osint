@@ -12,6 +12,8 @@ import concurrent.futures
 import queue
 import tempfile
 import base64
+import ipaddress
+import socket
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -490,6 +492,42 @@ def get_raster_footprint(cog_path: str):
         return footprint, min_lon, min_lat, max_lon, max_lat
 
 
+def _remote_imagery_max_bytes() -> int:
+    try:
+        return int(os.getenv("REMOTE_IMAGERY_MAX_BYTES", str(10 * 1024 * 1024 * 1024)))
+    except ValueError:
+        return 10 * 1024 * 1024 * 1024
+
+
+def _remote_imagery_allowed(image_url: str) -> None:
+    """Validate an operator-supplied remote imagery URL before worker fetch."""
+    if os.getenv("ALLOW_REMOTE_IMAGERY_URLS", "0") != "1":
+        raise RuntimeError("Remote imagery URLs are disabled; stage files under IMAGERY_PATH/incoming")
+    parsed = urlparse(image_url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise RuntimeError(f"Unsupported imagery URL scheme: {parsed.scheme}")
+    allowed_hosts = {
+        host.strip().lower()
+        for host in os.getenv("REMOTE_IMAGERY_ALLOWED_HOSTS", "").split(",")
+        if host.strip()
+    }
+    hostname = parsed.hostname.lower()
+    if allowed_hosts and hostname not in allowed_hosts:
+        raise RuntimeError(f"Remote imagery host {hostname!r} is not allowlisted")
+    try:
+        infos = socket.getaddrinfo(
+            hostname,
+            parsed.port or (443 if parsed.scheme == "https" else 80),
+            type=socket.SOCK_STREAM,
+        )
+    except socket.gaierror as exc:
+        raise RuntimeError(f"Remote imagery host did not resolve: {hostname}") from exc
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
+            raise RuntimeError(f"Remote imagery host resolves to disallowed address {ip}")
+
+
 def resolve_input_path(image_url: str) -> str:
     """Resolve local, HTTP(S), or unsupported remote imagery references into a local file."""
     parsed = urlparse(image_url)
@@ -497,13 +535,24 @@ def resolve_input_path(image_url: str) -> str:
     os.makedirs(incoming_dir, exist_ok=True)
 
     if parsed.scheme in ("http", "https"):
+        _remote_imagery_allowed(image_url)
         filename = os.path.basename(parsed.path) or f"{uuid.uuid4()}.tif"
         input_path = os.path.join(incoming_dir, filename)
+        max_bytes = _remote_imagery_max_bytes()
+        size = 0
         with requests.get(image_url, stream=True, timeout=120) as response:
             response.raise_for_status()
             with open(input_path, "wb") as handle:
                 for chunk in response.iter_content(chunk_size=1024 * 1024):
                     if chunk:
+                        size += len(chunk)
+                        if max_bytes > 0 and size > max_bytes:
+                            handle.close()
+                            try:
+                                os.remove(input_path)
+                            except OSError:
+                                pass
+                            raise RuntimeError(f"Remote imagery exceeds REMOTE_IMAGERY_MAX_BYTES ({max_bytes})")
                         handle.write(chunk)
         return input_path
 

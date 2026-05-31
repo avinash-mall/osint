@@ -18,7 +18,7 @@
 | `titiler` | `ghcr.io/developmentseed/titiler:2.0.2` | internal 8080 | COG tile server |
 | `martin` | `ghcr.io/maplibre/martin:1.9.1` | internal 3000 | PostGIS → MVT |
 | `assets` | `sentinel-assets:offline` | internal 80 | fonts, reference-corpora, calibration; binds `./assets/static/{basemap,terrain}` RO |
-| `llm-local-proxy` *(profile `llm-proxy`)* | `alpine/socat:1.8.0.3` | host 18001 | optional socat forwarder |
+| `llm-local-proxy` *(profile `llm-proxy`)* | `alpine/socat:1.8.0.3` | host `127.0.0.1:18001` | optional loopback-only socat forwarder |
 | `osrm-baker` *(profile `bake`)* | `sentinel-osrm-baker` | — | runtime baker; writes OSRM MLD into `./assets/osrm`; exits 0 |
 | `dem-baker` *(profile `bake`)* | `sentinel-dem-baker` | — | runtime baker; writes GLO-30 tiles into `./assets/dem`; exits 0 |
 | `basemap-baker` *(profile `bake`)* | `sentinel-tiles-baker` | — | runtime baker; writes Carto Dark tiles into `./assets/static/basemap`; exits 0 |
@@ -29,7 +29,8 @@
 - **Only nginx exposed** — all inter-service traffic on the internal bridge. Air-gap-friendly.
 - **Worker + worker_beat share the backend image**, run different commands — saves a build, keeps shared code in sync.
 - **Inference is its own image** — CUDA stack is heavy (~14 GB image), unrelated to the backend's Python runtime.
-- **`llm-local-proxy` is a separate compose profile** (only started with `--profile llm-proxy`) — a `socat` forwarder so containers can reach a host-side vLLM/Ollama bound to `127.0.0.1`.
+- **Auth secrets fail fast** — `backend` requires `ADMIN_PASSWORD` and `SESSION_SECRET` from `.env`; no checked-in fallback starts the API.
+- **`llm-local-proxy` is a separate compose profile** (only started with `--profile llm-proxy`) — a loopback-bound `socat` forwarder so containers can reach a host-side vLLM/Ollama bound to `127.0.0.1`.
 
 ## Named volumes
 
@@ -57,5 +58,7 @@ The four geo-asset bind mounts (`./assets/dem`, `./assets/osrm`, `./assets/stati
 - [nginx-gateway-and-tile-cache.md](nginx-gateway-and-tile-cache.md)
 - [offline-airgap-deployment.md](offline-airgap-deployment.md)
 - [volume-mounts-and-paths.md](volume-mounts-and-paths.md)
+- [environment-variables-reference.md](environment-variables-reference.md)
+- [../decisions/why-security-hardening-2026-05-31.md](../decisions/why-security-hardening-2026-05-31.md)
 - [../operations/reference-corpora-bake.md](../operations/reference-corpora-bake.md)
 - [../operations/calibration-shipping.md](../operations/calibration-shipping.md)

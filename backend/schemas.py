@@ -83,10 +83,6 @@ class ReviewUpdate(BaseModel):
     note: Optional[str] = None
 
 
-class CandidateLinkDecision(BaseModel):
-    analyst: Optional[str] = "analyst"
-
-
 # ---------------------------------------------------------------------------
 # Reference Embedding DB — Plan D HTTP request/response models.
 # Routes are mounted at backend/routers/reference_platforms.py.
@@ -356,19 +352,12 @@ class GraphPathRequest(BaseModel):
     max_depth: int = Field(default=4, ge=1, le=8)
 
 
-class GraphPromoteRequest(BaseModel):
-    """Body for ``POST /api/graph/candidate-edges/{id}/promote`` — analyst name carried for audit."""
-
-    analyst: Optional[str] = None
-
-
 class GraphContradictRequest(BaseModel):
     """Body for ``POST /api/graph/contradict`` — analyst flags evidence-against."""
 
     actor_id: str = Field(..., description="elementId of the OntologyCandidate or Target being contradicted")
     detection_postgis_id: int = Field(..., description="PostGIS detection_id that contradicts the actor")
     reason: Optional[str] = None
-    analyst: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

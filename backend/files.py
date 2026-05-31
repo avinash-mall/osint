@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
 from fastapi import HTTPException, UploadFile
+
+DEFAULT_MAX_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024
 
 
 def safe_filename(filename: str) -> str:
@@ -14,9 +17,18 @@ def safe_filename(filename: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", name) or "upload.tif"
 
 
+def max_upload_bytes() -> int:
+    """Configured multipart upload ceiling. A non-positive value disables the cap."""
+    try:
+        return int(os.getenv("MAX_UPLOAD_BYTES", str(DEFAULT_MAX_UPLOAD_BYTES)))
+    except ValueError:
+        return DEFAULT_MAX_UPLOAD_BYTES
+
+
 def save_upload_file(file: UploadFile, local_path: Path, chunk_size: int = 1024 * 1024) -> int:
     """Stream a multipart upload to disk in fixed-size chunks. Returns total bytes written."""
     size = 0
+    limit = max_upload_bytes()
     try:
         with local_path.open("wb") as handle:
             while True:
@@ -24,7 +36,12 @@ def save_upload_file(file: UploadFile, local_path: Path, chunk_size: int = 1024 
                 if not chunk:
                     break
                 size += len(chunk)
+                if limit > 0 and size > limit:
+                    raise HTTPException(status_code=413, detail=f"Upload exceeds MAX_UPLOAD_BYTES ({limit})")
                 handle.write(chunk)
+    except Exception:
+        local_path.unlink(missing_ok=True)
+        raise
     finally:
         file.file.close()
     return size

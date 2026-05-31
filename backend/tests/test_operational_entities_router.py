@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import sys
 import types
 from unittest.mock import MagicMock
@@ -49,7 +50,14 @@ def _load(monkeypatch, **kwargs):
     mod = importlib.import_module("routers.operational_entities")
     app = FastAPI()
     app.include_router(mod.router)
-    return TestClient(app)
+    client = TestClient(app)
+    os.environ.setdefault("SESSION_SECRET", "test-session-secret-please-replace-1234567890abcdef")
+    from auth import SessionUser, create_session_cookie
+    client.cookies.set(
+        "sentinel_session",
+        create_session_cookie(SessionUser(username="alice", role="analyst")),
+    )
+    return client
 
 
 def test_create_vessel_projects_to_graph(monkeypatch):
@@ -105,7 +113,7 @@ def test_delete_removes_graph_mirror(monkeypatch):
 
 def test_same_as_writes_edge(monkeypatch):
     client = _load(monkeypatch, neo4j_records=[{"1": 1}])
-    resp = client.post("/api/operational-entities/v-1/same-as/v-2", json={"analyst": "alice"})
+    resp = client.post("/api/operational-entities/v-1/same-as/v-2", json={})
     assert resp.status_code == 200
     body = resp.json()
     assert body == {"success": True, "a": "v-1", "b": "v-2", "merged_by": "alice"}

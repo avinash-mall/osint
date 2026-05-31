@@ -30,7 +30,7 @@ Phase 2 projector helpers:
 - `project_document_with_mentions` — MERGE `:Document` stub + (when a label index is supplied) `:MENTIONS` edges to operational entities resolved by case-insensitive substring match.
 - `load_entity_label_index` — builds the lowercase-name index used by the document projector. Called once per projector invocation; results are not cached (analyst can edit entity names between runs).
 - `project_observation_batch` — single UNWIND-MERGE batch creating `:Observation` nodes and OPTIONAL-MATCH-then-FOREACH-MERGE `OBSERVED_AT` edges only when an operational entity resolves.
-- `merge_contradicted_by` — analyst-driven dissent edge: `(actor)-[:CONTRADICTED_BY {reason, analyst}]->(:Detection)`. Used by `/api/graph/contradict`.
+- `merge_contradicted_by` — analyst-driven dissent edge: `(actor)-[:CONTRADICTED_BY {reason, analyst}]->(:Detection)`. Used by `/api/graph/contradict`; the router supplies `analyst` from the signed session, not from the request body.
 
 Phase 3 projector helpers (ontology):
 - `project_ontology_branches_and_objects` — UNWIND-MERGE the full taxonomy (branches + objects + HAS_CHILD + HAS_OBJECT). Three Cypher statements per call, single transaction.
