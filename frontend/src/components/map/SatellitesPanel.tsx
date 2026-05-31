@@ -12,11 +12,13 @@
 import { Satellite, Crosshair, Upload } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import {
+  getAnomalies,
   getGroundTrack,
   importTle,
   listTles,
   predictPasses,
   type OverpassResponse,
+  type SatelliteAnomalies,
   type StoredTle,
 } from '../../services/satellites';
 
@@ -39,9 +41,11 @@ export default function SatellitesPanel({ observer, onRequestPick, pickActive, o
   const [error, setError] = useState<string | null>(null);
   const [importText, setImportText] = useState('');
   const [showImport, setShowImport] = useState(false);
+  const [anomalies, setAnomalies] = useState<SatelliteAnomalies | null>(null);
 
   const refreshTles = useCallback(() => {
     listTles().then(setTles).catch(() => setTles([]));
+    getAnomalies().then(setAnomalies).catch(() => setAnomalies(null));
   }, []);
 
   useEffect(() => { refreshTles(); }, [refreshTles]);
@@ -183,6 +187,11 @@ export default function SatellitesPanel({ observer, onRequestPick, pickActive, o
             <span className="flex-1 text-[10px] font-bold uppercase tracking-wider text-slate-200 truncate">
               {sat.name || `NORAD ${sat.norad_id}`}
             </span>
+            {sat.mission && sat.mission !== 'unknown' && (
+              <span className="font-mono text-[8px] uppercase tracking-wider text-sentinel-accent border border-sentinel-line px-1">
+                {sat.mission.replace('_', ' ')}
+              </span>
+            )}
             <button
               type="button"
               onClick={() => onTrack(sat.norad_id, sat.name || String(sat.norad_id))}
@@ -203,6 +212,27 @@ export default function SatellitesPanel({ observer, onRequestPick, pickActive, o
           </div>
         </div>
       ))}
+
+      {/* R1 — orbital anomalies from successive TLE epochs (needs ≥2 imports). */}
+      {anomalies && (anomalies.maneuvers.length > 0 || anomalies.decay_anomalies.length > 0) && (
+        <div data-tour="satellites-anomalies" className="border border-sentinel-line-2 bg-sentinel-bg p-2">
+          <div className="pb-1 text-[10px] font-bold uppercase tracking-wider text-sentinel-accent">
+            Orbital anomalies
+          </div>
+          {anomalies.maneuvers.map((m, i) => (
+            <div key={`m${i}`} className="font-mono text-[10px] text-slate-300">
+              <span className="text-sentinel-accent">MANEUVER</span>{' '}
+              {m.name || `NORAD ${m.norad_id}`} — {m.reasons.join(', ')}
+            </div>
+          ))}
+          {anomalies.decay_anomalies.map((d, i) => (
+            <div key={`d${i}`} className="font-mono text-[10px] text-slate-300">
+              <span className="text-sentinel-crit">DECAY</span>{' '}
+              {d.name || `NORAD ${d.norad_id}`} — {d.mm_rate_revday2.toFixed(4)} rev/d², ~{d.approx_alt_km.toFixed(0)} km
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

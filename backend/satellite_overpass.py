@@ -66,6 +66,33 @@ class Tle:
         except (ValueError, IndexError):
             return None
 
+    def elements(self) -> Optional[dict]:
+        """Mean orbital elements from TLE line 2 (fixed columns, per the format spec).
+
+        Returns ``{inclination_deg, raan_deg, eccentricity, mean_motion_revday}``
+        plus ``epoch`` / ``epoch_ts``, or ``None`` if the line is malformed. Used
+        by maneuver/decay detection (satellite_anomaly.py) — no propagation needed.
+        """
+        try:
+            ln2 = self.line2
+            inclination = float(ln2[8:16])
+            raan = float(ln2[17:25])
+            ecc = float("0." + ln2[26:33].strip())  # implied leading decimal point
+            mean_motion = float(ln2[52:63])
+            ep = self.epoch()
+            return {
+                "norad_id": self.norad_id,
+                "name": self.name,
+                "inclination_deg": inclination,
+                "raan_deg": raan,
+                "eccentricity": ecc,
+                "mean_motion_revday": mean_motion,
+                "epoch": ep.isoformat() if ep else None,
+                "epoch_ts": ep.timestamp() if ep else None,
+            }
+        except (ValueError, IndexError):
+            return None
+
 
 def parse_tle_text(text: str) -> list[Tle]:
     """Parse 2-line or 3-line (name + 2 lines) TLE blocks from raw text.

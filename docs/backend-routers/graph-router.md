@@ -29,6 +29,7 @@ Neo4j-backed read endpoints for the Link Graph workspace + the Phase 1 redesign 
 | `POST` | `/api/graph/contradict` | [graph.py#L552](../../backend/routers/graph.py#L552) | Workflow 4/5 dissent action. Writes `(actor)-[:CONTRADICTED_BY {reason, analyst}]->(:Detection)`. Both ends must exist; returns 404 otherwise. |
 | `GET`  | `/api/graph/ontology` | [graph.py#L387](../../backend/routers/graph.py#L387) | Phase 3 feed: OntologyBranch + OntologyObject tree (HAS_OBJECT, HAS_CHILD), plus (optional) UnknownLabel orbits with SUGGESTED_BRANCH + LABEL_OF edges to recent supporting Detections. Query params: `include_unknown=true`, `since` (ISO), `supports_per_unknown` (≤25), and Phase 5.C `include_cooccurrence=true&cooccurrence_top_k=N` for per-OntologyObject adjacency counts powering the OntologyOrbit chips. |
 | `POST` | `/api/graph/candidate-edges/{candidate_id}/promote` | [graph.py#L552](../../backend/routers/graph.py#L552) | Graph-side equivalent of `/api/detection-target-candidates/{id}/approve`. Flips PostGIS row to `approved` AND promotes the Neo4j `CANDIDATE_DETECTED_AS` edge into `DETECTED_AS`. |
+| `GET`  | `/api/graph/export/stix` | [graph.py#L960](../../backend/routers/graph.py#L960) | **R3 — STIX 2.1 export.** Operational entities + FK-derived relationships → a STIX 2.1 bundle for OpenCTI/Splunk/Sentinel/QRadar. Read-only, offline (PostGIS only). Delegates to [stix_export.build_bundle](../backend/stix-export.md). |
 
 ## Why this design
 

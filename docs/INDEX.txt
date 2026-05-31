@@ -6,6 +6,7 @@ architecture/component-boundaries.md|arch|process/file boundaries: backend, work
 architecture/service-topology.md|arch,deployment|docker-compose service graph, bake-profile bakers, internal DNS, exposed ports
 architecture/link-graph-redesign.md|arch|4-phase Link Graph redesign as analyst reasoning surface: Investigation/Evidence/Ontology modes, projectors, NEAR/SAME_AS
 backend/main-app-entrypoint.md|backend,fastapi|main.py mounts routers, lifespan migrations, session middleware, FMV prompt fallback
+backend/aircraft-class.md|backend|offline ICAO type-code -> coarse airframe class (heli/turboprop/bizjet/airliner); backend reference, no live ADS-B
 backend/api-routes-reference.md|backend,router|route table by tag: auth/graph/detections/fmv/ontology/analytics/ai
 backend/auth-and-sessions.md|backend,auth|itsdangerous signed cookies, env-bootstrap admin, optional LDAP via auth_config row
 backend/database-connections.md|backend|Neo4j + PostGIS dual stack: pool, advisory locks, docker DNS fallback
@@ -35,8 +36,10 @@ backend/reference-platform-db.md|backend|reference_platforms+chips+candidates pg
 backend/reports-and-collections.md|backend|target-package and collection-requirement persistence
 backend/routing-osrm.md|backend|OSRM HTTP client; planet-scale driving routes via sidecar service
 backend/sar-cfar-detector.md|backend,imagery|CA-CFAR ship detection on Sentinel-1 dB raster, CPU-only
+backend/satellite-anomaly.md|backend,tracker|offline maneuver/decay detection (J2-corrected) + mission classification from successive TLEs
 backend/satellite-overpass.md|backend,tracker|offline SGP4 overpass prediction from local TLEs; AOS/LOS/elevation + ground track
 backend/size-estimation-obb.md|backend|UTM-local OBB -> length/width/area/bearing with uncertainty
+backend/stix-export.md|backend|clean-room STIX 2.1 export of operational-entity graph; identity/infrastructure SDOs, offline
 backend/terrain-viewshed-los.md|backend|DEM ray-cast with k=0.13 refraction; reads GLO-30 VRT mosaic
 backend/threat-assessment.md|backend|open-vocab neutral binning into category buckets
 backend/video-metadata-klv.md|backend,fmv|MISB ST 0601 KLV + MP4 GPMD + SRT sidecar parsers
@@ -176,6 +179,7 @@ decisions/why-glo30-as-default-dem.md|decision,deployment|Copernicus GLO-30 (30 
 decisions/why-candidate-edges-persisted.md|decision,backend|persist CANDIDATE_DETECTED_AS in Neo4j on candidate creation; makes pending edges Cypher-traversable
 decisions/why-category-presence-gate.md|decision,sam3|SegEarth-OV-3-style 0.40 filter suppresses absent concepts
 decisions/why-three-graph-modes.md|decision,frontend|Link Graph splits into Investigation/Evidence/Ontology sub-tabs; one workspace, shared state
+decisions/why-tle-history-for-maneuvers.md|decision,backend|separate satellite_tle_history table enables maneuver/decay detection without breaking latest-wins overpass
 decisions/why-postgis-to-neo4j-projectors.md|decision,backend|one-way PostGIS→Neo4j mirroring of identity + headline props; backfill for catchup
 decisions/why-llm-proposed-entities.md|decision,backend|operational entities are analyst-asserted; LLM/heuristic only proposes via entity_candidates queue
 decisions/why-llm-replaces-heuristic-proposer.md|decision,backend|tick_propose_entities tries LLM first, falls back to heuristic; both feed entity_candidates
@@ -213,6 +217,7 @@ decisions/why-sar-logratio-change.md|decision,imagery|SAR change is a sar_lograt
 decisions/why-sat-tiles-cap-at-native-zoom.md|decision,imagery,frontend|SAT TileLayer maxNativeZoom from COG GSD + nginx cache relax kills zoom-in blur
 decisions/why-segearth-presence-filter.md|decision,sam3|SegEarth-OV3 score-distribution presence-ratio gate composed with legacy max-score gate; default mode=both
 decisions/why-standalone-embed-endpoint.md|decision|standalone /embed avoids /detect cost and keeps DB dep in backend
+decisions/why-stix-21-export.md|decision,backend|STIX 2.1 export mapped to GEOINT SDOs (identity/infrastructure), clean-room from OASIS spec
 decisions/why-transportation-floor-raised.md|decision,backend,ontology|per-class floor defaults (transportation=0.55, other=0.50) lift precision on noisy buckets; operator overrides via admin matrix
 decisions/why-wbf-over-nms.md|decision,inference|cross-detector fuser default WBF; NMS suppresses winners (DOTA->GDINO mAP collapse); SAM3_FUSION_MODE=wbf|nms knob
 decisions/why-worker-legacy-monolith-kept.md|decision,celery|3500 tested lines preserved; thin facade package avoids breakage

@@ -15,6 +15,7 @@ const API_URL = (import.meta as any).env?.VITE_API_URL || '';
 export type StoredTle = {
   norad_id: number;
   name: string;
+  mission?: string;
   epoch: string | null;
   source: string | null;
   imported_at: string;
@@ -31,7 +32,20 @@ export type OverpassPass = {
 export type SatellitePasses = {
   norad_id: number;
   name: string;
+  mission?: string;
   passes: OverpassPass[];
+};
+
+export type SatelliteAnomalies = {
+  maneuvers: Array<{
+    norad_id: number; name: string; mission?: string;
+    reasons: string[]; epoch: string | null;
+  }>;
+  decay_anomalies: Array<{
+    norad_id: number; name: string; mission?: string;
+    mm_rate_revday2: number; approx_alt_km: number; epoch: string | null;
+  }>;
+  objects_compared: number;
 };
 
 export type OverpassResponse = {
@@ -82,5 +96,10 @@ export async function getGroundTrack(
   const r = await axios.get<GroundTrack>(`${API_URL}/api/satellites/ground-track/${noradId}`, {
     params: { hours, step_s: stepS },
   });
+  return r.data;
+}
+
+export async function getAnomalies(): Promise<SatelliteAnomalies> {
+  const r = await axios.get<SatelliteAnomalies>(`${API_URL}/api/satellites/anomalies`);
   return r.data;
 }

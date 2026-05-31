@@ -79,6 +79,26 @@ accurate to ±`step_s`.
   already exists, so a high-elevation pass over an AOI is a natural cue to raise
   a requirement for that window.
 
+## Maneuver / decay anomalies (R1) — needs ≥2 imports
+
+Each import also snapshots the element set into `satellite_tle_history`
+(idempotent per epoch). Once an object has **two distinct epochs** stored,
+`GET /api/satellites/anomalies` compares the two most recent and reports:
+
+- **maneuvers** — period / inclination / eccentricity change, or a RAAN shift
+  beyond expected J2 nodal precession (an intentional burn cue).
+- **decay anomalies** — abnormal mean-motion increase rate over a ≥12 h gap
+  (object losing altitude faster than routine drag).
+
+In the UI the Sat panel shows an "Orbital anomalies" block under the passes once
+detections exist. Workflow: import a catalog, wait for a fresh catalog (hours to
+days later), import again, then check anomalies — a maneuver on a recon/SAR bird
+over your AOR is a tasking cue.
+
+Each satellite also carries a **mission** tag (R2: military/recon/sar/navigation/
+EO/weather/comms/commercial-imaging) derived from its name; shown as a chip in
+the Sat panel and included in `/passes`, `/tle`, and `/anomalies` responses.
+
 ## When results look wrong
 
 - **No passes** → the window is too short, the elevation mask too high, or the

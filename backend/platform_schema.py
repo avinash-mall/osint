@@ -110,6 +110,24 @@ def ensure_satellite_tables() -> None:
                 imported_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             )
         """)
+        # R1 — per-epoch element history for maneuver/decay detection. The
+        # latest-wins satellite_tles row can't show *change*; this keeps prior
+        # epochs. Idempotent on (norad_id, epoch) so re-importing is a no-op.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS satellite_tle_history (
+                norad_id INTEGER NOT NULL,
+                epoch TIMESTAMP WITH TIME ZONE NOT NULL,
+                name TEXT NOT NULL DEFAULT '',
+                line1 TEXT NOT NULL,
+                line2 TEXT NOT NULL,
+                imported_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                PRIMARY KEY (norad_id, epoch)
+            )
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sat_tle_history_norad "
+            "ON satellite_tle_history(norad_id, epoch DESC)"
+        )
 
 
 def ensure_platform_tables() -> None:

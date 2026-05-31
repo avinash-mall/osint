@@ -957,3 +957,54 @@ def promote_candidate_edge(candidate_id: int, req: GraphPromoteRequest = GraphPr
         )
 
     return {"success": True, "candidate": updated, "graph": promoted}
+
+
+# ---------------------------------------------------------------------------
+# STIX 2.1 export (R3) — standards-based interchange for OpenCTI / Splunk /
+# MS Sentinel / QRadar. Read-only; sources operational entities + their FK
+# relationships from PostGIS (offline, no Neo4j round-trip). See
+# docs/backend/stix-export.md.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/graph/export/stix")
+def export_graph_stix():
+    """Export the operational-entity graph as a STIX 2.1 bundle.
+
+    Entities come from ``operational_entities``; relationships are derived from
+    the entity FK columns (``operates_from_base_id`` → ``operates-from``,
+    ``unit_id`` → ``assigned-to``). Bundle is valid STIX 2.1 ready for
+    OpenCTI/Splunk/Sentinel/QRadar import.
+    """
+    from platform_schema import ensure_platform_tables
+    from stix_export import build_bundle
+
+    ensure_platform_tables()
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT id, kind, name, callsign, hull, entity_class, unit_id,
+                   operates_from_base_id
+            FROM operational_entities
+            ORDER BY created_at DESC
+            LIMIT 5000
+            """
+        )
+        entities = [dict(r) for r in cursor.fetchall()]
+
+    # Derive relationships from FK columns (only when the target entity exists).
+    relations: list[dict] = []
+    for e in entities:
+        if e.get("operates_from_base_id"):
+            relations.append({
+                "source_id": e["id"], "target_id": e["operates_from_base_id"],
+                "relation_type": "operates-from",
+            })
+        if e.get("unit_id"):
+            relations.append({
+                "source_id": e["id"], "target_id": e["unit_id"],
+                "relation_type": "assigned-to",
+            })
+
+    bundle = build_bundle(entities, relations)
+    return bundle

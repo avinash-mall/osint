@@ -32,7 +32,7 @@ elements. Powers [backend/routers/satellites.py](../../backend/routers/satellite
 
 ## Key symbols
 
-- `Tle` dataclass — `norad_id`, `satrec()`, `epoch()` (line-1 cols 19-32).
+- `Tle` dataclass — `norad_id`, `satrec()`, `epoch()` (line-1 cols 19-32), `elements()` (mean elements from line-2 fixed columns, used by [satellite-anomaly.md](satellite-anomaly.md)).
 - `parse_tle_text` — tolerant 2-/3-line parser.
 - `_gmst_rad`, `_teme_to_ecef`, `_ecef_to_geodetic`, `_geodetic_to_ecef`,
   `_elevation_deg` — frame/geodetic helpers (clean-room, public formulas).

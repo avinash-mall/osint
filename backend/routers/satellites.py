@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException
 
 from database import postgis_db
 from platform_schema import ensure_satellite_tables
+from satellite_anomaly import classify_mission, detect_decay, detect_maneuver
 from satellite_overpass import Tle, ground_track, parse_tle_text, predict_passes
 from schemas import OverpassRequest, TleImportRequest
 
@@ -79,7 +80,12 @@ def list_tles():
             "FROM satellite_tles ORDER BY norad_id"
         )
         rows = cursor.fetchall()
-    return {"tles": [dict(r) for r in rows], "count": len(rows)}
+    tles = []
+    for r in rows:
+        d = dict(r)
+        d["mission"] = classify_mission(d.get("name"))["mission"]
+        tles.append(d)
+    return {"tles": tles, "count": len(tles)}
 
 
 @router.post("/tle", status_code=201)
@@ -95,6 +101,7 @@ def import_tle(body: TleImportRequest):
             norad = tle.norad_id
             if norad is None:
                 continue
+            epoch = tle.epoch()
             cursor.execute(
                 """
                 INSERT INTO satellite_tles (norad_id, name, line1, line2, epoch, source, imported_at)
@@ -103,10 +110,72 @@ def import_tle(body: TleImportRequest):
                     name = EXCLUDED.name, line1 = EXCLUDED.line1, line2 = EXCLUDED.line2,
                     epoch = EXCLUDED.epoch, source = EXCLUDED.source, imported_at = now()
                 """,
-                (norad, tle.name, tle.line1, tle.line2, tle.epoch(), body.source),
+                (norad, tle.name, tle.line1, tle.line2, epoch, body.source),
             )
+            # R1 — retain this epoch in history (idempotent on norad_id+epoch) so
+            # maneuver/decay detection can compare successive element sets.
+            if epoch is not None:
+                cursor.execute(
+                    """
+                    INSERT INTO satellite_tle_history (norad_id, epoch, name, line1, line2)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (norad_id, epoch) DO NOTHING
+                    """,
+                    (norad, epoch, tle.name, tle.line1, tle.line2),
+                )
             stored += 1
     return {"success": True, "imported": stored}
+
+
+@router.get("/anomalies")
+def list_anomalies(norad_id: Optional[int] = None):
+    """Maneuver + decay anomalies from successive stored TLE epochs (R1).
+
+    Compares the two most recent epochs per object in ``satellite_tle_history``.
+    Pure offline math (satellite_anomaly.py); no propagation, no network.
+    """
+    ensure_satellite_tables()
+    sql = (
+        "SELECT norad_id, epoch, name, line1, line2 FROM satellite_tle_history"
+    )
+    params: tuple = ()
+    if norad_id is not None:
+        sql += " WHERE norad_id = %s"
+        params = (norad_id,)
+    sql += " ORDER BY norad_id, epoch DESC"
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+
+    # Group by norad_id; the two newest epochs (already DESC) form prev<-cur.
+    by_norad: dict[int, list[dict]] = {}
+    for r in rows:
+        by_norad.setdefault(r["norad_id"], []).append(dict(r))
+
+    maneuvers: list[dict] = []
+    decays: list[dict] = []
+    for nid, epochs in by_norad.items():
+        if len(epochs) < 2:
+            continue
+        cur = Tle(name=epochs[0]["name"], line1=epochs[0]["line1"], line2=epochs[0]["line2"]).elements()
+        prev = Tle(name=epochs[1]["name"], line1=epochs[1]["line1"], line2=epochs[1]["line2"]).elements()
+        if not cur or not prev:
+            continue
+        mission = classify_mission(cur.get("name"))
+        man = detect_maneuver(prev, cur)
+        if man:
+            man["mission"] = mission["mission"]
+            maneuvers.append(man)
+        dec = detect_decay(prev, cur)
+        if dec:
+            dec["mission"] = mission["mission"]
+            decays.append(dec)
+
+    return {
+        "maneuvers": maneuvers,
+        "decay_anomalies": decays,
+        "objects_compared": sum(1 for e in by_norad.values() if len(e) >= 2),
+    }
 
 
 @router.post("/passes")
@@ -135,6 +204,7 @@ def predict_overpasses(req: OverpassRequest):
             results.append({
                 "norad_id": tle.norad_id,
                 "name": tle.name,
+                "mission": classify_mission(tle.name)["mission"],
                 "passes": [p.to_dict() for p in passes],
             })
     return {
