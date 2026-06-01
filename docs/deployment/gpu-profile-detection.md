@@ -66,6 +66,27 @@ Two optical-throughput optimisations are sized to the host automatically (see
 The docker-compose `inference-sam3` block must pass `SAM3_EMBED_BATCH_SIZE`, and the `worker`
 block `INFERENCE_MIN_PENDING_CHIPS`, for these to reach the containers.
 
+## Co-tenant VRAM ceiling (shared-GPU hosts)
+
+`configure_host` queries `memory.used` alongside `memory.total`. When a card already shows
+≥ `COTENANT_MIN_USED_MIB` (2048 MiB) of usage at configure time — i.e. **another process is
+sharing the GPUs** (e.g. a vLLM server) — it emits a per-process VRAM ceiling so inference
+can't wander into the neighbour's memory and trigger a context-poisoning `illegal memory
+access`:
+
+- **`SAM3_GPU_MEMORY_FRACTION`** = `(total − max_used − 4096 MiB) / total`, floored at 0.20.
+  `inference-sam3/main.py:_apply_gpu_memory_fraction` applies it per replica via
+  `torch.cuda.set_per_process_memory_fraction`, so an over-budget alloc raises a catchable OOM
+  (graceful per-chip fallback) instead of crashing the CUDA context.
+- The frugal overrides **`SAM3_EMBED_BATCH_SIZE`→16** and **`SAM3_BATCHED_TEXT_CHUNK_SIZE`→8**
+  keep the per-chip peak inside the cap on the common path (result-preserving).
+
+Dedicated cards (idle at configure time) get **no cap** and keep the profile's full batch
+sizes. **Run `configure_host.py` with co-tenants up but the Sentinel stack down**, so
+`memory.used` reflects only the neighbour and not our own replicas. See
+[decisions/optical-inference-throughput.md](../decisions/optical-inference-throughput.md)
+(Follow-up part 3).
+
 ## Preflight failure
 
 Preflight fails before build when a profile requires a newer host driver. E.g. Blackwell profile asks for driver 555.x+; on 535.x, `configure_host.py` reports the missing minimum and exits non-zero.

@@ -18,11 +18,19 @@ END_MARKER = "# END SENTINEL GENERATED GPU CONFIG"
 
 SERVICE_PREFIXES = ("SAM3_",)
 
+# Co-tenant detection / VRAM-ceiling tuning (see generated_env_values).
+COTENANT_MIN_USED_MIB = 2048      # below this, the card is effectively idle (driver/Xorg only)
+COTENANT_SAFETY_MIB = 4096        # slack left unallocated below the physical free memory
+COTENANT_MIN_FRACTION = 0.20      # never cap the inference pool below this share of the card
+COTENANT_EMBED_BATCH_SIZE = 16    # frugal DINOv3 crop batch when sharing a card
+COTENANT_TEXT_CHUNK_SIZE = 8      # frugal SAM3 prompt chunk when sharing a card
+
 
 @dataclass(frozen=True)
 class HostGpu:
     name: str
     memory_mib: int = 0
+    memory_used_mib: int = 0
 
 
 @dataclass(frozen=True)
@@ -57,17 +65,22 @@ def parse_gpu_query(output: str) -> tuple[HostGpu, ...]:
         if not line:
             continue
         parts = [part.strip() for part in line.split(",")]
-        # New query format: "name, memory_mib" (two columns); fall back to
-        # name-only for older recordings/tests so this stays compatible.
+
+        def _mib(value: str) -> int:
+            try:
+                return int(re.sub(r"[^0-9]", "", value) or "0")
+            except ValueError:
+                return 0
+
+        # Query format: "name, memory_total[, memory_used]". The third column
+        # (used) lets configure_host detect a GPU co-tenant; one- and two-column
+        # rows stay supported for older recordings/tests.
         if len(parts) == 1:
             gpus.append(HostGpu(name=parts[0]))
         elif len(parts) == 2:
-            mem_mib = 0
-            try:
-                mem_mib = int(re.sub(r"[^0-9]", "", parts[1]) or "0")
-            except ValueError:
-                mem_mib = 0
-            gpus.append(HostGpu(name=parts[0], memory_mib=mem_mib))
+            gpus.append(HostGpu(name=parts[0], memory_mib=_mib(parts[1])))
+        elif len(parts) == 3:
+            gpus.append(HostGpu(name=parts[0], memory_mib=_mib(parts[1]), memory_used_mib=_mib(parts[2])))
         else:
             raise RuntimeError(f"Unexpected nvidia-smi GPU query row: {line!r}")
     if not gpus:
@@ -86,7 +99,7 @@ def detect_host_gpu_info() -> HostGpuInfo:
         query = subprocess.run(
             [
                 "nvidia-smi",
-                "--query-gpu=name,memory.total",
+                "--query-gpu=name,memory.total,memory.used",
                 "--format=csv,noheader,nounits",
             ],
             check=True,
@@ -150,6 +163,31 @@ def generated_env_values(info: HostGpuInfo) -> dict[str, str]:
     profile_concurrency = int(values.get("INFERENCE_CHIP_CONCURRENCY", "1") or "1")
     values["INFERENCE_CHIP_CONCURRENCY"] = str(max(profile_concurrency, gpu_count))
     values["INFERENCE_MIN_PENDING_CHIPS"] = str(gpu_count)
+
+    # Co-tenant VRAM ceiling (depends on live free VRAM, so it belongs here, not
+    # in the per-arch profile). If another process already holds significant
+    # memory on the cards at configure time — e.g. a vLLM server sharing the
+    # GPUs — the inference replicas must not assume the whole card is theirs:
+    # torch's free-memory estimate is blind to other tenants, so an unbounded
+    # pool lets a fused cuBLAS/SDPA workspace alloc collide with the neighbour
+    # and surface as a context-poisoning "illegal memory access" instead of a
+    # clean OOM. We cap torch to the headroom that's actually free (minus a
+    # safety margin) so over-budget allocs fail gracefully, and shrink the two
+    # largest activation knobs so the per-chip peak stays inside the cap on the
+    # common path (result-preserving — fewer crops/prompts per forward, identical
+    # outputs). On dedicated cards (no co-tenant) nothing is emitted → no cap.
+    # NOTE: run configure_host.py with co-tenants up but the Sentinel stack DOWN,
+    # so memory.used reflects only the neighbour, not our own replicas.
+    total_mib = primary_gpu.memory_mib or 0
+    max_used_mib = max((g.memory_used_mib for g in info.gpus), default=0)
+    if total_mib and max_used_mib >= COTENANT_MIN_USED_MIB:
+        headroom_mib = total_mib - max_used_mib - COTENANT_SAFETY_MIB
+        fraction = max(COTENANT_MIN_FRACTION, min(0.95, headroom_mib / total_mib))
+        values["SAM3_GPU_MEMORY_FRACTION"] = f"{fraction:.2f}"
+        embed = int(values.get("SAM3_EMBED_BATCH_SIZE", "32") or "32")
+        chunk = int(values.get("SAM3_BATCHED_TEXT_CHUNK_SIZE", "8") or "8")
+        values["SAM3_EMBED_BATCH_SIZE"] = str(min(embed, COTENANT_EMBED_BATCH_SIZE))
+        values["SAM3_BATCHED_TEXT_CHUNK_SIZE"] = str(min(chunk, COTENANT_TEXT_CHUNK_SIZE))
 
     # Build flash-attn-3 + cc_torch into the inference image by default.
     # The runtime has a torch-SDPA fallback in sam3_runner.py if these

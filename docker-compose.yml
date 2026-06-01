@@ -304,6 +304,11 @@ services:
       ONTOLOGY_BACKEND_URL: ${ONTOLOGY_BACKEND_URL:-http://backend:8080}
       SAM3_EMBED_DETECTIONS: ${SAM3_EMBED_DETECTIONS:-0}
       SAM3_EMBED_BATCH_SIZE: ${SAM3_EMBED_BATCH_SIZE:-32}
+      # Per-process VRAM ceiling (fraction of each GPU's total). Auto-set by
+      # scripts/configure_host.py when a GPU co-tenant (e.g. a vLLM server) is
+      # detected; caps torch so an over-budget alloc OOMs cleanly instead of
+      # illegal-accessing into the neighbour. 0 = no cap (dedicated card).
+      SAM3_GPU_MEMORY_FRACTION: ${SAM3_GPU_MEMORY_FRACTION:-0}
       # Per-component runtime loader flags. The checked-in .env enables the full
       # auxiliary stack; turn individual flags off on memory-constrained GPUs.
       SAM3_LOAD_OPTIONAL_MODELS: ${SAM3_LOAD_OPTIONAL_MODELS:-1}

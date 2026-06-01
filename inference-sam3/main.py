@@ -162,6 +162,19 @@ SAM3_MAX_PROMPTS = int(os.getenv("SAM3_MAX_PROMPTS_PER_REQUEST", "64"))
 SAM3_MAX_IMAGE_PROMPTS = int(os.getenv("SAM3_MAX_IMAGE_PROMPTS", str(SAM3_MAX_PROMPTS)))
 SAM3_MAX_VIDEO_PROMPTS = int(os.getenv("SAM3_MAX_VIDEO_PROMPTS", "128"))
 SAM3_EMBED_DETECTIONS = os.getenv("SAM3_EMBED_DETECTIONS", "0").strip().lower() in {"1", "true", "yes", "on"}
+# Per-process VRAM ceiling, as a fraction of each GPU's total memory. Set by
+# scripts/configure_host.py when it detects a GPU co-tenant (e.g. a vLLM server
+# sharing the cards). torch's free-memory view is blind to other tenants, so an
+# uncapped pool lets a fused cuBLAS/SDPA workspace alloc collide with the
+# neighbour and surface as a context-poisoning "illegal memory access". Capping
+# the caching allocator below the shared ceiling makes an over-budget allocation
+# raise a catchable torch.cuda.OutOfMemoryError (handled by
+# inference_utils.safe_predict / memory_guard) instead. 0 / unset = no cap
+# (dedicated-GPU default). See docs/decisions/optical-inference-throughput.md.
+try:
+    SAM3_GPU_MEMORY_FRACTION = float(os.getenv("SAM3_GPU_MEMORY_FRACTION", "0") or "0")
+except ValueError:
+    SAM3_GPU_MEMORY_FRACTION = 0.0
 def _flag(name: str, default: str = "1") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
@@ -621,6 +634,27 @@ def _empty_bundle(device: str) -> dict[str, Any]:
     }
 
 
+def _apply_gpu_memory_fraction(device: str) -> None:
+    """Cap this process's caching-allocator pool on a CUDA device.
+
+    When SAM3_GPU_MEMORY_FRACTION is set (co-tenant GPUs — e.g. a vLLM server
+    sharing the cards), bound torch to that fraction of the device's total
+    memory so an over-budget allocation raises a catchable
+    torch.cuda.OutOfMemoryError (absorbed by inference_utils.safe_predict /
+    memory_guard) rather than letting an untracked fused-kernel workspace alloc
+    illegal-access against the neighbour's memory. No-op when unset (0) or on a
+    dedicated card. See docs/decisions/optical-inference-throughput.md."""
+    if not (0.0 < SAM3_GPU_MEMORY_FRACTION < 1.0):
+        return
+    if not (isinstance(device, str) and device.startswith("cuda")):
+        return
+    try:
+        torch.cuda.set_per_process_memory_fraction(SAM3_GPU_MEMORY_FRACTION, torch.device(device))
+        logger.info("Capped CUDA pool on %s to %.2f of total VRAM (co-tenant headroom)", device, SAM3_GPU_MEMORY_FRACTION)
+    except Exception as exc:  # pragma: no cover - defensive; never block load on this
+        logger.warning("Could not set GPU memory fraction on %s: %s", device, exc)
+
+
 def _unload_pool_locked() -> None:
     """Drop every model in every bundle and free CUDA memory.
     Must be called while holding _load_lock."""
@@ -664,6 +698,7 @@ def _load_profile(profile: str) -> None:
         _model_error = None
         try:
             for device in sam3_runner.resolve_devices(os.getenv("DEVICE", "auto")):
+                _apply_gpu_memory_fraction(device)
                 bundle = _empty_bundle(device)
                 for name in components:
                     bundle[name] = _build_component(name, device)

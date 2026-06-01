@@ -115,7 +115,8 @@ Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 | `SAM3_BATCHED_TEXT` / `SAM3_BATCHED_TEXT_CHUNK_SIZE` | `1` / `8` | Batched text prompting |
 | `SAM3_LOAD_OPTIONAL_MODELS` | `1` | Master switch — disables individual flags when off |
 | `SAM3_LOAD_DINOV3_SAT` | `1` | DINOv3-SAT-L re-ID embeddings |
-| `SAM3_EMBED_BATCH_SIZE` | `32` | Crops per DINOv3 forward in the batched embedding path — **VRAM-tiered, auto-set by `configure_host.py`** |
+| `SAM3_EMBED_BATCH_SIZE` | `32` | Crops per DINOv3 forward in the batched embedding path — **VRAM-tiered, auto-set by `configure_host.py`** (shrunk to 16 when a GPU co-tenant is detected) |
+| `SAM3_GPU_MEMORY_FRACTION` | `0` | Per-process VRAM ceiling (fraction of each GPU's total) — **co-tenant-derived, auto-set by `configure_host.py`** when another process (e.g. vLLM) shares the cards. `0` = no cap. Caps torch so an over-budget alloc OOMs cleanly instead of illegal-accessing the neighbour |
 | `SAM3_LOAD_PRITHVI` | `0` | Prithvi flood/burn |
 | `SAM3_LOAD_TERRAMIND` | `1` | TerraMind S1→S2 |
 | `SAM3_LOAD_DOTA_OBB` | `1` | DOTA-OBB specialist |

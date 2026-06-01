@@ -89,6 +89,50 @@ def test_single_gpu_keeps_profile_chip_dispatch():
     assert values["SAM3_EMBED_BATCH_SIZE"] == "32"
 
 
+def test_parse_gpu_query_extracts_total_and_used_columns():
+    gpus = parse_gpu_query("NVIDIA A100 80GB PCIe, 81920, 41424\n")
+
+    assert len(gpus) == 1
+    assert gpus[0].memory_mib == 81920
+    assert gpus[0].memory_used_mib == 41424
+
+
+def test_cotenant_usage_caps_memory_fraction_and_shrinks_batches():
+    """A co-tenant (e.g. vLLM) already holding ~40 GiB/card at configure time
+    → cap the inference pool to the free headroom and shrink the peak knobs."""
+    info = HostGpuInfo(
+        driver_version="595.58.03",
+        gpus=tuple(
+            HostGpu("NVIDIA A100 80GB PCIe", memory_mib=81920, memory_used_mib=41424)
+            for _ in range(4)
+        ),
+    )
+
+    values = generated_env_values(info)
+
+    # headroom = 81920 - 41424 - 4096 = 36400 → 36400/81920 = 0.44
+    assert values["SAM3_GPU_MEMORY_FRACTION"] == "0.44"
+    # datacenter baseline 64 / 16 shrinks to the frugal co-tenant values.
+    assert values["SAM3_EMBED_BATCH_SIZE"] == "16"
+    assert values["SAM3_BATCHED_TEXT_CHUNK_SIZE"] == "8"
+
+
+def test_dedicated_card_emits_no_memory_cap():
+    """No co-tenant (cards idle at configure time) → no cap, full batch sizes."""
+    info = HostGpuInfo(
+        driver_version="595.58.03",
+        gpus=tuple(
+            HostGpu("NVIDIA A100 80GB PCIe", memory_mib=81920, memory_used_mib=312)
+            for _ in range(4)
+        ),
+    )
+
+    values = generated_env_values(info)
+
+    assert "SAM3_GPU_MEMORY_FRACTION" not in values
+    assert values["SAM3_EMBED_BATCH_SIZE"] == "64"
+
+
 def test_blackwell_compatible_driver_generates_cu130_values():
     """RTX 5070 Ti → blackwell_sm120 profile (cu130 / torch 2.10.0)."""
     info = HostGpuInfo(
