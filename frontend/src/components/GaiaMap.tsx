@@ -481,10 +481,16 @@ export default function GaiaMap({
 
   const filteredDetectionClassStats = useMemo(() => {
     const query = detectionLabelSearch.trim().toLowerCase();
-    return query
-      ? detectionLabelStats.filter((item) => `${item.displayLabel || item.label} ${item.label} ${item.rawClass} ${item.parentClass || ''} ${categoryFor(item.category, DETECTION_CATEGORIES).label} ${item.source} ${item.ontology?.category || ''} ${item.threatLevel || ''} ${item.llmAdvisory?.description || ''}`.toLowerCase().includes(query))
+    // Mirror the map canvas's confidence gate: drop label rows whose highest
+    // confidence detection still falls below the threshold, so the sidebar
+    // doesn't list classes that are entirely hidden from the map.
+    const byConfidence = confidenceThreshold > 0
+      ? detectionLabelStats.filter((item) => Number(item.maxConfidence || 0) >= confidenceThreshold)
       : detectionLabelStats;
-  }, [detectionLabelSearch, detectionLabelStats]);
+    return query
+      ? byConfidence.filter((item) => `${item.displayLabel || item.label} ${item.label} ${item.rawClass} ${item.parentClass || ''} ${categoryFor(item.category, DETECTION_CATEGORIES).label} ${item.source} ${item.ontology?.category || ''} ${item.threatLevel || ''} ${item.llmAdvisory?.description || ''}`.toLowerCase().includes(query))
+      : byConfidence;
+  }, [detectionLabelSearch, detectionLabelStats, confidenceThreshold]);
 
   const detectionGroups = useMemo(() => {
     if (detectionGroupMode === 'SRC') {

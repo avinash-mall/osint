@@ -52,6 +52,8 @@ The Common Operating Picture: a 2D Leaflet map with all detection layers, satell
 
 The left Detection Classes list keeps `rawClass` as the hide/solo/API filter key. `displayLabel` is presentation-only; deterministic labels remain primary now that still-image YOLOE has been removed. LLM advisory text can still appear as secondary context in [LayerPanel](map-stage-and-layers.md).
 
+The confidence slider's `confidenceThreshold` gates the sidebar as well as the map canvas. [`filteredDetectionClassStats`](../../frontend/src/components/GaiaMap.tsx#L482-L492) drops label rows whose `maxConfidence` falls below the threshold (in addition to the search filter), so a class hidden entirely from the map by confidence is also removed from the Detection Classes list; empty category/source groups then collapse via `detectionGroups`. This mirrors the canvas gate in `filteredDetectionsGeoJSON`.
+
 ## Key symbols
 
 - [`approveCandidate`](../../frontend/src/components/GaiaMap.tsx#L1039-L1054) — approves a detection-target candidate link without sending client-side reviewer identity.
