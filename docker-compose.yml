@@ -303,6 +303,7 @@ services:
       SAM3_OBB_MIN_AREA_PX: ${SAM3_OBB_MIN_AREA_PX:-4}
       ONTOLOGY_BACKEND_URL: ${ONTOLOGY_BACKEND_URL:-http://backend:8080}
       SAM3_EMBED_DETECTIONS: ${SAM3_EMBED_DETECTIONS:-0}
+      SAM3_EMBED_BATCH_SIZE: ${SAM3_EMBED_BATCH_SIZE:-32}
       # Per-component runtime loader flags. The checked-in .env enables the full
       # auxiliary stack; turn individual flags off on memory-constrained GPUs.
       SAM3_LOAD_OPTIONAL_MODELS: ${SAM3_LOAD_OPTIONAL_MODELS:-1}
@@ -418,6 +419,7 @@ services:
       - MAX_INFERENCE_CHIPS=${MAX_INFERENCE_CHIPS:-256}
       - INFERENCE_CHIP_CONCURRENCY=${INFERENCE_CHIP_CONCURRENCY:-1}
       - INFERENCE_MAX_PENDING_CHIPS=${INFERENCE_MAX_PENDING_CHIPS:-}
+      - INFERENCE_MIN_PENDING_CHIPS=${INFERENCE_MIN_PENDING_CHIPS:-4}
       - INFERENCE_CHIP_TIMEOUT_S=${INFERENCE_CHIP_TIMEOUT_S:-600}
       # Phase 1: raster I/O tuning. Same block lives on inference-sam3 so
       # both processes share GDAL cache + vsicurl settings.

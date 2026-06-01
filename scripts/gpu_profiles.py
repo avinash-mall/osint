@@ -138,6 +138,11 @@ class GpuBuildProfile:
     # Number of text prompts sent to SAM3 in a single batched inference call.
     # Larger values reduce round-trips but consume more VRAM per call.
     sam3_batched_text_chunk_size: int = 8
+    # Crops per DINOv3 forward in the batched per-detection embedding path
+    # (inference-sam3/embedding.py:embed_crops_batched). Scales with VRAM:
+    # bigger HBM → larger batch → fewer encoder passes over the 50-200 detection
+    # crops/chip. Only used when sam3_embed_detections is True.
+    sam3_embed_batch_size: int = 32
     # Master switch for startup preloading. When True, sam3_preload_profile
     # is loaded eagerly during container boot (~30-60 s init cost) so the
     # first inference request doesn't pay model-load latency. Datacenter
@@ -221,6 +226,7 @@ class GpuBuildProfile:
             # Embedding & batching
             "SAM3_EMBED_DETECTIONS": "1" if self.sam3_embed_detections else "0",
             "SAM3_BATCHED_TEXT_CHUNK_SIZE": str(self.sam3_batched_text_chunk_size),
+            "SAM3_EMBED_BATCH_SIZE": str(self.sam3_embed_batch_size),
             "SAM3_PRELOAD_MODELS": "1" if preload_models else "0",
             "SAM3_PRELOAD_PROFILE": preload_profile,
             # Resting profile the inference lifespan loads at startup (keeps the
@@ -319,6 +325,7 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_load_grounding_dino=True,
         sam3_embed_detections=False,
         sam3_batched_text_chunk_size=4,
+        sam3_embed_batch_size=16,
         sam3_preload_profile="",
         inference_speed_profile="fast_review",
         inference_chip_concurrency=1,
@@ -432,6 +439,7 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_embed_detections=True,
         # Larger batch fits comfortably in 40-80 GiB HBM.
         sam3_batched_text_chunk_size=16,
+        sam3_embed_batch_size=64,
         # Preload the "all" superset profile — 40-80 GiB cards have room
         # to keep both fmv and imagery components resident, so requests
         # of either kind serve immediately with no /load unload+reload
@@ -544,6 +552,7 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         # in bf16), trivial against 80-141 GiB HBM3. Doubling chunk size
         # halves the number of Python-level decoder dispatches.
         sam3_batched_text_chunk_size=32,
+        sam3_embed_batch_size=96,
         sam3_preload_models=True,
         # H100/H200 carry 80 GiB+ HBM3 — keep the "all" superset resident
         # so requests of either kind serve immediately. `_ensure_profile`
@@ -594,6 +603,7 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         # (B200) makes decoder-output VRAM essentially free; doubling
         # chunk halves dispatch overhead.
         sam3_batched_text_chunk_size=32,
+        sam3_embed_batch_size=96,
         sam3_preload_models=True,
         # B100/B200 datacenter Blackwell — 80-192 GiB HBM3e. Preload the
         # full superset like Hopper / Ampere datacenter so profile switches

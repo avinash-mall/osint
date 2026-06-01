@@ -72,7 +72,7 @@ Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 | `MAX_INFERENCE_CHIPS` | `256` | Worker cap (0 = full coverage) |
 | `INFERENCE_CHIP_CONCURRENCY` | `1` | Concurrent chip POSTs to SAM3 |
 | `INFERENCE_MAX_PENDING_CHIPS` | `32` | Encoded chip queue depth (in-flight ceiling) |
-| `INFERENCE_MIN_PENDING_CHIPS` | `4` | Floor for the adaptive back-off so it never starves the GPU-replica pool — set to your inference GPU/replica count |
+| `INFERENCE_MIN_PENDING_CHIPS` | `4` | Floor for the adaptive back-off so it never starves the GPU-replica pool — **auto-set to GPU count by `configure_host.py`** |
 | `INFERENCE_CHIP_SPOOL_MAX_BYTES` | `4194304` | Spill encoded chip to disk above this size |
 | `INFERENCE_CHIP_TIMEOUT_S` | `600` | Per-request timeout |
 | `INFERENCE_READY_TIMEOUT_S` | `300` | Worker wait for inference `/health` |
@@ -115,7 +115,7 @@ Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 | `SAM3_BATCHED_TEXT` / `SAM3_BATCHED_TEXT_CHUNK_SIZE` | `1` / `8` | Batched text prompting |
 | `SAM3_LOAD_OPTIONAL_MODELS` | `1` | Master switch — disables individual flags when off |
 | `SAM3_LOAD_DINOV3_SAT` | `1` | DINOv3-SAT-L re-ID embeddings |
-| `SAM3_EMBED_BATCH_SIZE` | `32` | Crops per DINOv3 forward in the batched embedding path (bounds VRAM) |
+| `SAM3_EMBED_BATCH_SIZE` | `32` | Crops per DINOv3 forward in the batched embedding path — **VRAM-tiered, auto-set by `configure_host.py`** |
 | `SAM3_LOAD_PRITHVI` | `0` | Prithvi flood/burn |
 | `SAM3_LOAD_TERRAMIND` | `1` | TerraMind S1→S2 |
 | `SAM3_LOAD_DOTA_OBB` | `1` | DOTA-OBB specialist |

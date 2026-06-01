@@ -33,10 +33,15 @@ Operator chose a full code fix keeping every feature (embeddings, GroundingDINO,
 - **Move the back-off to be replica-aware via a discovery handshake** — overkill; a single floor env tuned to GPU count is enough and stays offline-friendly.
 - **Run embeddings/postprocess off the event loop wholesale** — the batched embedding already uses `run_in_threadpool`; rewrapping the fusion loop is a larger change deferred until measured necessary.
 
-## New env vars
+## New env vars (auto-set by `configure_host.py`)
 
-- `SAM3_EMBED_BATCH_SIZE` (default 32) — crops per DINOv3 forward.
-- `INFERENCE_MIN_PENDING_CHIPS` (default 4) — back-off floor; set to inference GPU/replica count.
+These are GPU/VRAM-dependent, so `scripts/configure_host.py` writes them into the generated `.env` block per host — operators do not hand-tune them (the in-code defaults are only fallbacks when the block is absent):
+
+- `SAM3_EMBED_BATCH_SIZE` — crops per DINOv3 forward. **VRAM-tiered** via the profile field `gpu_profiles.sam3_embed_batch_size` (Turing 16; consumer Ampere/Ada/Blackwell 32; datacenter Ampere/A100 64; Hopper / datacenter Blackwell 96). Code default 32.
+- `INFERENCE_MIN_PENDING_CHIPS` — adaptive back-off floor. **GPU-count-derived**: `configure_host` sets it to `len(info.gpus)` (one inference replica per GPU). Code default 4.
+- `INFERENCE_CHIP_CONCURRENCY` (existing knob) — `configure_host` raises it to `max(profile_baseline, gpu_count)` so the worker's poster pool is at least as wide as the GPU count; otherwise the poster pool caps concurrent POSTs below the floor and the extra GPUs stay idle.
+
+See [deployment/gpu-profile-detection.md](../deployment/gpu-profile-detection.md).
 
 ## Cross-references
 

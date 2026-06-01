@@ -139,6 +139,18 @@ def generated_env_values(info: HostGpuInfo) -> dict[str, str]:
     # baseline matched to its architecture without code edits.
     values.update(profile.runtime_env(vram_mib=primary_gpu.memory_mib or None))
 
+    # Multi-GPU chip dispatch (GPU-count derived, not VRAM/arch). The inference
+    # service runs one model replica per visible GPU and serves /detect_raw
+    # lock-free, so to actually use every GPU the worker's poster pool must be
+    # at least as wide as the GPU count, and the adaptive back-off must never
+    # drop below it (otherwise it collapses onto one GPU under latency variance).
+    # The per-profile INFERENCE_CHIP_CONCURRENCY is a VRAM/arch baseline; raise
+    # it to the GPU count when there are more GPUs than that baseline.
+    gpu_count = len(info.gpus)
+    profile_concurrency = int(values.get("INFERENCE_CHIP_CONCURRENCY", "1") or "1")
+    values["INFERENCE_CHIP_CONCURRENCY"] = str(max(profile_concurrency, gpu_count))
+    values["INFERENCE_MIN_PENDING_CHIPS"] = str(gpu_count)
+
     # Build flash-attn-3 + cc_torch into the inference image by default.
     # The runtime has a torch-SDPA fallback in sam3_runner.py if these
     # are missing, but fa3 is meaningfully faster on Ampere/Ada/Hopper

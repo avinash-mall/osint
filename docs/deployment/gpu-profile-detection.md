@@ -47,6 +47,25 @@ New flags written to `.env`: `SAM3_LOAD_POLICY`, `SAM3_RESTING_PROFILE`, `SAM3_L
 `SAM3_LOAD_REMOTECLIP`. The docker-compose `inference-sam3` `environment:` block must pass each
 through for it to reach the container.
 
+## Throughput knobs (VRAM- and GPU-count-derived)
+
+Two optical-throughput optimisations are sized to the host automatically (see
+[decisions/optical-inference-throughput.md](../decisions/optical-inference-throughput.md)):
+
+- **`SAM3_EMBED_BATCH_SIZE`** — crops per DINOv3 forward in the batched per-detection
+  embedding path. VRAM-tiered via the profile field `sam3_embed_batch_size`: Turing 16;
+  consumer Ampere / Ada / consumer Blackwell 32; datacenter Ampere (A100) 64; Hopper and
+  datacenter Blackwell 96.
+- **`INFERENCE_CHIP_CONCURRENCY`** and **`INFERENCE_MIN_PENDING_CHIPS`** — derived from the
+  **GPU count** (`len(info.gpus)`), not the profile, because the inference pool runs one model
+  replica per visible GPU. `configure_host` raises concurrency to `max(profile_baseline, gpu_count)`
+  so the worker's poster pool can feed every replica, and sets the adaptive back-off floor
+  `INFERENCE_MIN_PENDING_CHIPS = gpu_count` so it never collapses onto one GPU under latency
+  variance. A single-GPU host keeps the profile baseline (concurrency 1, floor 1).
+
+The docker-compose `inference-sam3` block must pass `SAM3_EMBED_BATCH_SIZE`, and the `worker`
+block `INFERENCE_MIN_PENDING_CHIPS`, for these to reach the containers.
+
 ## Preflight failure
 
 Preflight fails before build when a profile requires a newer host driver. E.g. Blackwell profile asks for driver 555.x+; on 535.x, `configure_host.py` reports the missing minimum and exits non-zero.

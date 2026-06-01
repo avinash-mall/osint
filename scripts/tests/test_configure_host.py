@@ -58,6 +58,37 @@ def test_a100_compatible_driver_generates_datacenter_profile_values():
     assert values["SAM3_TORCHAUDIO_VERSION"] == "2.10.0+cu130"
 
 
+def test_multi_gpu_scales_chip_dispatch_to_gpu_count():
+    """A 4-GPU host feeds one replica per GPU: concurrency >= GPU count and the
+    adaptive back-off floor == GPU count. VRAM tier sets the embed batch size."""
+    info = HostGpuInfo(
+        driver_version="595.58.03",
+        gpus=tuple(HostGpu("NVIDIA A100-SXM4-80GB", memory_mib=81920) for _ in range(4)),
+    )
+
+    values = generated_env_values(info)
+
+    assert values["INFERENCE_MIN_PENDING_CHIPS"] == "4"
+    # datacenter profile baseline is 2; raised to the GPU count (4).
+    assert int(values["INFERENCE_CHIP_CONCURRENCY"]) >= 4
+    # datacenter Ampere VRAM tier.
+    assert values["SAM3_EMBED_BATCH_SIZE"] == "64"
+
+
+def test_single_gpu_keeps_profile_chip_dispatch():
+    """A single consumer GPU keeps the profile baseline (no GPU-count bump)."""
+    info = HostGpuInfo(
+        driver_version="595.58.03",
+        gpus=(HostGpu("NVIDIA GeForce RTX 3090", memory_mib=24576),),
+    )
+
+    values = generated_env_values(info)
+
+    assert values["INFERENCE_MIN_PENDING_CHIPS"] == "1"
+    assert values["INFERENCE_CHIP_CONCURRENCY"] == "1"
+    assert values["SAM3_EMBED_BATCH_SIZE"] == "32"
+
+
 def test_blackwell_compatible_driver_generates_cu130_values():
     """RTX 5070 Ti → blackwell_sm120 profile (cu130 / torch 2.10.0)."""
     info = HostGpuInfo(
