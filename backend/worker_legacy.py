@@ -232,6 +232,14 @@ INFERENCE_MAX_PENDING_CHIPS = max(
     1,
     env_int("INFERENCE_MAX_PENDING_CHIPS", INFERENCE_CHIP_CONCURRENCY * 4),
 )
+# Floor for the adaptive concurrency back-off. The inference service runs a
+# replica per GPU and serves /detect_raw lock-free, so the back-off must never
+# starve that pool — keep at least this many chips in flight. Set to your
+# inference GPU/replica count (default 4). Clamped to the pending ceiling.
+INFERENCE_MIN_PENDING_CHIPS = max(
+    1,
+    min(env_int("INFERENCE_MIN_PENDING_CHIPS", 4), INFERENCE_MAX_PENDING_CHIPS),
+)
 
 
 def _csv_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
@@ -1996,11 +2004,12 @@ def slice_and_infer(
                 _src_handles.put(src_t)
 
         # Rolling-window latency tracker for memory-aware concurrency back-off.
-        # When p95 / p50 > 3.0 the inference service is saturated (one slow
+        # When p95 / p50 > 4.0 the inference service is saturated (one slow
         # chip drags the tail); halve the effective limit to slow new submits.
-        # Restore when p95 / p50 < 1.5. Bounded by INFERENCE_CHIP_CONCURRENCY *
-        # 2 (the original pending cap) so we never push past the configured
-        # ceiling — only below it.
+        # Restore when p95 / p50 < 1.5. Floored at INFERENCE_MIN_PENDING_CHIPS
+        # so the back-off never starves the GPU-replica pool (which is the most
+        # common false trigger — tile latency varies with content, not just
+        # saturation), and capped at INFERENCE_MAX_PENDING_CHIPS on the way up.
         _chip_latencies_ms: deque[float] = deque(maxlen=20)
         _effective_pending_limit = INFERENCE_MAX_PENDING_CHIPS
 
@@ -2062,8 +2071,8 @@ def slice_and_infer(
                     p95 = sorted_lat[int(len(sorted_lat) * 0.95)]
                     ceiling = INFERENCE_MAX_PENDING_CHIPS
                     new_limit = _effective_pending_limit
-                    if p50 > 0 and p95 > 3.0 * p50 and _effective_pending_limit > 1:
-                        new_limit = max(1, _effective_pending_limit // 2)
+                    if p50 > 0 and p95 > 4.0 * p50 and _effective_pending_limit > INFERENCE_MIN_PENDING_CHIPS:
+                        new_limit = max(INFERENCE_MIN_PENDING_CHIPS, _effective_pending_limit // 2)
                     elif p50 > 0 and p95 < 1.5 * p50 and _effective_pending_limit < ceiling:
                         new_limit = min(ceiling, _effective_pending_limit + 1)
                     if new_limit != _effective_pending_limit:

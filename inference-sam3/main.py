@@ -1096,8 +1096,7 @@ async def _detect_pipeline(
     t0 = mark("overlays", t0)
 
     detections = []
-    embedding_ms = 0.0
-    dinov3_calls = 0
+    embed_bboxes: list[list[float]] = []
     for source_layer, (mask, bbox_xyxy, score, label) in layer_candidates:
         det = fusion.candidate_to_detection(
             mask,
@@ -1111,13 +1110,8 @@ async def _detect_pipeline(
         det["source_layer"] = source_layer
         if meta.get("geo"):
             det["geo"] = {**meta["geo"], "obb_map_crs": None, "obb_map_geojson": None}
-        if SAM3_EMBED_DETECTIONS and _layer_active("dinov3_sat") and bundle.get("dinov3_sat"):
-            emb_start = time.perf_counter()
-            det["embedding"] = embedding.embed_crop(bundle.get("dinov3_sat"), chip3, bbox_xyxy)
-            embedding_ms += (time.perf_counter() - emb_start) * 1000
-            dinov3_calls += 1
-        else:
-            det["embedding"] = {"model": "disabled", "dim": 0, "fp16_b64": ""}
+        det["embedding"] = {"model": "disabled", "dim": 0, "fp16_b64": ""}
+        embed_bboxes.append(bbox_xyxy)
         if modality == "multispectral":
             det["prithvi_labels"] = fusion.overlay_labels(mask, overlays, threshold=SAM3_PRITHVI_OVERLAY_THR)
         if modality == "sar":
@@ -1129,10 +1123,22 @@ async def _detect_pipeline(
             else:
                 det["terramind_embedding"] = None
         detections.append(det)
-    if dinov3_calls > 0:
-        _record_metric("dinov3_sat", embedding_ms)
-    timings["embedding"] = round(embedding_ms, 3)
     t0 = mark("postprocess", t0)
+    # DINOv3-SAT crop embeddings: one batched encoder pass over all detections
+    # (was one forward + host transfer per detection). Same per-crop output.
+    if SAM3_EMBED_DETECTIONS and _layer_active("dinov3_sat") and bundle.get("dinov3_sat") and detections:
+        emb_start = time.perf_counter()
+        embeddings = await run_in_threadpool(
+            embedding.embed_crops_batched, bundle.get("dinov3_sat"), chip3, embed_bboxes,
+        )
+        for det, emb in zip(detections, embeddings):
+            det["embedding"] = emb
+        embedding_ms = (time.perf_counter() - emb_start) * 1000
+        _record_metric("dinov3_sat", embedding_ms)
+        timings["embedding"] = round(embedding_ms, 3)
+    else:
+        timings["embedding"] = 0.0
+    t0 = time.perf_counter()  # reset so the nms timer below excludes embedding
     _nms_agnostic = os.getenv("SAM3_NMS_AGNOSTIC", "1").strip().lower() in {"1", "true", "yes", "on"}
     _nms_soft = os.getenv("SAM3_NMS_SOFT", "0").strip().lower() in {"1", "true", "yes", "on"}
     pre_nms_count = len(detections)

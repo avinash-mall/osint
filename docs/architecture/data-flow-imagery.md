@@ -34,7 +34,8 @@ Raw raster (GeoTIFF, NITF, Sentinel L2A, HLS-6, S1 GRD) → displayable detectio
 | `INFERENCE_CHIP_SIZE` / `INFERENCE_CHIP_OVERLAP` | 1008 / 252 | SAM3 chip geometry |
 | `MAX_INFERENCE_CHIPS` | 256 | Worker cap (0 = full coverage) |
 | `INFERENCE_CHIP_CONCURRENCY` | 1 | Parallel POSTs per pass |
-| `INFERENCE_MAX_PENDING_CHIPS` | 32 | Bounded encoded-chip queue |
+| `INFERENCE_MAX_PENDING_CHIPS` | 32 | Bounded encoded-chip queue (in-flight ceiling) |
+| `INFERENCE_MIN_PENDING_CHIPS` | 4 | Adaptive back-off floor — keeps the GPU-replica pool fed; set to inference GPU count |
 | `INFERENCE_CHIP_SPOOL_MAX_BYTES` | 4 MiB | Spill encoded chip to temp file above this |
 | `INFERENCE_CHIP_TIMEOUT_S` | 600 | Per-request timeout |
 

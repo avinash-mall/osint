@@ -152,6 +152,7 @@ decisions/live-mgrs-cursor-readout.md|decision,frontend|cursor chip MGRS string 
 decisions/los-obstruction-point-features.md|decision,backend,frontend|LOS endpoint emits one Point per obstruction with elev/clearance/distance for per-point tooltips
 decisions/manual-draw-modal-replaces-prompt.md|decision,frontend|in-app ManualDetectionDialog replaces window.prompt; hardened browsers block native prompts
 decisions/merged-additions-responsive-css.md|decision,frontend|additions.responsive.css folded into index.css to kill duplicate/drifting rules
+decisions/optical-inference-throughput.md|decision,inference,sam3|batch embeddings, ROI-crop postprocess, multi-GPU back-off floor, non-blocking GD gate
 decisions/pgvector-adapter-on-pool.md|decision,backend|connection_factory registers pgvector adapter on every pooled connection so list/numpy/Vector inserts work
 decisions/prompt-profile-demote-via-upsert.md|decision,backend,ontology|UPSERT no longer ORs current with existing; make_current=FALSE actually demotes
 decisions/reclassify-storage-tank-and-helipad.md|decision,ontology|Storage Tank → Industrial, Helipad → Airfield; fixes mis-filed seed objects + DOTA eval mapping

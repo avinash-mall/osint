@@ -102,14 +102,31 @@ def mask_to_obb_record(mask_bool, bbox_xyxy, width: int, height: int, *, valid_m
     work = np.asarray(mask_bool, dtype=bool)
     if valid_mask is not None:
         work = np.logical_and(work, np.asarray(valid_mask, dtype=bool))
-    edge_truncated = _touches_edge(work)
-    binary = work.astype(np.uint8)
-    if binary.sum() == 0:
+    edge_truncated = _touches_edge(work)  # full-mask: edge = image edge
+    if not work.any():
         return _hbb_fallback(bbox_xyxy, width, height, edge_truncated)
 
-    ys, xs = np.where(binary)
-    extent = max(1, min(int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1)))
+    # Run the cv2 / np.where work on the mask's own bounding-box ROI instead of
+    # the full frame, so per-detection cost is O(object), not O(image). The ROI
+    # is derived from the mask itself (cheap 1-D reductions) — never the passed
+    # bbox — so no mask pixel can be clipped. minAreaRect points are offset back
+    # to full-image coordinates before normalising, so the output is identical
+    # to operating on the full mask.
+    rows = np.any(work, axis=1)
+    cols = np.any(work, axis=0)
+    y_idx = np.where(rows)[0]
+    x_idx = np.where(cols)[0]
+    y0, y1 = int(y_idx[0]), int(y_idx[-1])
+    x0, x1 = int(x_idx[0]), int(x_idx[-1])
+    extent = max(1, min(x1 - x0 + 1, y1 - y0 + 1))
     kernel_size = int(round(extent * OBB_OPENING_KERNEL_PCT))
+    # Pad the ROI by the kernel size so MORPH_OPEN's footprint only ever reaches
+    # real (zero) mask pixels, never the ROI border — identical to full-frame.
+    pad = kernel_size if kernel_size >= 2 else 0
+    ry0, ry1 = max(0, y0 - pad), min(work.shape[0], y1 + 1 + pad)
+    rx0, rx1 = max(0, x0 - pad), min(work.shape[1], x1 + 1 + pad)
+    binary = work[ry0:ry1, rx0:rx1].astype(np.uint8)
+
     if kernel_size >= 2:
         if kernel_size % 2 == 0:
             kernel_size += 1
@@ -123,7 +140,7 @@ def mask_to_obb_record(mask_bool, bbox_xyxy, width: int, height: int, *, valid_m
     if area < OBB_MIN_AREA_PX:
         return _hbb_fallback(bbox_xyxy, width, height, edge_truncated)
     rect = cv2.minAreaRect(contour)
-    pts = cv2.boxPoints(rect)
+    pts = cv2.boxPoints(rect) + np.array([rx0, ry0], dtype=np.float32)  # ROI -> full image
     return {
         "points": _normalize_obb_points(pts, width, height),
         "source": "mask_min_area_rect",

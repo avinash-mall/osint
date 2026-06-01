@@ -47,33 +47,23 @@ _ONTOLOGY_BACKEND_URL = os.getenv("ONTOLOGY_BACKEND_URL", "http://backend:8080")
 _ONTOLOGY_VOCAB_TTL = 300.0  # 5 min — the gate doesn't change every request
 _ONTOLOGY_VOCAB_LOCK = threading.Lock()
 _ONTOLOGY_VOCAB_CACHE: dict[str, object] = {"ts": 0.0, "vocab": frozenset()}
+_ONTOLOGY_REFRESH_INFLIGHT = False
 
 
-def _fetch_ontology_vocab() -> frozenset[str]:
-    """Fetch the union of optical+multispectral+sar default prompts from the
-    backend ontology API. Used as the dynamic part of the common vocabulary.
-
-    Cached for _ONTOLOGY_VOCAB_TTL seconds. On any error (backend down,
-    timeout) returns the previously cached vocab — empty on first failure.
-    The gate degrades gracefully: an empty ontology vocab means more requests
-    fall through to GROUNDING_DINO, which is conservative (more recall, more
-    latency).
+def _refresh_ontology_vocab() -> None:
+    """Fetch the union of optical+multispectral+sar default prompts and update
+    the cache. Runs in a background thread (kicked off by _fetch_ontology_vocab)
+    so the request path never blocks on the backend round-trip. Single-flight
+    via _ONTOLOGY_REFRESH_INFLIGHT; on error the previous cache is kept.
     """
-    now = time.time()
-    with _ONTOLOGY_VOCAB_LOCK:
-        cached_ts = float(_ONTOLOGY_VOCAB_CACHE["ts"])  # type: ignore[arg-type]
-        cached_vocab = _ONTOLOGY_VOCAB_CACHE["vocab"]
-        if cached_vocab and (now - cached_ts) < _ONTOLOGY_VOCAB_TTL:
-            return cached_vocab  # type: ignore[return-value]
-    # Network fetch happens outside the lock to avoid blocking concurrent
-    # readers while the (possibly slow) backend round-trips complete.
+    global _ONTOLOGY_REFRESH_INFLIGHT
     merged: set[str] = set()
     try:
         for sensor in ("optical", "multispectral", "sar"):
             resp = requests.get(
                 f"{_ONTOLOGY_BACKEND_URL}/api/ontology/default-prompts",
                 params={"sensor": sensor},
-                timeout=5.0,
+                timeout=1.5,
             )
             resp.raise_for_status()
             for p in resp.json().get("prompts", []):
@@ -83,14 +73,43 @@ def _fetch_ontology_vocab() -> frozenset[str]:
         with _ONTOLOGY_VOCAB_LOCK:
             _ONTOLOGY_VOCAB_CACHE["ts"] = time.time()
             _ONTOLOGY_VOCAB_CACHE["vocab"] = vocab
-        return vocab
     except Exception as exc:
+        with _ONTOLOGY_VOCAB_LOCK:
+            cached = _ONTOLOGY_VOCAB_CACHE["vocab"]
         logger.warning(
             "grounding_dino_gate: failed to refresh ontology vocab: %s "
-            "(falling back to %d cached / static terms)",
-            exc, len(cached_vocab),  # type: ignore[arg-type]
+            "(keeping %d cached / static terms)",
+            exc, len(cached),  # type: ignore[arg-type]
         )
-        return cached_vocab  # type: ignore[return-value]
+    finally:
+        with _ONTOLOGY_VOCAB_LOCK:
+            _ONTOLOGY_REFRESH_INFLIGHT = False
+
+
+def _fetch_ontology_vocab() -> frozenset[str]:
+    """Return the cached dynamic vocab immediately, refreshing in the background
+    when stale. Never blocks the request path on the (possibly slow, up to a few
+    seconds) backend ontology round-trip — the static vocab still gates common
+    terms while a cold/expired cache refreshes. Degrades gracefully: an empty
+    dynamic vocab just sends more prompts through GROUNDING_DINO (more recall,
+    more latency), never a stall.
+    """
+    global _ONTOLOGY_REFRESH_INFLIGHT
+    now = time.time()
+    start_refresh = False
+    with _ONTOLOGY_VOCAB_LOCK:
+        cached_ts = float(_ONTOLOGY_VOCAB_CACHE["ts"])  # type: ignore[arg-type]
+        cached_vocab = _ONTOLOGY_VOCAB_CACHE["vocab"]
+        if (now - cached_ts) >= _ONTOLOGY_VOCAB_TTL and not _ONTOLOGY_REFRESH_INFLIGHT:
+            _ONTOLOGY_REFRESH_INFLIGHT = True
+            start_refresh = True
+    if start_refresh:
+        threading.Thread(
+            target=_refresh_ontology_vocab,
+            name="gd-gate-ontology-refresh",
+            daemon=True,
+        ).start()
+    return cached_vocab  # type: ignore[return-value]
 
 
 # Static portion of the common vocabulary — always available even when the
