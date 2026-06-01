@@ -286,23 +286,34 @@ def _build_image_impl(device: str) -> dict[str, Any]:
         checkpoint_path = _resolve_mirror_checkpoint()
         load_from_hf = False
 
-    model = build_sam3_image_model(
-        device=device,
-        compile=SAM3_COMPILE_IMAGE,
-        checkpoint_path=checkpoint_path,
-        load_from_HF=load_from_hf,
-    ).to(device).eval()
-    if SAM3_NATIVE_BF16 and device.startswith("cuda"):
-        # Cast vision + text encoders + decoder to bf16. The legacy fp32-
-        # text-encoder pin was only needed because Flash-Attention dislikes
-        # fp32; we're on SDPA so this is safe. mlx-community/sam3-bf16 ships
-        # a fully-bf16 SAM3 checkpoint as precedent for quality.
-        import torch as _torch_bf16
-        try:
-            model = model.to(_torch_bf16.bfloat16)
-            logger.info("SAM3 image model cast to native bfloat16")
-        except Exception as exc:
-            logger.warning("SAM3 native bf16 cast failed (%s); staying fp32", exc)
+    # Build under the replica's CUDA device context. build_sam3_image_model
+    # honours `device=` for parameters/buffers, but the model also creates
+    # non-param tensors — notably the vision positional encodings that
+    # _get_img_feats indexes (`vis_pos_enc`) — on the *current* CUDA device,
+    # which defaults to cuda:0. Without this context every replica's pos-enc
+    # lands on cuda:0 while `.to(device)` moves the weights to the replica's
+    # GPU, so on multi-GPU hosts _get_img_feats indexes a cuda:0 vis_pos_enc
+    # with cuda:N img_ids and dies ("indices ... same device"). Mirrors the
+    # build_video device-context fix. See
+    # docs/decisions/cached-forward-device-normalise.md.
+    with _device_context(device):
+        model = build_sam3_image_model(
+            device=device,
+            compile=SAM3_COMPILE_IMAGE,
+            checkpoint_path=checkpoint_path,
+            load_from_HF=load_from_hf,
+        ).to(device).eval()
+        if SAM3_NATIVE_BF16 and device.startswith("cuda"):
+            # Cast vision + text encoders + decoder to bf16. The legacy fp32-
+            # text-encoder pin was only needed because Flash-Attention dislikes
+            # fp32; we're on SDPA so this is safe. mlx-community/sam3-bf16 ships
+            # a fully-bf16 SAM3 checkpoint as precedent for quality.
+            import torch as _torch_bf16
+            try:
+                model = model.to(_torch_bf16.bfloat16)
+                logger.info("SAM3 image model cast to native bfloat16")
+            except Exception as exc:
+                logger.warning("SAM3 native bf16 cast failed (%s); staying fp32", exc)
     _install_sam3_perf_patches()
     return {"model": model, "processor": Sam3Processor(model, device=device)}
 
@@ -1059,6 +1070,16 @@ def _run_text_prompts_cached_batched(
             model = bundle["sam3_image"]["model"]
             cached_backbone_out: dict[str, Any] = {}
             cached_backbone_out.update(model.backbone.forward_image(seed_tensor))
+            # Guarantee every cached vision tensor (incl. vis_pos_enc, the
+            # operand _get_img_feats indexes) sits on this replica's device so
+            # it co-locates with the collator-built img_ids. Cheap no-op when
+            # the model is fully resident on `device` (the build is now wrapped
+            # in _device_context); a real backstop if any backbone tensor was
+            # created on a stray (cuda:0) device.
+            cached_backbone_out = copy_data_to_device(
+                cached_backbone_out, torch.device(device),
+                non_blocking=device.startswith("cuda"),
+            )
             cached_img_batch = seed_tensor
 
         # ---- Iterate chunks: build a tiny batch (no image work), reuse cache ----

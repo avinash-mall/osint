@@ -144,7 +144,7 @@ operations/llm-ava-configuration.md|operations|OPENAI_API_BASE pointing at vLLM/
 operations/reference-corpora-bake.md|operations,backend|assets-image bake of reference corpora; auto-seed lifespan; admin re-seed; drop-in tarballs
 operations/calibration-shipping.md|operations,backend,inference|assets-image bake of per-detector temperatures; calibration_data volume; measurement -> rebuild flow
 decisions/borders-vs-graticule-split.md|decision,frontend|LayerPanel "Tactical Grid" split into Borders (admin GeoJSON) and Graticule (coordinate grid)
-decisions/cached-forward-device-normalise.md|decision,sam3|multi-GPU _get_img_feats crash: co-locate FindStage img_ids onto cached-feature device per-stage
+decisions/cached-forward-device-normalise.md|decision,sam3|multi-GPU _get_img_feats crash: pin image-model build device so vis_pos_enc lands on replica GPU
 decisions/disable-addmm-cuda-lt.md|decision,gpu|routes nn.Linear off cuBLAS-Lt to dodge A100/cu130 corruption bug
 decisions/fmv-default-sidetab-clips.md|decision,frontend,fmv|FMV right panel opens on Clips when no cross-nav; Tracks default hid uploaded clip
 decisions/implemented-ontology-updates-endpoint.md|decision|registers GET /api/ontology/updates to fix Link Graph bottom strip 404

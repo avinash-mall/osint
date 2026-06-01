@@ -69,7 +69,27 @@ Reading the upstream source (`sam3` @ `ea46ebca`) settled it:
 
 **The fix (Layer 3, the one that actually co-locates):** in `forward_with_cache`, call `copy_data_to_device` **directly on each `FindStage` / `FindTarget`** and use the returned (moved) object as `find_input` / `find_target` — using the helper the way it was designed (per-dataclass, return-a-copy) rather than batch-level. The old in-place mover is retained only as a backstop for stage types that are neither dataclass nor `_CopyableData`, and a one-shot diagnostic (`_log_device_normalise_once`) logs `img_ids`'s device before/after against the cached features' device to confirm the outcome on the box. `_device_ctx` (Layer 1) stays as the first line of defence.
 
-> The Layer 2 claim above ("genuine backstop, not a no-op") was optimistic — it had not been exercised on a true multi-GPU host. Layer 3 is the version verified to co-locate `img_ids`.
+> The Layer 2 claim above ("genuine backstop, not a no-op") was optimistic — it had not been exercised on a true multi-GPU host. Layer 3 co-locates `img_ids`, but see Follow-up 3: `img_ids` was never the operand at fault.
+
+## Follow-up 3: the real cause was a split `backbone_out`, not the find side
+
+Layer 3 shipped with a one-shot diagnostic, and the first run on the 4× A100 host finally pinned the mechanism:
+
+```
+cached-forward find-side device normalise: stage=FindStage img_ids cuda:1 -> cuda:1 (feat_device=cuda:1)
+RuntimeError: indices ... same device as the indexed tensor (cuda:0)
+```
+
+`img_ids` was already on `cuda:1` — Layer 1's `_device_ctx` had been working all along, and **the find side was never the problem.** The *indexed* operand, `vis_pos_enc`, was on `cuda:0`. So the cached `backbone_out` was **split across GPUs**: most tensors on the replica's device, the vision positional encodings on `cuda:0`.
+
+Cause: the image-model build (`_build_image_impl`) was **not** wrapped in `_device_context(device)`. `build_sam3_image_model(device=...).to(device)` moves parameters and registered buffers to the replica's GPU, but the model creates non-param tensors (the positional encodings) on the *current* CUDA device — `cuda:0` by default — at build time, and `.to(device)` does not relocate them. Every replica ran with weights on `cuda:N` but pos-enc stuck on `cuda:0`; `_get_img_feats` then indexed a `cuda:0` `vis_pos_enc` with `cuda:N` `img_ids`. That illegal index also poisons the CUDA context → the follow-on `cudaErrorIllegalAddress` cascade. `build_video` already guarded against exactly this; the image build did not.
+
+**Fix (the one that resolves it):**
+- Wrap the image-model build in `_device_context(device)` in `_build_image_impl`, so pos-enc and any other current-device tensors are created on the replica's GPU. Mirrors `build_video`.
+- Belt-and-suspenders: in `_run_text_prompts_cached_batched`, run the freshly-built `cached_backbone_out` through `copy_data_to_device(..., torch.device(device))` so the indexed operand is guaranteed co-located with `img_ids` (a no-op once the build is correct).
+- Layers 1–3 stay — they were correct, just aimed at an operand (`img_ids`) that was already fine. The diagnostic now also logs the device set of `backbone_out` to catch any future split.
+
+Lesson: key device debugging off the **indexed operand** (`vis_pos_enc`), not the index (`img_ids`). Three iterations chased the index; the operand was the one on the wrong GPU, because `.to(device)` is not a guarantee that *every* tensor a module produces is on `device`.
 
 ## Cross-references
 

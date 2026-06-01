@@ -37,6 +37,24 @@ def _first_tensor_device(obj):
     return None
 
 
+def _all_tensor_devices(obj, _depth: int = 0) -> set:
+    """Set of distinct device strings for every ``torch.Tensor`` nested in
+    ``obj`` (bounded depth). Used to detect a backbone_out split across GPUs."""
+    import torch
+    out: set = set()
+    if _depth > 6:
+        return out
+    if isinstance(obj, torch.Tensor):
+        out.add(str(obj.device))
+    elif isinstance(obj, dict):
+        for value in obj.values():
+            out |= _all_tensor_devices(value, _depth + 1)
+    elif isinstance(obj, (list, tuple)):
+        for value in obj:
+            out |= _all_tensor_devices(value, _depth + 1)
+    return out
+
+
 def _move_tensors_to_device(obj, device, _depth: int = 0):
     """Recursively move every ``torch.Tensor`` inside ``obj`` onto ``device``,
     mutating lists / dicts / objects in place.
@@ -97,20 +115,22 @@ def _move_tensors_to_device(obj, device, _depth: int = 0):
 _device_normalise_logged = False
 
 
-def _log_device_normalise_once(stage_type, orig_dev, final_dev, feat_device) -> None:
-    """One-shot log of the cached-forward find-side device normalisation.
+def _log_device_normalise_once(stage_type, orig_dev, final_dev, feat_device, backbone_devs) -> None:
+    """One-shot log of the cached-forward device normalisation.
 
     Confirms on a real multi-GPU host whether ``img_ids`` started off the
-    cached features' device and whether co-location landed it back. Gated by a
-    module flag so it fires once per process, not per chunk / per request.
+    cached features' device, whether co-location landed it back, and the set of
+    devices the cached ``backbone_out`` tensors live on (a split there — e.g.
+    a stray ``cuda:0`` — is the real cause of the ``_get_img_feats`` crash).
+    Gated by a module flag so it fires once per process, not per chunk.
     """
     global _device_normalise_logged
     if _device_normalise_logged:
         return
     _device_normalise_logged = True
     logger.info(
-        "cached-forward find-side device normalise: stage=%s img_ids %s -> %s (feat_device=%s)",
-        stage_type, orig_dev, final_dev, feat_device,
+        "cached-forward device normalise: stage=%s img_ids %s -> %s feat_device=%s backbone_out devices=%s",
+        stage_type, orig_dev, final_dev, feat_device, backbone_devs,
     )
 
 
@@ -203,7 +223,10 @@ def install() -> bool:
                 _move_tensors_to_device(find_target, feat_device)
                 ids = getattr(find_input, "img_ids", None)
             final_dev = ids.device if isinstance(ids, torch.Tensor) else None
-            _log_device_normalise_once(type(find_input).__name__, orig_dev, final_dev, feat_device)
+            _log_device_normalise_once(
+                type(find_input).__name__, orig_dev, final_dev, feat_device,
+                sorted(_all_tensor_devices(backbone_out)),
+            )
 
         if find_input.input_points is not None and find_input.input_points.numel() > 0:
             print("Warning: Point prompts are ignored in PCS.")
