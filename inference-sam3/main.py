@@ -1042,6 +1042,20 @@ async def _detect_pipeline(
         timings[f"sam3_{_k}"] = _v
     t0 = mark("sam3_inference", t0)
 
+    # Serialize per-replica GPU forwards. SAM3's run_text/box_prompts already
+    # holds bundle["lock"] during its forward, but the specialists and the
+    # batched embedding run in the threadpool with no lock. Two concurrent
+    # requests on the same replica then launch matmuls on the same device's
+    # default-stream cuBLAS workspace at once → "illegal memory access". The
+    # lock is acquired inside the worker thread (not the event loop) so it
+    # serializes one replica's forwards without stalling the loop or other
+    # replicas. See docs/decisions/optical-inference-throughput.md.
+    _bundle_lock = bundle["lock"]
+
+    def _locked(fn, *args):
+        with _bundle_lock:
+            return fn(*args)
+
     force_dota = bool(meta.get("force_dota_obb", False))
     dota_allowed = (
         force_dota
@@ -1050,7 +1064,7 @@ async def _detect_pipeline(
     if bundle.get("dota_obb") and (force_dota or _layer_active("dota_obb")) and dota_allowed:
         with _track("dota_obb"):
             dota_candidates = await run_in_threadpool(
-                dota_obb.run, bundle["dota_obb"], chip3, dota_obb.DOTA_OBB_THRESHOLD,
+                _locked, dota_obb.run, bundle["dota_obb"], chip3, dota_obb.DOTA_OBB_THRESHOLD,
             )
         layer_candidates.extend(_tag_candidates("dota_obb", dota_candidates))
         candidates_by_layer["dota_obb"] = len(dota_candidates)
@@ -1071,6 +1085,7 @@ async def _detect_pipeline(
     ):
         with _track("grounding_dino"):
             gd_candidates = await run_in_threadpool(
+                _locked,
                 grounding_dino.run,
                 bundle["grounding_dino"],
                 chip3,
@@ -1090,7 +1105,7 @@ async def _detect_pipeline(
     if modality == "multispectral":
         if _layer_active("prithvi"):
             with _track("prithvi"):
-                overlays = await run_in_threadpool(prithvi_heads.run_all, bundle.get("prithvi"), chip6, (height, width))
+                overlays = await run_in_threadpool(_locked, prithvi_heads.run_all, bundle.get("prithvi"), chip6, (height, width))
         else:
             overlays = {}
     t0 = mark("overlays", t0)
@@ -1129,7 +1144,7 @@ async def _detect_pipeline(
     if SAM3_EMBED_DETECTIONS and _layer_active("dinov3_sat") and bundle.get("dinov3_sat") and detections:
         emb_start = time.perf_counter()
         embeddings = await run_in_threadpool(
-            embedding.embed_crops_batched, bundle.get("dinov3_sat"), chip3, embed_bboxes,
+            _locked, embedding.embed_crops_batched, bundle.get("dinov3_sat"), chip3, embed_bboxes,
         )
         for det, emb in zip(detections, embeddings):
             det["embedding"] = emb
