@@ -1,8 +1,8 @@
 # `inference-sam3/embedding.py` — DINOv3-SAT Embedding Head
 
 **Path:** [inference-sam3/embedding.py](../../inference-sam3/embedding.py)
-**Lines:** ~125
-**Depends on:** `transformers`, weights `facebook/dinov3-vitl16-pretrain-sat493m` (gated)
+**Lines:** ~132
+**Depends on:** `transformers`, weights `facebook/dinov3-vitl16-pretrain-sat493m` (gated), `inference_utils.device_ctx`
 
 ## Purpose
 
@@ -13,7 +13,7 @@ Compute a 1024-D embedding per detection (cropped to the bbox) for re-ID across 
 - [`_load`](../../inference-sam3/embedding.py#L17) — model + processor loader.
 - [`load_sat`](../../inference-sam3/embedding.py#L29) — `facebook/dinov3-vitl16-pretrain-sat493m` wrapper.
 - [`embed_crop`](../../inference-sam3/embedding.py#L33) — single-crop entry: `(bundle, image, bbox) -> {model, dim, fp16_b64}`.
-- [`embed_crops_batched`](../../inference-sam3/embedding.py#L47) — **batched** entry: `(bundle, image, [bbox,…]) -> [{…},…]`. Collects all in-bounds crops and runs the encoder in batches of `SAM3_EMBED_BATCH_SIZE`, one host transfer per batch. Per-crop output is identical to `embed_crop`; the detect pipeline uses this so N detections cost ~ceil(N/B) forwards, not N. Degenerate (<4 px) crops get the dim-0 placeholder in place.
+- [`embed_crops_batched`](../../inference-sam3/embedding.py#L47) — **batched** entry: `(bundle, image, [bbox,…]) -> [{…},…]`. Collects all in-bounds crops and runs the encoder in batches of `SAM3_EMBED_BATCH_SIZE`, one host transfer per batch. Per-crop output is identical to `embed_crop`; the detect pipeline uses this so N detections cost ~ceil(N/B) forwards, not N. Degenerate (<4 px) crops get the dim-0 placeholder in place. Runs the GPU loop under `inference_utils.device_ctx(device)` — it executes in the anyio threadpool, so the current CUDA device must be pinned to the replica's GPU or a forward on `cuda:N` illegal-accesses under concurrency (see [decisions/optical-inference-throughput.md](../decisions/optical-inference-throughput.md)).
 - [`dinov3_pool`](../../inference-sam3/embedding.py#L111) — pools patch tokens to a single vector (single-image path).
 
 ## Why DINOv3-SAT, not DINOv3-LVD

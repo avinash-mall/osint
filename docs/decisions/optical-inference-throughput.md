@@ -43,6 +43,14 @@ These are GPU/VRAM-dependent, so `scripts/configure_host.py` writes them into th
 
 See [deployment/gpu-profile-detection.md](../deployment/gpu-profile-detection.md).
 
+## Follow-up: concurrency exposed an unpinned-device crash
+
+Raising concurrency (back-off floor + `INFERENCE_CHIP_CONCURRENCY` = GPU count) surfaced a latent multi-GPU bug: `/detect_raw` started 500-ing with `CUDA error: an illegal memory access was encountered`, first in `embed_crops_batched`, then cascading (a poisoned CUDA context kills every later request until the container restarts).
+
+Cause: GPU forwards that run in the anyio worker threadpool must pin PyTorch's thread-local current CUDA device to the replica's GPU. SAM3's `run_text_prompts` does (`_device_ctx`), but `embed_crops_batched` and `grounding_dino.run`'s forward did an explicit `.to(device)` + forward **without** pinning. Worker threads default to `cuda:0`, so a forward on `cuda:N` issues cross-device cuBLAS/cuDNN kernels and illegal-accesses. It stayed latent while requests were effectively serialized (the old inline per-detection `embed_crop`); 4 concurrent forwards across 4 GPUs trip it.
+
+Fix: a shared `inference_utils.device_ctx(device)` context manager (mirrors `_device_ctx`) now wraps the GPU work in `embed_crops_batched`, `grounding_dino.run` (`_do_forward`), and `dota_obb.run` (`_do_predict`). Every threadpool forward now pins its replica's device like SAM3. Result-preserving; restores the intended multi-GPU concurrency. Stopgap while undeployed: `SAM3_DEVICE=cuda:0` (single GPU → no cross-device path).
+
 ## Cross-references
 
 - [inference/dinov3-embeddings.md](../inference/dinov3-embeddings.md)

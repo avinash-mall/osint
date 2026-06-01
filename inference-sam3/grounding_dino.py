@@ -97,7 +97,7 @@ def run(
     height, width = image_rgb_uint8.shape[:2]
     pil = Image.fromarray(image_rgb_uint8)
 
-    from inference_utils import safe_predict, cuda_cleanup, memory_guard
+    from inference_utils import safe_predict, cuda_cleanup, memory_guard, device_ctx
 
     def _forward_chunk(label_list: list[str]) -> list[tuple[np.ndarray, list[float], float, str]]:
         # Grounding DINO's processor expects a list of phrases joined by ". "
@@ -111,17 +111,22 @@ def run(
             # default `.to(device)` only walks the top-level dict and can leave
             # nested ints/longs on CPU, triggering "tensors on different
             # devices" at forward time.
-            inputs_dev = {k: (v.to(device) if hasattr(v, "to") else v) for k, v in inputs.items()}
-            with torch.inference_mode():
-                outputs = model(**inputs_dev)
-            return processor.post_process_grounded_object_detection(
-                outputs,
-                input_ids=inputs_dev.get("input_ids"),
-                threshold=score_threshold,
-                text_threshold=GROUNDING_DINO_TEXT_THR,
-                target_sizes=[(height, width)],
-                text_labels=[label_list],
-            )
+            # Pin the current CUDA device too: this runs in the anyio threadpool
+            # (current device defaults to cuda:0), so a forward on cuda:N would
+            # issue cross-device kernels and illegal-access under concurrency.
+            # See docs/decisions/optical-inference-throughput.md.
+            with device_ctx(device):
+                inputs_dev = {k: (v.to(device) if hasattr(v, "to") else v) for k, v in inputs.items()}
+                with torch.inference_mode():
+                    outputs = model(**inputs_dev)
+                return processor.post_process_grounded_object_detection(
+                    outputs,
+                    input_ids=inputs_dev.get("input_ids"),
+                    threshold=score_threshold,
+                    text_threshold=GROUNDING_DINO_TEXT_THR,
+                    target_sizes=[(height, width)],
+                    text_labels=[label_list],
+                )
 
         try:
             with memory_guard("grounding_dino"):

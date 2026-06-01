@@ -88,23 +88,29 @@ def embed_crops_batched(
         return results
 
     import torch
+    from inference_utils import device_ctx
 
     processor = bundle["processor"]
     model = bundle["model"]
     device = bundle["device"]
-    for start in range(0, len(crops), SAM3_EMBED_BATCH_SIZE):
-        chunk = crops[start:start + SAM3_EMBED_BATCH_SIZE]
-        inp = processor(images=chunk, return_tensors="pt").to(device)
-        with torch.inference_mode():
-            out = model(**inp)
-        vecs = out.last_hidden_state[:, 0, :].to(torch.float16).cpu().numpy()
-        for j in range(vecs.shape[0]):
-            vec = vecs[j]
-            results[crop_idx[start + j]] = {
-                "model": model_id,
-                "dim": int(vec.shape[0]),
-                "fp16_b64": base64.b64encode(vec.tobytes()).decode("ascii"),
-            }
+    # Pin the current CUDA device to this replica's GPU: embed_crops_batched runs
+    # in the anyio threadpool (current device defaults to cuda:0), so a forward
+    # on cuda:N would issue cross-device kernels and illegal-access under
+    # concurrency. See docs/decisions/optical-inference-throughput.md.
+    with device_ctx(device):
+        for start in range(0, len(crops), SAM3_EMBED_BATCH_SIZE):
+            chunk = crops[start:start + SAM3_EMBED_BATCH_SIZE]
+            inp = processor(images=chunk, return_tensors="pt").to(device)
+            with torch.inference_mode():
+                out = model(**inp)
+            vecs = out.last_hidden_state[:, 0, :].to(torch.float16).cpu().numpy()
+            for j in range(vecs.shape[0]):
+                vec = vecs[j]
+                results[crop_idx[start + j]] = {
+                    "model": model_id,
+                    "dim": int(vec.shape[0]),
+                    "fp16_b64": base64.b64encode(vec.tobytes()).decode("ascii"),
+                }
     return results
 
 

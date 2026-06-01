@@ -134,6 +134,27 @@ def apply_yolo_optimizations(
 
 
 @contextmanager
+def device_ctx(device) -> Iterator[None]:
+    """Pin PyTorch's thread-local current CUDA device for the enclosed GPU work.
+
+    Any model forward that runs in the anyio worker threadpool must pin the
+    current device: worker threads start on ``cuda:0``, so a forward whose
+    weights/inputs live on ``cuda:N`` issues cross-device kernels (cuBLAS /
+    cuDNN workspace on the *current* device) and can hit an illegal memory
+    access — especially under multi-request concurrency. Mirrors
+    ``sam3_runner._device_ctx``; shared here so the embedding + specialist
+    runners pin the same way SAM3 does. No-op on CPU / when torch is absent.
+    """
+    dev = str(device) if device is not None else ""
+    if not dev.startswith("cuda"):
+        yield
+        return
+    import torch
+    with torch.cuda.device(device):
+        yield
+
+
+@contextmanager
 def memory_guard(label: str = "inference") -> Iterator[None]:
     """Reset peaks on entry, log peak + fragmentation on exit.
 

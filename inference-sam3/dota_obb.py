@@ -75,18 +75,23 @@ def run(
         return []
     model = bundle["model"]
     height, width = image_rgb_uint8.shape[:2]
-    from inference_utils import safe_predict, cuda_cleanup
+    from inference_utils import safe_predict, cuda_cleanup, device_ctx
 
     def _do_predict():
-        return model.predict(
-            source=image_rgb_uint8,
-            imgsz=DOTA_OBB_IMGSZ,
-            conf=score_threshold,
-            iou=DOTA_OBB_IOU,
-            verbose=False,
-            device=bundle.get("device"),
-            half=DOTA_OBB_HALF,
-        )
+        # Pin the current CUDA device to this replica's GPU for parity with the
+        # other threadpool forwards (Ultralytics manages device via device=, but
+        # under multi-request concurrency a stray current device is a cross-device
+        # hazard). See docs/decisions/optical-inference-throughput.md.
+        with device_ctx(bundle.get("device")):
+            return model.predict(
+                source=image_rgb_uint8,
+                imgsz=DOTA_OBB_IMGSZ,
+                conf=score_threshold,
+                iou=DOTA_OBB_IOU,
+                verbose=False,
+                device=bundle.get("device"),
+                half=DOTA_OBB_HALF,
+            )
 
     try:
         results = safe_predict(
