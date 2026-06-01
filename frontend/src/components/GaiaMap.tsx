@@ -182,7 +182,7 @@ export default function GaiaMap({
   const [tmPlaying, setTmPlaying] = useState(false);
   // Side-by-side imagery comparator — see SwipeControl.tsx.
   const [compareImageryId, setCompareImageryId] = useState<number | null>(null);
-  const [confidenceThreshold, setConfidenceThreshold] = useState(0);
+  const [confidenceThreshold, setConfidenceThreshold] = useState(0.2);
   const [timeRange, setTimeRange] = useState<{ start: string; end: string }>(() => {
     const now = new Date();
     const hourAgo = new Date(now.getTime() - 60 * 60 * 1000);
