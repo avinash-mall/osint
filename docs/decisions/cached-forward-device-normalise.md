@@ -57,6 +57,20 @@ The real fix is two layers:
 
 A per-chunk `try/except` was also added to `_run_text_prompts_cached_batched`: a failing chunk is logged and skipped → the tile returns partial detections instead of 500-ing the whole `/detect_raw` request.
 
+## Follow-up 2: the hardened mover still missed `img_ids` on a real 4-GPU host
+
+Layer 2 above (the hardened in-place `_move_tensors_to_device`) was still a no-op against a live 4× A100 deployment — `/detect_raw` kept dying with the same `indices should be ... same device` error, with the cached `vis_pos_enc` on `cuda:0` and `find_input.img_ids` on another CUDA device. Layer 1's `_device_ctx` pin was confirmed active around both the collate and the forward, yet `img_ids` still diverged, so neither layer was actually co-locating it.
+
+Reading the upstream source (`sam3` @ `ea46ebca`) settled it:
+
+- `find_input` is a **`FindStage`** (`sam3.model.data_misc`), not a "FindInput". `img_ids` is collated as a Python list and converted to a tensor by `convert_my_tensors()` with **no `device=`**.
+- **`copy_data_to_device` is dataclass-aware**: it recurses dataclasses and `.to()`-capable objects and **returns a moved copy**. But the code only ever called it on the **whole batch** (`BatchedDatapoint`), whose top-level type is not a dataclass → recursion hit the `return data` fallback and never descended into the stages. So `img_ids` was never moved by it. The Alternatives note above ("`copy_data_to_device` doesn't recurse into `FindInput`") was therefore half-right for the wrong reason: it does recurse dataclasses, just not when handed the non-dataclass batch.
+- The in-place `_move_tensors_to_device` mover attempted attribute mutation on the stage and could not reliably reach `img_ids` on the running version's stage type.
+
+**The fix (Layer 3, the one that actually co-locates):** in `forward_with_cache`, call `copy_data_to_device` **directly on each `FindStage` / `FindTarget`** and use the returned (moved) object as `find_input` / `find_target` — using the helper the way it was designed (per-dataclass, return-a-copy) rather than batch-level. The old in-place mover is retained only as a backstop for stage types that are neither dataclass nor `_CopyableData`, and a one-shot diagnostic (`_log_device_normalise_once`) logs `img_ids`'s device before/after against the cached features' device to confirm the outcome on the box. `_device_ctx` (Layer 1) stays as the first line of defence.
+
+> The Layer 2 claim above ("genuine backstop, not a no-op") was optimistic — it had not been exercised on a true multi-GPU host. Layer 3 is the version verified to co-locate `img_ids`.
+
 ## Cross-references
 
 - [inference/sam3-runner-internals.md](../inference/sam3-runner-internals.md)

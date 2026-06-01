@@ -94,6 +94,26 @@ def _move_tensors_to_device(obj, device, _depth: int = 0):
     return obj
 
 
+_device_normalise_logged = False
+
+
+def _log_device_normalise_once(stage_type, orig_dev, final_dev, feat_device) -> None:
+    """One-shot log of the cached-forward find-side device normalisation.
+
+    Confirms on a real multi-GPU host whether ``img_ids`` started off the
+    cached features' device and whether co-location landed it back. Gated by a
+    module flag so it fires once per process, not per chunk / per request.
+    """
+    global _device_normalise_logged
+    if _device_normalise_logged:
+        return
+    _device_normalise_logged = True
+    logger.info(
+        "cached-forward find-side device normalise: stage=%s img_ids %s -> %s (feat_device=%s)",
+        stage_type, orig_dev, final_dev, feat_device,
+    )
+
+
 def install() -> bool:
     """Install the cached-forward patch on Sam3Image. Returns True on success.
 
@@ -146,22 +166,44 @@ def install() -> bool:
         # The upstream Sam3Image.forward normalises the datapoint onto the
         # model device before grounding. This patched forward bypasses that
         # normalisation to reuse cached image features, so the find-side
-        # tensors (notably find_input.img_ids) can sit on a different CUDA
-        # device than the cached backbone — _get_img_feats then dies with
-        # "indices should be ... on the same device as the indexed tensor".
-        # It bites on multi-GPU hosts where the thread-local current CUDA
-        # device drifts from this replica's device. The upstream
-        # copy_data_to_device helper does not recurse into the FindInput
-        # object, so move the find side explicitly onto the device the cached
-        # vision features actually live on — that is the operand _get_img_feats
-        # indexes. See docs/decisions/cached-forward-device-normalise.md.
-        feat_device = _first_tensor_device(backbone_out)
-        if feat_device is not None:
-            _move_tensors_to_device(input.find_inputs, feat_device)
-            _move_tensors_to_device(input.find_targets, feat_device)
+        # tensors (notably find_input.img_ids, a FindStage field) can sit on a
+        # different CUDA device than the cached backbone — _get_img_feats then
+        # dies with "indices should be ... on the same device as the indexed
+        # tensor". It bites on multi-GPU hosts where the thread-local current
+        # CUDA device drifts from this replica's device.
+        #
+        # Co-locate the find side onto the device the cached vision features
+        # actually live on — the operand _get_img_feats indexes. Upstream
+        # copy_data_to_device IS dataclass-aware (it recurses dataclasses /
+        # .to()-capable objects and RETURNS a moved copy), and the find stages
+        # are dataclasses — so call it per-stage and use the returned object.
+        # Two earlier attempts missed: calling it on the whole batch never
+        # reached the stages (the batch's top type isn't a dataclass), and the
+        # in-place _move_tensors_to_device mutation silently no-op'd on these
+        # frozen / slotted stages. See docs/decisions/cached-forward-device-normalise.md.
+        from sam3.model.utils.misc import copy_data_to_device
 
+        feat_device = _first_tensor_device(backbone_out)
         find_input = input.find_inputs[0]
         find_target = input.find_targets[0]
+        if feat_device is not None:
+            orig_ids = getattr(find_input, "img_ids", None)
+            orig_dev = orig_ids.device if isinstance(orig_ids, torch.Tensor) else None
+            try:
+                find_input = copy_data_to_device(find_input, feat_device)
+                find_target = copy_data_to_device(find_target, feat_device)
+            except Exception as exc:
+                logger.debug("copy_data_to_device on find stage failed (%s); using in-place mover", exc)
+            # Backstop: copy_data_to_device is a passthrough for non-dataclass
+            # stages (and we land here if it raised above), so if img_ids is
+            # still off-device, move it in place.
+            ids = getattr(find_input, "img_ids", None)
+            if isinstance(ids, torch.Tensor) and ids.device != feat_device:
+                _move_tensors_to_device(find_input, feat_device)
+                _move_tensors_to_device(find_target, feat_device)
+                ids = getattr(find_input, "img_ids", None)
+            final_dev = ids.device if isinstance(ids, torch.Tensor) else None
+            _log_device_normalise_once(type(find_input).__name__, orig_dev, final_dev, feat_device)
 
         if find_input.input_points is not None and find_input.input_points.numel() > 0:
             print("Warning: Point prompts are ignored in PCS.")
