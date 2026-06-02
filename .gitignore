@@ -137,3 +137,7 @@ build_*.txt
 *.log
 /tmp/
 /temp/
+
+# Celery Beat schedule DB — runtime state rewritten on every tick by the
+# worker_beat container; not source. Tracked by mistake; untracked here.
+backend/celerybeat-schedule
