@@ -201,7 +201,13 @@ services:
         SAM3_INSTALL_FAST_DEPS: ${SAM3_INSTALL_FAST_DEPS:-1}
         HF_TOKEN: ${HF_TOKEN:-}
     image: sentinel-inference-sam3:gpu
-    gpus: all
+    # GPU selection is driven by SAM3_VISIBLE_DEVICES below (NVIDIA_VISIBLE_DEVICES
+    # in the container), not a `gpus:` device request — a `--gpus all` request
+    # overrides/ignores NVIDIA_VISIBLE_DEVICES, so it must NOT be set here. Uses
+    # the nvidia runtime; requires it registered on the daemon
+    # (`docker info | grep -i runtimes` shows "nvidia"; if not:
+    # `sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker`).
+    runtime: nvidia
     # Kill-and-respawn is how /unload reliably frees SAM3's VRAM (Python
     # refs inside the upstream library survive del+empty_cache). The hot
     # path is: backend POST /unload → main.py kills the process via
@@ -210,7 +216,12 @@ services:
     environment:
       GPU_MODEL: ${GPU_MODEL:?Run python scripts/configure_host.py first}
       SAM3_GPU_PROFILE: ${SAM3_GPU_PROFILE:?Run python scripts/configure_host.py first}
-      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      # Which physical GPUs this service may use. Set SAM3_VISIBLE_DEVICES in
+      # .env to e.g. "2,3" to dedicate cards (the rest left for a co-tenant like
+      # vLLM); unset/missing → "all" (every GPU, the default). Inside the
+      # container the chosen GPUs remap to cuda:0..N, so SAM3_DEVICE=auto builds
+      # one replica per selected card.
+      NVIDIA_VISIBLE_DEVICES: ${SAM3_VISIBLE_DEVICES:-all}
       NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
       DEVICE: ${SAM3_DEVICE:-auto}
       CUDA_UNSUPPORTED_ARCH_POLICY: ${CUDA_UNSUPPORTED_ARCH_POLICY:-cpu}
