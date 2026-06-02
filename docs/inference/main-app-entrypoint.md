@@ -1,7 +1,7 @@
 # `inference-sam3/main.py` — Service Entrypoint
 
 **Path:** [inference-sam3/main.py](../../inference-sam3/main.py)
-**Lines:** ~1740
+**Lines:** ~1960
 **Depends on:** Every other module in `inference-sam3/`, plus `torch`, `cv2`, `PIL`, `fastapi`
 
 ## Purpose
@@ -14,15 +14,14 @@ FastAPI app for the GPU inference service. Holds request handlers (`/health`, `/
 
 ## Key symbols (request handlers)
 
-- [`health`](../../inference-sam3/main.py#L776-L813) — `GET /health`
-- [`memory_health`](../../inference-sam3/main.py#L817-L848) — `GET /health/memory`
-- [`memory_reset`](../../inference-sam3/main.py#L852-L862) — `POST /health/memory/reset`
-- [`load_profile`](../../inference-sam3/main.py#L866-L875) — `POST /load`
-- [`unload_models`](../../inference-sam3/main.py#L879-L900) — `POST /unload` (re-execs the process)
-- `/detect` handler — [#L1140-L1219](../../inference-sam3/main.py#L1140-L1219)
-- [`embed_endpoint`](../../inference-sam3/main.py#L1223-L1251) — `POST /embed` — standalone DINOv3-SAT 1024-d embedding for bake scripts + analyst lookup; auto-loads the imagery profile on first call; returns `{model, dim, fp16_b64}`. 503 when the active profile lacks `dinov3_sat`.
-- `/detect_raw` handler — [#L1255-L1359](../../inference-sam3/main.py#L1255-L1359)
-- `/detect_video` handler — [#L1367-L1552](../../inference-sam3/main.py#L1367-L1552)
+- [`health`](../../inference-sam3/main.py#L908) — `GET /health` (includes `serialize_forwards`)
+- `memory_health` / `memory_reset` — `GET /health/memory`, `POST /health/memory/reset`
+- [`load_profile`](../../inference-sam3/main.py#L998) — `POST /load`
+- [`unload_models`](../../inference-sam3/main.py#L1011) — `POST /unload` (re-execs the process)
+- [`detect`](../../inference-sam3/main.py#L1329) — `/detect` handler (calls `_detect_pipeline_guarded`)
+- [`embed_endpoint`](../../inference-sam3/main.py#L1423) — `POST /embed` — standalone DINOv3-SAT 1024-d embedding for bake scripts + analyst lookup; auto-loads the imagery profile on first call; returns `{model, dim, fp16_b64}`. 503 when the active profile lacks `dinov3_sat`.
+- [`detect_raw`](../../inference-sam3/main.py#L1456) — `/detect_raw` handler (calls `_detect_pipeline_guarded`)
+- [`detect_video`](../../inference-sam3/main.py#L1570) — `/detect_video` handler; each `stream()` holds `_global_forward_lock` for its window when serializing
 
 ## Key symbols (internal)
 
@@ -35,6 +34,8 @@ FastAPI app for the GPU inference service. Holds request handlers (`/health`, `/
 - [`_build_component`](../../inference-sam3/main.py#L602-L612), [`_load_profile`](../../inference-sam3/main.py#L665-L699), [`_ensure_profile`](../../inference-sam3/main.py#L702-L728) — profile pool lifecycle. `_ensure_profile` short-circuits when a resident superset (`imagery` union or `all`) already covers the requested profile's components, so hot cards never reload.
 - [`_profile_for_modality`](../../inference-sam3/main.py#L730-L744) — maps a `/detect` request `modality` (`rgb`/`multispectral`/`sar`) to its per-modality imagery profile (`imagery_rgb`/`imagery_msi`/`imagery_sar`); `/detect` and `/detect_raw` route through it so tight-VRAM cards hold one modality's models at a time. See [decisions/why-dynamic-modality-loading-on-tight-vram.md](../decisions/why-dynamic-modality-loading-on-tight-vram.md).
 - [`_version_snapshot`](../../inference-sam3/main.py#L768-L772) — combines SAM3, OBB, verifier version metadata.
+- [`_detect_pipeline`](../../inference-sam3/main.py#L1054) / [`_detect_pipeline_guarded`](../../inference-sam3/main.py#L1288) — the shared post-decode GPU pipeline and its self-heal boundary. The guarded wrapper (called by both `/detect` and `/detect_raw`) catches a poisoned CUDA context from *any* GPU path — `encode_image`, batched forward, a specialist, embedding — not just the text-chunk loop, and `os._exit(1)`s so compose respawns a clean container instead of serving 500s forever. When `SAM3_SERIALIZE_FORWARDS` is on it also holds `_detect_serial_lock` (asyncio) across the whole pipeline so no two detect pipelines overlap. See [decisions/why-exit-on-poisoned-cuda-context.md](../decisions/why-exit-on-poisoned-cuda-context.md) and [decisions/why-serialize-forwards-on-a100-cu13x.md](../decisions/why-serialize-forwards-on-a100-cu13x.md).
+- `SAM3_SERIALIZE_FORWARDS` (env, default on) + `_global_forward_lock` (threading) + `_detect_serial_lock` (asyncio) — process-wide forward serialization. [`_empty_bundle`](../../inference-sam3/main.py#L650) sets `bundle["forward_lock"]` to the shared global lock (on) or a per-replica lock (off); the 4 `sam3_runner` forward stacks and the specialist/embedding `_locked` wrapper acquire it. Each `/detect_video` `stream()` also holds `_global_forward_lock` for its window so an image forward can't race a video forward. `/health` exposes `serialize_forwards`. See [decisions/why-serialize-forwards-on-a100-cu13x.md](../decisions/why-serialize-forwards-on-a100-cu13x.md).
 
 ## /detect request contract
 
@@ -64,6 +65,7 @@ Streams `application/x-ndjson`, one record per frame × track.
 ## Failure modes
 
 - **Profile-swap race → 503, not a crash.** `/detect` auto-heals to the imagery profile, then guards `bundle.get("sam3_image") is None` before running prompts: a concurrent FMV `/load` can swap the pool to `fmv` (no `sam3_image`) between the ensure and the run, which used to crash with `TypeError: 'NoneType' object is not subscriptable`. Now it raises 503 (retryable backpressure). `run_text_prompts`/`run_box_prompts` carry the same guard. See [decisions/why-503-on-unloaded-component.md](../decisions/why-503-on-unloaded-component.md).
+- **Poisoned CUDA context → self-heal restart, not a 500-zombie.** Any `/detect(_raw)` whose GPU work raises an unrecoverable CUDA fault (illegal memory access / device-side assert / cuBLAS-cuDNN init failure) is caught by `_detect_pipeline_guarded`, which `os._exit(1)`s so the container respawns clean. On A100/cu13x this fault fires when two GPU forwards run concurrently; `SAM3_SERIALIZE_FORWARDS` (default on) serializes all forwards process-wide to prevent it, and the backend worker rides out any residual restart via chip retry. See [decisions/why-serialize-forwards-on-a100-cu13x.md](../decisions/why-serialize-forwards-on-a100-cu13x.md), [decisions/why-exit-on-poisoned-cuda-context.md](../decisions/why-exit-on-poisoned-cuda-context.md), [decisions/why-retry-chips-across-inference-restart.md](../decisions/why-retry-chips-across-inference-restart.md).
 - Invalid JSON metadata treated as `{}` for `/detect`; missing prompts then use precision defaults.
 - Image `/detect` and `/detect_raw` with `enabled_layers` containing `yoloe`, `yoloe_pf`, or `yoloe_seg` → 400; use `/detect_video` for YOLOE FMV tracking.
 - Explicit empty `metadata.text_prompts` → 400 in image detection (prevents accidental broad fallback).

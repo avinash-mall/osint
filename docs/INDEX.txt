@@ -206,6 +206,7 @@ decisions/why-open-vocabulary.md|decision|no closed taxonomy: explicit/precision
 decisions/why-osrm-replaced-networkx.md|decision,backend|planet-scale routing via OSRM sidecar; pickled networkx graph doesn't scale worldwide
 decisions/why-pgvector-for-reference-db.md|decision|pgvector + HNSW in PostGIS; no FAISS/hnswlib in inference-sam3
 decisions/why-postgis-and-neo4j-coexist.md|decision|PostGIS for spatial detections; Neo4j for entity/link graph
+decisions/why-postgis-max-connections-300.md|decision,backend,deployment|raise max_connections to 300 (env POSTGIS_MAX_CONNECTIONS) so concurrent imagery+FMV pools don't exhaust the default 100
 decisions/why-precision-first-inference-defaults.md|decision|bounded prompt defaults, source-layer provenance, specialist gates, nonzero policy floor
 decisions/why-preload-imagery-on-startup.md|decision,inference,deployment|inference-sam3 lifespan preloads imagery so healthcheck sees model_loaded; SAM3_SKIP_PRELOAD opts out
 decisions/why-readonly-ai-brief-and-map-control.md|decision,backend|AI brief-area is read-only; map control via sentinel:map-control event, not agent writes
@@ -214,6 +215,7 @@ decisions/why-release-db-connection-before-enrichment.md|decision,backend|geojso
 decisions/why-remoteclip-default-on.md|decision,inference|SUPERSEDED: RemoteCLIP verifier removed — see removed-fair1m-and-remoteclip
 decisions/removed-fair1m-and-remoteclip.md|decision,inference|permanently removed FAIR1M-OBB (no-op stub) + RemoteCLIP verifier; kept Grounding-DINO + FAIR1M dataset
 decisions/why-removed-auto-vram-cap.md|decision,deployment|configure_host no longer auto-derives SAM3_GPU_MEMORY_FRACTION (misfired on own replicas); manual-only now
+decisions/why-retry-chips-across-inference-restart.md|decision,backend,inference|imagery worker waits for /health model_loaded + retries chips across a self-heal restart; fails loudly past 5% failed-chip tolerance
 decisions/why-revert-inference-after-fmv.md|decision,backend|process_fmv reverts the GPU pool to imagery in a best-effort 409-tolerant finally so the COP keeps detecting
 decisions/why-runtime-bakers-into-assets.md|decision,deployment|geo-assets moved to runtime bake profile; BuildKit cache-mount rollback + OOM drove this
 decisions/why-sam3-as-foundation.md|decision,sam3|open-vocabulary segmentation across RGB/MSI/SAR with native API
@@ -222,6 +224,7 @@ decisions/why-sar-logratio-change.md|decision,imagery|SAR change is a sar_lograt
 decisions/why-sat-tiles-cap-at-native-zoom.md|decision,imagery,frontend|SAT TileLayer maxNativeZoom from COG GSD + nginx cache relax kills zoom-in blur
 decisions/why-security-hardening-2026-05-31.md|decision|fail-closed defaults: no committed tokens, required auth secrets, bounded uploads, gated remote imagery
 decisions/why-segearth-presence-filter.md|decision,sam3|SegEarth-OV3 score-distribution presence-ratio gate composed with legacy max-score gate; default mode=both
+decisions/why-serialize-forwards-on-a100-cu13x.md|decision,inference,gpu|SAM3_SERIALIZE_FORWARDS: one GPU forward at a time process-wide; fixes cross-replica + image×video cu13x illegal-access poison
 decisions/why-standalone-embed-endpoint.md|decision|standalone /embed avoids /detect cost and keeps DB dep in backend
 decisions/why-stix-21-export.md|decision,backend|STIX 2.1 export mapped to GEOINT SDOs (identity/infrastructure), clean-room from OASIS spec
 decisions/why-transportation-floor-raised.md|decision,backend,ontology|per-class floor defaults (transportation=0.55, other=0.50) lift precision on noisy buckets; operator overrides via admin matrix

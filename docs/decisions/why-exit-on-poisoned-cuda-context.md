@@ -74,6 +74,22 @@ text-detection path, not inventing a new one.
 - **Keep skipping chunks.** Rejected: every subsequent op fails, so this just
   serves 500s forever while reporting healthy — the bug we observed.
 
+## Update: backstop at the request boundary (not just the text-chunk loop)
+
+The per-chunk classifier above only fires when the illegal-access surfaces
+*inside* `_run_text_prompts_cached_batched`'s chunk loop. But a poisoned context
+makes the *next* request die earlier — in `encode_image`, the batched forward, a
+specialist, or the embedding pass — which escapes the chunk guard and returns a
+500, recreating the zombie this decision set out to kill (reproduced: the
+illegal-access surfaced at the `encode_image` `stage_timer` synchronize, outside
+the chunk `try`). `main._detect_pipeline_guarded` now wraps the whole
+`/detect(_raw)` pipeline and runs the same `_cuda_context_poisoned` check on
+*any* exception, `os._exit(1)`-ing regardless of which GPU path raised. The
+upstream trigger (concurrent forwards) is separately suppressed by
+[why-serialize-forwards-on-a100-cu13x.md](why-serialize-forwards-on-a100-cu13x.md),
+and the backend rides out the restart via
+[why-retry-chips-across-inference-restart.md](why-retry-chips-across-inference-restart.md).
+
 ## Consequences
 
 - A poisoned context now self-heals: one failed request, then a clean restart,

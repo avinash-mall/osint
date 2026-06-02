@@ -17,6 +17,17 @@ services:
     build:
       context: ./postgis
     image: sentinel-postgis:18-3.6-pgvector
+    # Default max_connections (100) is too small once imagery and FMV run at
+    # full concurrent load: each Celery prefork child holds its own PostGIS pool,
+    # plus Martin (~20 idle), the backend, and the tile/embed paths — the sum
+    # exceeded 100 and FMV failed with "sorry, too many clients already" while
+    # imagery was storing thousands of detections. Raise the ceiling (a
+    # transient spike, not a leak — connections free as tasks finish). ~10 MB per
+    # backend slot, so 300 ≈ 3 GB worst case, fine for a GEOINT-class host.
+    command:
+      - "postgres"
+      - "-c"
+      - "max_connections=${POSTGIS_MAX_CONNECTIONS:-300}"
     environment:
       - POSTGRES_USER=sentinel
       - POSTGRES_PASSWORD=sentinel
@@ -271,6 +282,17 @@ services:
       # cuBLAS sidesteps it. ~5–15% throughput hit on text encoder.
       # Revisit when the upstream PyTorch / cu130 cuBLAS-Lt bug is fixed.
       DISABLE_ADDMM_CUDA_LT: ${DISABLE_ADDMM_CUDA_LT:-1}
+      # Serialize GPU forwards process-wide. The per-replica forward lock guards
+      # two forwards on the SAME GPU, but on A100 (sm_80) + CUDA 13.x two
+      # forwards on DIFFERENT replicas of this one process also race a shared
+      # driver workspace → cudaErrorIllegalAddress that poisons the whole
+      # context (reproduced: sequential /detect_raw = clean, concurrent burst =
+      # instant illegal-access → self-heal restart loop). On = at most one GPU
+      # forward at a time across all replicas (imagery loses cross-GPU
+      # parallelism; FMV video is a separate path and unaffected). Set 0 only on
+      # hardware without the bug (Hopper/Blackwell) to regain imagery throughput.
+      # Companion to DISABLE_ADDMM_CUDA_LT.
+      SAM3_SERIALIZE_FORWARDS: ${SAM3_SERIALIZE_FORWARDS:-1}
       SAM3_BATCHED_TEXT: ${SAM3_BATCHED_TEXT:-1}
       SAM3_BATCHED_TEXT_CHUNK_SIZE: ${SAM3_BATCHED_TEXT_CHUNK_SIZE:-8}
       DINOV3_SAT_MODEL_ID: ${DINOV3_SAT_MODEL_ID:-facebook/dinov3-vitl16-pretrain-sat493m}

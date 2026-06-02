@@ -13,7 +13,7 @@
 | `worker_beat` | `sentinel-backend:latest` | — | Celery beat scheduler |
 | `inference-sam3` | `sentinel-inference-sam3:gpu` | internal 8001 | GPU container |
 | `neo4j` | `neo4j:5.26.26-community-ubi10` | internal 7687/7474 | APOC enabled |
-| `postgis` | `postgis/postgis:18-3.6` | internal 5432 | |
+| `postgis` | `postgis/postgis:18-3.6` | internal 5432 | `max_connections=${POSTGIS_MAX_CONNECTIONS:-300}` (concurrent imagery+FMV pools; see [decisions/why-postgis-max-connections-300.md](../decisions/why-postgis-max-connections-300.md)) |
 | `redis` | `redis:8-alpine` | internal 6379 | Celery broker |
 | `titiler` | `ghcr.io/developmentseed/titiler:2.0.2` | internal 8080 | COG tile server |
 | `martin` | `ghcr.io/maplibre/martin:1.9.1` | internal 3000 | PostGIS → MVT |

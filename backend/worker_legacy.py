@@ -183,6 +183,23 @@ def _default_chip_concurrency() -> int:
 
 INFERENCE_CHIP_CONCURRENCY = max(1, env_int("INFERENCE_CHIP_CONCURRENCY", _default_chip_concurrency()))
 INFERENCE_CHIP_TIMEOUT_S = env_int("INFERENCE_CHIP_TIMEOUT_S", 120)
+# A poisoned CUDA context makes inference-sam3 self-heal by exiting and letting
+# `restart: unless-stopped` respawn it with a clean context (~100 s). See
+# docs/decisions/why-exit-on-poisoned-cuda-context.md. During that window chip
+# POSTs fail at the connection level (refused / DNS / remote-disconnected, all
+# `requests.ConnectionError`). Rather than silently scoring those chips as
+# zero-detection, the chip POST waits for /health to come back and retries — so
+# a self-heal restart costs ~one restart of wall-clock instead of dropping the
+# rest of the scene. Bounded so a *persistent* crash loop still terminates.
+INFERENCE_RESTART_RETRY_MAX = max(0, env_int("INFERENCE_RESTART_RETRY_MAX", 3))
+INFERENCE_RESTART_WAIT_S = max(1, env_int("INFERENCE_RESTART_WAIT_S", 180))
+# After retries are exhausted, fail the pass loudly if more than this fraction
+# of attempted chips still failed — a near-empty result from a half-inferenced
+# scene is worse than an honest failure for an analyst. 0 disables the fraction
+# gate (the all-chips-failed gate still applies).
+INFERENCE_MAX_FAILED_CHIP_FRACTION = max(
+    0.0, min(1.0, env_float("INFERENCE_MAX_FAILED_CHIP_FRACTION", 0.05))
+)
 INFERENCE_MIN_VALID_CHIP_FRACTION = max(0.0, min(1.0, env_float("INFERENCE_MIN_VALID_CHIP_FRACTION", 0.01)))
 INFERENCE_MIN_VALID_DETECTION_FRACTION = max(0.0, min(1.0, env_float("INFERENCE_MIN_VALID_DETECTION_FRACTION", 0.20)))
 
@@ -1269,6 +1286,97 @@ def _negotiate_inference_capabilities(session: requests.Session) -> dict:
         return caps
 
 
+_RETRYABLE_HTTP_STATUS = frozenset({502, 503, 504})
+
+
+def _inference_unavailable(exc: BaseException) -> bool:
+    """True when an exception means inference-sam3 is unavailable — down,
+    restarting, or model still preloading — so the chip should wait for recovery
+    and be retried rather than scored as a failed (zero-detection) chip.
+
+    A self-heal restart has two faces, both transient:
+      * container gone → TCP refused / DNS failure → ``requests.ConnectionError``
+        (also covers ``ConnectTimeout``), or a mid-stream ``ChunkedEncodingError``.
+      * container back but the SAM3 bundle is still preloading → ``/detect_raw``
+        returns HTTP 503 (see decisions/why-503-on-unloaded-component.md); a
+        502/504 from any proxy in front is the same "not ready" class.
+
+    A ``ReadTimeout`` (one slow forward) or any other 4xx/5xx (a genuine
+    per-chip failure, e.g. a 500 on a single tile) is deliberately NOT retried
+    here — only whole-service unavailability is.
+    """
+    if isinstance(
+        exc, (requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError)
+    ):
+        return True
+    if isinstance(exc, requests.exceptions.HTTPError):
+        resp = getattr(exc, "response", None)
+        return resp is not None and resp.status_code in _RETRYABLE_HTTP_STATUS
+    return False
+
+
+def _wait_for_inference_healthy(timeout_s: float = INFERENCE_RESTART_WAIT_S) -> bool:
+    """Poll inference-sam3 /health until the model is loaded or the deadline passes.
+
+    /health *always* returns HTTP 200 (it never touches the GPU) with a
+    ``model_loaded`` flag that is False while the SAM3 bundle preloads after a
+    restart, so a status-only check would return immediately and the retried
+    POST would just hit 503 again. We require ``model_loaded`` truthy (pool
+    populated) so the wait actually spans the preload. Uses a fresh connection
+    (not the chip session, whose pooled socket points at the dead container) so
+    DNS re-resolves to the respawned container. Returns True once the model is
+    servable, False on timeout.
+    """
+    health_url = f"{INFERENCE_SAM3_URL.rstrip('/')}/health"
+    deadline = time.time() + max(1.0, timeout_s)
+    while time.time() < deadline:
+        try:
+            resp = requests.get(health_url, timeout=3)
+            if resp.status_code == 200 and bool(resp.json().get("model_loaded")):
+                return True
+        except (requests.RequestException, ValueError):
+            pass
+        time.sleep(2.0)
+    return False
+
+
+def _post_chip_with_restart_retry(send, chip_label: str) -> dict | None:
+    """Run ``send()`` (a thunk returning a ``requests.Response``), parse JSON,
+    and retry the whole call across an inference-sam3 self-heal restart.
+
+    On a whole-service unavailability the service is likely mid-restart
+    (poisoned CUDA context → ``os._exit(1)`` → compose respawn → SAM3 preload,
+    ~100-150 s); wait for /health to report the model loaded and retry up to
+    ``INFERENCE_RESTART_RETRY_MAX`` times. Per-chip errors (read timeout, a 500
+    on one tile, bad JSON) return None immediately as before, so the caller
+    scores just that chip as failed.
+    """
+    attempt = 0
+    while True:
+        try:
+            resp = send()
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as exc:
+            if _inference_unavailable(exc) and attempt < INFERENCE_RESTART_RETRY_MAX:
+                attempt += 1
+                logger.warning(
+                    "[WORKER] inference unavailable on chip %s (attempt %s/%s); "
+                    "waiting up to %ss for self-heal restart + model preload, then "
+                    "retrying: %s",
+                    chip_label, attempt, INFERENCE_RESTART_RETRY_MAX,
+                    INFERENCE_RESTART_WAIT_S, exc,
+                )
+                # Sleep until /health is likely back (a slow SAM3 preload may
+                # outlast one wait — that just consumes a retry and we try
+                # again). The next send() is the real test, so a wait timeout is
+                # not itself terminal; the bounded retry count is.
+                _wait_for_inference_healthy()
+                continue
+            logger.warning("[WORKER] sam3 inference failed on chip %s: %s", chip_label, exc)
+            return None
+
+
 def _post_chip_to_sam3(
     session: requests.Session,
     chip_file,
@@ -1276,7 +1384,7 @@ def _post_chip_to_sam3(
     chip_label: str,
 ) -> dict | None:
     """POST a single chip to SAM3 /detect. Returns response JSON or None on failure."""
-    try:
+    def _send():
         try:
             meta = json.loads(chip_meta_payload) if chip_meta_payload else {}
         except (TypeError, json.JSONDecodeError):
@@ -1284,17 +1392,15 @@ def _post_chip_to_sam3(
         filename = meta.get("filename") or "chip.png"
         content_type = meta.get("content_type") or "image/png"
         chip_file.seek(0)
-        resp = session.post(
+        return session.post(
             f"{INFERENCE_SAM3_URL}/detect",
             files={"image": (filename, chip_file, content_type)},
             data={"metadata": chip_meta_payload},
             timeout=INFERENCE_CHIP_TIMEOUT_S,
         )
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as exc:
-        logger.warning("[WORKER] sam3 inference failed on chip %s: %s", chip_label, exc)
-        return None
+
+    try:
+        return _post_chip_with_restart_retry(_send, chip_label)
     finally:
         chip_file.close()
 
@@ -1313,7 +1419,7 @@ def _post_chip_to_sam3_raw(
     so the server's ``np.frombuffer`` produces a pixel-identical input
     array to what /detect's ``_decode_rgb`` would have produced.
     """
-    try:
+    def _send():
         meta_b64 = base64.b64encode(chip_meta_payload.encode("utf-8")).decode("ascii")
         h, w = chip_array.shape[:2]
         headers = {
@@ -1323,18 +1429,14 @@ def _post_chip_to_sam3_raw(
             "X-Chip-Dtype": "uint8",
             "X-Chip-Meta-B64": meta_b64,
         }
-        body = chip_array.tobytes()
-        resp = session.post(
+        return session.post(
             f"{INFERENCE_SAM3_URL}/detect_raw",
-            data=body,
+            data=chip_array.tobytes(),
             headers=headers,
             timeout=INFERENCE_CHIP_TIMEOUT_S,
         )
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as exc:
-        logger.warning("[WORKER] sam3 inference (raw) failed on chip %s: %s", chip_label, exc)
-        return None
+
+    return _post_chip_with_restart_retry(_send, chip_label)
 
 
 def _png_file(rgb: np.ndarray):
@@ -4842,21 +4944,37 @@ def process_satellite_imagery(
             on_chip_store=_store_chip,
         )
         inference_summary = inference_result["summary"]
-        # Guard: if EVERY attempted chip failed inference (e.g. the inference
-        # service OOMs on every SAM3 forward because the GPU profile loaded too
-        # many models), the pass has zero detections not because the scene is
-        # empty but because inference never ran. Fail loudly instead of
-        # finalizing `ready` with an empty result — the task's except handler
-        # records the error on the upload job. `processed_chips` excludes
-        # skipped (nodata) chips, so >0 means inference was genuinely attempted.
+        # Guard: if too many attempted chips failed inference, the pass has
+        # near-zero detections not because the scene is empty but because
+        # inference never ran on most of it. Causes: the inference service OOMs
+        # on every SAM3 forward (over-committed GPU profile), or a CUDA-poison
+        # self-heal restart that outlasted the chip-POST retry budget
+        # (INFERENCE_RESTART_RETRY_MAX × INFERENCE_RESTART_WAIT_S). A transient
+        # restart is now absorbed by the per-chip retry, so a high failure
+        # fraction here means a *persistent* fault — fail loudly instead of
+        # finalizing `ready` with a misleading empty result; the task's except
+        # handler records the error on the upload job. `processed_chips`
+        # excludes skipped (nodata) chips, so >0 means inference was genuinely
+        # attempted. `inference_success_fraction` is surfaced for honest
+        # coverage reporting alongside the existing chip-sampling
+        # `coverage_fraction`.
         _processed = int(inference_summary.get("processed_chips") or 0)
         _failed = int(inference_summary.get("failed_chips") or 0)
-        if _processed > 0 and _failed == _processed:
-            raise RuntimeError(
-                f"All {_processed} inference chips failed for pass {pass_id} "
-                "(see inference-sam3 logs; commonly GPU OOM from an over-committed "
-                "model set). Marking upload failed rather than ready-with-zero-detections."
+        if _processed > 0:
+            _fail_fraction = _failed / _processed
+            inference_summary["inference_success_fraction"] = round(1.0 - _fail_fraction, 4)
+            _over_tolerance = (
+                INFERENCE_MAX_FAILED_CHIP_FRACTION > 0.0
+                and _fail_fraction > INFERENCE_MAX_FAILED_CHIP_FRACTION
             )
+            if _failed == _processed or _over_tolerance:
+                raise RuntimeError(
+                    f"{_failed}/{_processed} inference chips failed for pass {pass_id} "
+                    f"({_fail_fraction:.1%} > {INFERENCE_MAX_FAILED_CHIP_FRACTION:.0%} tolerance; "
+                    "see inference-sam3 logs — commonly a GPU OOM or a CUDA self-heal "
+                    "restart that outlasted the worker's retry budget). Marking upload "
+                    "failed rather than ready-with-misleading-zero-detections."
+                )
         # Phase 5.20b: for SAR rasters, run the local CFAR detector after
         # the SAM3 / TerraMind chip pass. Always-on for SAR — operators who
         # want CFAR off explicitly can set ``SAR_CFAR_ENABLED=0``. Routes

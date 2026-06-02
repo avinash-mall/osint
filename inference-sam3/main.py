@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import collections
 import contextlib
 import gc
@@ -290,6 +291,33 @@ _active_lock = threading.Lock()
 _active_requests = 0
 _model_error: str | None = None
 _current_profile: str | None = None
+
+# Serialize GPU forwards process-wide. The per-replica bundle["lock"] guards two
+# forwards racing the SAME replica's default-stream cuBLAS workspace, but on
+# A100 (sm_80) + CUDA 13.x two forwards on DIFFERENT replicas of the SAME
+# process also race a shared driver workspace → cudaErrorIllegalAddress that
+# poisons the whole context (reproduced: 3 sequential /detect_raw = clean, an
+# 8-way concurrent burst = instant illegal-access). When this flag is on, every
+# replica's bundle["lock"] is this ONE shared lock, so at most one GPU forward
+# runs at a time across all replicas — trading cross-GPU imagery parallelism for
+# the elimination of the poison/self-heal/restart loop. Off restores per-replica
+# locking for hardware without the bug (Hopper/Blackwell). Companion to
+# DISABLE_ADDMM_CUDA_LT (see decisions/disable-addmm-cuda-lt.md and
+# why-exit-on-poisoned-cuda-context.md).
+SAM3_SERIALIZE_FORWARDS = os.getenv("SAM3_SERIALIZE_FORWARDS", "1").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+# Two layers, both gated by SAM3_SERIALIZE_FORWARDS:
+#  * _global_forward_lock (threading): shared bundle["forward_lock"] so individual
+#    GPU forwards across replicas can't run at once.
+#  * _detect_serial_lock (asyncio): held across a WHOLE /detect(_raw) pipeline so
+#    request B can't start until request A has fully returned — closing the
+#    async-tail gap where A's forward releases the threading lock while its GPU
+#    work is still draining and B launches on the other replica. The asyncio
+#    lock yields the event loop (health checks still answer) and is the airtight
+#    guarantee; the threading lock is defence-in-depth.
+_global_forward_lock = threading.Lock()
+_detect_serial_lock = asyncio.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -620,9 +648,18 @@ def _build_component(name: str, device: str) -> Any:
 
 
 def _empty_bundle(device: str) -> dict[str, Any]:
+    lock = threading.Lock()
     return {
         "device": device,
-        "lock": threading.Lock(),
+        # Per-replica lock: guards same-replica forward races AND gates video
+        # sessions (held for a whole stream). Left per-replica so concurrent
+        # multi-GPU FMV — which does NOT trip the kernel race — keeps both cards.
+        "lock": lock,
+        # Forward lock for the imagery /detect path only. When
+        # SAM3_SERIALIZE_FORWARDS is on it is the ONE shared global lock so at
+        # most one GPU forward runs process-wide (the cross-replica poison fix);
+        # off, it is this replica's own lock (per-GPU concurrency as before).
+        "forward_lock": _global_forward_lock if SAM3_SERIALIZE_FORWARDS else lock,
         "sam3_image": None,
         "sam3_video": None,
         "dinov3_sat": None,
@@ -887,6 +924,7 @@ def health() -> dict[str, Any]:
         "vram_total_gib": vram_total_gib,
         "active_requests": _active_requests,
         "embed_detections": SAM3_EMBED_DETECTIONS,
+        "serialize_forwards": SAM3_SERIALIZE_FORWARDS,
         "track_config": {
             "iou_min": sam3_runner.SAM3_TRACK_IOU_MIN,
             "buffer": sam3_runner.SAM3_TRACK_BUFFER,
@@ -1077,15 +1115,17 @@ async def _detect_pipeline(
         timings[f"sam3_{_k}"] = _v
     t0 = mark("sam3_inference", t0)
 
-    # Serialize per-replica GPU forwards. SAM3's run_text/box_prompts already
-    # holds bundle["lock"] during its forward, but the specialists and the
-    # batched embedding run in the threadpool with no lock. Two concurrent
-    # requests on the same replica then launch matmuls on the same device's
-    # default-stream cuBLAS workspace at once → "illegal memory access". The
-    # lock is acquired inside the worker thread (not the event loop) so it
-    # serializes one replica's forwards without stalling the loop or other
-    # replicas. See docs/decisions/optical-inference-throughput.md.
-    _bundle_lock = bundle["lock"]
+    # Serialize GPU forwards. SAM3's run_text/box_prompts already holds the same
+    # forward lock during its forward, but the specialists and the batched
+    # embedding run in the threadpool with no lock. Two concurrent forwards
+    # launch matmuls on a shared default-stream cuBLAS workspace at once →
+    # "illegal memory access". With SAM3_SERIALIZE_FORWARDS this is the global
+    # lock (one forward process-wide; fixes the cross-replica A100/cu13x poison);
+    # otherwise it is the per-replica lock. Acquired inside the worker thread
+    # (not the event loop) so it never stalls the loop. See
+    # docs/decisions/optical-inference-throughput.md and
+    # why-exit-on-poisoned-cuda-context.md.
+    _bundle_lock = bundle.get("forward_lock") or bundle["lock"]
 
     def _locked(fn, *args):
         with _bundle_lock:
@@ -1245,6 +1285,46 @@ async def _detect_pipeline(
     }
 
 
+async def _detect_pipeline_guarded(*args, **kwargs):
+    """Run `_detect_pipeline`, self-healing on a poisoned CUDA context.
+
+    The per-chunk self-heal in `sam3_runner._run_text_prompts_cached_batched`
+    only fires when the illegal-memory-access surfaces *inside* the text-chunk
+    loop. But a `cudaErrorIllegalAddress` poisons the whole process context, so
+    the very next request typically dies earlier — in `encode_image`, the
+    batched forward, a specialist, or the embedding pass — which escapes that
+    guard and returns a 500. The context never recovers, so every subsequent
+    request 500s while /health still reports `model_loaded` true: a zombie
+    serving 500s, exactly what the self-heal exists to prevent.
+
+    This boundary catches a poisoned-context exception from *any* GPU path and
+    `os._exit(1)`s so `restart: unless-stopped` respawns a clean container —
+    turning an indefinite 500 storm into one dropped request plus a restart that
+    the worker's chip-retry then rides out. OOM and per-chip errors propagate
+    unchanged (HTTP 500 for that one chip). See
+    docs/decisions/why-exit-on-poisoned-cuda-context.md.
+    """
+    try:
+        if SAM3_SERIALIZE_FORWARDS:
+            # Whole-pipeline serialization: no two /detect pipelines overlap, so
+            # one request's draining GPU work can never race the next request's
+            # forward on another replica. asyncio.Lock yields the loop, so
+            # /health stays responsive while detect requests queue.
+            async with _detect_serial_lock:
+                return await _detect_pipeline(*args, **kwargs)
+        return await _detect_pipeline(*args, **kwargs)
+    except Exception as exc:
+        if sam3_runner._cuda_context_poisoned(exc):
+            logger.critical(
+                "poisoned CUDA context escaped the detection pipeline (%s) — "
+                "process state is unrecoverable, exiting so docker-compose "
+                "respawns the container",
+                exc,
+            )
+            os._exit(1)
+        raise
+
+
 @app.post("/detect")
 async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
     started = time.perf_counter()
@@ -1330,7 +1410,7 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
             raise HTTPException(status_code=400, detail=f"Unable to decode {modality} chip: {exc}") from exc
         t0 = mark("decode", t0)
 
-        return await _detect_pipeline(
+        return await _detect_pipeline_guarded(
             bundle, meta, modality, chip3, chip6, chip2,
             started, timings, queue_depth, _peak_dev,
             _enabled, _layer_active, _unavailable,
@@ -1477,7 +1557,7 @@ async def detect_raw(request: "Request"):  # type: ignore[name-defined]
         chip2 = None
         timings["decode"] = round((time.perf_counter() - t0) * 1000, 3)
 
-        return await _detect_pipeline(
+        return await _detect_pipeline_guarded(
             bundle, meta, "rgb", chip3, chip6, chip2,
             started, timings, queue_depth, _peak_dev,
             _enabled, _layer_active, _unavailable,
@@ -1602,6 +1682,15 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
             # prompt-free general detector).
             _yoloe_slug = "yoloe_seg" if _yoloe_prompts else "yoloe_pf"
             def stream():
+                # When serializing forwards, a video forward must not run
+                # concurrently with an image /detect forward (image×video on
+                # A100/cu13x poisons the context — image×image and video×video
+                # are handled elsewhere). The image path holds _global_forward_lock
+                # per forward, so the video stream holds it for its whole window
+                # too. Held in the streaming worker thread (not the event loop).
+                _serialized = SAM3_SERIALIZE_FORWARDS
+                if _serialized:
+                    _global_forward_lock.acquire()
                 _stream_t0 = time.perf_counter()
                 _stream_err = False
                 try:
@@ -1627,11 +1716,19 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
                         cleanup_path.unlink(missing_ok=True)
                     reserved["lock"].release()
                     _leave_request()
+                    if _serialized:
+                        _global_forward_lock.release()
         else:
             # prompts is guaranteed len == 1 (or 0 → run_video no-ops) by
             # the multi-prompt 400 check above.
             _video_prompt = prompts[0] if prompts else ""
             def stream():
+                # See the YOLOE branch above: hold the global forward lock for
+                # the whole video window so an image /detect forward can't run
+                # concurrently when SAM3_SERIALIZE_FORWARDS is on.
+                _serialized = SAM3_SERIALIZE_FORWARDS
+                if _serialized:
+                    _global_forward_lock.acquire()
                 _stream_t0 = time.perf_counter()
                 _stream_err = False
                 try:
@@ -1658,6 +1755,8 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
                         cleanup_path.unlink(missing_ok=True)
                     reserved["lock"].release()
                     _leave_request()
+                    if _serialized:
+                        _global_forward_lock.release()
 
         logger.info(
             "sam3_detect_video_start mode=%s prompts=%s queue_depth=%s path=%s device=%s",

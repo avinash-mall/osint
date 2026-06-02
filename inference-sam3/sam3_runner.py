@@ -822,7 +822,7 @@ def run_text_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompt
     pil_image = Image.fromarray(image_rgb_uint8)
     candidates: list[tuple[np.ndarray, list[float], float, str]] = []
 
-    with bundle["lock"], _device_ctx(device), _inference_mode(), _autocast_ctx(device), _sdpa_ctx():
+    with (bundle.get("forward_lock") or bundle["lock"]), _device_ctx(device), _inference_mode(), _autocast_ctx(device), _sdpa_ctx():
         with stage_timer(timings, "encode_image"):
             state = processor.set_image(pil_image)
         with stage_timer(timings, "decode_loop"):
@@ -986,7 +986,7 @@ def _run_text_prompts_batched(
         always_interpolate_masks_on_gpu=device.startswith("cuda"),
     )
 
-    with bundle["lock"], _device_ctx(device), _inference_mode(), _autocast_ctx(device), _sdpa_ctx():
+    with (bundle.get("forward_lock") or bundle["lock"]), _device_ctx(device), _inference_mode(), _autocast_ctx(device), _sdpa_ctx():
         with stage_timer(timings, "batched_forward"):
             output = bundle["sam3_image"]["model"](batch)
         with stage_timer(timings, "batched_postproc"):
@@ -1077,7 +1077,7 @@ def _run_text_prompts_cached_batched(
     failed_chunks = 0
     last_exc: Exception | None = None
 
-    with bundle["lock"], _device_ctx(device), _inference_mode(), _autocast_ctx(device), _sdpa_ctx():
+    with (bundle.get("forward_lock") or bundle["lock"]), _device_ctx(device), _inference_mode(), _autocast_ctx(device), _sdpa_ctx():
         # ---- Encode the image ONCE for the whole request ----
         # We bypass the collator/Datapoint path here because the SAM3 collator
         # requires at least one find_query, but at seed time we have zero —
@@ -1252,7 +1252,7 @@ def run_box_prompts(bundle: dict[str, Any], image_rgb_uint8: np.ndarray, prompt_
     pil_image = Image.fromarray(image_rgb_uint8)
     candidates: list[tuple[np.ndarray, list[float], float, str]] = []
 
-    with bundle["lock"], _device_ctx(device), _inference_mode(), _autocast_ctx(device), _sdpa_ctx():
+    with (bundle.get("forward_lock") or bundle["lock"]), _device_ctx(device), _inference_mode(), _autocast_ctx(device), _sdpa_ctx():
         state = processor.set_image(pil_image)
         for entry in prompt_boxes:
             cxcywh = _entry_to_norm_cxcywh(entry)

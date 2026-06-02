@@ -11,7 +11,7 @@ Two connection objects shared by every backend module: `db` (Neo4j), `postgis_db
 ## Why this design
 
 - **Both clients = module-level globals**, not factories. Exactly one Neo4j driver + one PostGIS pool per process; modules import once, reuse.
-- **PostGIS via psycopg v3 connection pool** — min/max from env; single-tenant dev stays `1/10`, multi-tenant can crank `POSTGIS_POOL_MAX` to 30+.
+- **PostGIS via psycopg v3 connection pool** — min/max from env; single-tenant dev stays `1/10`, multi-tenant can crank `POSTGIS_POOL_MAX` to 30+. The server-side ceiling must cover the *sum* of every process's pool — each Celery prefork child rebuilds its own ([reset-db-pool-after-fork.md](../decisions/reset-db-pool-after-fork.md)), plus Martin (~20) and the backend — so `postgis` runs with `max_connections=${POSTGIS_MAX_CONNECTIONS:-300}` to survive concurrent imagery+FMV ingest. See [decisions/why-postgis-max-connections-300.md](../decisions/why-postgis-max-connections-300.md).
 - **Docker DNS fallback** — `POSTGIS_URI` host `postgis` + DNS failure (common during compose startup race) → retry `127.0.0.1` once.
 - **pgvector adapter registered on every pooled connection** via a `connection_factory` subclass. The Reference Embedding DB stores 1024-D vectors and every writer (bake pipeline, refresh tasks, identification scorer) inserts via Python lists / numpy arrays / `pgvector.Vector` objects. Registering once at the pool level means no callsite has to remember to call `register_vector(conn)`. Registration is lazy on first `cursor()` and silently no-ops if the `vector` extension is not yet installed (the ensure-schema step runs in lifespan startup).
 - **`DatabaseManager`** wraps both for context-managed startup/shutdown.
