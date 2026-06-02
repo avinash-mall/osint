@@ -133,11 +133,16 @@ def download_cog(scene, output_path):
         print("Error: Scene does not contain a standard true-color visual COG asset.")
         sys.exit(1)
         
+    # If the user pointed -o at a directory (existing, or a trailing separator),
+    # generate a filename inside it instead of trying to open the dir as a file.
+    if os.path.isdir(output_path) or output_path.endswith((os.sep, "/")):
+        output_path = os.path.join(output_path, f"{scene_id}.tif")
+
     print(f"Downloading Cloud-Optimized GeoTIFF from:")
     print(f"URL: {download_url}")
     print(f"To:  {output_path}")
-    
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     
     download_req = urllib.request.Request(
         download_url,
@@ -166,9 +171,11 @@ def download_cog(scene, output_path):
             print("\nSuccessfully downloaded COG image!")
     except Exception as e:
         print(f"\nDownload error: {e}")
-        if os.path.exists(output_path):
+        if os.path.isfile(output_path):
             os.remove(output_path)
         sys.exit(1)
+
+    return output_path
 
 def main():
     parser = argparse.ArgumentParser(
@@ -204,15 +211,15 @@ def main():
         
     bbox_coords = geocode_location(args.location)
     scene, search_bbox = search_stac(bbox_coords, args.cloud_cover, args.days)
-    download_cog(scene, args.output)
-    
+    output_path = download_cog(scene, args.output)
+
     # Try importing rasterio to print verified metadata
     try:
         import rasterio
         from rasterio.warp import transform_bounds
-        with rasterio.open(args.output) as src:
+        with rasterio.open(output_path) as src:
             print("\n=== VERIFIED GEOTIFF METADATA ===")
-            print(f"Local Path: {args.output}")
+            print(f"Local Path: {output_path}")
             print(f"Dimensions: {src.width} x {src.height} pixels")
             print(f"Bands:      {src.count}")
             print(f"Projection: {src.crs}")
