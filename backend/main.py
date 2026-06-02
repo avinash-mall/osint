@@ -1466,110 +1466,117 @@ def get_detections_geojson(
     DESC)`` and the cursor encodes both values so ids inserted out-of-order do
     not create gaps.
     """
+    query = """
+        SELECT d.id, d.class, d.confidence, d.pass_id, d.created_at, d.metadata,
+               sp.name AS pass_name, sp.acquisition_time, sp.metadata AS imagery_metadata,
+               ST_AsGeoJSON(d.geom)::jsonb AS geometry
+        FROM detections d
+        JOIN satellite_passes sp ON d.pass_id = sp.id
+        WHERE d.deleted_at IS NULL AND ST_Intersects(d.geom, sp.footprint)
+    """
+    params = []
+    if bbox:
+        min_lon, min_lat, max_lon, max_lat = parse_bbox(bbox)
+        query += " AND ST_Intersects(d.geom, ST_MakeEnvelope(%s, %s, %s, %s, 4326))"
+        params.extend([min_lon, min_lat, max_lon, max_lat])
+    if start_time:
+        query += " AND sp.acquisition_time >= %s"
+        params.append(start_time)
+    if end_time:
+        query += " AND sp.acquisition_time <= %s"
+        params.append(end_time)
+    if det_class:
+        query += " AND d.class = %s"
+        params.append(det_class)
+    if cursor is not None:
+        try:
+            cursor_created_at, cursor_id = _decode_detection_cursor(cursor)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="invalid detection cursor") from exc
+        query += " AND (d.created_at, d.id) < (%s, %s)"
+        params.extend([cursor_created_at, int(cursor_id)])
+    # Fetch one extra row so we can tell the client whether more remain.
+    query += " ORDER BY d.created_at DESC, d.id DESC LIMIT %s"
+    params.append(limit + 1)
+    # Hold the pooled connection ONLY for the query+fetch — never for the row
+    # enrichment below. enriched_detection_metadata() is pure-Python and, on a
+    # dense scene (thousands of detections / tens of MB), runs for tens of
+    # seconds. Building the response inside the cursor block kept each request's
+    # connection "idle in transaction" the whole time, so ~10 concurrent map
+    # polls exhausted the pool (max 10) and 500'd every other endpoint. See
+    # decisions/why-release-db-connection-before-enrichment.md.
     with postgis_db.get_cursor() as db_cursor:
-        query = """
-            SELECT d.id, d.class, d.confidence, d.pass_id, d.created_at, d.metadata,
-                   sp.name AS pass_name, sp.acquisition_time, sp.metadata AS imagery_metadata,
-                   ST_AsGeoJSON(d.geom)::jsonb AS geometry
-            FROM detections d
-            JOIN satellite_passes sp ON d.pass_id = sp.id
-            WHERE d.deleted_at IS NULL AND ST_Intersects(d.geom, sp.footprint)
-        """
-        params = []
-        if bbox:
-            min_lon, min_lat, max_lon, max_lat = parse_bbox(bbox)
-            query += " AND ST_Intersects(d.geom, ST_MakeEnvelope(%s, %s, %s, %s, 4326))"
-            params.extend([min_lon, min_lat, max_lon, max_lat])
-        if start_time:
-            query += " AND sp.acquisition_time >= %s"
-            params.append(start_time)
-        if end_time:
-            query += " AND sp.acquisition_time <= %s"
-            params.append(end_time)
-        if det_class:
-            query += " AND d.class = %s"
-            params.append(det_class)
-        if cursor is not None:
-            try:
-                cursor_created_at, cursor_id = _decode_detection_cursor(cursor)
-            except Exception as exc:
-                raise HTTPException(status_code=400, detail="invalid detection cursor") from exc
-            query += " AND (d.created_at, d.id) < (%s, %s)"
-            params.extend([cursor_created_at, int(cursor_id)])
-        # Fetch one extra row so we can tell the client whether more remain.
-        query += " ORDER BY d.created_at DESC, d.id DESC LIMIT %s"
-        params.append(limit + 1)
         db_cursor.execute(query, params)
         rows = db_cursor.fetchall()
-        has_more = len(rows) > limit
-        rows = rows[:limit]
-        next_cursor = None
-        if has_more and rows:
-            next_cursor = _encode_detection_cursor(rows[-1]["created_at"], rows[-1]["id"])
-        features = []
-        for row in rows:
-            raw_metadata = dict(row["metadata"] or {})
-            raw_metadata["confidence"] = row["confidence"]
-            metadata = enriched_detection_metadata(row["class"], raw_metadata)
-            features.append({
-                "type": "Feature",
-                "geometry": row["geometry"],
-                "properties": {
-                    "id": row["id"],
-                    "class": row["class"],
-                    "label": metadata["ontology"]["label"],
-                    "confidence": row["confidence"],
-                    "calibrated_confidence": metadata.get("calibrated_confidence", row["confidence"]),
-                    # Phase 7.36: surface the pre-calibration score + the per-
-                    # model temperature so the provenance panel can show the
-                    # full "raw → calibrated" story.
-                    "raw_confidence": metadata.get("raw_confidence"),
-                    "model_temperature": metadata.get("model_temperature"),
-                    "original_class": metadata.get("original_class", row["class"]),
-                    "parent_class": metadata.get("parent_class", row["class"]),
-                    "review_status": metadata.get("review_status", "review_candidate"),
-                    "threshold_profile": metadata.get("threshold_profile"),
-                    "class_threshold": metadata.get("class_threshold"),
-                    "model_version": metadata.get("model_version"),
-                    "taxonomy_version": metadata.get("taxonomy_version"),
-                    "chip_id": metadata.get("chip_id"),
-                    "coverage_fraction": metadata.get("coverage_fraction"),
-                    # Phase 3.13: chip-sampling transparency — when the
-                    # planner sub-samples a large raster (>MAX_INFERENCE_CHIPS),
-                    # the analyst should see that this AOI is not fully
-                    # covered. These three fields ride alongside every
-                    # detection so the UI can surface the gap.
-                    "planned_chips": metadata.get("planned_chips"),
-                    "source_total_chips": metadata.get("source_total_chips"),
-                    "sampling_enabled": metadata.get("sampling_enabled"),
-                    "pass_id": row["pass_id"],
-                    "pass_name": row["pass_name"],
-                    "acquisition_time": row["acquisition_time"],
-                    "imagery_metadata": row["imagery_metadata"] or {},
-                    "created_at": row["created_at"],
-                    "metadata": metadata,
-                    "ontology": metadata["ontology"],
-                    "threat_level": metadata.get("threat_level"),
-                    "threat_confidence": metadata.get("threat_confidence"),
-                    "assessment_status": metadata.get("assessment_status"),
-                    "evidence": metadata.get("evidence", []),
-                    "allegiance": metadata.get("allegiance", "unknown"),
-                    "branch_id": metadata.get("branch_id") or "Other",
-                    "icon_key": metadata.get("icon_key") or "circle_help",
-                    "canonical_label": metadata.get("canonical_label"),
-                    "was_unknown": bool(metadata.get("was_unknown")),
-                    "ontology_object_id": metadata.get("ontology_object_id"),
-                    "position_uncertainty_m": metadata.get("position_uncertainty_m"),
-                    "position_uncertainty_ellipse": metadata.get("position_uncertainty_ellipse"),
-                    "scale_pass": metadata.get("scale_pass"),
-                },
-            })
-        return {
-            "type": "FeatureCollection",
-            "features": features,
-            "next_cursor": next_cursor,
-            "has_more": has_more,
-        }
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    next_cursor = None
+    if has_more and rows:
+        next_cursor = _encode_detection_cursor(rows[-1]["created_at"], rows[-1]["id"])
+    features = []
+    for row in rows:
+        raw_metadata = dict(row["metadata"] or {})
+        raw_metadata["confidence"] = row["confidence"]
+        metadata = enriched_detection_metadata(row["class"], raw_metadata)
+        features.append({
+            "type": "Feature",
+            "geometry": row["geometry"],
+            "properties": {
+                "id": row["id"],
+                "class": row["class"],
+                "label": metadata["ontology"]["label"],
+                "confidence": row["confidence"],
+                "calibrated_confidence": metadata.get("calibrated_confidence", row["confidence"]),
+                # Phase 7.36: surface the pre-calibration score + the per-
+                # model temperature so the provenance panel can show the
+                # full "raw → calibrated" story.
+                "raw_confidence": metadata.get("raw_confidence"),
+                "model_temperature": metadata.get("model_temperature"),
+                "original_class": metadata.get("original_class", row["class"]),
+                "parent_class": metadata.get("parent_class", row["class"]),
+                "review_status": metadata.get("review_status", "review_candidate"),
+                "threshold_profile": metadata.get("threshold_profile"),
+                "class_threshold": metadata.get("class_threshold"),
+                "model_version": metadata.get("model_version"),
+                "taxonomy_version": metadata.get("taxonomy_version"),
+                "chip_id": metadata.get("chip_id"),
+                "coverage_fraction": metadata.get("coverage_fraction"),
+                # Phase 3.13: chip-sampling transparency — when the
+                # planner sub-samples a large raster (>MAX_INFERENCE_CHIPS),
+                # the analyst should see that this AOI is not fully
+                # covered. These three fields ride alongside every
+                # detection so the UI can surface the gap.
+                "planned_chips": metadata.get("planned_chips"),
+                "source_total_chips": metadata.get("source_total_chips"),
+                "sampling_enabled": metadata.get("sampling_enabled"),
+                "pass_id": row["pass_id"],
+                "pass_name": row["pass_name"],
+                "acquisition_time": row["acquisition_time"],
+                "imagery_metadata": row["imagery_metadata"] or {},
+                "created_at": row["created_at"],
+                "metadata": metadata,
+                "ontology": metadata["ontology"],
+                "threat_level": metadata.get("threat_level"),
+                "threat_confidence": metadata.get("threat_confidence"),
+                "assessment_status": metadata.get("assessment_status"),
+                "evidence": metadata.get("evidence", []),
+                "allegiance": metadata.get("allegiance", "unknown"),
+                "branch_id": metadata.get("branch_id") or "Other",
+                "icon_key": metadata.get("icon_key") or "circle_help",
+                "canonical_label": metadata.get("canonical_label"),
+                "was_unknown": bool(metadata.get("was_unknown")),
+                "ontology_object_id": metadata.get("ontology_object_id"),
+                "position_uncertainty_m": metadata.get("position_uncertainty_m"),
+                "position_uncertainty_ellipse": metadata.get("position_uncertainty_ellipse"),
+                "scale_pass": metadata.get("scale_pass"),
+            },
+        })
+    return {
+        "type": "FeatureCollection",
+        "features": features,
+        "next_cursor": next_cursor,
+        "has_more": has_more,
+    }
 
 
 @app.patch("/api/detections/{detection_id}/tag")

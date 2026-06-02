@@ -52,6 +52,18 @@ libpq connections are **not** fork-safe — a child reusing a parent-opened sock
 - Neo4j down → same; `db.session()` raises.
 - Schema not initialized → [`platform_schema.ensure_platform_tables()`](platform-schema-migrations.md) runs in lifespan startup.
 - Pool inherited across `fork()` without `reset_after_fork()` → `DatabaseError: error with status PGRES_TUPLES_OK and no message from the libpq` on first task per child.
+- **Pool exhaustion from long connection holds.** `get_cursor()` keeps the connection
+  checked out (`idle in transaction`) for the *whole* `with` block. A handler that builds a
+  large/slow response (e.g. per-row enrichment of thousands of rows) inside the block holds a
+  connection for tens of seconds; ~`POSTGIS_POOL_MAX` such concurrent requests exhaust the pool
+  → every other request gets `RuntimeError: PostGIS connection pool exhausted` (500).
+  **Rule: fetch rows inside `get_cursor`, exit the block, then do the slow Python work.** See
+  [decisions/why-release-db-connection-before-enrichment.md](../decisions/why-release-db-connection-before-enrichment.md).
+- **pgvector adapter is best-effort** (lazy, no-ops if the `vector` extension was absent at
+  first `cursor()` — see line 16). A connection whose adapter never registered binds Python
+  lists as `numeric[]`, so `vector <=> %s` raises `operator does not exist: vector <=> numeric[]`.
+  Vector-distance queries must cast explicitly — `<=> %s::vector` with a pgvector text literal —
+  rather than rely on the adapter (this bit `find_similar_platforms`, breaking auto-identify).
 
 ## Cross-references
 

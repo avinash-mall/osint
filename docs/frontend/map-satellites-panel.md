@@ -43,6 +43,10 @@ SGP4 service — see [satellites-router.md](../backend-routers/satellites-router
 - No TLEs stored → the service 404s; the panel surfaces the detail and shows a
   `0 TLE` count. Import resolves it.
 - Predict with no observer → inline "Pick an observer point first".
+- Panel renders only when `SelectionPanel` actually mounts the `satellitesSlot`
+  in its content region (`{rightTab === 'satellites' && satellitesSlot}`). If
+  that block is absent the "Sat" tab button still appears but clicking it shows
+  an empty pane — see [map-selection-panel.md](map-selection-panel.md) Failure modes.
 
 ## Cross-references
 

@@ -15,7 +15,7 @@ is detection-independent (overpass planning over any picked point).
 |---|---|
 | **Details** | `ObjectDetailsForm` — threat, affiliation, notes, size estimation, original/canonical labels, provenance link. Identification subsection — see [identification-panel.md](identification-panel.md) — renders between Taxonomy and the cross-nav buttons. |
 | **Analytics** | Buttons for viewshed/LOS/route/change-detection from this detection's location |
-| **Sat** | Satellite overpass planning — an injected `satellitesSlot` node from GaiaMap (keeps this panel decoupled from the satellites service). Offline SGP4, observer pick, ground track. See [map-satellites-panel.md](map-satellites-panel.md). |
+| **Sat** | Satellite overpass planning — an injected `satellitesSlot` node from GaiaMap (keeps this panel decoupled from the satellites service). Rendered by `{rightTab === 'satellites' && satellitesSlot}` in the content region. Offline SGP4, observer pick, ground track. See [map-satellites-panel.md](map-satellites-panel.md). |
 | **Similar** | k-NN list of detections with similar embeddings (`GET /api/detections/{id}/similar`) |
 | **Actions** | Resolve-to-target, candidate-link suggestions, create target package, propose collection task |
 
@@ -69,6 +69,7 @@ to display-name mapping (`sam3`, `dota_obb`, `grounding_dino`, `yoloe`,
 
 - Elevation errors are non-blocking and render `--`/unavailable state in the Geolocation section.
 - Target-package generation failures keep the user in the panel and surface the existing error path rather than navigating away.
+- A tab needs **three** things wired or it silently renders empty: (1) an entry in the tab-bar array, (2) a content block in the scroll region (`{rightTab === '<k>' && …}`), and (3) a `setRightTab` case in GaiaMap's `onStepChange` so the product tour lands on populated content. The **Sat** tab had (1) but was missing (2) and (3), so it rendered nothing for every user until both were added.
 
 ## Cross-references
 

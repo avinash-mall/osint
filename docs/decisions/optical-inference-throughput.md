@@ -60,6 +60,12 @@ After parts 1+2, the illegal-access still recurred under load — but the diagno
 
 So the device-pin (part 1) and per-replica lock (part 2) were both correct and necessary, but the *residual* crashes were pure **VRAM contention with a co-tenant**, not a bug in inference code (which is stable and well-behaved).
 
+> **Superseded (auto-config only):** the runtime ceiling below is still in force as a **manual**
+> knob, but the `configure_host.py` **auto-derivation** of `SAM3_GPU_MEMORY_FRACTION` was later
+> **removed** — it misfired by counting the stack's own replicas as a co-tenant and spuriously
+> throttled dedicated cards. See [why-removed-auto-vram-cap.md](why-removed-auto-vram-cap.md).
+> Parts 1 (device-pin) and 2 (per-replica lock) are unaffected.
+
 Fix (part 3 — frugal + memory-capped, operator chose this over GPU isolation):
 - **Ceiling:** new `SAM3_GPU_MEMORY_FRACTION` env. `main.py:_apply_gpu_memory_fraction` calls `torch.cuda.set_per_process_memory_fraction(frac, device)` per replica at load, so an over-budget allocation raises a catchable `OutOfMemoryError` (absorbed by `inference_utils.safe_predict`/`memory_guard`, graceful per-chip fallback, service stays up) instead of illegal-accessing into the neighbour. Keeping torch well below the physical ceiling also leaves room for untracked kernel-internal workspaces.
 - **Frugal peak:** on a co-tenant card the per-chip peak is kept *inside* the cap on the common path by shrinking the two largest activation knobs — `SAM3_EMBED_BATCH_SIZE`→16 and `SAM3_BATCHED_TEXT_CHUNK_SIZE`→8. These are **result-preserving** (fewer crops/prompts per forward, identical outputs), so normal runs stay full-quality; the cap is only the tail safety net.

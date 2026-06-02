@@ -20,7 +20,7 @@ Shared upload primitives for ingest and model-training routers: filename sanitiz
 - [`safe_filename`](../../backend/files.py#L14-L17) — strips path components and unsafe characters.
 - [`max_upload_bytes`](../../backend/files.py#L20-L25) — reads the upload byte ceiling from `MAX_UPLOAD_BYTES`.
 - [`save_upload_file`](../../backend/files.py#L28-L47) — streams to disk, raises 413 on over-limit uploads, and removes partial files.
-- [`classify_upload`](../../backend/files.py#L50-L69) — `(media_type, celery_task_name)`.
+- [`classify_upload`](../../backend/files.py#L50-L69) — `(media_type, celery_task_name)`. Video suffixes: `.mp4 .mov .m4v .ts .mpeg .mpg` (note `.mpg/.mpeg` MPEG-TS drone feeds **are** accepted; `.mkv` is **not**). The frontend file-picker `accept` lists (`FMV_FILE_ACCEPT` / `IMAGERY_FILE_ACCEPT` in `IngestConnect.tsx`) must mirror this set, or the native picker filters out files the backend would happily ingest (this drifted: the UI listed `.mkv` and omitted `.mpg`).
 
 ## Inputs / Outputs
 

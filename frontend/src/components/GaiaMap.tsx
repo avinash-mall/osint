@@ -711,7 +711,13 @@ export default function GaiaMap({
       if (detectionClassFilter) {
         geoParams.append('det_class', detectionClassFilter);
       }
-      const response = await axios.get(`${API_URL}/api/detections/geojson?${geoParams.toString()}`, { timeout: 10000 });
+      // Dense scenes (a full pass over a city) can return thousands of
+      // detections — each carrying full ontology/metadata the selection panel
+      // and OBB renderer need — which legitimately takes tens of seconds to
+      // build and transfer. A 10s ceiling silently dropped the whole layer on
+      // such scenes; 60s lets it land (the "Loading detections" spinner covers
+      // the wait). The bbox+limit params still scope normal working zooms.
+      const response = await axios.get(`${API_URL}/api/detections/geojson?${geoParams.toString()}`, { timeout: 60000 });
       setDetectionsGeoJSON(response.data || { type: 'FeatureCollection', features: [] });
     } catch (error) {
       console.error('Error fetching detections:', error);
@@ -1695,6 +1701,7 @@ export default function GaiaMap({
           // Switch the active tab so the spotlight lands on visible content.
           if (stepId === 'tab-details' || stepId === 'selection-header-chip') setRightTab('details');
           if (stepId === 'tab-analytics' || stepId.startsWith('analytics-')) setRightTab('analytics');
+          if (stepId === 'tab-satellites') setRightTab('satellites');
           if (stepId === 'tab-similar') setRightTab('similar');
           if (stepId === 'tab-tracks' || stepId.startsWith('tracks-')) setRightTab('tracks');
           // Time-machine + event-timeline steps need the bottom panel open.

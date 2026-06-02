@@ -39,7 +39,7 @@ The Common Operating Picture: a 2D Leaflet map with all detection layers, satell
 
 ## Data sources
 
-- `GET /api/detections/geojson` — live detection layer
+- `GET /api/detections/geojson` — live detection layer. Scoped by the current map `bbox` + time window + `limit=20000`. Each feature carries full ontology/metadata (the selection panel and OBB renderer read it), so a dense pass over a city returns thousands of features / tens of MB and can take 20–30 s; the fetch timeout is **60 s** (not 10 s — a 10 s ceiling silently dropped the whole layer on dense scenes) and the "Loading detections" spinner covers the wait.
 - `GET /api/detections/classes?llm=true` — global Detection Classes summary; raw class keys and deterministic labels drive filtering, while `llm_advisory` can add non-authoritative operator context
 - `GET /api/imagery` — satellite passes
 - `GET /api/tracks/detections` — cross-image tracks

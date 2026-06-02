@@ -209,8 +209,10 @@ decisions/why-precision-first-inference-defaults.md|decision|bounded prompt defa
 decisions/why-preload-imagery-on-startup.md|decision,inference,deployment|inference-sam3 lifespan preloads imagery so healthcheck sees model_loaded; SAM3_SKIP_PRELOAD opts out
 decisions/why-readonly-ai-brief-and-map-control.md|decision,backend|AI brief-area is read-only; map control via sentinel:map-control event, not agent writes
 decisions/why-reject-double-review-with-409.md|decision,backend|approve/reject UPDATE guarded WHERE status='pending'; 409 with prior reviewer instead of silent overwrite
+decisions/why-release-db-connection-before-enrichment.md|decision,backend|geojson holds the pooled conn only for the query, not the slow per-row enrichment; fixes pool exhaustion 500s
 decisions/why-remoteclip-default-on.md|decision,inference|SUPERSEDED: RemoteCLIP verifier removed — see removed-fair1m-and-remoteclip
 decisions/removed-fair1m-and-remoteclip.md|decision,inference|permanently removed FAIR1M-OBB (no-op stub) + RemoteCLIP verifier; kept Grounding-DINO + FAIR1M dataset
+decisions/why-removed-auto-vram-cap.md|decision,deployment|configure_host no longer auto-derives SAM3_GPU_MEMORY_FRACTION (misfired on own replicas); manual-only now
 decisions/why-revert-inference-after-fmv.md|decision,backend|process_fmv reverts the GPU pool to imagery in a best-effort 409-tolerant finally so the COP keeps detecting
 decisions/why-runtime-bakers-into-assets.md|decision,deployment|geo-assets moved to runtime bake profile; BuildKit cache-mount rollback + OOM drove this
 decisions/why-sam3-as-foundation.md|decision,sam3|open-vocabulary segmentation across RGB/MSI/SAR with native API
@@ -254,6 +256,7 @@ scripts/eval-runners.md|scripts,benchmark|eval_candidate_links + eval_sar_cfar +
 scripts/benchmark-scripts.md|scripts,benchmark|bench_fmv + benchmark_inference + benchmark_sam3_inference
 scripts/backend-scripts-train-and-seed.md|scripts|backend/scripts: train, seed_ontology, refmv, backfill_detection_branch
 scripts/smoke-test-live-api.md|scripts,testing|live API smoke test vs nginx:3000: 152-route catalog coverage, tagged+torn-down mutations, idle-gated inference
+scripts/download-city-cog.md|scripts,imagery|geocodes any city or country and downloads its Sentinel-2 visual COG
 conventions/coding-style.md|conventions|file size limits, no premature abstraction, no spurious comments
 conventions/documentation-workflow.md|conventions|mandatory read-before/update-after loop for every agent session
 conventions/naming-and-paths.md|conventions|module/router/component naming, /api prefix, /data volume layout

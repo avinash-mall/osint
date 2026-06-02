@@ -216,13 +216,18 @@ def find_similar_platforms(
     if view_domain not in ("overhead", "ground"):
         raise ValueError(f"view_domain must be 'overhead' or 'ground', got {view_domain!r}")
 
-    # Preserve numpy.ndarray as-is for the pgvector adapter; list-ify other iterables.
+    # Render the query embedding as a pgvector text literal and cast every
+    # distance term below with %s::vector. This is robust whether or not the
+    # pgvector psycopg2 adapter registered on this connection — a plain Python
+    # list would otherwise bind as numeric[], and `vector <=> numeric[]` raises
+    # UndefinedFunction (every auto-identify failed this way during ingest).
+    # See database.py:_VectorAwareConnection.
     try:
         import numpy as _np
-        _is_np = isinstance(embedding, _np.ndarray)
+        _seq = embedding.tolist() if isinstance(embedding, _np.ndarray) else list(embedding)
     except ImportError:
-        _is_np = False
-    q = embedding if _is_np else list(embedding)
+        _seq = list(embedding)
+    q = "[" + ",".join(repr(float(x)) for x in _seq) + "]"
 
     centroid_col = "centroid_overhead" if view_domain == "overhead" else "centroid_ground"
     chip_col = "embedding_overhead" if view_domain == "overhead" else "embedding_ground"
@@ -231,10 +236,10 @@ def find_similar_platforms(
     cursor.execute(
         f"""
         SELECT id, platform_name, platform_family,
-               1 - ({centroid_col} <=> %s) AS centroid_score
+               1 - ({centroid_col} <=> %s::vector) AS centroid_score
           FROM reference_platforms
          WHERE {centroid_col} IS NOT NULL
-         ORDER BY {centroid_col} <=> %s
+         ORDER BY {centroid_col} <=> %s::vector
          LIMIT %s
         """,
         (q, q, candidate_pool),
@@ -260,10 +265,10 @@ def find_similar_platforms(
         WITH ranked AS (
             SELECT c.platform_id,
                    c.id::text AS chip_id,
-                   1 - (c.{chip_col} <=> %s) AS chip_score,
+                   1 - (c.{chip_col} <=> %s::vector) AS chip_score,
                    ROW_NUMBER() OVER (
                        PARTITION BY c.platform_id
-                       ORDER BY c.{chip_col} <=> %s
+                       ORDER BY c.{chip_col} <=> %s::vector
                    ) AS rn
               FROM reference_chips c
              WHERE c.platform_id = ANY(%s::uuid[])

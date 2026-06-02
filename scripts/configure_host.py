@@ -18,13 +18,6 @@ END_MARKER = "# END SENTINEL GENERATED GPU CONFIG"
 
 SERVICE_PREFIXES = ("SAM3_",)
 
-# Co-tenant detection / VRAM-ceiling tuning (see generated_env_values).
-COTENANT_MIN_USED_MIB = 2048      # below this, the card is effectively idle (driver/Xorg only)
-COTENANT_SAFETY_MIB = 4096        # slack left unallocated below the physical free memory
-COTENANT_MIN_FRACTION = 0.20      # never cap the inference pool below this share of the card
-COTENANT_EMBED_BATCH_SIZE = 16    # frugal DINOv3 crop batch when sharing a card
-COTENANT_TEXT_CHUNK_SIZE = 8      # frugal SAM3 prompt chunk when sharing a card
-
 
 @dataclass(frozen=True)
 class HostGpu:
@@ -164,30 +157,13 @@ def generated_env_values(info: HostGpuInfo) -> dict[str, str]:
     values["INFERENCE_CHIP_CONCURRENCY"] = str(max(profile_concurrency, gpu_count))
     values["INFERENCE_MIN_PENDING_CHIPS"] = str(gpu_count)
 
-    # Co-tenant VRAM ceiling (depends on live free VRAM, so it belongs here, not
-    # in the per-arch profile). If another process already holds significant
-    # memory on the cards at configure time — e.g. a vLLM server sharing the
-    # GPUs — the inference replicas must not assume the whole card is theirs:
-    # torch's free-memory estimate is blind to other tenants, so an unbounded
-    # pool lets a fused cuBLAS/SDPA workspace alloc collide with the neighbour
-    # and surface as a context-poisoning "illegal memory access" instead of a
-    # clean OOM. We cap torch to the headroom that's actually free (minus a
-    # safety margin) so over-budget allocs fail gracefully, and shrink the two
-    # largest activation knobs so the per-chip peak stays inside the cap on the
-    # common path (result-preserving — fewer crops/prompts per forward, identical
-    # outputs). On dedicated cards (no co-tenant) nothing is emitted → no cap.
-    # NOTE: run configure_host.py with co-tenants up but the Sentinel stack DOWN,
-    # so memory.used reflects only the neighbour, not our own replicas.
-    total_mib = primary_gpu.memory_mib or 0
-    max_used_mib = max((g.memory_used_mib for g in info.gpus), default=0)
-    if total_mib and max_used_mib >= COTENANT_MIN_USED_MIB:
-        headroom_mib = total_mib - max_used_mib - COTENANT_SAFETY_MIB
-        fraction = max(COTENANT_MIN_FRACTION, min(0.95, headroom_mib / total_mib))
-        values["SAM3_GPU_MEMORY_FRACTION"] = f"{fraction:.2f}"
-        embed = int(values.get("SAM3_EMBED_BATCH_SIZE", "32") or "32")
-        chunk = int(values.get("SAM3_BATCHED_TEXT_CHUNK_SIZE", "8") or "8")
-        values["SAM3_EMBED_BATCH_SIZE"] = str(min(embed, COTENANT_EMBED_BATCH_SIZE))
-        values["SAM3_BATCHED_TEXT_CHUNK_SIZE"] = str(min(chunk, COTENANT_TEXT_CHUNK_SIZE))
+    # NOTE: no automatic per-process VRAM cap is emitted. A previous build
+    # detected GPU "co-tenants" from live memory.used and wrote a
+    # SAM3_GPU_MEMORY_FRACTION ceiling — but it routinely misfired (counting the
+    # Sentinel stack's own resident replicas as a neighbour) and throttled SAM3
+    # into spurious OOMs on dedicated cards. The inference service always gets
+    # the whole card now. Operators sharing a GPU can still set
+    # SAM3_GPU_MEMORY_FRACTION by hand outside the generated block.
 
     # Build flash-attn-3 + cc_torch into the inference image by default.
     # The runtime has a torch-SDPA fallback in sam3_runner.py if these

@@ -174,6 +174,7 @@ export default function SelectionPanel(props: Props) {
     userRole,
     onOpenFmv,
     actions,
+    satellitesSlot,
   } = props;
 
   // Sample DEM elevation at the selected detection centroid. Triggered on
@@ -669,6 +670,8 @@ export default function SelectionPanel(props: Props) {
             }}
           />
         )}
+
+        {rightTab === 'satellites' && satellitesSlot}
 
         {rightTab === 'similar' && (
           selectedDetection ? (
