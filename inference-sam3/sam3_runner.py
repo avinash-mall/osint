@@ -994,6 +994,32 @@ def _run_text_prompts_batched(
     return _collect_batched_candidates(processed, query_labels)
 
 
+def _cuda_context_poisoned(exc: Exception) -> bool:
+    """True when ``exc`` corresponds to an unrecoverable CUDA fault.
+
+    A ``cudaErrorIllegalAddress`` ("illegal memory access"), device-side
+    assert, cuBLAS/cuDNN init failure, or any other "CUDA error" sticks to the
+    process's CUDA context: once raised, every subsequent kernel launch in this
+    process — including the next request's image encode — fails identically.
+    There is no in-process recovery, mirroring the multiplex-warmup path above
+    (see _build_*_predictor). OOM is explicitly excluded: it leaves the cuBLAS
+    handle valid and is recoverable by clearing caches, so it stays on the
+    graceful-degrade path (skip the chunk, keep the others).
+    """
+    if not isinstance(exc, RuntimeError):
+        return False
+    text = str(exc)
+    if "CUDA out of memory" in text or "out of memory" in text.lower():
+        return False
+    return (
+        "CUDA error" in text
+        or "illegal memory access" in text
+        or "device-side assert" in text
+        or "CUBLAS_STATUS" in text
+        or "cuDNN error" in text
+    )
+
+
 def _run_text_prompts_cached_batched(
     bundle: dict[str, Any],
     image_rgb_uint8: np.ndarray,
@@ -1149,6 +1175,22 @@ def _run_text_prompts_cached_batched(
                     processed = postprocessor.process_results(output, chunk_batch.find_metadatas)
                 candidates.extend(_collect_batched_candidates(processed, query_labels))
             except Exception as exc:
+                # A poisoned CUDA context (illegal memory access / device-side
+                # assert / cuBLAS-cuDNN init failure) is NOT a per-chunk OOM:
+                # it corrupts the whole process, so retrying the next chunk —
+                # or the next request's image encode — keeps failing forever
+                # while /health still reports ok. Self-heal by exiting; the
+                # `restart: unless-stopped` policy respawns the container with
+                # a clean context. Mirrors the multiplex-warmup path above.
+                if _cuda_context_poisoned(exc):
+                    logger.critical(
+                        "sam3 cached-batched chunk poisoned the CUDA context "
+                        "(offset=%d, labels=%s): %s — process state is "
+                        "unrecoverable, exiting so docker-compose respawns the "
+                        "container",
+                        offset, chunk, exc,
+                    )
+                    os._exit(1)
                 failed_chunks += 1
                 last_exc = exc
                 logger.warning(
