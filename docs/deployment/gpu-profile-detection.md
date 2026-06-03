@@ -32,6 +32,7 @@ the sm_120 bump is about kernel currency, not that bug.
 ## Build args written to .env
 
 - `SAM3_CUDA_VERSION`, `SAM3_TORCH_INDEX_URL`, `SAM3_TORCH_VERSION`, `SAM3_TORCHVISION_VERSION`, `SAM3_TORCH_CUDA_ARCH_LIST`, `SAM3_GPU_PROFILE`, `SAM3_UBUNTU_VERSION`
+- `SAM3_INSTALL_FAST_DEPS` — profile-driven (`build_env()`), default `1` (build flash-attn-3 + cc_torch). **`0` on `blackwell_sm120`**: the cu132 index has no flash-attn-3 wheel, and FA3 doesn't run on sm_120 anyway → SDPA fallback. Verified: `resolve_gpu_profile("RTX 5090")` → `0`; A100/H100/Ada → `1`.
 - `SAM3_ENABLE_TF32` (sm_80+ only)
 - `SAM3_CUDNN_BENCHMARK` (off on Turing; cu126 re-searches kernels)
 

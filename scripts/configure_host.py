@@ -165,12 +165,11 @@ def generated_env_values(info: HostGpuInfo) -> dict[str, str]:
     # the whole card now. Operators sharing a GPU can still set
     # SAM3_GPU_MEMORY_FRACTION by hand outside the generated block.
 
-    # Build flash-attn-3 + cc_torch into the inference image by default.
-    # The runtime has a torch-SDPA fallback in sam3_runner.py if these
-    # are missing, but fa3 is meaningfully faster on Ampere/Ada/Hopper
-    # and SAM3's vitdet path expects it. Operators on memory-constrained
-    # build hosts can override to 0 after running configure_host.py.
-    values["SAM3_INSTALL_FAST_DEPS"] = "1"
+    # SAM3_INSTALL_FAST_DEPS (flash-attn-3 + cc_torch) is profile-driven via
+    # build_env(): on by default (fa3 is faster on Ampere/Ada/Hopper and SAM3's
+    # vitdet path expects it), off where the torch index has no flash-attn-3
+    # wheel (cu132/sm_120) — the runtime SDPA fallback covers it. Operators on
+    # memory-constrained build hosts can still override to 0 in .env afterwards.
 
     return values
 

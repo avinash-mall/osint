@@ -22,6 +22,13 @@ class GpuBuildProfile:
     min_driver_version: str
     ubuntu_version: str  # "22.04" for cu126, "24.04" for cu130+
 
+    # Build flash-attn-3 + cc_torch into the image (Dockerfile SAM3_INSTALL_FAST_DEPS).
+    # Default True. Set False where the chosen torch index has no flash-attn-3
+    # wheel (e.g. cu132) — the runtime falls back to torch SDPA (no accuracy
+    # loss), so skipping it keeps the build green. First defaulted field, so it
+    # may sit ahead of the runtime-tuning defaults below.
+    install_fast_deps: bool = True
+
     # ------------------------------------------------------------------
     # Runtime-tuning defaults for the inference / worker containers.
     # These get written into the generated `.env` block by
@@ -174,6 +181,7 @@ class GpuBuildProfile:
             f"{prefix}TORCHVISION_VERSION": self.torchvision_version,
             f"{prefix}TORCHAUDIO_VERSION": self.torchaudio_version,
             f"{prefix}TORCH_CUDA_ARCH_LIST": self.torch_cuda_arch_list,
+            f"{prefix}INSTALL_FAST_DEPS": "1" if self.install_fast_deps else "0",
         }
 
     def runtime_env(self, vram_mib: int | None = None) -> dict[str, str]:
@@ -645,6 +653,11 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         compute_capability="12.0",
         min_driver_version="575.51",
         ubuntu_version="24.04",
+        # flash-attn-3 has no cu132 wheel, and FA3 doesn't run on sm_120 anyway
+        # (Hopper-only today — see SDPA note below), so skip the fast-deps build
+        # step; the runtime uses the torch SDPA fallback. Without this the
+        # Dockerfile's `pip install flash-attn-3 --index-url …/cu132` step fails.
+        install_fast_deps=False,
         # Consumer Blackwell (RTX 5060/5070/5080/5090). TF32 = yes. Multiplex
         # permitted at profile level; the runtime VRAM gate gates it off on
         # 16 GiB cards (RTX 5070 Ti: 15.9 GiB < 20 GiB threshold) and on for

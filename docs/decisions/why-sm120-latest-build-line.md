@@ -28,6 +28,18 @@ Bump only the `blackwell_sm120` profile to the latest line:
 | `torch_version` | 2.10.0+cu130 | **2.12.0+cu132** |
 | `torchvision_version` | 0.25.0+cu130 | **0.27.0+cu132** |
 | `torchaudio_version` | 2.10.0+cu130 | 2.12.0+cu132 (unused — Dockerfile installs only torch+torchvision) |
+| `install_fast_deps` | True (default) | **False** — see below |
+
+**`install_fast_deps=False` is required, not optional.** flash-attn-3 has a wheel
+at the cu130 index but **not at cu132**, and the Dockerfile's
+`pip install flash-attn-3 --no-deps --index-url ${TORCH_INDEX_URL}` step (gated by
+`SAM3_INSTALL_FAST_DEPS`) would fail the build on cu132. It's also semantically
+correct: FA3 is Hopper-only and does not run on sm_120 (the profile already pins
+`sdpa=flash` → EFFICIENT_ATTENTION fallback), so skipping the build step is
+lossless. To make this work, `install_fast_deps` is now a **profile field** emitted
+by `build_env()` as `SAM3_INSTALL_FAST_DEPS` (default `1`); `configure_host.py` no
+longer hard-codes it. All non-sm_120 profiles keep `1` (their cu130/cu126 indexes
+have the flash-attn-3 wheel).
 
 Everything else is unchanged:
 
