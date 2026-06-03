@@ -789,6 +789,16 @@ export default function GaiaMap({
   }, [focusTimeRange, fetchDetections, fetchDetectionTracks, fetchImagery]));
   useEventStream('imagery', useCallback((message: any) => {
     focusTimeRange(message?.acquisition_time);
+    // Auto-select a freshly-ingested pass so a new upload actually renders on
+    // the map. The map only draws the *selected* pass, and fetchImagery()
+    // preserves the current selection when it is still in range (GaiaMap line
+    // ~671). The first upload selects itself (selection starts null), but a
+    // second upload would otherwise land in the imagery list while the map kept
+    // the first pass selected — "processed but never appears". Pinning the
+    // newly-cataloged pass_id here makes the new scene the displayed layer.
+    if (message?.type === 'ingest_succeeded' && message?.pass_id != null) {
+      setSelectedImagery(Number(message.pass_id));
+    }
     fetchImagery();
   }, [focusTimeRange, fetchImagery]));
   useEventStream('ops', useCallback((message: any) => {

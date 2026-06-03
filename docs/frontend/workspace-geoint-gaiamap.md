@@ -54,6 +54,10 @@ The left Detection Classes list keeps `rawClass` as the hide/solo/API filter key
 
 The confidence slider's `confidenceThreshold` gates the sidebar as well as the map canvas. [`filteredDetectionClassStats`](../../frontend/src/components/GaiaMap.tsx#L482-L492) drops label rows whose `maxConfidence` falls below the threshold (in addition to the search filter), so a class hidden entirely from the map by confidence is also removed from the Detection Classes list; empty category/source groups then collapse via `detectionGroups`. This mirrors the canvas gate in `filteredDetectionsGeoJSON`.
 
+## Live updates
+
+The `imagery` SSE handler ([GaiaMap.tsx#L790-L803](../../frontend/src/components/GaiaMap.tsx#L790-L803)) refreshes `fetchImagery()` on every imagery event and, on `ingest_succeeded`, **selects the freshly-cataloged `pass_id`**. The map only draws the *selected* pass (`selectedImageryData`, `GaiaMap.tsx#L250`) and `fetchImagery()` deliberately preserves the current selection when it is still in range (`GaiaMap.tsx#L671`). Without the explicit select, the first upload showed (selection starts `null` → auto-picks `rows[0]`) but a second upload landed only in the imagery list — the map kept the first pass selected, so the new scene "processed but never appeared." Pinning the new `pass_id` makes each completed upload the displayed layer.
+
 ## Key symbols
 
 - [`approveCandidate`](../../frontend/src/components/GaiaMap.tsx#L1039-L1054) — approves a detection-target candidate link without sending client-side reviewer identity.
