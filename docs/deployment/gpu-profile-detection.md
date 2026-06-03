@@ -10,12 +10,24 @@ Read `nvidia-smi`, resolve the matching CUDA / PyTorch / TorchVision / arch-list
 
 ## Supported profiles
 
-| GPU family | Profile | CUDA | PyTorch | TorchVision |
+| GPU family | Profile | CUDA wheel | PyTorch | TorchVision |
 |---|---|---|---|---|
-| Turing (T4, sm_75) | `turing` | 12.4 | 2.6 | 0.21 |
-| Ampere (A100 sm_80 / A40 sm_86) | `ampere` | 12.4 | 2.6 | 0.21 |
-| Hopper (H100, sm_90) | `hopper` | 12.6 | 2.6 | 0.21 |
-| Blackwell (RTX 50, sm_120) | `blackwell` | 12.8 | 2.7 | 0.22 |
+| Turing (T4, sm_75) | `turing_sm75` | cu126 | 2.7.1 | 0.22.1 |
+| Ampere consumer (RTX 30, sm_80/86) | `ampere_sm80_86` | cu130 | 2.10.0 | 0.25.0 |
+| Ampere datacenter (A100/A40, sm_80/86) | `ampere_sm80_86_datacenter` | cu130 | 2.10.0 | 0.25.0 |
+| Ada (RTX 40 / L40, sm_89) | `ada_sm89` | cu126 | 2.7.1 | 0.22.1 |
+| Hopper (H100/H200, sm_90) | `hopper_sm90` | cu130 | 2.10.0 | 0.25.0 |
+| Blackwell datacenter (B200, sm_100) | `blackwell_sm100` | cu130 | 2.10.0 | 0.25.0 |
+| **Blackwell consumer (RTX 50, sm_120)** | `blackwell_sm120` | **cu132** | **2.12.0** | **0.27.0** |
+
+Per-architecture build lines are deliberate. Most cards ride the cu130/torch-2.10
+baseline; **consumer Blackwell (sm_120) is pinned to the latest line — torch 2.12
+on CUDA 13.2 (cu132)** — to get the newest kernels for that silicon. cu132 is
+PyTorch's experimental channel: verify a build + inference pass on real Blackwell
+hardware before production. Note the cu13x concurrent-forward CUDA-context poison
+is **version-independent** (reproduced on cu128/cu130/cu132 — see
+[decisions/why-serialize-forwards-on-a100-cu13x.md](../decisions/why-serialize-forwards-on-a100-cu13x.md));
+the sm_120 bump is about kernel currency, not that bug.
 
 ## Build args written to .env
 

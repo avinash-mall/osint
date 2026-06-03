@@ -225,6 +225,7 @@ decisions/why-sat-tiles-cap-at-native-zoom.md|decision,imagery,frontend|SAT Tile
 decisions/why-security-hardening-2026-05-31.md|decision|fail-closed defaults: no committed tokens, required auth secrets, bounded uploads, gated remote imagery
 decisions/why-segearth-presence-filter.md|decision,sam3|SegEarth-OV3 score-distribution presence-ratio gate composed with legacy max-score gate; default mode=both
 decisions/why-serialize-forwards-on-a100-cu13x.md|decision,inference,gpu|SAM3_SERIALIZE_FORWARDS: one GPU forward at a time process-wide; fixes cross-replica + image×video cu13x illegal-access poison
+decisions/why-sm120-latest-build-line.md|decision,gpu,deployment|consumer Blackwell sm_120 pinned to latest cu132/torch-2.12 line; other archs unchanged; poison is version-independent
 decisions/why-standalone-embed-endpoint.md|decision|standalone /embed avoids /detect cost and keeps DB dep in backend
 decisions/why-stix-21-export.md|decision,backend|STIX 2.1 export mapped to GEOINT SDOs (identity/infrastructure), clean-room from OASIS spec
 decisions/why-transportation-floor-raised.md|decision,backend,ontology|per-class floor defaults (transportation=0.55, other=0.50) lift precision on noisy buckets; operator overrides via admin matrix

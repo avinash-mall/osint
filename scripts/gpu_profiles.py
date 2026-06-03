@@ -623,11 +623,24 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
     ),
     "blackwell_sm120": GpuBuildProfile(
         name="blackwell_sm120",
+        # Consumer Blackwell (RTX 50-series) is the only profile pinned AHEAD of
+        # the shared cu130/torch-2.10 baseline: it builds on the *latest* line,
+        # torch 2.12 on CUDA 13.2 (cu132), to pick up the newest sm_120 kernels
+        # for this brand-new silicon. cu132 is PyTorch's experimental build
+        # channel — VERIFY a full image build + inference pass on real Blackwell
+        # hardware before production. The base image stays CUDA 13.2.0 (already
+        # used by every cu130 profile); the cu132 wheels bundle their own CUDA
+        # 13.2 runtime. Driver floor unchanged: CUDA 13.x minor-version
+        # compatibility runs 13.2 wheels on the cu130 driver baseline. Note the
+        # cu13x concurrent-forward poison is version-independent (reproduced on
+        # cu128/cu130/cu132 — see why-serialize-forwards-on-a100-cu13x.md), so
+        # SAM3_SERIALIZE_FORWARDS stays governed by its compose default; this
+        # bump is purely about kernel currency, not the poison.
         cuda_version="13.2.0",
-        torch_index_url="https://download.pytorch.org/whl/cu130",
-        torch_version="2.10.0+cu130",
-        torchvision_version="0.25.0+cu130",
-        torchaudio_version="2.10.0+cu130",
+        torch_index_url="https://download.pytorch.org/whl/cu132",
+        torch_version="2.12.0+cu132",
+        torchvision_version="0.27.0+cu132",
+        torchaudio_version="2.12.0+cu132",
         torch_cuda_arch_list="8.0;8.6;8.9;9.0;12.0+PTX",
         compute_capability="12.0",
         min_driver_version="575.51",
