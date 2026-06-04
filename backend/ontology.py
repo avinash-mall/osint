@@ -267,29 +267,32 @@ def invalidate_cache() -> None:
 # ---------------------------------------------------------------------------
 # Unknown-label logging
 # ---------------------------------------------------------------------------
-# Process-local throttle for the Neo4j projection enqueue. _log_unknown runs
-# once per detection during store_detections; a dense pass with thousands of
-# unknown-label detections would otherwise enqueue thousands of redundant
-# worker.project_unknown_labels tasks (one Neo4j projection each) for the same
-# handful of labels, saturating the worker. The DB upsert below still runs every
-# call so the triage count stays exact — only the projection enqueue is throttled
-# (at most once per label per window). Each prefork worker keeps its own map.
-_PROJECT_ENQUEUE_TTL_S = 300.0
-_PROJECT_ENQUEUE_SEEN: dict[str, float] = {}
-_PROJECT_ENQUEUE_LOCK = threading.Lock()
+# Process-local throttle for the *noisy* unknown-label side-effects: the
+# per-detection WARNING log and the Neo4j projection enqueue. _log_unknown runs
+# once per detection during store_detections, and normalize() is itself called
+# several times per detection, so a dense pass with thousands of unknown-label
+# detections would otherwise emit thousands of identical "unknown label" warnings
+# and enqueue thousands of redundant worker.project_unknown_labels tasks (one
+# Neo4j projection each) for the same handful of labels — saturating the worker
+# and flooding the log. The DB upsert below still runs every call so the triage
+# count stays exact; only the warning + projection are throttled (at most once
+# per label per window). Each prefork worker keeps its own map.
+_UNKNOWN_SURFACE_TTL_S = 300.0
+_UNKNOWN_SURFACE_SEEN: dict[str, float] = {}
+_UNKNOWN_SURFACE_LOCK = threading.Lock()
 
 
-def _should_enqueue_projection(label: str) -> bool:
-    """True at most once per ``label`` per ``_PROJECT_ENQUEUE_TTL_S`` window."""
+def _should_surface_unknown(label: str) -> bool:
+    """True at most once per ``label`` per ``_UNKNOWN_SURFACE_TTL_S`` window."""
     now = time.monotonic()
-    with _PROJECT_ENQUEUE_LOCK:
-        if now - _PROJECT_ENQUEUE_SEEN.get(label, 0.0) < _PROJECT_ENQUEUE_TTL_S:
+    with _UNKNOWN_SURFACE_LOCK:
+        if now - _UNKNOWN_SURFACE_SEEN.get(label, 0.0) < _UNKNOWN_SURFACE_TTL_S:
             return False
-        _PROJECT_ENQUEUE_SEEN[label] = now
-        if len(_PROJECT_ENQUEUE_SEEN) > 4096:
-            cutoff = now - _PROJECT_ENQUEUE_TTL_S
-            for stale in [k for k, ts in _PROJECT_ENQUEUE_SEEN.items() if ts < cutoff]:
-                _PROJECT_ENQUEUE_SEEN.pop(stale, None)
+        _UNKNOWN_SURFACE_SEEN[label] = now
+        if len(_UNKNOWN_SURFACE_SEEN) > 4096:
+            cutoff = now - _UNKNOWN_SURFACE_TTL_S
+            for stale in [k for k, ts in _UNKNOWN_SURFACE_SEEN.items() if ts < cutoff]:
+                _UNKNOWN_SURFACE_SEEN.pop(stale, None)
         return True
 
 
@@ -310,12 +313,13 @@ def _log_unknown(label: str, layer: str) -> None:
     except Exception:
         logger.exception("ontology: failed to upsert unknown label %s", label)
         return
-    # Phase 3.B: refresh the Neo4j :UnknownLabel mirror so Ontology mode shows
-    # the triage queue. Lazy import avoids the worker→ontology→worker cycle.
-    # Throttled per label — the mirror only needs one projection per label, not
-    # one per detection that carried it.
-    if not _should_enqueue_projection(label):
+    # The "unknown label" WARNING and the Neo4j :UnknownLabel mirror refresh
+    # (Phase 3.B) are both idempotent per label, so emit them at most once per
+    # label per window — the count above already records every occurrence. Lazy
+    # import of the projection task avoids the worker→ontology→worker cycle.
+    if not _should_surface_unknown(label):
         return
+    logger.warning("ontology.normalize: unknown label=%r layer=%r -> Other", label, layer)
     try:
         from worker import project_unknown_labels
         project_unknown_labels.delay(label)
@@ -413,12 +417,10 @@ def normalize(label: Any, layer: str = "") -> NormalizedLabel:
                         was_unknown=False,
                     )
 
-    # 4) Fallback. Log only non-empty inputs.
+    # 4) Fallback. Record non-empty unknowns; the WARNING log, triage upsert, and
+    #    Neo4j projection all live in _log_unknown (warning + projection are
+    #    throttled there to once per label per window — see _should_surface_unknown).
     if canon:
-        logger.warning(
-            "ontology.normalize: unknown label=%r layer=%r -> Other",
-            raw, layer,
-        )
         _log_unknown(canon, layer or "")
     # Phase 6.24: keep semantic richness for unknown-but-novel labels.
     # Previously parent_class collapsed to "unknown" and canonical_label
