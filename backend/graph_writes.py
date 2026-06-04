@@ -95,6 +95,51 @@ def merge_candidate_detected_as(
         return False
 
 
+def merge_candidate_detected_as_batch(rows: list[dict[str, Any]]) -> int:
+    """Batch-MERGE many pending ``CANDIDATE_DETECTED_AS`` edges in one UNWIND.
+
+    Each row carries ``det_id, det_class, confidence, lat, lon, target_id,
+    candidate_id, score, reason`` — mirroring the single-edge
+    :func:`merge_candidate_detected_as`. Candidate generation over a dense pass
+    can emit tens of thousands of edges; one ``session.run`` per edge was the
+    dominant cost, so the satellite worker accumulates rows and writes them here
+    (chunked by the caller). The graph is a non-authoritative mirror, so a blip
+    is swallowed; the PostGIS ``detection_target_candidates`` rows are the source
+    of truth. Returns the number of edges written.
+    """
+    if not rows:
+        return 0
+    try:
+        with db.get_session() as session:
+            result = session.run(
+                """
+                UNWIND $rows AS row
+                MATCH (t:Target)
+                WHERE elementId(t) = row.target_id OR t.id = row.target_id
+                MERGE (d:Detection {postgis_id: row.det_id})
+                  ON CREATE SET d.class = row.det_class,
+                                d.confidence = row.confidence,
+                                d.latitude = row.lat,
+                                d.longitude = row.lon,
+                                d.created_at = datetime()
+                MERGE (t)-[rel:CANDIDATE_DETECTED_AS]->(d)
+                  ON CREATE SET rel.created_at = datetime()
+                SET rel.candidate_id = row.candidate_id,
+                    rel.score = row.score,
+                    rel.reason = row.reason,
+                    rel.status = 'pending',
+                    rel.updated_at = datetime()
+                RETURN count(rel) AS edges
+                """,
+                {"rows": rows},
+            )
+            record = result.single()
+            return int(record["edges"]) if record else 0
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("graph_writes: merge_candidate_detected_as_batch(%d) failed: %s", len(rows), exc)
+        return 0
+
+
 def delete_candidate_detected_as(*, detection_id: int, target_id: str) -> int:
     """Delete the ``CANDIDATE_DETECTED_AS`` edge for one (target, detection).
 

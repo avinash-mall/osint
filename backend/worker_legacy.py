@@ -4579,15 +4579,31 @@ def generate_candidate_links_for_pass(
         logger.warning("Unable to read targets for candidate links: %s", exc)
         targets = []
 
+    # No targets → no candidates possible; skip the per-detection loop entirely.
+    if not targets:
+        return 0
+
     created = 0
+    graph_edges: list[dict] = []
     with postgis_db.get_cursor(commit=True) as cursor:
+        # history_anchor depends only on target_id, so resolve it once per target
+        # instead of re-querying it inside the per-detection ranking loop (a
+        # dense pass is thousands of detections × every target).
+        history_by_target = {
+            tid: _target_history_anchor(cursor, tid)
+            for tid in {
+                str(t.get("stable_id") or t.get("element_id") or "")
+                for t in targets
+            }
+            if tid
+        }
         for det in rows:
             ranked = rank_candidate_links(
                 dict(det),
                 targets,
                 max_distance_m=distance_threshold_meters,
                 max_candidates_per_detection=max_candidates_per_detection,
-                history_lookup=lambda target_id: _target_history_anchor(cursor, target_id),
+                history_lookup=lambda target_id: history_by_target.get(target_id, 0.0),
             )
             for item in ranked:
                 target_id = item["target_id"]
@@ -4621,21 +4637,26 @@ def generate_candidate_links_for_pass(
                 row = cursor.fetchone()
                 if row:
                     created += 1
-                    # Persist the Neo4j edge so Cypher traversals can see
-                    # pending candidates without round-tripping to PostGIS.
-                    # Imported lazily to keep the worker bootstrap cheap.
-                    from graph_writes import merge_candidate_detected_as
-                    merge_candidate_detected_as(
-                        detection_id=det["id"],
-                        detection_class=det.get("class"),
-                        detection_confidence=det.get("confidence"),
-                        detection_lat=det.get("lat"),
-                        detection_lon=det.get("lon"),
-                        target_id=target_id,
-                        candidate_id=int(row["id"] if isinstance(row, dict) else row[0]),
-                        score=item["score"],
-                        reason=item["reason"],
-                    )
+                    # Mirror the edge into Neo4j after the PostGIS commit, in one
+                    # batched UNWIND rather than a session per candidate.
+                    graph_edges.append({
+                        "det_id": det["id"],
+                        "det_class": det.get("class"),
+                        "confidence": det.get("confidence"),
+                        "lat": det.get("lat"),
+                        "lon": det.get("lon"),
+                        "target_id": target_id,
+                        "candidate_id": int(row["id"] if isinstance(row, dict) else row[0]),
+                        "score": item["score"],
+                        "reason": item["reason"],
+                    })
+
+    # PostGIS rows are committed; mirror all candidate edges into Neo4j in
+    # chunked UNWIND batches (the graph is a non-authoritative mirror).
+    if graph_edges:
+        from graph_writes import merge_candidate_detected_as_batch
+        for start in range(0, len(graph_edges), 1000):
+            merge_candidate_detected_as_batch(graph_edges[start:start + 1000])
     return created
 
 
@@ -4725,18 +4746,24 @@ def process_satellite_imagery(
         acq_time = acquisition_time or raster_metadata.get("acquisition_time") or datetime.now(timezone.utc).isoformat()
 
         with postgis_db.get_cursor(commit=True) as cursor:
+            # Dedup is content-identity ONLY. A byte-identical re-upload shares
+            # its SHA-256 (source_hash) and must collapse onto the existing pass
+            # so re-processing the same raster stays idempotent (see
+            # docs/backend/imagery-metadata-hashing.md). The previous query also
+            # matched on acquisition_time + footprint + source_filename/name,
+            # which collapsed *distinct* uploads that merely shared a timestamp
+            # and footprint (e.g. two scenes from one satellite pass, or two
+            # crops of a mosaic) into a single row — silently dropping the second
+            # image. A SHA-256 match means the files are identical, so neither
+            # acquisition_time nor footprint is needed to disambiguate. See
+            # docs/decisions/why-imagery-dedup-is-hash-only.md.
             cursor.execute("""
                 SELECT id
                 FROM satellite_passes
-                WHERE acquisition_time = %s::timestamptz
-                  AND (
-                    (%s IS NOT NULL AND source_hash = %s)
-                    OR (source_filename = %s AND ST_Equals(footprint, ST_GeomFromText(%s, 4326)))
-                    OR (source_filename IS NULL AND (name = %s OR name LIKE %s) AND ST_Equals(footprint, ST_GeomFromText(%s, 4326)))
-                  )
+                WHERE %s IS NOT NULL AND source_hash = %s
                 ORDER BY updated_at DESC NULLS LAST, created_at DESC
                 LIMIT 1
-            """, (acq_time, source_hash, source_hash, source_filename, footprint_wkt, source_filename, f"%{source_filename}", footprint_wkt))
+            """, (source_hash, source_hash))
             existing = cursor.fetchone()
             if existing:
                 pass_id = existing["id"]

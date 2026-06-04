@@ -1,7 +1,7 @@
 # Graph Write Helpers
 
 **Path:** [backend/graph_writes.py](../../backend/graph_writes.py)
-**Lines:** ~500
+**Lines:** ~1120
 **Depends on:** [backend/database.py](../../backend/database.py) (`db`)
 
 ## Purpose
@@ -17,9 +17,10 @@ Pure-Python scoring stays in [candidate_linking.py](../../backend/candidate_link
 ## Key symbols
 
 Candidate edges (Phase 1.B):
-- [`merge_candidate_detected_as`](../../backend/graph_writes.py#L24-L94) — MERGE Detection (lazy) + MERGE `(t)-[rel:CANDIDATE_DETECTED_AS]->(d)` with `candidate_id, score, reason, status='pending'`. Returns `False` if the Target isn't in Neo4j.
-- [`delete_candidate_detected_as`](../../backend/graph_writes.py#L97-L121) — removes the edge for one `(target, detection)` pair. Used by approve/reject endpoints.
-- [`promote_candidate_to_detected_as`](../../backend/graph_writes.py#L124-L162) — atomic transition: locates the pending edge by `candidate_id`, MERGE-creates `:DETECTED_AS`, deletes the candidate edge. Used by `/api/graph/candidate-edges/{id}/promote`.
+- [`merge_candidate_detected_as`](../../backend/graph_writes.py#L24-L95) — MERGE Detection (lazy) + MERGE `(t)-[rel:CANDIDATE_DETECTED_AS]->(d)` with `candidate_id, score, reason, status='pending'`. Returns `False` if the Target isn't in Neo4j. Single-edge path — used by [main.py](../../backend/main.py) candidate creation and `backfill_candidate_edges`.
+- [`merge_candidate_detected_as_batch`](../../backend/graph_writes.py#L98-L141) — same MERGE, UNWIND-batched over many edges in one session. The satellite worker's `generate_candidate_links_for_pass` accumulates every pending edge and writes them here in 1000-row chunks **after** the PostGIS commit: a dense pass can emit tens of thousands of candidate edges and one `session.run` per edge was the dominant cost (it stalled large-scene ingest). Returns the edge count.
+- [`delete_candidate_detected_as`](../../backend/graph_writes.py#L143-L178) — removes the edge for one `(target, detection)` pair. Used by approve/reject endpoints.
+- [`promote_candidate_to_detected_as`](../../backend/graph_writes.py#L1077-L1119) — atomic transition: locates the pending edge by `candidate_id`, MERGE-creates `:DETECTED_AS`, deletes the candidate edge. Used by `/api/graph/candidate-edges/{id}/promote`.
 
 AOI projection (Phase 1.D):
 - `merge_site_from_aoi` — MERGE `:Base` / `:LaunchPoint` / `:Facility` from an AOI tagged with `metadata.aoi_kind`. Identity is `id = f"aoi-{postgis_id}"`.

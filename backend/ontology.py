@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -266,6 +267,32 @@ def invalidate_cache() -> None:
 # ---------------------------------------------------------------------------
 # Unknown-label logging
 # ---------------------------------------------------------------------------
+# Process-local throttle for the Neo4j projection enqueue. _log_unknown runs
+# once per detection during store_detections; a dense pass with thousands of
+# unknown-label detections would otherwise enqueue thousands of redundant
+# worker.project_unknown_labels tasks (one Neo4j projection each) for the same
+# handful of labels, saturating the worker. The DB upsert below still runs every
+# call so the triage count stays exact — only the projection enqueue is throttled
+# (at most once per label per window). Each prefork worker keeps its own map.
+_PROJECT_ENQUEUE_TTL_S = 300.0
+_PROJECT_ENQUEUE_SEEN: dict[str, float] = {}
+_PROJECT_ENQUEUE_LOCK = threading.Lock()
+
+
+def _should_enqueue_projection(label: str) -> bool:
+    """True at most once per ``label`` per ``_PROJECT_ENQUEUE_TTL_S`` window."""
+    now = time.monotonic()
+    with _PROJECT_ENQUEUE_LOCK:
+        if now - _PROJECT_ENQUEUE_SEEN.get(label, 0.0) < _PROJECT_ENQUEUE_TTL_S:
+            return False
+        _PROJECT_ENQUEUE_SEEN[label] = now
+        if len(_PROJECT_ENQUEUE_SEEN) > 4096:
+            cutoff = now - _PROJECT_ENQUEUE_TTL_S
+            for stale in [k for k, ts in _PROJECT_ENQUEUE_SEEN.items() if ts < cutoff]:
+                _PROJECT_ENQUEUE_SEEN.pop(stale, None)
+        return True
+
+
 def _log_unknown(label: str, layer: str) -> None:
     if not label:
         return
@@ -285,6 +312,10 @@ def _log_unknown(label: str, layer: str) -> None:
         return
     # Phase 3.B: refresh the Neo4j :UnknownLabel mirror so Ontology mode shows
     # the triage queue. Lazy import avoids the worker→ontology→worker cycle.
+    # Throttled per label — the mirror only needs one projection per label, not
+    # one per detection that carried it.
+    if not _should_enqueue_projection(label):
+        return
     try:
         from worker import project_unknown_labels
         project_unknown_labels.delay(label)
