@@ -197,6 +197,14 @@ KALMAN_OBSERVATION_NOISE_FLOOR_M = max(0.5, float(os.getenv("KALMAN_OBS_NOISE_FL
 # the operator wants more permissive gating.
 KALMAN_GATE_SIGMAS = max(1.0, float(os.getenv("KALMAN_GATE_SIGMAS", "3.0") or "3.0"))
 
+# Multiplier on the maximum physically-credible displacement (V_MAX·dt) when
+# capping the assignment gate. The Kalman σ-growth term (~0.5·σ_a·dt²) is
+# unbounded in dt and over a multi-pass gap can exceed Earth's radius, so an
+# object's gate would admit a same-class detection on the far side of the
+# planet. The cap keeps the gate within ``margin × top-speed travel`` plus the
+# bounded position-uncertainty floor. 2.0 allows for heading/accel slack.
+GATE_MAX_SPEED_MARGIN = max(1.0, float(os.getenv("TRACKER_GATE_SPEED_MARGIN", "2.0") or "2.0"))
+
 
 def _kalman_process_sigma_a(category: str, state: str | None) -> float:
     """Return process-noise σ_a (m/s²) for the given (category, state)."""
@@ -270,12 +278,33 @@ def _velocity_sigma_after_update(track: dict, dt_seconds: float, observation_sig
 # Category helpers
 # ---------------------------------------------------------------------------
 
+# category_for_class buckets that are physically fixed (sport courts/fields/
+# pools → "recreation"; terrain/water/vegetation → "nature"). They have no
+# V_MAX key of their own and must not fall through to the mobile "default"
+# bucket — otherwise a static structure is treated as a 16 m/s object whose
+# Kalman gate balloons across continents over a long inter-pass gap.
+_STATIC_TRACKER_CATEGORIES = {"recreation", "nature"}
+
+
 def _tracker_category(class_name: str) -> str:
     """Map a detection class to one of the V_MAX category keys."""
     raw = category_for_class(class_name)  # may return "combat", "unknown", etc.
     if raw in V_MAX:
         return raw
+    if raw in _STATIC_TRACKER_CATEGORIES:
+        return "infrastructure"
     return "default"
+
+
+def _v_max_ceiling(category: str) -> float:
+    """Fastest plausible speed (m/s) for a category, across all its states.
+
+    Used to cap the assignment gate at the maximum physically-credible
+    displacement: no object travels faster than its top-speed state, so the
+    Kalman σ-growth term must not admit detections beyond ``v_ceiling·dt``.
+    """
+    table = V_MAX_PER_STATE.get(category) or V_MAX_PER_STATE["default"]
+    return max(table.values())
 
 
 def _v_max(category: str, state: str | None = None) -> float:
@@ -443,6 +472,22 @@ def _compute_cost(
     r_gate = max(r_gate_vmax, r_gate_kalman)
     if r_gate == 0:
         r_gate = 10.0  # minimum gate for infrastructure / stationary tracks
+
+    # Physical ceiling — r_gate_kalman grows as ~0.5·σ_a·dt² with no bound in
+    # dt, so over a long inter-pass gap it exceeds Earth's circumference and
+    # admits a same-class detection on the far side of the planet (e.g. two
+    # static tennis courts in different cities). Cap the gate at the maximum
+    # credible travel (top-speed·dt·margin) plus the bounded position floor,
+    # which still lets uncertainty widen the gate up to what physics allows.
+    try:
+        sigma_x_base = float(track.get("position_sigma_m") or KALMAN_OBSERVATION_NOISE_FLOOR_M)
+    except (TypeError, ValueError):
+        sigma_x_base = KALMAN_OBSERVATION_NOISE_FLOOR_M
+    r_gate_ceiling = (
+        _v_max_ceiling(category) * delta_t_seconds * GATE_MAX_SPEED_MARGIN
+        + KALMAN_GATE_SIGMAS * sigma_x_base
+    )
+    r_gate = min(r_gate, max(10.0, r_gate_ceiling))
 
     pred_lat, pred_lon = _predict_position(track, delta_t_seconds)
     dist_m = _haversine_metres(pred_lat, pred_lon, det["lat"], det["lon"])

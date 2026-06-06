@@ -148,6 +148,7 @@ decisions/cached-forward-device-normalise.md|decision,sam3|multi-GPU _get_img_fe
 decisions/disable-addmm-cuda-lt.md|decision,gpu|routes nn.Linear off cuBLAS-Lt to dodge A100/cu130 corruption bug
 decisions/fmv-default-sidetab-clips.md|decision,frontend,fmv|FMV right panel opens on Clips when no cross-nav; Tracks default hid uploaded clip
 decisions/implemented-ontology-updates-endpoint.md|decision|registers GET /api/ontology/updates to fix Link Graph bottom strip 404
+decisions/imagery-source-selection.md|decision,imagery|download_city_cog --source sentinel2|esri; 10m vs sub-meter Esri tile mosaic, kept both
 decisions/live-mgrs-cursor-readout.md|decision,frontend|cursor chip MGRS string now live via mgrs.forward; was hardcoded "AUTO" placeholder
 decisions/los-obstruction-point-features.md|decision,backend,frontend|LOS endpoint emits one Point per obstruction with elev/clearance/distance for per-point tooltips
 decisions/manual-draw-modal-replaces-prompt.md|decision,frontend|in-app ManualDetectionDialog replaces window.prompt; hardened browsers block native prompts
@@ -162,6 +163,7 @@ decisions/removed-sam3-amg.md|decision,fmv|SAM3 AMG path removed in favor of YOL
 decisions/removed-yoloe-imagery.md|decision,imagery,inference|YOLOE removed from still-image inference; FMV YOLOE remains
 decisions/reset-db-pool-after-fork.md|decision,celery|worker_process_init resets PostGIS pool so prefork children don't share libpq sockets
 decisions/temporal-swipe-comparator.md|decision,frontend|side-by-side imagery comparator via custom Leaflet pane + clip-path; no plugin dependency
+decisions/tracker-gate-physical-ceiling.md|decision,backend,tracker|cap association gate at physical travel; static recreation/nature map to stationary; kills cross-continent track streaks
 decisions/why-503-on-unloaded-component.md|decision,inference|/detect guards a missing sam3_image bundle (profile-swap race) → honest 503 instead of a NoneType 500
 decisions/why-admin-mutators-require-admin.md|decision,auth|global config/model/ontology/inference mutators require admin sessions
 decisions/why-amg-detection-classes-use-llm-labels.md|decision,frontend|superseded: YOLOE-PF imagery labels no longer promoted after image YOLOE removal
@@ -262,7 +264,7 @@ scripts/eval-runners.md|scripts,benchmark|eval_candidate_links + eval_sar_cfar +
 scripts/benchmark-scripts.md|scripts,benchmark|bench_fmv + benchmark_inference + benchmark_sam3_inference
 scripts/backend-scripts-train-and-seed.md|scripts|backend/scripts: train, seed_ontology, refmv, backfill_detection_branch
 scripts/smoke-test-live-api.md|scripts,testing|live API smoke test vs nginx:3000: 152-route catalog coverage, tagged+torn-down mutations, idle-gated inference
-scripts/download-city-cog.md|scripts,imagery|geocodes any city or country and downloads its Sentinel-2 visual COG
+scripts/download-city-cog.md|scripts,imagery|geocodes any city/country; --source sentinel2 (10m COG) or esri (sub-meter tile mosaic)
 conventions/coding-style.md|conventions|file size limits, no premature abstraction, no spurious comments
 conventions/documentation-workflow.md|conventions|mandatory read-before/update-after loop for every agent session
 conventions/naming-and-paths.md|conventions|module/router/component naming, /api prefix, /data volume layout
