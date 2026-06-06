@@ -301,9 +301,9 @@ def main():
     parser.add_argument(
         "--source", "-s",
         choices=["sentinel2", "esri"],
-        default="sentinel2",
+        default="esri",
         help="Imagery source: 'sentinel2' (10 m multispectral, global, dated) or "
-             "'esri' (sub-meter World Imagery basemap). Default: sentinel2"
+             "'esri' (sub-meter World Imagery basemap). Default: esri"
     )
     parser.add_argument(
         "--output", "-o",
@@ -324,8 +324,8 @@ def main():
     parser.add_argument(
         "--zoom", "-z",
         type=int,
-        default=18,
-        help="[esri] XYZ zoom level: z17~1.2 m/px, z18~0.6 m/px, z19~0.3 m/px (default: 18)"
+        default=19,
+        help="[esri] XYZ zoom level: z17~1.2 m/px, z18~0.6 m/px, z19~0.3 m/px (default: 19)"
     )
     parser.add_argument(
         "--radius-km",
