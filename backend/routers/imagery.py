@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from auth import SessionUser, require_admin
+from cascade_delete import affected_track_ids, purge_empty_tracks, purge_object_details
 from change_detection import compute_change
 from database import db, postgis_db
 from geometry import parse_bbox
@@ -126,8 +127,14 @@ def delete_imagery(pass_id: int, user: SessionUser = Depends(require_admin)):
         file_path = row["file_path"]
         cursor.execute("SELECT id FROM detections WHERE pass_id = %s", (pass_id,))
         det_ids = [r["id"] for r in cursor.fetchall()]
+        # Capture track membership before the cascade removes the member rows.
+        track_ids = affected_track_ids(cursor, det_ids)
         cursor.execute("DELETE FROM detections WHERE pass_id = %s", (pass_id,))
         cursor.execute("DELETE FROM satellite_passes WHERE id = %s", (pass_id,))
+        # FK cascades cleared candidates + track members; purge the rows no FK
+        # reaches: analyst object_details and now-empty parent tracks.
+        purge_object_details(cursor, "detection", det_ids)
+        purge_empty_tracks(cursor, track_ids)
 
     if file_path:
         try:

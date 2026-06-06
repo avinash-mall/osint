@@ -21,6 +21,7 @@ backend/detection-helpers.md|backend|shared detection/FMV detail validators + ob
 backend/platform-schema-migrations.md|backend|idempotent CREATE TABLE IF NOT EXISTS for feed/event/observation tables
 backend/pydantic-schemas.md|backend|request/response models extracted from main.py to avoid circular imports
 backend/candidate-linking.md|backend|pure scorer: 30% spatial + 30% compat + 30% confidence + 10% history
+backend/cascade-delete.md|backend|orphan-free delete helpers: purge object_details/empty tracks/oet + Neo4j across all delete paths
 backend/change-detection-raster.md|backend,imagery|two-pass COG change: optical diff + SAR dB log-ratio preset, shared polygonizer
 backend/calibration-temperature.md|backend|single-parameter temperature scaling for SAM3/DOTA/GDINO scores
 backend/ai-llm-integration.md|backend|OpenAI-compatible client with read-only Cypher fallback for safety

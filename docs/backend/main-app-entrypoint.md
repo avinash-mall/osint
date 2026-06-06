@@ -22,7 +22,7 @@ Holds the FastAPI application object. Mounts the 19 routers (including `referenc
 - [`require_session_on_mutations`](../../backend/main.py#L110-L127) — the middleware.
 - [`app.include_router(...)`](../../backend/main.py#L197-L216) — router mount block; **add new routers here**.
 - [`upload_fmv_clip`](../../backend/main.py#L947-L1126) — `/api/fmv/clips` upload path; HLS transcode + telemetry extraction happen before `process_fmv` dispatch.
-- [`delete_fmv_clip`](../../backend/main.py#L1148-L1188) — `DELETE /api/fmv/clips/{id}`, admin-only hard delete: drops `fmv_detections`+`fmv_frames`+`fmv_clips` rows, `rmtree`s the clip upload dir (video+HLS+sidecars), `DETACH DELETE`s the Neo4j clip/detection nodes (file/graph best-effort). See [decisions/why-deletable-imagery-and-clips.md](../decisions/why-deletable-imagery-and-clips.md).
+- [`delete_fmv_clip`](../../backend/main.py#L1148-L1188) — `DELETE /api/fmv/clips/{id}`, admin-only hard delete: drops `fmv_detections`+`fmv_frames`+`fmv_clips` rows, purges the no-FK `object_details` (`source='fmv_detection'`) via [cascade_delete.py](../../backend/cascade_delete.py), `rmtree`s the clip upload dir (video+HLS+sidecars), `DETACH DELETE`s the Neo4j clip/detection nodes (file/graph best-effort). See [decisions/why-deletable-imagery-and-clips.md](../decisions/why-deletable-imagery-and-clips.md) and [backend/cascade-delete.md](cascade-delete.md).
 - [`_raise_detection_candidate_404_or_409`](../../backend/main.py#L2035-L2055) — disambiguates missing vs already-reviewed detection-target candidates.
 - [`approve_detection_target_candidate`](../../backend/main.py#L2058-L2127) / [`reject_detection_target_candidate`](../../backend/main.py#L2130-L2152) — session-derived reviewer identity + pending-only updates.
 

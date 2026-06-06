@@ -14,7 +14,14 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from auth import SessionUser, get_current_user
-from database import postgis_db
+from cascade_delete import (
+    affected_track_ids,
+    detach_delete_detection_nodes,
+    purge_detection_children,
+    purge_empty_tracks,
+    purge_object_details,
+)
+from database import db, postgis_db
 from detection_helpers import (
     _normalize_affiliation,
     _normalize_threat,
@@ -215,9 +222,25 @@ def delete_detection(detection_id: int, user: SessionUser = Depends(get_current_
                 status_code=403,
                 detail="only admins can delete AI detections; analysts can delete operator-drawn boxes",
             )
+        # Capture track membership before purge_detection_children removes it.
+        track_ids = affected_track_ids(cursor, [detection_id])
         cursor.execute(
             "UPDATE detections SET deleted_at = NOW() WHERE id = %s RETURNING id",
             (detection_id,),
+        )
+        # The row survives as a tombstone for audit, but its downstream
+        # projections must not keep rendering: drop candidate links + track
+        # membership (no FK cascade fires on a soft delete), any now-empty
+        # parent track, and the analyst object_details row.
+        purge_detection_children(cursor, [detection_id])
+        purge_empty_tracks(cursor, track_ids)
+        purge_object_details(cursor, "detection", [detection_id])
+    try:
+        with db.get_session() as neo:
+            detach_delete_detection_nodes(neo, [detection_id])
+    except Exception:  # noqa: BLE001 — graph cleanup must not fail the delete
+        logger.warning(
+            "delete_detection: Neo4j cleanup failed for detection %s", detection_id, exc_info=True
         )
     publish_event(
         "detections",

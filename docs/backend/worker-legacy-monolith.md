@@ -94,6 +94,7 @@ Everything here is re-exported by [backend/worker/__init__.py](../../backend/wor
 ## Cross-references
 
 - [backend/worker-package-facade.md](worker-package-facade.md)
+- [backend/cascade-delete.md](cascade-delete.md) — `clear_existing_detections` (re-ingest/replace) routes its cleanup here so a replaced pass leaves no `object_details` / empty-track orphans
 - [backend/detection-evidence.md](detection-evidence.md)
 - [decisions/removed-yoloe-imagery.md](../decisions/removed-yoloe-imagery.md)
 - [decisions/why-worker-legacy-monolith-kept.md](../decisions/why-worker-legacy-monolith-kept.md)

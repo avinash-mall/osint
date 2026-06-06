@@ -17,12 +17,12 @@ Bulk read endpoints (`GET /api/detections`, `/api/detections/geojson`, `/api/det
 | `GET` | `/api/detections/{id}/details` | [detections.py#L34](../../backend/routers/detections.py#L34) | Operator-editable object_details row |
 | `PUT` | `/api/detections/{id}/details` | [detections.py#L53](../../backend/routers/detections.py#L53) | Update threat/affiliation/notes via [`ObjectDetailsBody`](../../backend/schemas.py) |
 | `POST` | `/api/detections/manual` | [detections.py#L101](../../backend/routers/detections.py#L101) | Operator-drawn detection with `ManualDetectionBody` |
-| `DELETE` | `/api/detections/{id}` | [detections.py#L197](../../backend/routers/detections.py#L197) | Soft-delete (sets a flag, keeps row) |
+| `DELETE` | `/api/detections/{id}` | [detections.py#L197](../../backend/routers/detections.py#L197) | Soft-delete (sets `deleted_at`, keeps row) + purges projections (candidate links, track membership, empty tracks, `object_details`, Neo4j node) via [cascade_delete.py](../../backend/cascade_delete.py) |
 
 ## Why this design
 
 - **Details split from detection row** — `detections` stores model output; `object_details` stores operator edits. Splitting keeps detector-pipeline writes idempotent, prevents overwriting operator work on the next chip re-process.
-- **Soft delete** — detections are evidence, never hard-deleted. Flag lets re-processing skip them, UI hide them; admin can restore.
+- **Soft delete** — detections are evidence, never hard-deleted. The `deleted_at` tombstone lets re-processing skip them and the UI hide them; admin can restore. Downstream **projections** (candidate links, track membership, empty parent tracks, `object_details`, the Neo4j `:Detection` node) are purged so nothing stale renders behind the hidden row — see [backend/cascade-delete.md](../backend/cascade-delete.md).
 - **`require_admin` not used here** — any logged-in operator can edit details. Mutating verbs gated by session middleware at [backend/main.py#L84](../../backend/main.py#L84).
 
 ## Cross-references

@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, List
 import uvicorn
 import requests
+from cascade_delete import purge_object_details
 from database import db, postgis_db
 from auth import (
     LDAPSettings,
@@ -1160,6 +1161,8 @@ def delete_fmv_clip(clip_id: int, user: SessionUser = Depends(require_admin)):
         cursor.execute("DELETE FROM fmv_detections WHERE clip_id = %s", (clip_id,))
         cursor.execute("DELETE FROM fmv_frames WHERE clip_id = %s", (clip_id,))
         cursor.execute("DELETE FROM fmv_clips WHERE id = %s", (clip_id,))
+        # object_details (source='fmv_detection') has no FK — purge explicitly.
+        purge_object_details(cursor, "fmv_detection", det_ids)
 
     # Remove the whole clip directory (each upload lives in its own uuid dir).
     if file_path:

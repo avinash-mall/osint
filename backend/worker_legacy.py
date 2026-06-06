@@ -25,6 +25,7 @@ APP_DIR = Path(__file__).resolve().parent
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
+from cascade_delete import affected_track_ids, purge_empty_tracks, purge_object_details
 from database import db, postgis_db
 import rasterio
 from rasterio.io import MemoryFile
@@ -2863,7 +2864,12 @@ def clear_existing_detections(pass_id: int) -> None:
     with postgis_db.get_cursor(commit=True) as cursor:
         cursor.execute("SELECT id FROM detections WHERE pass_id = %s", (pass_id,))
         det_ids = [row["id"] for row in cursor.fetchall()]
+        # Capture track membership before the cascade removes the member rows.
+        track_ids = affected_track_ids(cursor, det_ids)
         cursor.execute("DELETE FROM detections WHERE pass_id = %s", (pass_id,))
+        # Purge the rows no FK reaches: analyst object_details + emptied tracks.
+        purge_object_details(cursor, "detection", det_ids)
+        purge_empty_tracks(cursor, track_ids)
 
     if det_ids:
         with db.get_session() as neo_session:

@@ -33,6 +33,26 @@ purge a bad upload. Deletes mirror the existing PostGIS+Neo4j cascade in
 soft) is the right call: the intent is to reclaim disk and remove the artifact entirely,
 unlike the per-detection soft-delete (`deleted_at`) which preserves review history.
 
+## Orphan-free cascade (follow-up)
+
+The original deletes relied on PostGIS FKs to cascade
+`detection_target_candidates`, `detection_track_members`, and
+`platform_identification_candidates`. Three data classes have **no FK** and were
+left behind: `object_details` (analyst designation/threat, keyed by the
+polymorphic string `(source, source_id)`), **empty `detection_tracks`** (a parent
+track row survives after its last member cascades away), and
+`operational_entity_tracks` links to those tracks. The single-detection
+**soft**-delete additionally left its candidate links, track membership,
+`object_details`, and Neo4j `:Detection` node fully live behind a hidden row.
+
+All four delete paths now route their cleanup through
+[backend/cascade_delete.py](../../backend/cascade_delete.py): `delete_imagery`,
+`clear_existing_detections` (re-ingest/replace), `delete_fmv_clip`, and
+`delete_detection`. The soft-delete keeps the `detections` row as an audit
+tombstone (`deleted_at`) but purges its projections so nothing stale renders.
+`object_details` is cleaned by `(source, source_id)` string match because it
+cannot carry an FK. See [backend/cascade-delete.md](../backend/cascade-delete.md).
+
 ## Considered alternatives
 
 - **Soft-delete (set a `deleted_at`).** Rejected: the goal is to reclaim disk and graph;
