@@ -380,6 +380,13 @@ export const TOUR_STEPS: TourStep[] = [
     placement: 'left',
   },
   {
+    id: 'tab-provenance',
+    selector: '[data-tour="tab-provenance"]',
+    title: 'Provenance tab',
+    body: 'Full lineage for the selected detection: source raster + chip, model and sensor, calibrated vs raw confidence, the detector ensemble that fused the call, and the taxonomy version. Use to audit why a detection exists before acting on it.',
+    placement: 'left',
+  },
+  {
     id: 'tab-tracks',
     selector: '[data-tour="tab-tracks"]',
     title: 'Active Tracks tab',

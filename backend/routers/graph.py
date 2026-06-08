@@ -377,9 +377,11 @@ def get_site_composition(
     - ``recent_detections`` — PostGIS detections within radius_m of the AOI
       centroid in the last ``recent_days`` days, grouped by class.
     - ``vessels``, ``vehicles``, ``aircraft`` — Neo4j Assets with `:OBSERVED_AT`
-      pointing to this site (empty in Phase 1 until projectors run).
-    - ``fmv_clips``, ``reports`` — empty placeholders in Phase 1 (Phase 2
-      projectors populate them).
+      pointing to this site (empty until operational-entity projectors run).
+    - ``fmv_clips`` — clips whose frame footprints intersect the AOI polygon
+      (Phase 5.L spatial join over ``fmv_frames``).
+    - ``reports`` — reports whose ``target_id`` matches an asset anchored at
+      this site via ``:OPERATES_FROM|:NEAR|:OBSERVED_AT`` (Phase 5.L).
 
     The PostGIS join is a live ST_DWithin until Phase 4's ``worker.tick_near_builder``
     populates ``:NEAR`` edges; this avoids gating Phase 1 on the beat task.

@@ -3,10 +3,9 @@
  * back to the raster + model + taxonomy version that produced it.
  */
 
-// NOTE: This component is currently orphan-mounted — no caller in frontend/src/
-// references it. The "Detector ensemble" section added in Task 1.3 follows
-// the SelectionPanel chip's data contract so it renders correctly once the
-// SelectionPanel's `Provenance` tab is wired (planned in a follow-up task).
+// Mounted as the SelectionPanel "Prov" tab (rightTab === 'provenance'). The
+// "Detector ensemble" section follows the SelectionPanel chip's data contract
+// (detectionProvenance) so the lineage matches the chip the analyst sees.
 
 import { Cpu, Database, Layers, Tag } from 'lucide-react';
 import { EmbeddingBadge, ModalityBadge, Panel } from '../atoms';

@@ -26,6 +26,7 @@ Three smaller right-rail panels complementing [SelectionPanel.tsx](map-selection
 - Source: detection record's `metadata` field (no extra API call)
 - Shows: chip URL, chip index, detector layer (sam3, dota_obb, etc.), model version, taxonomy version
 - "Open chip" reveals the source chip with the detection mask overlaid
+- **Wired as the SelectionPanel "Prov" tab** (`rightTab === 'provenance'`) — `import ProvenancePanel from './ProvenancePanel'` in [SelectionPanel.tsx](../../frontend/src/components/map/SelectionPanel.tsx), rendered via `{rightTab === 'provenance' && <ProvenancePanel selectedDetection={selectedDetection} />}`. GaiaMap owns the `rightTab` state and the tour `tab-provenance → setRightTab('provenance')` mapping; the tour step lives in [tourSteps.ts](../../frontend/src/components/tour/tourSteps.ts). (Was orphan-mounted before this wiring.)
 
 ### Detector ensemble panel (Task 1.3)
 

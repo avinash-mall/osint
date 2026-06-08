@@ -6,7 +6,7 @@
 
 ## Purpose
 
-Five-tab right rail. Most tabs key off the selected detection; the **Sat** tab
+Six-tab right rail. Most tabs key off the selected detection; the **Sat** tab
 is detection-independent (overpass planning over any picked point).
 
 ## Tabs
@@ -17,7 +17,8 @@ is detection-independent (overpass planning over any picked point).
 | **Analytics** | Buttons for viewshed/LOS/route/change-detection from this detection's location |
 | **Sat** | Satellite overpass planning — an injected `satellitesSlot` node from GaiaMap (keeps this panel decoupled from the satellites service). Rendered by `{rightTab === 'satellites' && satellitesSlot}` in the content region. Offline SGP4, observer pick, ground track. See [map-satellites-panel.md](map-satellites-panel.md). |
 | **Similar** | k-NN list of detections with similar embeddings (`GET /api/detections/{id}/similar`) |
-| **Actions** | Resolve-to-target, candidate-link suggestions, create target package, propose collection task |
+| **Prov** | `ProvenancePanel` — full lineage for the selected detection (source raster/chip, model + sensor, calibrated vs raw confidence, detector ensemble, taxonomy). Reads the detection's `metadata` only, no extra API call. See [map-review-similar-provenance.md](map-review-similar-provenance.md). |
+| **Active Tracks** | Pass-stitched live tracks; Track Object force-creates a track from the selection |
 
 ## Data sources
 

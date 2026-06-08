@@ -217,7 +217,7 @@ export default function GaiaMap({
   const [satObserver, setSatObserver] = useState<{ lat: number; lon: number } | null>(null);
   const [satPickActive, setSatPickActive] = useState(false);
   const [satGroundTrack, setSatGroundTrack] = useState<[number, number][] | null>(null);
-  const [rightTab, setRightTab] = useState<'details' | 'analytics' | 'satellites' | 'similar' | 'tracks'>('details');
+  const [rightTab, setRightTab] = useState<'details' | 'analytics' | 'satellites' | 'similar' | 'tracks' | 'provenance'>('details');
   const [overlaysOpen, setOverlaysOpen] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   // Modern shell: each side panel can be collapsed to a 36 px floating handle so
@@ -1713,6 +1713,7 @@ export default function GaiaMap({
           if (stepId === 'tab-analytics' || stepId.startsWith('analytics-')) setRightTab('analytics');
           if (stepId === 'tab-satellites') setRightTab('satellites');
           if (stepId === 'tab-similar') setRightTab('similar');
+          if (stepId === 'tab-provenance') setRightTab('provenance');
           if (stepId === 'tab-tracks' || stepId.startsWith('tracks-')) setRightTab('tracks');
           // Time-machine + event-timeline steps need the bottom panel open.
           if (

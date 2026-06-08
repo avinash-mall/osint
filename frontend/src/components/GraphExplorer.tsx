@@ -231,7 +231,9 @@ export default function GraphExplorer() {
   const fetchData = useCallback(async () => {
     setLoadError(null);
     if (mode !== 'investigation') {
-      // Evidence + Ontology modes are stubs in Phase 1.
+      // Evidence and Ontology modes own their own fetch/render paths
+      // (openEvidenceChain → EvidenceColumnDAG; OntologyOrbit fetches itself),
+      // so the force-graph feed is only populated for Investigation mode.
       setData({ nodes: [], links: [] });
       setUpdates([]);
       return;
@@ -488,12 +490,33 @@ export default function GraphExplorer() {
     return ids;
   }, [selectedConnections, selectedNode]);
 
-  // Stable per-node hash for the placeholder co-occurrence bars (Phase 3
-  // replaces with real ontology co-occurrence).
+  // Real co-occurrence histogram: bucket the selected node's neighbours by
+  // their `created_at` across the active time window. Shows *when* the
+  // entities linked to this node appeared — derived from the graph itself,
+  // no synthetic data.
   const cooccurrenceBars = useMemo(() => {
-    const seed = String(selectedNode?.id || 'graph').split('').reduce((sum, char) => sum + char.charCodeAt(0), 0);
-    return Array.from({ length: 8 }, (_, index) => 24 + ((seed * (index + 3)) % 72));
-  }, [selectedNode?.id]);
+    const BUCKETS = 8;
+    const counts = Array.from({ length: BUCKETS }, () => 0);
+    if (!selectedNode) return { counts, total: 0 };
+    const startMs = Date.parse(timeRange.start);
+    const endMs = Date.parse(timeRange.end);
+    const span = endMs - startMs;
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || span <= 0) {
+      return { counts, total: 0 };
+    }
+    let total = 0;
+    for (const link of selectedConnections) {
+      const otherId = nodeId(link.source) === selectedNode.id ? nodeId(link.target) : nodeId(link.source);
+      const other = nodeMap.get(otherId);
+      const ts = (other as any)?.properties?.created_at;
+      const ms = ts ? Date.parse(ts) : NaN;
+      if (!Number.isFinite(ms)) continue;
+      const idx = Math.min(BUCKETS - 1, Math.max(0, Math.floor(((ms - startMs) / span) * BUCKETS)));
+      counts[idx] += 1;
+      total += 1;
+    }
+    return { counts, total };
+  }, [selectedNode, selectedConnections, nodeMap, timeRange.start, timeRange.end]);
 
   const handleNodeClick = useCallback((node: any) => {
     // Phase 5.E: clicking a cluster expands it back into its member nodes.
@@ -1078,9 +1101,34 @@ export default function GraphExplorer() {
                 ) : <div className="text-xs text-sentinel-muted font-mono">none</div>}
               </section>
             ))}
-            <div className="text-[10px] text-sentinel-muted font-mono">
-              FMV clips + reports populate in Phase 2.
-            </div>
+            <section className="border border-sentinel-line bg-sentinel-bg p-2">
+              <div className="sentinel-label mb-1">FMV clips</div>
+              {(siteRollup.fmv_clips || []).length ? (
+                <div className="space-y-1">
+                  {siteRollup.fmv_clips.map((clip: any) => (
+                    <div key={clip.id} className="flex items-center gap-2 text-xs">
+                      <span className="truncate flex-1">{clip.name || `clip-${clip.id}`}</span>
+                      <span className="font-mono text-[10px] text-sentinel-muted">
+                        {clip.overlapping_frames ?? 0}f · {clip.status || '—'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : <div className="text-xs text-sentinel-muted font-mono">none intersecting site</div>}
+            </section>
+            <section className="border border-sentinel-line bg-sentinel-bg p-2">
+              <div className="sentinel-label mb-1">Reports</div>
+              {(siteRollup.reports || []).length ? (
+                <div className="space-y-1">
+                  {siteRollup.reports.map((report: any) => (
+                    <div key={report.id} className="flex items-center gap-2 text-xs">
+                      <span className="truncate flex-1">{report.title || `report-${report.id}`}</span>
+                      <span className="font-mono text-[10px] text-sentinel-muted">{report.report_type || report.status || '—'}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : <div className="text-xs text-sentinel-muted font-mono">none linked to site entities</div>}
+            </section>
           </div>
         ) : selectedNode ? (
           <>
@@ -1114,12 +1162,32 @@ export default function GraphExplorer() {
                 }) : <div className="text-xs text-sentinel-muted font-mono">No visible adjacent links.</div>}
               </section>
               <section className="p-3 border-b border-sentinel-line">
-                <div className="sentinel-label mb-2">Co-occurrence / 30D</div>
-                <div className="flex h-14 items-end gap-1 border border-sentinel-line bg-sentinel-bg p-2">
-                  {cooccurrenceBars.map((height, index) => (
-                    <span key={index} className="flex-1 bg-sentinel-accent" style={{ height: `${height}%`, opacity: 0.45 + height / 180 }} />
-                  ))}
+                <div className="sentinel-label mb-2 flex items-center">
+                  <span>Co-occurrence over window</span>
+                  <span className="ml-auto font-mono text-[10px] text-sentinel-muted">{cooccurrenceBars.total} linked</span>
                 </div>
+                {cooccurrenceBars.total > 0 ? (
+                  (() => {
+                    const max = Math.max(1, ...cooccurrenceBars.counts);
+                    return (
+                      <div className="flex h-14 items-end gap-1 border border-sentinel-line bg-sentinel-bg p-2">
+                        {cooccurrenceBars.counts.map((count, index) => {
+                          const height = (count / max) * 100;
+                          return (
+                            <span
+                              key={index}
+                              title={`${count} linked entit${count === 1 ? 'y' : 'ies'}`}
+                              className="flex-1 bg-sentinel-accent"
+                              style={{ height: `${Math.max(count > 0 ? 6 : 0, height)}%`, opacity: 0.45 + height / 180 }}
+                            />
+                          );
+                        })}
+                      </div>
+                    );
+                  })()
+                ) : (
+                  <div className="text-xs text-sentinel-muted font-mono">No time-stamped links in window.</div>
+                )}
               </section>
               <section className="p-3">
                 <div className="sentinel-label mb-2">Properties</div>

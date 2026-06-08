@@ -146,6 +146,7 @@ operations/reference-corpora-bake.md|operations,backend|assets-image bake of ref
 operations/calibration-shipping.md|operations,backend,inference|assets-image bake of per-detector temperatures; calibration_data volume; measurement -> rebuild flow
 decisions/borders-vs-graticule-split.md|decision,frontend|LayerPanel "Tactical Grid" split into Borders (admin GeoJSON) and Graticule (coordinate grid)
 decisions/cached-forward-device-normalise.md|decision,sam3|multi-GPU _get_img_feats crash: pin image-model build device so vis_pos_enc lands on replica GPU
+decisions/completed-stubbed-graph-ui.md|decision,frontend|real co-occurrence histogram, site-rollup FMV/reports render, ProvenancePanel wired as SelectionPanel Prov tab
 decisions/disable-addmm-cuda-lt.md|decision,gpu|routes nn.Linear off cuBLAS-Lt to dodge A100/cu130 corruption bug
 decisions/fmv-default-sidetab-clips.md|decision,frontend,fmv|FMV right panel opens on Clips when no cross-nav; Tracks default hid uploaded clip
 decisions/implemented-ontology-updates-endpoint.md|decision|registers GET /api/ontology/updates to fix Link Graph bottom strip 404
@@ -160,6 +161,7 @@ decisions/prompt-profile-demote-via-upsert.md|decision,backend,ontology|UPSERT n
 decisions/reclassify-storage-tank-and-helipad.md|decision,ontology|Storage Tank → Industrial, Helipad → Airfield; fixes mis-filed seed objects + DOTA eval mapping
 decisions/removed-defence-yolo.md|decision|DEFENCE_YOLO emitted 1297 FPs / 0 TPs on DOTA val
 decisions/removed-dinov3-lvd.md|decision|DINOV3_LVD emitted NaN embeddings on drone-video crops
+decisions/removed-empty-inference-detection-policy.md|decision,inference|deleted empty 0-byte inference-sam3/detection_policy.py; fusion loads backend/detection_policy.py by path
 decisions/removed-sam3-amg.md|decision,fmv|SAM3 AMG path removed in favor of YOLOE
 decisions/removed-yoloe-imagery.md|decision,imagery,inference|YOLOE removed from still-image inference; FMV YOLOE remains
 decisions/reset-db-pool-after-fork.md|decision,celery|worker_process_init resets PostGIS pool so prefork children don't share libpq sockets

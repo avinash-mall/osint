@@ -1,12 +1,12 @@
 # Link Graph Workspace — `GraphExplorer.tsx`
 
 **Path:** [frontend/src/components/GraphExplorer.tsx](../../frontend/src/components/GraphExplorer.tsx)
-**Lines:** ~1000 (TSX). Companion: [frontend/src/components/graph/TimeScrubber.tsx](../../frontend/src/components/graph/TimeScrubber.tsx) (~120).
-**Status:** Phase 1 of the [Link Graph redesign](../architecture/link-graph-redesign.md) shipped — Investigation mode is functional, Evidence and Ontology are stubs that point to Phase 2/3.
+**Lines:** ~1260 (TSX). Companion: [frontend/src/components/graph/TimeScrubber.tsx](../../frontend/src/components/graph/TimeScrubber.tsx) (~120).
+**Status:** Phases 1–5 of the [Link Graph redesign](../architecture/link-graph-redesign.md) shipped — all three modes (Investigation, Evidence, Ontology) are functional, each backed by a live endpoint.
 
 ## Purpose
 
-Three-mode force-directed view of the Neo4j entity graph for defence analysts. Investigation surfaces operational entities (Target, Asset, Base/LaunchPoint/Facility, Vessel/Aircraft/Vehicle, Unit) and their evidence neighborhood with time and class lenses. Evidence and Ontology are scoped placeholders until Phase 2 and Phase 3 ship.
+Three-mode force-directed view of the Neo4j entity graph for defence analysts. Investigation surfaces operational entities (Target, Asset, Base/LaunchPoint/Facility, Vessel/Aircraft/Vehicle, Unit) and their evidence neighborhood with time and class lenses. Evidence renders a column-DAG chain of evidence per node; Ontology renders the branch/object tree with UnknownLabel orbits. Each mode owns its own fetch/render path — `fetchData` only populates the Investigation force-graph feed.
 
 ## Modes (sub-tabs in the panel header)
 
@@ -25,13 +25,14 @@ Sub-tabs share selection state (current node, time range, class lens) — see [d
 - **Predicate chip bar** (UX-AUDIT F22) — filter edges by Neo4j relationship type.
 - **Candidates toggle** — show/hide pending `CANDIDATE_DETECTED_AS` edges. Default hidden because Phase 1.B persists them as real edges (see [decisions/why-candidate-edges-persisted.md](../decisions/why-candidate-edges-persisted.md)).
 - **Force-graph** — `react-force-graph-2d`, summarise-and-expand capped at 150 nodes (server enforces). Per-node "Expand Node" still uses `/api/graph/neighborhood`.
+- **Co-occurrence histogram** (detail panel, when a node is selected) — 8-bucket temporal histogram of the selected node's linked neighbours by their `created_at` across the active time window. Derived from the loaded graph payload, no extra request; renders "No time-stamped links in window" when none of the neighbours carry timestamps. (Replaced the earlier seed-hash placeholder bars.)
 
 ## Right-click context menu
 
 - **Search Around** — local 1-hop filter using already-loaded data.
 - **Expand Node** — server-side 2-hop fetch via `/api/graph/neighborhood`.
 - **Find path to…** — picks a second node from either the canvas or the entity list, calls `/api/graph/path` (max depth 4), renders all shortest paths in the detail panel with predicate trail, and swaps the visible graph for the union of returned paths.
-- **Roll up to site** (only on Base/LaunchPoint/Facility) — calls `/api/graph/site-composition/{id}` and renders recent-detections by class + per-asset-kind buckets in the detail panel.
+- **Roll up to site** (only on Base/LaunchPoint/Facility) — calls `/api/graph/site-composition/{id}` and renders recent-detections by class, per-asset-kind buckets (vessels/vehicles/aircraft/other), **FMV clips** intersecting the AOI footprint, and **reports** linked to anchored entities — all in the detail panel (FMV + reports populated by the Phase 5.L backend buckets).
 - **Evidence chain** — switches to Evidence mode focused on this node; fetches `/api/graph/evidence/{id}` and renders the column-DAG.
 - **Export Selection** — JSON dump of the selected node or current view.
 

@@ -24,6 +24,7 @@ import {
   CircleHelp,
   Cpu,
   Crosshair,
+  Database,
   FileDown,
   GitBranch,
   Navigation,
@@ -55,6 +56,7 @@ import IdentificationPanel from './IdentificationPanel';
 import ObjectDetailsForm from '../ObjectDetailsForm';
 import ReviewPanel from './ReviewPanel';
 import SimilarPanel from './SimilarPanel';
+import ProvenancePanel from './ProvenancePanel';
 import AnalyticsToolsPanel, {
   type AnalyticsKind,
   type AnalyticsPick,
@@ -64,7 +66,7 @@ import type { ActiveLayerMap } from './LayerPanel';
 
 const API_URL = (import.meta as any).env?.VITE_API_URL || '';
 
-export type SelectionRightTab = 'details' | 'analytics' | 'satellites' | 'similar' | 'tracks';
+export type SelectionRightTab = 'details' | 'analytics' | 'satellites' | 'similar' | 'tracks' | 'provenance';
 export type SelectionEditTab = 'edit' | 'review';
 
 export type SelectionPanelActions = {
@@ -240,6 +242,7 @@ export default function SelectionPanel(props: Props) {
     rightTab === 'satellites'? { Icon: Satellite,   label: 'Satellites',    tag: 'OVERPASS'  } :
     rightTab === 'similar'   ? { Icon: Crosshair,   label: 'Similar',       tag: 'NEAREST'   } :
     rightTab === 'tracks'    ? { Icon: Navigation,  label: 'Active Tracks', tag: 'TRACKS'    } :
+    rightTab === 'provenance'? { Icon: Database,    label: 'Provenance',    tag: 'LINEAGE'   } :
                                { Icon: Crosshair,   label: selectedDetection ? `DET-${selectedDetection.properties?.id}` : 'Selection', tag: 'DETAIL' };
   const HeaderIcon = rightHeader.Icon;
   const allegianceLabel = String(selectedDetection?.properties?.allegiance || '').toLowerCase();
@@ -290,6 +293,7 @@ export default function SelectionPanel(props: Props) {
           ['analytics', 'Analytics'],
           ['satellites', 'Sat'],
           ['similar', 'Similar'],
+          ['provenance', 'Prov'],
           ['tracks', 'Active Tracks'],
         ] as const).map(([k, label]) => {
           const isActive = rightTab === k;
@@ -687,6 +691,10 @@ export default function SelectionPanel(props: Props) {
           ) : (
             <div className="border-b border-sentinel-line p-3 text-xs text-sentinel-muted">Select a detection polygon to inspect similar objects.</div>
           )
+        )}
+
+        {rightTab === 'provenance' && (
+          <ProvenancePanel selectedDetection={selectedDetection} />
         )}
 
         {rightTab === 'tracks' && (
