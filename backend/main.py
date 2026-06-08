@@ -1141,6 +1141,7 @@ def list_fmv_clips():
         clips = [dict(row) for row in cursor.fetchall()]
     for clip in clips:
         clip["stream_url"] = fmv_public_url(clip.get("hls_path"), clip["file_path"])
+        clip["source_url"] = fmv_public_url(None, clip["file_path"])
     return {"clips": clips}
 
 
@@ -1204,6 +1205,7 @@ def get_fmv_clip(clip_id: int):
             raise HTTPException(status_code=404, detail="FMV clip not found")
         clip = dict(row)
     clip["stream_url"] = fmv_public_url(clip.get("hls_path"), clip["file_path"])
+    clip["source_url"] = fmv_public_url(None, clip["file_path"])
     return {"clip": clip}
 
 

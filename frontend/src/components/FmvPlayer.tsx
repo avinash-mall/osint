@@ -53,6 +53,7 @@ type Clip = {
   fps: number | null;
   status: string;
   stream_url: string;
+  source_url?: string;
   metadata: any;
   created_at?: string;
   updated_at?: string;
@@ -849,6 +850,30 @@ export default function FmvPlayer({
     [duration],
   );
 
+  // Fullscreen the video pane (wrapper holds <video> + the overlay canvas, so
+  // detections stay aligned; the existing ResizeObserver re-syncs the canvas).
+  const toggleFullscreen = useCallback(() => {
+    const el = wrapperRef.current;
+    if (!el) return;
+    if (document.fullscreenElement) {
+      document.exitFullscreen?.();
+    } else {
+      el.requestFullscreen?.();
+    }
+  }, []);
+
+  // Export the clip's original source file via the nginx /fmv URL.
+  const exportClip = useCallback(() => {
+    const url = selectedClip?.source_url || selectedClip?.stream_url;
+    if (!url) return;
+    const a = document.createElement('a');
+    a.href = url.startsWith('http') ? url : `${API_URL}${url}`;
+    a.download = selectedClip?.file_path?.split('/').pop() || `${selectedClip?.name || 'clip'}.mp4`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }, [selectedClip]);
+
   const togglePlay = useCallback(async () => {
     const v = videoRef.current;
     if (!v) return;
@@ -1203,7 +1228,7 @@ export default function FmvPlayer({
                         ⊕ TRACK {trackingProgress.window}/{trackingProgress.windows}
                       </span>
                     )}
-                    <button className="btn icon sm" style={{ background: 'rgba(0,0,0,.5)', borderColor: 'rgba(255,255,255,.15)', color: '#fff' }} title="Fullscreen">
+                    <button type="button" onClick={toggleFullscreen} className="btn icon sm" style={{ background: 'rgba(0,0,0,.5)', borderColor: 'rgba(255,255,255,.15)', color: '#fff' }} title="Fullscreen">
                       <Maximize2 size={12} />
                     </button>
                     <button
@@ -1559,7 +1584,7 @@ export default function FmvPlayer({
                   EXP
                 </button>
               </div>
-              <button className="btn xs" type="button" title="Export clip"><Download size={11} /> Clip</button>
+              <button className="btn xs" type="button" onClick={exportClip} disabled={!selectedClip} title="Export clip"><Download size={11} /> Clip</button>
             </div>
 
             {/* Linear scrub slider — primary, keyboard/touch friendly seek */}

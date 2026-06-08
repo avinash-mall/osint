@@ -7,7 +7,7 @@
 
 import axios from 'axios';
 import { useCallback, useEffect, useState } from 'react';
-import { MoreHorizontal, RefreshCw } from 'lucide-react';
+import { RefreshCw } from 'lucide-react';
 import ViewHeader from './ViewHeader';
 import { relativeTime } from './time';
 
@@ -119,9 +119,7 @@ export default function ModelsView({ onCount }: Props) {
                   </td>
                   <td>
                     {m.promoted ? (
-                      <button className="btn xs ghost icon" type="button" aria-label="More">
-                        <MoreHorizontal size={11}/>
-                      </button>
+                      <span className="mono" style={{ fontSize: 10.5, color: 'var(--ink-3)' }}>—</span>
                     ) : (
                       <button
                         className="btn xs" type="button"

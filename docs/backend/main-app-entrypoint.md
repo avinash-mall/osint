@@ -30,6 +30,8 @@ Holds the FastAPI application object. Mounts the 19 routers (including `referenc
 
 `POST /api/fmv/clips` accepts optional comma-separated `prompts`. Omitted in PCS mode → queues `process_fmv` with `["vehicle", "person", "building"]`, not all ontology prompts.
 
+`GET /api/fmv/clips` and `GET /api/fmv/clips/{id}` enrich each clip via [`fmv_public_url`](../../backend/fmv_helpers.py): `stream_url` (HLS playlist if transcoded, else the raw file) for playback, and `source_url` = `fmv_public_url(None, file_path)` — the original file's `/fmv/<rel>` URL the FMV player's **Export clip** button downloads.
+
 `GET /api/detections/classes?llm=true` aggregates PostGIS detections by raw class. The raw `class`, deterministic `label`, branch, and threat fields remain stable for filtering and audit. When requested, the first rows may include `llm_advisory` text, but `display_label` remains deterministic.
 
 `POST /api/detection-target-candidates/{id}/approve|reject` no longer accepts a request-body analyst field. The active `SessionUser.username` is the only `reviewed_by` source.

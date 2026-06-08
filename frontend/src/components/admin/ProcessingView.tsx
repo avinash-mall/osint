@@ -13,7 +13,7 @@
 import axios from 'axios';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Film, Map as MapIcon, MoreHorizontal, RefreshCw,
+  Film, Map as MapIcon, RefreshCw,
 } from 'lucide-react';
 import ViewHeader from './ViewHeader';
 import { relativeTime } from './time';
@@ -219,9 +219,6 @@ export default function ProcessingView({ onCount, onOpenOnMap, onOpenInFmv }: Pr
                   <span className="mono" style={{ fontSize: 11, color, letterSpacing: '.08em' }}>
                     {j.status.toUpperCase()}
                   </span>
-                  <button className="btn xs ghost icon" type="button" aria-label="More actions">
-                    <MoreHorizontal size={11}/>
-                  </button>
                 </div>
               </div>
               <div style={{ marginTop: 10, height: 3, background: 'var(--bg-3)' }} aria-hidden>
