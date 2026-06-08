@@ -780,7 +780,6 @@ export default function GaiaMap({
     fetchBasemap();
   }, []);
 
-  useEventStream('geotime', useCallback(() => { fetchData(); }, [fetchData]));
   useEventStream('detections', useCallback((message: any) => {
     focusTimeRange(message?.acquisition_time);
     fetchDetections();
@@ -805,7 +804,12 @@ export default function GaiaMap({
     if (String(message?.type || '').startsWith('imagery_') || message?.type === 'upload_received') {
       focusTimeRange(message?.acquisition_time);
     }
-  }, [focusTimeRange]));
+    // Operational changes (AOIs, entities, projected Base/LaunchPoint features,
+    // asset tracks) reload the static-feature layer. The backend never
+    // publishes a `geotime` topic, so this is where /api/geotime/features
+    // refreshes live.
+    fetchData();
+  }, [focusTimeRange, fetchData]));
 
   // Bubble cursor coords up to the global status bar.
   useEffect(() => {
@@ -825,6 +829,7 @@ export default function GaiaMap({
         setSelectedDetection(feat);
         setRightOpen(true);
         if (!pendingPick) setRightTab('details');
+        mapStageRef.current?.panToDetection?.(feat);
       }
     };
     window.addEventListener('sentinel:jump-to-detection', handler);
@@ -860,6 +865,7 @@ export default function GaiaMap({
         setSelectedDetection(feat);
         setRightOpen(true);
         if (!pendingPick) setRightTab('details');
+        mapStageRef.current?.panToDetection?.(feat);
       }
     }
     if (crossNav.className) {

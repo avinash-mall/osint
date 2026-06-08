@@ -78,7 +78,7 @@ export function objectIconComponent(
   if (/hangar|aircraft_shelter/.test(raw)) return Warehouse;
   if (/airport|airfield|\brunway\b|terminal|control_tower|apron|tarmac|hardstand|dispersal|taxiway/.test(raw)) return Landmark;
   if (/aircraft|airplane|\bplane\b|bomber|tanker_aircraft|cargo_aircraft|transport_aircraft|awacs|reconnaissance_aircraft|maritime_patrol|trainer_aircraft|civilian_airliner|\bdrone\b|\buav\b|loitering|fighter/.test(raw)) return Plane;
-  if (/warship|warcraft|destroyer|frigate|cruiser|aircraft_carrier|\bsubmarine\b|\bnaval\b|missile_boat|fast_attack|mine_warfare|amphibious_assault|landing_ship|patrol_boat/.test(raw)) return Shield;
+  if (/warship|warcraft|destroyer|frigate|cruiser|aircraft_carrier|\bsubmarine\b|\bnaval\b|missile_boat|fast_attack|mine_warfare|amphibious_assault|landing_ship|patrol_boat/.test(raw)) return Ship;
   if (/sailboat|yacht/.test(raw)) return Sailboat;
   if (/tugboat|tug_boat|barge|ferry|motorboat|fishing|landing_craft|hovercraft|unmanned_surface|usv/.test(raw)) return Anchor;
   if (/\bship\b|vessel|tanker|harbor|harbour|\bport\b|shipyard|cruise_ship|bulk_carrier|container_ship|roll_on_roll_off|cargo_ship|oil_tanker|lng_tanker|hospital_ship|survey_vessel|intelligence_ship|replenishment_ship/.test(raw)) return ShipWheel;

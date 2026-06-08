@@ -92,16 +92,25 @@ export function OntologyOrbit({ onBack }: Props) {
       try {
         const resp = await axios.get(`${API_URL}/api/ontology`);
         const tree = resp.data;
-        if (tree?.branches && Array.isArray(tree.branches)) {
-          setBranches(tree.branches.map((b: any) => ({ id: b.id, label: b.label })));
-        }
-        if (tree?.objects && Array.isArray(tree.objects)) {
-          const grouped: Record<string, ObjectRow[]> = {};
-          for (const o of tree.objects) {
-            (grouped[o.branch_id] ||= []).push({ id: o.id, branch_id: o.branch_id, label: o.label });
+        // GET /api/ontology returns a nested tree: { branches: roots } where
+        // each branch holds nested `.children` (sub-branches) and `.objects`.
+        // There is no flat top-level `objects` array — walk the tree to collect
+        // every branch (incl. sub-branches) and every object, grouped by branch.
+        const flatBranches: Branch[] = [];
+        const grouped: Record<string, ObjectRow[]> = {};
+        const walk = (b: any) => {
+          if (!b) return;
+          flatBranches.push({ id: b.id, label: b.label });
+          for (const o of b.objects || []) {
+            (grouped[b.id] ||= []).push({ id: o.id, branch_id: b.id, label: o.label });
           }
-          setObjectsByBranch(grouped);
+          for (const child of b.children || []) walk(child);
+        };
+        if (tree?.branches && Array.isArray(tree.branches)) {
+          for (const root of tree.branches) walk(root);
         }
+        setBranches(flatBranches);
+        setObjectsByBranch(grouped);
       } catch (e) {
         // Non-fatal — the orbit still renders.
         console.warn('ontology tree fetch failed', e);

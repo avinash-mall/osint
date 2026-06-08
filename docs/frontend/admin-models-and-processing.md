@@ -22,6 +22,12 @@ Live list of analytics + training Celery jobs. Monitors: ingest jobs in flight, 
 - `GET /api/ingest/jobs/{task_id}` (when expanding a row)
 - WebSocket: `processing_jobs` topic for live status
 
+Status normalisation: analytics jobs are stored as `status='complete'`; training
+uses `'completed'`/`'done'`. An `isDoneStatus` helper treats all three as
+terminal-success for the progress bar, the colour, and the DONE filter. Job
+cards show status only — there is no Map/FMV cross-nav (analytics jobs return a
+GeoJSON `result`, not a `detection_id`, and training jobs carry neither).
+
 ## Cross-references
 
 - [backend-routers/models-training-router.md](../backend-routers/models-training-router.md)

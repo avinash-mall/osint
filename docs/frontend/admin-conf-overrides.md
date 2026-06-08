@@ -5,7 +5,7 @@
 
 ## Purpose
 
-Per-class confidence floor editor. Surfaces the `PER_CLASS_CONFIDENCE_OVERRIDES` JSON map as a table, each row `{class, floor}`. Edits persist to PostGIS, apply on the next request to inference.
+Per-class confidence floor editor. Surfaces the `PER_CLASS_CONFIDENCE_OVERRIDES` JSON map as a table, each row `{class, base, value}`. The **BASE** column is the per-class env floor (`env_per_class_confidence_overrides[class]`, falling back to the global env floor when none is set) — the value inference uses without a DB override; the slider's **VALUE** highlights when it is raised above that per-class base. Edits persist to PostGIS, apply on the next request to inference.
 
 ## Why this lives in the UI
 

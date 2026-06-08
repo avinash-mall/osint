@@ -71,12 +71,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const me = await fetchMe();
       setUser(me);
       setStatus(me ? 'authenticated' : 'anonymous');
-    } catch (err: any) {
-      // A transient network error shouldn't lock the user out forever — show
-      // the login screen, they can retry.
+    } catch {
+      // A transient network/5xx on the boot session probe shouldn't surface as
+      // a hostile "login failed" banner — the user never attempted a login.
+      // Drop to the login screen silently; a real login attempt will report its
+      // own error.
       setUser(null);
       setStatus('anonymous');
-      setError(err?.message || 'failed to load session');
     }
   }, []);
 

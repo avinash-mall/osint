@@ -915,12 +915,16 @@ export default function FmvPlayer({
         e.preventDefault();
         togglePlay();
       } else if (e.code === 'ArrowLeft') {
+        e.preventDefault();
         seekTo(t - 1 / fps);
       } else if (e.code === 'ArrowRight') {
+        e.preventDefault();
         seekTo(t + 1 / fps);
       } else if (e.key === 'j' || e.key === 'J') {
+        e.preventDefault();
         seekTo(t - 10 / fps);
       } else if (e.key === 'l' || e.key === 'L') {
+        e.preventDefault();
         seekTo(t + 10 / fps);
       }
     };
@@ -1728,7 +1732,7 @@ export default function FmvPlayer({
                   position: 'absolute',
                   top: 0,
                   bottom: 0,
-                  left: `${duration ? (currentTime / duration) * 100 : 0}%`,
+                  left: `${(() => { const d = duration || selectedClip?.duration_seconds || 0; return d ? (currentTime / d) * 100 : 0; })()}%`,
                   borderLeft: `1.5px solid ${accent}`,
                   pointerEvents: 'none',
                 }}
@@ -2028,7 +2032,10 @@ export default function FmvPlayer({
                 if (detectionFilter !== 'in-frame') return true;
                 const f = (d as any).frame_index;
                 if (typeof f !== 'number') return false;
-                return Math.abs(f - currentFrameIdx) <= detectionMaxAgeFrames;
+                // Match the canvas overlay: backward-only window (a detection is
+                // "in frame" from its frame up to detectionMaxAgeFrames later),
+                // never future frames — so the list and the overlay agree.
+                return f <= currentFrameIdx && currentFrameIdx - f <= detectionMaxAgeFrames;
               });
               const sorted = [...list].sort((a, b) => {
                 const fa = Number((a as any).frame_index ?? 0);

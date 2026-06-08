@@ -109,9 +109,18 @@ function NodeGlyph({ kind, size = 14 }: { kind: string; size?: number }) {
 
 const GROUP_ORDER = ['facility', 'person', 'vehicle', 'vessel', 'phone', 'account', 'detection', 'candidate', 'imagery', 'source', 'entity'];
 
+function linkScore(link: any): number | undefined {
+  // The backend serialiser puts all relationship props under `link.properties`
+  // and only lifts type/predicate/candidate to the top level, so the score
+  // lives at link.properties.score (candidate-link scorer), not link.score.
+  const p = link?.properties || {};
+  const raw = Number(p.score ?? p.weight ?? p.confidence ?? link.score ?? link.weight ?? link.confidence);
+  return Number.isFinite(raw) ? raw : undefined;
+}
+
 function linkWeight(link: any): number {
-  const raw = Number(link.score ?? link.weight ?? link.confidence ?? link.value ?? 0.45);
-  return Number.isFinite(raw) ? Math.max(0.08, Math.min(1, raw)) : 0.45;
+  const raw = linkScore(link);
+  return raw === undefined ? 0.45 : Math.max(0.08, Math.min(1, raw));
 }
 
 // UX-AUDIT F22: edges carry a semantic predicate (the Neo4j relationship
@@ -670,8 +679,6 @@ export default function GraphExplorer() {
     return false;
   }, [contextMenu]);
 
-  const isStubMode = mode === 'ontology' || (mode === 'evidence' && !evidencePayload);
-
   return (
     <div className="graph-shell h-full min-h-0 bg-sentinel-bg text-sentinel-text overflow-hidden" onClick={() => setContextMenu(null)}>
       <aside className="graph-entity-panel sentinel-panel border-y-0 border-l-0 min-h-0 flex flex-col">
@@ -754,6 +761,12 @@ export default function GraphExplorer() {
                       setFilteredData(null);
                       setPathResult(null);
                       setSiteRollup(null);
+                      // Clear cross-mode state so switching tabs never shows a
+                      // stale evidence chain or a selection from another mode.
+                      setSelectedNode(null);
+                      setContextMenu(null);
+                      setEvidencePayload(null);
+                      setEvidenceFocusId(null);
                     }}
                     className={`px-3 text-[10px] font-mono uppercase whitespace-nowrap border-l first:border-l-0 border-sentinel-line-2 ${
                       on ? 'bg-sentinel-accent text-sentinel-bg' : 'text-sentinel-muted'
@@ -859,7 +872,7 @@ export default function GraphExplorer() {
               graphData={graphData}
               nodeId="id"
               nodeLabel={nodeTitle}
-              linkLabel={(link: any) => `${link.type}${link.score ? ` ${Number(link.score).toFixed(2)}` : ''}`}
+              linkLabel={(link: any) => { const s = linkScore(link); return `${link.type}${s !== undefined ? ` ${s.toFixed(2)}` : ''}`; }}
               linkDirectionalArrowLength={3}
               linkDirectionalArrowRelPos={1}
               linkColor={(link: any) => {
@@ -975,7 +988,7 @@ export default function GraphExplorer() {
               }}
             />
           )}
-          {!isStubMode && (
+          {mode === 'investigation' && (
             <>
               <div className="absolute left-3 top-3 border border-sentinel-line bg-sentinel-panel/90 p-3 font-mono text-[10px] text-sentinel-muted">
                 <div className="sentinel-label mb-2">Graph</div>

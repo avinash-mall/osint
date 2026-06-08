@@ -155,7 +155,7 @@ export default function IngestConnect() {
     }
   }, [fetchUploadJobs]));
 
-  const activeJob = uploadJobs.find((job) => job.upload_id === activeUploadId)
+  const activeJob = uploadJobs.find((job) => job.upload_id === activeUploadId && job.media_type === mediaType)
     || uploadJobs.find((job) => job.media_type === mediaType && isUploadActive(job))
     || uploadJobs.find((job) => job.media_type === mediaType)
     || null;
@@ -180,7 +180,7 @@ export default function IngestConnect() {
       seen.add(key);
       return true;
     });
-  }, [customPrompts, selectedDefenceIds]);
+  }, [customPrompts, selectedDefenceIds, defenceObjectById]);
 
   const scopedBranch = useMemo(
     () => ontologyBranches.find((b) => b.id === scopedBranchId) || null,

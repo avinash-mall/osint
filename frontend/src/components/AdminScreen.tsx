@@ -194,8 +194,6 @@ export default function AdminScreen({
         {tab === 'processing' && (
           <ProcessingView
             onCount={setProcessingCount}
-            onOpenOnMap={onOpenDetectionOnMap}
-            onOpenInFmv={onOpenDetectionInFmv}
           />
         )}
         {tab === 'models'     && <ModelsView onCount={setModelsCount} />}

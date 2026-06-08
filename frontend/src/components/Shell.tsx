@@ -520,7 +520,10 @@ function Topbar({ workspaceLabel, contextLine, alerts, onNavigate, onOpenPalette
           aria-label={alerts.unread > 0 ? `View ${alerts.unread} unread health alerts` : 'View health alerts'}
           onClick={() => {
             onNavigate('admin');
-            window.dispatchEvent(new CustomEvent('sentinel:admin-tab', { detail: { tab: 'alerts' } }));
+            // Defer so AdminScreen mounts and registers its `sentinel:admin-tab`
+            // listener before the event fires (it isn't mounted until `active`
+            // becomes 'admin' on the next render).
+            setTimeout(() => window.dispatchEvent(new CustomEvent('sentinel:admin-tab', { detail: { tab: 'alerts' } })), 0);
           }}
         >
           <Bell size={13} aria-hidden/>
@@ -570,6 +573,22 @@ function AnalystChip() {
   const { user, logout } = useAuth();
   const { theme, density, clockTz, setTheme, setDensity, setClockTz } = usePreferences();
   const [open, setOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  // Close on Escape or a click/tap outside (mouse-leave alone strands the menu
+  // open for keyboard and touch users).
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (e: PointerEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('pointerdown', onPointer);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onPointer);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
   const initials = (user?.display_name || user?.username || 'AN')
     .split(/[\s.]+/)
     .map((s) => s[0]?.toUpperCase() || '')
@@ -577,7 +596,7 @@ function AnalystChip() {
     .slice(0, 2) || 'AN';
   const accent = user?.role === 'admin' ? 'var(--accent)' : 'var(--nato-friend)';
   return (
-    <div className="analyst-chip" style={{ position: 'relative' }}>
+    <div ref={menuRef} className="analyst-chip" style={{ position: 'relative' }}>
       <button
         type="button" onClick={() => setOpen((o) => !o)}
         style={{
@@ -786,7 +805,9 @@ function CommandPalette({
         hint: 'Opens in Geoint',
         run: () => {
           onNavigate('map');
-          window.dispatchEvent(new CustomEvent('sentinel:jump-to-detection', { detail: { id } }));
+          // Defer so GaiaMap mounts and registers its jump listener before the
+          // event fires (it isn't mounted until `active` becomes 'map').
+          setTimeout(() => window.dispatchEvent(new CustomEvent('sentinel:jump-to-detection', { detail: { id } })), 0);
         },
       });
     }

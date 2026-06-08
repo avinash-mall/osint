@@ -2,8 +2,7 @@
  * ProcessingView — Admin · Processing tab.
  *
  * Extracted from the monolithic AdminScreen.tsx. Single responsibility:
- * list analytics + training jobs, filter by status, surface clickable
- * cross-nav buttons for jobs that produced detections.
+ * list analytics + training jobs, filter by status.
  *
  * Polling cadence:
  *   - Tight (3 s) while any job is running / queued; relaxed (15 s) otherwise.
@@ -12,9 +11,7 @@
 
 import axios from 'axios';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  Film, Map as MapIcon, RefreshCw,
-} from 'lucide-react';
+import { RefreshCw } from 'lucide-react';
 import ViewHeader from './ViewHeader';
 import { relativeTime } from './time';
 
@@ -22,6 +19,10 @@ const API_URL = (import.meta as any).env?.VITE_API_URL || '';
 
 const FAST_TICK = 3000;
 const SLOW_TICK = 15000;
+
+// Analytics jobs are stored with status 'complete' (analytics router); training
+// uses 'completed'/'done'. Treat all three as terminal-success.
+const isDoneStatus = (s?: string) => s === 'complete' || s === 'completed' || s === 'done';
 
 type JobRow = {
   id: string | number;
@@ -32,20 +33,15 @@ type JobRow = {
   created_at?: string | null;
   pct?: number;
   raw_source: 'analytics' | 'training';
-  /** When the analytics job produced a detection, surfaces a click target. */
-  detection_id?: number;
-  fmv_clip_id?: number;
 };
 
 type Filter = 'all' | 'running' | 'queued' | 'done' | 'failed';
 
 type Props = {
   onCount: (n: number) => void;
-  onOpenOnMap?: (detectionId: number, className?: string) => void;
-  onOpenInFmv?: (detectionId: number) => void;
 };
 
-export default function ProcessingView({ onCount, onOpenOnMap, onOpenInFmv }: Props) {
+export default function ProcessingView({ onCount }: Props) {
   const [jobs, setJobs] = useState<JobRow[]>([]);
   const [filter, setFilter] = useState<Filter>('all');
   const [loading, setLoading] = useState(false);
@@ -68,21 +64,19 @@ export default function ProcessingView({ onCount, onOpenOnMap, onOpenInFmv }: Pr
             stage: j.status || 'queued',
             status: j.status || 'queued',
             created_at: j.created_at,
-            pct: j.status === 'completed' || j.status === 'done' ? 1 : j.status === 'running' ? 0.5 : 0,
+            pct: isDoneStatus(j.status) ? 1 : j.status === 'running' ? 0.5 : 0,
             raw_source: 'analytics' as const,
-            detection_id: j.output?.detection_id,
-            fmv_clip_id: j.output?.fmv_clip_id,
           }))
         : [];
       const tRows: JobRow[] = t.status === 'fulfilled'
         ? (t.value.data.jobs ?? []).map((j) => ({
             id: j.id,
-            title: j.dataset_name || `training:${j.id}`,
+            title: j.name || `training:${j.id}`,
             model: 'training',
             stage: j.status || 'queued',
             status: j.status || 'queued',
             created_at: j.created_at,
-            pct: j.status === 'completed' || j.status === 'done' ? 1 : j.status === 'running' ? 0.5 : 0,
+            pct: isDoneStatus(j.status) ? 1 : j.status === 'running' ? 0.5 : 0,
             raw_source: 'training' as const,
           }))
         : [];
@@ -119,7 +113,7 @@ export default function ProcessingView({ onCount, onOpenOnMap, onOpenInFmv }: Pr
   const visible = useMemo(() => {
     if (filter === 'all') return jobs;
     return jobs.filter((j) => {
-      if (filter === 'done') return j.status === 'completed' || j.status === 'done';
+      if (filter === 'done') return isDoneStatus(j.status);
       if (filter === 'failed') return j.status === 'failed' || j.status === 'error';
       return j.status === filter;
     });
@@ -177,7 +171,7 @@ export default function ProcessingView({ onCount, onOpenOnMap, onOpenInFmv }: Pr
         {visible.map((j) => {
           const color =
             j.status === 'running' ? 'var(--accent)' :
-            j.status === 'completed' || j.status === 'done' ? 'var(--ok)' :
+            isDoneStatus(j.status) ? 'var(--ok)' :
             j.status === 'failed' || j.status === 'error' ? 'var(--nato-hostile)' : 'var(--ink-2)';
           const pct = j.pct ?? 0;
           return (
@@ -198,24 +192,6 @@ export default function ProcessingView({ onCount, onOpenOnMap, onOpenInFmv }: Pr
                   textAlign: 'right',
                   display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end',
                 }}>
-                  {j.detection_id != null && onOpenOnMap && (
-                    <button
-                      className="btn xs" type="button"
-                      onClick={() => onOpenOnMap(j.detection_id!)}
-                      title="Open detection on GEOINT map"
-                    >
-                      <MapIcon size={11}/> Map
-                    </button>
-                  )}
-                  {j.fmv_clip_id != null && onOpenInFmv && (
-                    <button
-                      className="btn xs" type="button"
-                      onClick={() => onOpenInFmv(j.detection_id ?? j.fmv_clip_id!)}
-                      title="Open in FMV player"
-                    >
-                      <Film size={11}/> FMV
-                    </button>
-                  )}
                   <span className="mono" style={{ fontSize: 11, color, letterSpacing: '.08em' }}>
                     {j.status.toUpperCase()}
                   </span>

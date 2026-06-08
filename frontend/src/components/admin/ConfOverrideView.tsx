@@ -23,20 +23,25 @@ type OverridesPayload = {
   env_high_confidence_threshold?: number | null;
 };
 
-type Row = { id: string; value: number; from_env: boolean };
+// `base` = the per-class env floor for this class (what inference falls back to
+// without a DB override), or the global env floor when no per-class env value
+// exists. Shown in the BASE column and used as the "raised above base" pivot.
+type Row = { id: string; value: number; from_env: boolean; base: number };
 
 function buildRows(payload: OverridesPayload): Row[] {
   const env = payload.env_per_class_confidence_overrides || {};
   const db = payload.per_class_confidence_overrides || {};
+  const globalFloor = Number(payload.env_global_floor ?? 0);
+  const baseFor = (k: string) => (env[k] != null ? Number(env[k]) : globalFloor);
   const seen = new Set<string>();
   const rows: Row[] = [];
   for (const [k, v] of Object.entries(db)) {
-    rows.push({ id: k, value: Number(v), from_env: false });
+    rows.push({ id: k, value: Number(v), from_env: false, base: baseFor(k) });
     seen.add(k);
   }
   for (const [k, v] of Object.entries(env)) {
     if (seen.has(k)) continue;
-    rows.push({ id: k, value: Number(v), from_env: true });
+    rows.push({ id: k, value: Number(v), from_env: true, base: baseFor(k) });
   }
   rows.sort((a, b) => a.id.localeCompare(b.id));
   return rows;
@@ -89,9 +94,9 @@ export default function ConfOverrideView() {
   const addRow = useCallback(() => {
     const id = newClass.trim().toLowerCase();
     if (!id) return;
-    setRows((cur) => (cur.some((r) => r.id === id) ? cur : [...cur, { id, value: 0.5, from_env: false }]));
+    setRows((cur) => (cur.some((r) => r.id === id) ? cur : [...cur, { id, value: 0.5, from_env: false, base: Number(envGlobalFloor ?? 0) }]));
     setNewClass('');
-  }, [newClass]);
+  }, [newClass, envGlobalFloor]);
 
   const save = useCallback(async () => {
     setBusy(true);
@@ -239,7 +244,7 @@ export default function ConfOverrideView() {
                 )}
               </div>
               <div className="mono" style={{ fontSize: 11.5, color: 'var(--ink-2)' }}>
-                {(envGlobalFloor ?? 0).toFixed(2)}
+                {r.base.toFixed(2)}
               </div>
               <input
                 type="range"
@@ -255,7 +260,7 @@ export default function ConfOverrideView() {
                 style={{
                   fontSize: 11.5,
                   fontWeight: 600,
-                  color: r.value > (envGlobalFloor ?? 0) ? 'var(--accent)' : 'var(--ink-1)',
+                  color: r.value > r.base ? 'var(--accent)' : 'var(--ink-1)',
                 }}
               >
                 {r.value.toFixed(2)}

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
-import { CheckCircle2, Plus, RefreshCw, Ship, Trash2, Triangle, Truck, Building2, Users, GitMerge, XCircle } from 'lucide-react';
+import { Boxes, CheckCircle2, Plus, RefreshCw, Ship, Trash2, Triangle, Truck, Building2, Users, GitMerge, XCircle } from 'lucide-react';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -47,6 +47,7 @@ const KINDS: { value: EntityKind; label: string; Icon: any }[] = [
   { value: 'vehicle', label: 'Vehicle', Icon: Truck },
   { value: 'facility', label: 'Facility', Icon: Building2 },
   { value: 'unit', label: 'Unit', Icon: Users },
+  { value: 'asset', label: 'Asset', Icon: Boxes },
 ];
 
 export default function OperationalEntitiesAdmin() {
