@@ -31,6 +31,7 @@ Change polygons between two co-registered satellite passes. Surfaces as `POST /a
 ## Failure modes
 
 - Pass not found / COG missing / empty bbox intersection → `None`.
+- **Mismatched band counts** — `_resample_window` caps bands per file independently, so a 1-band SAR vs 3-band optical (or a 2-band source) pair would crash/garble the optical diff. `_change_map_optical` differences only the common leading bands (`min(before_bands, after_bands)`).
 - **SAR on a non-SAR pass** — runs the log-ratio on band 1 regardless; output is meaningless on optical input. The frontend selector labels intent; the backend does not enforce sensor type.
 - Threshold yields zero polygons → empty `FeatureCollection` with a `summary` (valid empty result; optical reports `peak_diff`, SAR reports `peak_diff_db`).
 

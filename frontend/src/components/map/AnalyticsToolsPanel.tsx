@@ -238,13 +238,22 @@ export default function AnalyticsToolsPanel({
           onChange={(v) => updateTool('viewshed', { radius: v })}
         />
         <FieldRange
-          label="Height"
+          label="Observer ht"
           value={vs.observerHeight}
           min={0}
           max={50}
           step={0.5}
           suffix="m"
           onChange={(v) => updateTool('viewshed', { observerHeight: v })}
+        />
+        <FieldRange
+          label="Target ht"
+          value={vs.targetHeight}
+          min={0}
+          max={50}
+          step={0.5}
+          suffix="m"
+          onChange={(v) => updateTool('viewshed', { targetHeight: v })}
         />
       </ToolCard>
 
@@ -273,6 +282,24 @@ export default function AnalyticsToolsPanel({
           value={pickLabel(los.destination, 'pick on map…')}
           active={pendingPick === 'los.target'}
           onPick={() => startPick('los.target')}
+        />
+        <FieldRange
+          label="Observer ht"
+          value={los.observerHeight}
+          min={0}
+          max={50}
+          step={0.5}
+          suffix="m"
+          onChange={(v) => updateTool('los', { observerHeight: v })}
+        />
+        <FieldRange
+          label="Target ht"
+          value={los.targetHeight}
+          min={0}
+          max={50}
+          step={0.5}
+          suffix="m"
+          onChange={(v) => updateTool('los', { targetHeight: v })}
         />
       </ToolCard>
 

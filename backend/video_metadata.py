@@ -94,7 +94,7 @@ def extract_telemetry(
     fps_value = fps or 30.0
 
     for extractor, label in (
-        (_extract_klv, "misb-klv"),
+        (lambda p: _extract_klv(p, duration_s), "misb-klv"),
         (_extract_gpmd, "gpmd"),
         (lambda p: _extract_srt(sidecar_srt) if sidecar_srt else [], "srt"),
     ):
@@ -125,7 +125,7 @@ def extract_telemetry(
 # KLV (MISB 0601)
 # ---------------------------------------------------------------------------
 
-def _extract_klv(video_path: Path) -> list[dict]:
+def _extract_klv(video_path: Path, duration_s: float = 0.0) -> list[dict]:
     """Demux KLV data stream via ffmpeg, parse with klvdata.
 
     Returns a list of `{timestamp_seconds, **fields}` dicts. Empty if the
@@ -208,9 +208,13 @@ def _extract_klv(video_path: Path) -> list[dict]:
         for sample in samples:
             sample["timestamp_seconds"] = round(sample.get("unix_timestamp", t0) - t0, 3)
     else:
+        # No absolute timestamps — spread samples evenly across the real clip
+        # duration (not [0,1)s, which would collapse them all into the first
+        # second of frames and the per-frame dedup would discard most).
         n = max(1, len(samples))
+        span = duration_s if duration_s and duration_s > 0 else float(n)
         for idx, sample in enumerate(samples):
-            sample["timestamp_seconds"] = round(idx / n, 3)
+            sample["timestamp_seconds"] = round(idx / n * span, 3)
     return samples
 
 
@@ -423,8 +427,11 @@ def _footprint_wkt(telemetry: dict, lat: float, lon: float) -> str:
     except (TypeError, ValueError):
         ground_w = ground_h = 50.0
 
-    half_w_deg = (ground_w / 2.0) / 111_320.0
-    half_h_deg = (ground_h / 2.0) / (111_320.0 * max(math.cos(math.radians(lat)), 1e-6))
+    # ground_w is the East-West span (its offset is added to longitude, so it
+    # divides by metres-per-degree-lon = 111320·cos(lat)); ground_h is
+    # North-South (added to latitude → plain 111320). These were swapped.
+    half_w_deg = (ground_w / 2.0) / (111_320.0 * max(math.cos(math.radians(lat)), 1e-6))
+    half_h_deg = (ground_h / 2.0) / 111_320.0
     cos_a = math.cos(math.radians(azimuth))
     sin_a = math.sin(math.radians(azimuth))
 

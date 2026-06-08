@@ -11,7 +11,8 @@ Pull per-frame telemetry from an FMV clip. Tries in order: MISB ST 0601 KLV in t
 ## Why this design
 
 - **Cascading fallback** — real UAS clips come from many sources; not all have KLV. The ladder gets the best telemetry available without the operator knowing which their clip uses.
-- **Footprint WKT** computed per frame from `(sensor_lat, sensor_lon, target_lat, target_lon, fov_horizontal, fov_vertical)` → map renders the view footprint over time.
+- **Footprint WKT** computed per frame from `(sensor_lat, sensor_lon, target_lat, target_lon, fov_horizontal, fov_vertical)` → map renders the view footprint over time. The East-West half-span divides by metres-per-degree-lon (`111320·cos(lat)`) and the North-South half-span by `111320` (these divisors were previously swapped, distorting every footprint by a `cos(lat)` factor).
+- **KLV without absolute timestamps** — when packets carry no PrecisionTimeStamp, samples are spread evenly across the real clip `duration_s` (not [0,1)s, which collapsed them into the first second of frames and let the per-frame dedup discard most).
 - **`TelemetryMissingError` = the explicit-failure case** — ingest router catches it, falls back to the synthetic fixture path so a clip with no telemetry still produces a navigable timeline. `FMV_DEMO_MODE=1` forces the fixture.
 
 ## Key symbols

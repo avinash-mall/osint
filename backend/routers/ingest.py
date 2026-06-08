@@ -678,27 +678,31 @@ def ingest_url(req: IngestUrlRequest):
     upload_id = uuid.uuid4().hex
     domain = normalize_domain(req.domain, "OSINT")
     title = req.title or req.url
+    # Offline/air-gapped builds cannot fetch a URL at runtime (CLAUDE.md hard
+    # rule #8) and there is no `workers.url.process` task, so this records the URL
+    # as a manual OSINT reference (observation + timeline + document stub) rather
+    # than pretending to queue automated retrieval.
     with postgis_db.get_cursor(commit=True) as cursor:
         cursor.execute(
             """
             INSERT INTO upload_jobs (upload_id, filename, file_path, media_type, handler, status, metadata)
-            VALUES (%s, %s, %s, %s, %s, 'queued', %s)
+            VALUES (%s, %s, %s, %s, %s, 'manual', %s)
             """,
             (
-                upload_id, safe_filename(title)[:255], req.url, req.source_type, "workers.url.process",
+                upload_id, safe_filename(title)[:255], req.url, req.source_type, "manual",
                 json.dumps({"domain": domain, "auto_process": req.auto_process, "source_url": req.url}),
             ),
         )
         cursor.execute(
             """
             INSERT INTO documents (upload_id, domain, title, source_url, media_type, status, summary, metadata)
-            VALUES (%s, %s, %s, %s, %s, 'queued', %s, %s)
+            VALUES (%s, %s, %s, %s, %s, 'manual', %s, %s)
             RETURNING id, upload_id, domain, title, source_url, media_type, status, summary, metadata, created_at, updated_at
             """,
             (
                 upload_id, domain, title[:255], req.url, req.source_type,
-                "Queued for automated retrieval and LLM extraction.",
-                json.dumps({"handler": "workers.url.process"}),
+                "URL recorded as an OSINT reference. Automated retrieval/LLM extraction is disabled in offline builds.",
+                json.dumps({"handler": "manual"}),
             ),
         )
         document = dict(cursor.fetchone())
@@ -706,7 +710,7 @@ def ingest_url(req: IngestUrlRequest):
         domain, "url_ingest", title, {"url": req.url, "document_id": document["id"]},
         confidence=0.5, provenance={"source": "url"},
     )
-    record_timeline_event(domain, "url_ingest_queued", title, {"document": document})
-    publish_event("ingest", {"type": "url_ingest_queued", "document": document})
-    publish_event("ops", {"type": "url_ingest_queued", "document": document})
-    return {"success": True, "upload_id": upload_id, "document": document, "message": "URL ingestion queued."}
+    record_timeline_event(domain, "url_ingest_recorded", title, {"document": document})
+    publish_event("ingest", {"type": "url_ingest_recorded", "document": document})
+    publish_event("ops", {"type": "url_ingest_recorded", "document": document})
+    return {"success": True, "upload_id": upload_id, "document": document, "message": "URL recorded as a reference (automated retrieval is disabled in offline builds)."}

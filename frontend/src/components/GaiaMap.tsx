@@ -461,11 +461,14 @@ export default function GaiaMap({
           },
         });
       } else {
-        // OBB â€” if metadata.obb is a polygon of [lon,lat] pairs, use it; else
-        // fall back to the mask polygon so the layer never disappears.
-        const obb = f?.properties?.metadata?.obb;
-        if (Array.isArray(obb) && obb.length >= 3 && Array.isArray(obb[0]) && obb[0].length >= 2) {
-          const ring = obb.map((pt: any) => [Number(pt[0]), Number(pt[1])]);
+        // OBB — the backend persists the geo-projected oriented box as
+        // metadata.geo_polygon, a FLAT [lon, lat, lon, lat, …] list (not nested
+        // pairs, and metadata.obb is pixel-space, not geographic). Rebuild the
+        // ring from it; fall back to the feature's own geometry otherwise.
+        const flat = f?.properties?.metadata?.geo_polygon;
+        if (Array.isArray(flat) && flat.length >= 6 && typeof flat[0] === 'number') {
+          const ring: number[][] = [];
+          for (let i = 0; i + 1 < flat.length; i += 2) ring.push([Number(flat[i]), Number(flat[i + 1])]);
           ring.push(ring[0]);
           out.features.push({
             ...f,

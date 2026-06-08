@@ -273,11 +273,17 @@ def run_route_options(req: AnalyticsRequest):
 def run_pattern_of_life(req: AnalyticsRequest):
     ensure_platform_tables()
     with postgis_db.get_cursor() as cursor:
+        # Cluster track points into ~0.02° grid cells and return each cell's
+        # centroid + count. Grouping by the raw lon/lat (as before) made every
+        # distinct point its own group, defeating the ST_SnapToGrid clustering.
         cursor.execute("""
-            SELECT ST_X(geom) AS lon, ST_Y(geom) AS lat, count(*) AS count
-            FROM track_points
-            WHERE geom IS NOT NULL
-            GROUP BY ST_SnapToGrid(geom, 0.02), lon, lat
+            SELECT ST_X(cell) AS lon, ST_Y(cell) AS lat, count(*) AS count
+            FROM (
+                SELECT ST_SnapToGrid(geom, 0.02) AS cell
+                FROM track_points
+                WHERE geom IS NOT NULL
+            ) s
+            GROUP BY cell
             ORDER BY count DESC
             LIMIT 50
         """)

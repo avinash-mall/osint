@@ -118,11 +118,18 @@ def dinov3_pool(bundle: dict[str, Any], pil_image_or_array: Image.Image | np.nda
     if isinstance(pil_image_or_array, np.ndarray):
         pil_image_or_array = Image.fromarray(pil_image_or_array)
     import torch
+    from inference_utils import device_ctx
 
-    inp = bundle["processor"](images=pil_image_or_array, return_tensors="pt").to(bundle["device"])
-    with torch.inference_mode():
-        out = bundle["model"](**inp)
-    vec = out.last_hidden_state[:, 0, :].squeeze(0).to(torch.float16).cpu().numpy()
+    # Pin the current CUDA device to this replica's GPU (same reason as
+    # embed_crops_batched): /embed runs in the threadpool where the current
+    # device defaults to cuda:0, so a forward on cuda:N would issue cross-device
+    # kernels under multi-GPU concurrency.
+    device = bundle["device"]
+    with device_ctx(device):
+        inp = bundle["processor"](images=pil_image_or_array, return_tensors="pt").to(device)
+        with torch.inference_mode():
+            out = bundle["model"](**inp)
+        vec = out.last_hidden_state[:, 0, :].squeeze(0).to(torch.float16).cpu().numpy()
     return {
         "model": bundle["model_id"],
         "dim": int(vec.shape[0]),

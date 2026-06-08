@@ -151,6 +151,14 @@ def _change_map_optical(before_arr: np.ndarray, after_arr: np.ndarray) -> tuple[
 
     Returns ``(diff_norm 0..1, mask uint8, threshold)``.
     """
+    # The two passes can have different band counts (e.g. 1-band SAR vs 3-band
+    # optical, or a 2-band source) because _resample_window caps each file
+    # independently. Difference only the common leading bands so the subtraction
+    # neither raises a broadcasting error nor silently broadcasts mismatched
+    # spectra together.
+    n_bands = min(before_arr.shape[0], after_arr.shape[0])
+    before_arr = before_arr[:n_bands]
+    after_arr = after_arr[:n_bands]
     diff = np.abs(after_arr.astype(np.float32) - before_arr.astype(np.float32))
     diff_mean = diff.mean(axis=0)
     peak = float(diff_mean.max()) or 1.0

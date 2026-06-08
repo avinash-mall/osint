@@ -17,7 +17,10 @@ from shapely.ops import transform as shapely_transform
 
 
 def local_utm_crs(lon: float, lat: float) -> pyproj.CRS:
-    zone = int((lon + 180) // 6) + 1
+    # Clamp to UTM zones 1..60 — lon == 180 (or a slightly out-of-range value
+    # from an upstream antimeridian wrap) would otherwise yield zone 61 and an
+    # invalid EPSG 32661/32761.
+    zone = min(60, max(1, int((lon + 180) // 6) + 1))
     epsg = 32600 + zone if lat >= 0 else 32700 + zone
     return pyproj.CRS.from_epsg(epsg)
 

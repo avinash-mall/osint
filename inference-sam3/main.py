@@ -1445,7 +1445,7 @@ async def embed_endpoint(image: UploadFile = File(...)):
         pil_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"could not decode image: {e}")
-    result = embedding.dinov3_pool(bundle, pil_img)
+    result = await run_in_threadpool(embedding.dinov3_pool, bundle, pil_img)
     if not result.get("fp16_b64"):
         raise HTTPException(status_code=500, detail="embedding computation returned empty result")
     logger.info("/embed ok dim=%s bytes=%d", result.get("dim"), len(img_bytes))

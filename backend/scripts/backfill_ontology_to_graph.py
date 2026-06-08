@@ -105,7 +105,7 @@ def backfill_label_of(batch_size: int = 500) -> int:
                 norm = ontology_module.normalize(row["class"])
             except Exception:
                 continue
-            object_id = getattr(norm, "object_id", None) if norm else None
+            object_id = getattr(norm, "ontology_object_id", None) if norm else None
             if not object_id:
                 continue
             by_object.setdefault(object_id, []).append(int(row["id"]))

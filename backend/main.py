@@ -1179,12 +1179,15 @@ def delete_fmv_clip(clip_id: int, user: SessionUser = Depends(require_admin)):
 
     try:
         with db.get_session() as neo:
-            if det_ids:
-                neo.run(
-                    "MATCH (d:FmvDetection) WHERE d.postgis_id IN $ids DETACH DELETE d",
-                    {"ids": det_ids},
-                )
-            neo.run("MATCH (c:FmvClip {postgis_id: $cid}) DETACH DELETE c", {"cid": clip_id})
+            # Nodes are projected as :FMVClip / :FMVDetection (graph_writes.py);
+            # FMVDetection identity is (clip_id, track_uid), not postgis_id — so
+            # delete the clip and its CONTAINS_DETECTION children via the edge.
+            neo.run(
+                "MATCH (c:FMVClip {postgis_id: $cid}) "
+                "OPTIONAL MATCH (c)-[:CONTAINS_DETECTION]->(d:FMVDetection) "
+                "DETACH DELETE d, c",
+                {"cid": clip_id},
+            )
     except Exception:  # noqa: BLE001 — graph cleanup must not fail the delete
         logger.warning("delete_fmv_clip: Neo4j cleanup failed for clip %s", clip_id, exc_info=True)
 

@@ -270,7 +270,30 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
   // F14 — wire the floating zoom controls to the live Leaflet instance.
   const zoomIn = () => mapInstance.current?.zoomIn();
   const zoomOut = () => mapInstance.current?.zoomOut();
-  const recenter = () => mapInstance.current?.setView([25.0, 55.0], 6);
+  // Recenter on the operational context — the selected imagery footprint, then
+  // the current detections — falling back to the default view only when there's
+  // nothing loaded (rather than always jumping back to the Gulf).
+  const recenter = () => {
+    const map = mapInstance.current;
+    if (!map) return;
+    try {
+      if (selectedImageryData?.footprint_geojson) {
+        const geometry = typeof selectedImageryData.footprint_geojson === 'string'
+          ? JSON.parse(selectedImageryData.footprint_geojson)
+          : selectedImageryData.footprint_geojson;
+        const b = L.geoJSON(geometry).getBounds();
+        if (b.isValid()) { map.fitBounds(b.pad(0.15), { animate: true, maxZoom: 13 }); return; }
+      }
+      const feats = detectionsGeoJSON?.features || [];
+      if (feats.length) {
+        const b = L.geoJSON({ type: 'FeatureCollection', features: feats } as any).getBounds();
+        if (b.isValid()) { map.fitBounds(b.pad(0.3), { animate: true, maxZoom: 14 }); return; }
+      }
+    } catch {
+      // fall through to the default view
+    }
+    map.setView([25.0, 55.0], 6);
+  };
 
   useImperativeHandle(ref, () => ({
     getMap: () => mapInstance.current,

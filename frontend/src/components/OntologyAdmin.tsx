@@ -1534,12 +1534,14 @@ function RecentInstancesPanel({
     let cancelled = false;
     setLoading(true);
     setError(null);
-    const lowered = objectId.replace(/_/g, ' ').toLowerCase();
+    // Detection `class` is stored as the raw lowercase_underscore inference
+    // label (e.g. "main_battle_tank"); object ids are the same shape but
+    // Capitalized (e.g. "Main_Battle_Tank"). Lowercase but KEEP the underscores
+    // — replacing them with spaces made the exact backend `d.class = %s` match
+    // miss everything except single-word classes.
+    const lowered = objectId.toLowerCase();
     (async () => {
       try {
-        // Query detections filtered to this object's class label. The API
-        // already lower-cases on disk, so the object id (e.g. "Tank")
-        // matches its stored class "tank" once we map to lower.
         const { data } = await axios.get(`${API_URL}/api/detections`, {
           params: { det_class: lowered, limit: 25 },
         });

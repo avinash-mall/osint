@@ -214,14 +214,17 @@ def fetch_sen1floods(max_chips: int = 10) -> None:
             "chip_file": f"chips/{chip_name}",
             "modality": "multispectral",
             "source": f"sen1floods11:{Path(s2_path).stem}",
-            "ground_truth": {"burn_scar": has_flood, "flood": has_flood},
+            # Sen1Floods11 only provides a flood/water mask — it has NO burn-scar
+            # ground truth, so do not fabricate a `burn_scar` label from the flood
+            # mask (that would make any burn-scar eval actually measure flood).
+            "ground_truth": {"flood": has_flood},
             "annotations": [],
         })
         if i % 2 == 0:
             print(f"[fetch_real]   {len(records)}/{max_chips} ({chip_name}, has_flood={has_flood})")
 
     (HLS_OUT / "labels.json").write_text(json.dumps(records, indent=2))
-    n_pos = sum(1 for r in records if r["ground_truth"]["burn_scar"])
+    n_pos = sum(1 for r in records if r["ground_truth"]["flood"])
     print(f"[fetch_real] Sen1Floods done: {len(records)} chips ({n_pos} positive) -> {HLS_OUT}")
 
 

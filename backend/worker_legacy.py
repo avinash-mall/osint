@@ -2803,49 +2803,60 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
                         exc_info=True,
                     )
 
-            neo_session.run("""
-                MATCH (sp:SatellitePass {postgis_id: $pass_id})
-                CREATE (d:Detection {
-                    postgis_id: $det_id,
-                    class: $det_class,
-                    label: $label,
-                    original_class: $original_class,
-                    parent_class: $parent_class,
-                    confidence: $confidence,
-                    review_status: $review_status,
-                    threshold_profile: $threshold_profile,
-                    model_version: $model_version,
-                    taxonomy_version: $taxonomy_version,
-                    threat_level: $threat_level,
-                    threat_confidence: $threat_confidence,
-                    assessment_status: $assessment_status,
-                    ontology_category: $ontology_category,
-                    allegiance: $allegiance,
-                    latitude: $lat,
-                    longitude: $lon,
-                    created_at: datetime()
+            # Neo4j is a non-authoritative mirror — a graph blip must NOT roll
+            # back the committed PostGIS detections (the cursor's commit fires on
+            # clean exit of this `with`). Best-effort, matching every other graph
+            # write in the codebase.
+            try:
+                neo_session.run("""
+                    MATCH (sp:SatellitePass {postgis_id: $pass_id})
+                    CREATE (d:Detection {
+                        postgis_id: $det_id,
+                        class: $det_class,
+                        label: $label,
+                        original_class: $original_class,
+                        parent_class: $parent_class,
+                        confidence: $confidence,
+                        review_status: $review_status,
+                        threshold_profile: $threshold_profile,
+                        model_version: $model_version,
+                        taxonomy_version: $taxonomy_version,
+                        threat_level: $threat_level,
+                        threat_confidence: $threat_confidence,
+                        assessment_status: $assessment_status,
+                        ontology_category: $ontology_category,
+                        allegiance: $allegiance,
+                        latitude: $lat,
+                        longitude: $lon,
+                        created_at: datetime()
+                    })
+                    CREATE (sp)-[:CONTAINS_DETECTION]->(d)
+                """, {
+                    "pass_id": pass_id,
+                    "det_id": det_id,
+                    "det_class": det_class,
+                    "label": ontology["label"],
+                    "original_class": original_class,
+                    "parent_class": parent_class,
+                    "confidence": confidence,
+                    "review_status": det.get("review_status") or decision["review_status"],
+                    "threshold_profile": det.get("threshold_profile") or DETECTION_POLICY["threshold_profile"],
+                    "model_version": det.get("model_version") or DETECTION_POLICY["model_version"],
+                    "taxonomy_version": det.get("taxonomy_version") or DETECTION_POLICY["taxonomy_version"],
+                    "threat_level": assessment["threat_level"],
+                    "threat_confidence": assessment["threat_confidence"],
+                    "assessment_status": assessment["assessment_status"],
+                    "ontology_category": ontology["category"],
+                    "allegiance": allegiance,
+                    "lat": (lat1 + lat2) / 2,
+                    "lon": (lon1 + lon2) / 2
                 })
-                CREATE (sp)-[:CONTAINS_DETECTION]->(d)
-            """, {
-                "pass_id": pass_id,
-                "det_id": det_id,
-                "det_class": det_class,
-                "label": ontology["label"],
-                "original_class": original_class,
-                "parent_class": parent_class,
-                "confidence": confidence,
-                "review_status": det.get("review_status") or decision["review_status"],
-                "threshold_profile": det.get("threshold_profile") or DETECTION_POLICY["threshold_profile"],
-                "model_version": det.get("model_version") or DETECTION_POLICY["model_version"],
-                "taxonomy_version": det.get("taxonomy_version") or DETECTION_POLICY["taxonomy_version"],
-                "threat_level": assessment["threat_level"],
-                "threat_confidence": assessment["threat_confidence"],
-                "assessment_status": assessment["assessment_status"],
-                "ontology_category": ontology["category"],
-                "allegiance": allegiance,
-                "lat": (lat1 + lat2) / 2,
-                "lon": (lon1 + lon2) / 2
-            })
+            except Exception:  # noqa: BLE001 — graph mirror is best-effort
+                logger.warning(
+                    "store_detections: Neo4j projection failed for detection %s (PostGIS kept)",
+                    det_id,
+                    exc_info=True,
+                )
 
     # Step 3: per-batch summary of how many labels could not be resolved by
     # the defence-ontology normalizer (branch_id == "Other" / icon == circle_help).

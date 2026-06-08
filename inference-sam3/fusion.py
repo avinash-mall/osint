@@ -215,10 +215,11 @@ def mask_aware_nms(
         if not candidates:
             continue
         # coco_mask.iou's third argument is per-element iscrowd flags, not
-        # category ids — we pass all zeros (no crowd encoding). Class
-        # gating happens above at line 154 when not agnostic; when
-        # agnostic, candidates spans all classes and the IoU is computed
-        # class-blind by design. Do not interpret the zeros as class ids.
+        # category ids — we pass all zeros (no crowd encoding). Class gating
+        # happens in the candidate loop above (the `det.get("class") !=
+        # ranked[j].get("class")` skip) when not agnostic; when agnostic,
+        # candidates spans all classes and the IoU is computed class-blind by
+        # design. Do not interpret the zeros as class ids.
         mask_ious = coco_mask.iou([rles[i]], [rles[j] for j in candidates], [0] * len(candidates))[0]
         for j, mask_iou in zip(candidates, mask_ious):
             miou = float(mask_iou)

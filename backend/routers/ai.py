@@ -11,9 +11,10 @@ import json
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ai import AIUnavailable, get_ai_response, get_llm_json
+from auth import SessionUser, get_current_user
 from database import db, postgis_db
 from events import normalize_domain, publish_event, record_timeline_event
 from platform_schema import ensure_platform_tables
@@ -241,16 +242,16 @@ def list_action_proposals(status: Optional[str] = Query(None), limit: int = Quer
 
 
 @router.post("/api/actions/proposals/{proposal_id}/approve")
-def approve_action_proposal(proposal_id: int):
+def approve_action_proposal(proposal_id: int, user: SessionUser = Depends(get_current_user)):
     ensure_platform_tables()
     with postgis_db.get_cursor(commit=True) as cursor:
         cursor.execute("""
             UPDATE ai_action_proposals
-            SET status = 'approved', approved_by = 'local_user', updated_at = NOW()
+            SET status = 'approved', approved_by = %s, updated_at = NOW()
             WHERE id = %s AND status = 'pending_approval'
             RETURNING id, action_type, title, domain, target_id, rationale, sources, payload,
                       confidence, risk_level, status, proposed_by, approved_by, executed_at, result, created_at, updated_at
-        """, (proposal_id,))
+        """, (user.username, proposal_id))
         row = cursor.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Pending proposal not found")
