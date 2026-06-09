@@ -141,3 +141,9 @@ build_*.txt
 # Celery Beat schedule DB — runtime state rewritten on every tick by the
 # worker_beat container; not source. Tracked by mistake; untracked here.
 backend/celerybeat-schedule
+
+# Docker bind-mount point: compose mounts `./backend/detection_policy.py` onto
+# `/app/detection_policy.py`, and `/app` is the `inference-sam3/` bind mount — so
+# docker recreates this host-side mount point (root-owned, 0-byte) on every
+# inference-sam3 start. It is NOT source; the real module is backend/detection_policy.py.
+inference-sam3/detection_policy.py

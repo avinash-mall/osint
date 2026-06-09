@@ -1,12 +1,24 @@
 # Removed: empty `inference-sam3/detection_policy.py`
 
-**Date:** 2026-06-08
-**Status:** adopted
+**Date:** 2026-06-08 (corrected 2026-06-09)
+**Status:** adopted — with a correction (see "Correction" below)
+
+## Correction (2026-06-09)
+
+This file is **not** truly removable: it is the host-side **docker bind-mount
+point** for the compose line `./backend/detection_policy.py:/app/detection_policy.py:ro`.
+Because `/app` is itself the `inference-sam3/` bind mount, docker re-creates
+`inference-sam3/detection_policy.py` (root-owned, 0-byte) on every
+`inference-sam3` container start to anchor that file mount. So deleting it from
+git is fine (it carries no source), but the 0-byte file reappears whenever the
+container runs. It is now **gitignored** so it no longer shows as an untracked,
+root-owned artifact. The real module remains `backend/detection_policy.py`.
 
 ## Decision
 
-Delete `inference-sam3/detection_policy.py`. It was a 0-byte file, empty across
-its entire git history, and referenced by nothing.
+Stop tracking `inference-sam3/detection_policy.py` in git. It is a 0-byte file
+(empty across its entire git history) imported by nothing — its only role is as
+the docker mount point described above.
 
 The inference service's only consumer of detection-policy logic — `fusion.py`'s
 `parent_class_for_label` — loads the **backend** module by path:
