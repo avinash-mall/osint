@@ -303,7 +303,10 @@ def test_default_prompts_branch_scope():
     child_scope = ontology.default_prompts(branch=child_id)
     assert set(child_scope) == {"test zxqkk child prompt"}
 
-    assert ontology.all_prompts() == all_p
+    # Unscoped all_prompts() is the superset — it contains both branch prompts
+    # (plus everything else in the ontology). (This line previously referenced an
+    # `all_p` left over from another test, which raised NameError.)
+    assert {"test zxqkk root prompt", "test zxqkk child prompt"}.issubset(set(ontology.all_prompts()))
 
 
 def test_threading_concurrent_normalize():

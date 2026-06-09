@@ -193,7 +193,10 @@ def test_resolve_prompts_uses_bounded_precision_defaults(monkeypatch):
 
     prompts = main.resolve_prompts({"modality": "rgb"})
 
-    assert prompts == ["vehicle", "ship", "aircraft", "building"]
+    # rgb maps to the "optical" sensor; the precision path must return that
+    # sensor's built-in bounded default verbatim (no backend call). Assert
+    # against the constant so this can't go stale when the defaults are tuned.
+    assert prompts == list(main._PRECISION_DEFAULT_PROMPTS["optical"])
 
 
 def test_dota_obb_skips_unrelated_prompt(monkeypatch):

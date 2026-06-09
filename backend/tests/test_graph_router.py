@@ -36,6 +36,22 @@ def _make_session_stub(run_side_effect):
     return session, cm
 
 
+def _cursor_returns(values, default):
+    """Mimic a real psycopg2 cursor: return the queued values in order, then
+    keep returning the sensible default (``None`` for fetchone/execute, ``[]``
+    for fetchall) — a bare list ``side_effect`` instead raises ``StopIteration``
+    once exhausted, which a real cursor never does (and newer anyio surfaces as
+    a RuntimeError inside the TestClient threadpool)."""
+    queue = list(values or [])
+
+    def _call(*_a, **_kw):
+        if queue:
+            return queue.pop(0)
+        return default() if callable(default) else default
+
+    return _call
+
+
 def _install_stubs(monkeypatch, *, neo4j_runs, postgis_runs=None):
     session, session_cm = _make_session_stub(neo4j_runs)
     db_stub = MagicMock()
@@ -48,9 +64,9 @@ def _install_stubs(monkeypatch, *, neo4j_runs, postgis_runs=None):
     postgis_stub = MagicMock()
     postgis_stub.get_cursor = MagicMock(return_value=cursor_cm)
     if postgis_runs is not None:
-        cursor.execute = MagicMock(side_effect=postgis_runs.get("execute"))
-        cursor.fetchall = MagicMock(side_effect=postgis_runs.get("fetchall"))
-        cursor.fetchone = MagicMock(side_effect=postgis_runs.get("fetchone"))
+        cursor.execute = MagicMock(side_effect=_cursor_returns(postgis_runs.get("execute"), None))
+        cursor.fetchall = MagicMock(side_effect=_cursor_returns(postgis_runs.get("fetchall"), list))
+        cursor.fetchone = MagicMock(side_effect=_cursor_returns(postgis_runs.get("fetchone"), None))
 
     database_module = types.ModuleType("database")
     database_module.db = db_stub
