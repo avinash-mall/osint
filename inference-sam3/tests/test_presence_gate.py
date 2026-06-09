@@ -122,6 +122,34 @@ def test_batched_path_applies_presence_gate(monkeypatch):
     assert len(out_legacy) == 5, "max-mode batched path must restore legacy permissive behaviour"
 
 
+def test_batched_path_gate_sees_full_distribution_then_emit_filters(monkeypatch):
+    """Regression for the gate-asymmetry bug: the batched postprocessor now runs
+    at the low SAM3_GATE_SCORE_FLOOR so the gate sees the FULL distribution
+    (low tail included), then emitted detections are filtered at score_threshold.
+    A sharply-localized prompt (max 0.85, long low tail) must SURVIVE the ratio
+    gate and emit only its above-threshold detections."""
+    import numpy as np
+
+    monkeypatch.setattr(sam3_runner, "SAM3_PRESENCE_MODE", "both")
+    # Full distribution as the gate-floor postprocessor would now yield it:
+    # one strong detection + a long weak tail (mean is dragged down → ratio high).
+    scores = [0.85, 0.62] + [0.10, 0.12, 0.09, 0.11, 0.08, 0.13]
+    fake_mask = np.zeros((4, 4), dtype=bool)
+    fake_box = np.asarray([0.0, 0.0, 1.0, 1.0])
+    processed = {
+        0: {
+            "masks": [fake_mask for _ in scores],
+            "boxes": [fake_box for _ in scores],
+            "scores": scores,
+        }
+    }
+    # Gate passes (ratio ≈ 0.85 / ~0.24 ≈ 3.5 ≥ 1.8); emit-filter at 0.50 keeps
+    # only the two strong detections, drops the weak tail.
+    out = sam3_runner._collect_batched_candidates(processed, {0: "vehicle"}, 0.50)
+    assert len(out) == 2, "gate must pass and only above-threshold detections emit"
+    assert all(score >= 0.50 for _m, _b, score, _l in out)
+
+
 def test_invalid_presence_mode_falls_back_to_both(monkeypatch, caplog):
     """An invalid SAM3_PRESENCE_MODE value (typo) must warn and fall back to
     'both' rather than silently disabling both gates."""

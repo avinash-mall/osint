@@ -72,6 +72,20 @@ SAM3_CATEGORY_THR = float(os.getenv("SAM3_CATEGORY_THRESHOLD", "0.40"))
 SAM3_PRESENCE_RATIO_FLOOR = float(os.getenv("SAM3_PRESENCE_RATIO_FLOOR", "1.8"))
 SAM3_PRESENCE_RATIO_EPS = float(os.getenv("SAM3_PRESENCE_RATIO_EPS", "0.05"))
 
+# Score floor the BATCHED text path postprocesses at *for the presence gate*.
+# The single-prompt path runs `_prompt_passes_category_gate` on the model's raw
+# (unthresholded) score distribution. The batched path used to postprocess at
+# the caller's `score_threshold` (≈0.50), so the gate only ever saw scores above
+# the floor — the mean was compressed up toward the max and the ratio gate
+# (max/mean) collapsed to ~1.0, wrongly dropping real, sharply-localized prompts.
+# Postprocessing at this lower floor restores the low tail so the ratio gate
+# discriminates the same way as the single-prompt path; emitted detections are
+# still filtered at the real `score_threshold`. Default 0.05 captures the
+# meaningful tail while avoiding mask interpolation for the near-zero query bulk;
+# set 0.0 for exact single-path parity, or raise it if profiling shows the extra
+# masks cost too much. See docs/decisions/why-batched-presence-gate-floor.md.
+SAM3_GATE_SCORE_FLOOR = float(os.getenv("SAM3_GATE_SCORE_FLOOR", "0.05"))
+
 # Mode selector: which gate(s) to apply. Backward-compat default is
 # "both" (existing max-score gate AND new ratio gate must both pass).
 # "max" = only the existing gate (legacy behaviour).
@@ -981,7 +995,10 @@ def _run_text_prompts_batched(
         use_original_sizes_box=True,
         use_original_sizes_mask=True,
         convert_mask_to_rle=False,
-        detection_threshold=score_threshold,
+        # Postprocess at the low gate floor (not score_threshold) so the
+        # presence gate sees the full score distribution; emit-filtering at
+        # score_threshold happens in _collect_batched_candidates.
+        detection_threshold=min(SAM3_GATE_SCORE_FLOOR, score_threshold),
         to_cpu=True,
         always_interpolate_masks_on_gpu=device.startswith("cuda"),
     )
@@ -991,7 +1008,7 @@ def _run_text_prompts_batched(
             output = bundle["sam3_image"]["model"](batch)
         with stage_timer(timings, "batched_postproc"):
             processed = postprocessor.process_results(output, batch.find_metadatas)
-    return _collect_batched_candidates(processed, query_labels)
+    return _collect_batched_candidates(processed, query_labels, score_threshold)
 
 
 def _cuda_context_poisoned(exc: Exception) -> bool:
@@ -1165,7 +1182,10 @@ def _run_text_prompts_cached_batched(
                     use_original_sizes_box=True,
                     use_original_sizes_mask=True,
                     convert_mask_to_rle=False,
-                    detection_threshold=score_threshold,
+                    # Low gate floor so the presence gate sees the full score
+                    # distribution; emit-filtering at score_threshold happens in
+                    # _collect_batched_candidates.
+                    detection_threshold=min(SAM3_GATE_SCORE_FLOOR, score_threshold),
                     to_cpu=True,
                     always_interpolate_masks_on_gpu=device.startswith("cuda"),
                 )
@@ -1173,7 +1193,7 @@ def _run_text_prompts_cached_batched(
                     output = model(chunk_batch)
                 with stage_timer(timings, "batched_postproc"):
                     processed = postprocessor.process_results(output, chunk_batch.find_metadatas)
-                candidates.extend(_collect_batched_candidates(processed, query_labels))
+                candidates.extend(_collect_batched_candidates(processed, query_labels, score_threshold))
             except Exception as exc:
                 # A poisoned CUDA context (illegal memory access / device-side
                 # assert / cuBLAS-cuDNN init failure) is NOT a per-chunk OOM:
@@ -1212,7 +1232,11 @@ def _run_text_prompts_cached_batched(
     return candidates
 
 
-def _collect_batched_candidates(processed: dict[int, dict[str, Any]], query_labels: dict[int, str]):
+def _collect_batched_candidates(
+    processed: dict[int, dict[str, Any]],
+    query_labels: dict[int, str],
+    score_threshold: float = 0.0,
+):
     out: list[tuple[np.ndarray, list[float], float, str]] = []
     for query_id, result in processed.items():
         label = query_labels.get(int(query_id), "object")
@@ -1223,14 +1247,21 @@ def _collect_batched_candidates(processed: dict[int, dict[str, Any]], query_labe
         # same max-gate + SegEarth-OV3 ratio composition as the single-prompt
         # path (SAM3_PRESENCE_MODE). Production runs with SAM3_BATCHED_TEXT=1
         # so this is the dominant code path; an inline max-only gate here
-        # would defeat the ratio default.
+        # would defeat the ratio default. The gate sees the FULL distribution
+        # because the postprocessor ran at SAM3_GATE_SCORE_FLOOR, not at
+        # score_threshold (see why-batched-presence-gate-floor.md).
         if not _prompt_passes_category_gate({"scores": scores}, label):
             continue
         for mask, box_xyxy, score in zip(masks, boxes, scores):
+            score_f = float(score)
+            # Emit-filter at the real score_threshold (the single-prompt path
+            # does the equivalent filter in _collect_candidates).
+            if score_f < score_threshold:
+                continue
             out.append((
                 np.asarray(_to_numpy(mask), dtype=bool).squeeze(),
                 [float(v) for v in _to_numpy(box_xyxy).reshape(-1)[:4]],
-                float(score),
+                score_f,
                 label,
             ))
     return out

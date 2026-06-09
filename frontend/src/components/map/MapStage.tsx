@@ -21,6 +21,7 @@ import {
   Palette,
   Plus,
   Target,
+  X,
 } from 'lucide-react';
 import {
   forwardRef,
@@ -260,6 +261,32 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
   // /api/dossier (country from baked ne_countries + nearby detection count) and
   // shows a Leaflet popup at the click point. No internet.
   const [dossier, setDossier] = useState<{ lat: number; lon: number; data: Dossier | null; loading: boolean } | null>(null);
+
+  // Generic GeoJSON overlay subsystem: any component can drop a result layer on
+  // the map by dispatching `sentinel:overlay-geojson` (e.g. ChangeDetectionDialog's
+  // "Open on map"). Overlays are keyed by id (newest replaces); a `sentinel:overlay-clear`
+  // event (or the on-map button) removes them.
+  const [overlays, setOverlays] = useState<Array<{ id: string; label: string; featureCollection: any }>>([]);
+  useEffect(() => {
+    const onOverlay = (e: Event) => {
+      const d = (e as CustomEvent).detail;
+      if (!d?.featureCollection) return;
+      const id = String(d.id || `overlay-${Date.now()}`);
+      setOverlays((cur) => [...cur.filter((o) => o.id !== id), { id, label: String(d.label || id), featureCollection: d.featureCollection }]);
+      try { const b = L.geoJSON(d.featureCollection).getBounds(); if (b.isValid()) mapInstance.current?.flyToBounds(b.pad(0.2), { animate: true, maxZoom: 15 }); } catch { /* ignore */ }
+    };
+    const onClear = (e: Event) => {
+      const id = (e as CustomEvent).detail?.id;
+      setOverlays((cur) => (id ? cur.filter((o) => o.id !== String(id)) : []));
+    };
+    window.addEventListener('sentinel:overlay-geojson', onOverlay);
+    window.addEventListener('sentinel:overlay-clear', onClear);
+    return () => {
+      window.removeEventListener('sentinel:overlay-geojson', onOverlay);
+      window.removeEventListener('sentinel:overlay-clear', onClear);
+    };
+  }, []);
+
   const openDossier = (lat: number, lon: number) => {
     setDossier({ lat, lon, data: null, loading: true });
     fetchDossier(lat, lon)
@@ -935,10 +962,45 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
               </div>
             </Popup>
           )}
+
+          {/* Generic GeoJSON result overlays (e.g. change-detection) */}
+          {overlays.map((ov) => (
+            <GeoJSON
+              key={ov.id}
+              data={ov.featureCollection}
+              style={(feature?: any) => {
+                const score = Number(feature?.properties?.score ?? feature?.properties?.confidence ?? 0.6);
+                return {
+                  color: '#ff3bd0',
+                  weight: 1.5,
+                  opacity: 0.95,
+                  fillColor: '#ff3bd0',
+                  fillOpacity: 0.18 + Math.min(0.5, Math.max(0, score) * 0.5),
+                };
+              }}
+            />
+          ))}
         </MapContainer>
 
         {/* Floating overlays drawn on top of the map */}
         <div className="pointer-events-none absolute inset-0">
+          {overlays.length > 0 && (
+            <div className="pointer-events-auto absolute right-2 top-10 flex flex-col gap-1">
+              {overlays.map((ov) => (
+                <button
+                  key={ov.id}
+                  type="button"
+                  onClick={() => setOverlays((cur) => cur.filter((o) => o.id !== ov.id))}
+                  title="Remove this overlay"
+                  className="flex items-center gap-1.5 border border-sentinel-line-2 bg-sentinel-panel px-2 py-1 font-mono text-[10px] text-sentinel-text hover:text-sentinel-accent"
+                >
+                  <span className="inline-block h-2 w-2" style={{ background: '#ff3bd0' }} />
+                  {ov.label}
+                  <X className="h-3 w-3" />
+                </button>
+              ))}
+            </div>
+          )}
           <div className="sentinel-grid" />
           <div className="map-focus-collapsible map-focus-left absolute left-2 top-2 font-mono text-[10px] tracking-wider text-sentinel-muted">WGS84 / MERCATOR / LIVE COP</div>
           <div className="map-focus-collapsible map-focus-right absolute right-2 top-2 font-mono text-[10px] tracking-wider text-sentinel-muted">AOR / CURRENT VIEW</div>

@@ -339,7 +339,19 @@ def _fetch_dropin_only(dataset: str, out: Path, dropin_root: Path) -> FetchResul
     if not src_root.is_dir():
         return FetchResult(dataset, "skipped", f"no drop-in tree at {src_root}")
 
+    # Content-keyed freshness so re-runs are no-ops AND a changed tree refetches.
+    # Digest relative paths + sizes (cheap; no full hashing). The previous stamp
+    # keyed on entry COUNT alone, so same-count content edits were missed and the
+    # function re-staged + re-SHA256'd every chip on every run regardless.
+    dropin_sig = "|".join(
+        f"{p.relative_to(src_root).as_posix()}:{p.stat().st_size}"
+        for p in sorted(src_root.rglob("*")) if p.is_file()
+    )
+    dropin_digest = _sha8(f"dropin|{dataset}|{dropin_sig}".encode())
+
     dataset_root = out / dataset
+    if _is_fresh(dataset_root, dropin_digest):
+        return FetchResult(dataset, "ok", detail=f"drop-in {src_root} unchanged — cached")
     dataset_root.mkdir(parents=True, exist_ok=True)
     license_spdx = DEFAULT_LICENSES.get(dataset, "see-source-terms")
 
@@ -402,8 +414,7 @@ def _fetch_dropin_only(dataset: str, out: Path, dropin_root: Path) -> FetchResul
                 sha256=_file_sha256(chip),
             ))
     _write_manifest(dataset_root, dataset, entries)
-    digest = _sha8(f"dropin|{dataset}|{len(entries)}".encode())
-    _stamp(dataset_root, digest)
+    _stamp(dataset_root, dropin_digest)
     return FetchResult(
         dataset, "ok",
         detail=f"drop-in {src_root} → {len(entries)} chips",

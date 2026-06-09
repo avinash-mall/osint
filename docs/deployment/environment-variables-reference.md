@@ -101,6 +101,7 @@ Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 | `SAM3_PRESENCE_MODE` | `both` | Presence-gate composition: `max` (legacy only), `ratio` (SegEarth-OV3 distribution gate only), `both` (DEFAULT — both must pass). See [why-segearth-presence-filter.md](../decisions/why-segearth-presence-filter.md) |
 | `SAM3_PRESENCE_RATIO_FLOOR` | `1.8` | Minimum `max_score / mean_score` ratio for a prompt to pass the SegEarth-OV3 distribution gate. Higher = stricter (kills more diffuse responses). `0.0` disables the ratio gate even in mode `both` |
 | `SAM3_PRESENCE_RATIO_EPS` | `0.05` | Floor for the denominator when computing the presence ratio; prevents division-by-zero when SAM3 emits near-zero mean scores |
+| `SAM3_GATE_SCORE_FLOOR` | `0.05` | Score floor the batched text path postprocesses at so the presence gate sees the full score distribution (not just above-`score_threshold` survivors). `0.0` = exact single-prompt parity; raise if profiling shows the extra masks cost too much. See [why-batched-presence-gate-floor.md](../decisions/why-batched-presence-gate-floor.md) |
 | `SAM3_PRITHVI_OVERLAY_THRESHOLD` | `0.30` | Mask × Prithvi-overlay IoU for label append |
 | `SAM3_SAR_CONF_CAP` | `0.85` | Hard cap on SAR confidence |
 | `SAM3_OBB_OPENING_KERNEL_PCT` | `0.01` | Morphological opening kernel before `minAreaRect` |

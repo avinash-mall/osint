@@ -50,6 +50,7 @@ import { useProductTour } from '../hooks/useProductTour';
 import SelectionPanel from './map/SelectionPanel';
 import SatellitesPanel from './map/SatellitesPanel';
 import TimeMachineBar from './map/TimeMachineBar';
+import ChangeDetectionDialog from './map/ChangeDetectionDialog';
 import { useAuth } from '../hooks/useAuth';
 import {
   type AnalyticsKind,
@@ -182,6 +183,8 @@ export default function GaiaMap({
   const [tmPlaying, setTmPlaying] = useState(false);
   // Side-by-side imagery comparator — see SwipeControl.tsx.
   const [compareImageryId, setCompareImageryId] = useState<number | null>(null);
+  // Pass-vs-pass change-detection dialog (active pass vs the pinned compare pass).
+  const [changePair, setChangePair] = useState<{ before: any; after: any } | null>(null);
   const [confidenceThreshold, setConfidenceThreshold] = useState(0.2);
   const [timeRange, setTimeRange] = useState<{ start: string; end: string }>(() => {
     const now = new Date();
@@ -814,6 +817,82 @@ export default function GaiaMap({
     fetchData();
   }, [focusTimeRange, fetchData]));
 
+  // ── Time-machine playback ────────────────────────────────────────────────
+  // The TimeMachineBar is presentational; these effects make the playhead and
+  // Play button actually drive the displayed imagery.
+  const TM_RANGE_MS: Record<'24h' | '7d' | '30d', number> = {
+    '24h': 24 * 3600_000, '7d': 7 * 24 * 3600_000, '30d': 30 * 24 * 3600_000,
+  };
+  // Fracs (0..1 across the window ending "now") of every pass with a timestamp,
+  // ascending — the ordered "stops" the playhead snaps to.
+  const tmPassFracs = useMemo(() => {
+    const ms = TM_RANGE_MS[tmRange];
+    const end = Date.now();
+    const start = end - ms;
+    return imagery
+      .map((p: any) => {
+        const t = p.acquisition_time ? Date.parse(p.acquisition_time) : NaN;
+        if (!Number.isFinite(t) || t < start || t > end) return null;
+        return { id: Number(p.id), frac: (t - start) / Math.max(1, end - start) };
+      })
+      .filter(Boolean)
+      .sort((a: any, b: any) => a.frac - b.frac) as Array<{ id: number; frac: number }>;
+  }, [imagery, tmRange]);
+
+  // Scrubbing (or stepping) the playhead selects the pass nearest under it.
+  useEffect(() => {
+    if (tmPassFracs.length === 0) return;
+    let best = tmPassFracs[0];
+    for (const p of tmPassFracs) {
+      if (Math.abs(p.frac - tmValue) < Math.abs(best.frac - tmValue)) best = p;
+    }
+    setSelectedImagery((cur) => (cur === best.id ? cur : best.id));
+  }, [tmValue, tmPassFracs]);
+
+  const tmValueRef = useRef(tmValue);
+  useEffect(() => { tmValueRef.current = tmValue; }, [tmValue]);
+
+  // Play: step through the passes oldest→newest, ~1.2 s each, then stop.
+  useEffect(() => {
+    if (!tmPlaying) return;
+    if (tmPassFracs.length === 0) { setTmPlaying(false); return; }
+    // Resume from the next stop after the current playhead, else restart.
+    let i = tmPassFracs.findIndex((p) => p.frac > tmValueRef.current + 1e-3);
+    if (i < 0) i = 0;
+    setTmValue(tmPassFracs[i].frac);
+    const id = window.setInterval(() => {
+      i += 1;
+      if (i >= tmPassFracs.length) {
+        setTmPlaying(false);
+        window.clearInterval(id);
+        return;
+      }
+      setTmValue(tmPassFracs[i].frac);
+    }, 1200);
+    return () => window.clearInterval(id);
+  }, [tmPlaying, tmPassFracs]);
+
+  // Event-timeline "play" = live-follow: auto-refresh detections so the
+  // density strip advances in real time (was presentational — icon only).
+  useEffect(() => {
+    if (!timelinePlaying) return;
+    const id = window.setInterval(() => { fetchDetections(); }, 5000);
+    return () => window.clearInterval(id);
+  }, [timelinePlaying, fetchDetections]);
+
+  // Open pass-vs-pass change detection between the active pass and the pinned
+  // compare pass (before = earlier acquisition, after = later).
+  const openChangeDetection = useCallback(() => {
+    if (compareImageryId == null) return;
+    const active = imagery.find((p: any) => Number(p.id) === selectedImagery);
+    const compare = imagery.find((p: any) => Number(p.id) === compareImageryId);
+    if (!active || !compare) return;
+    const at = (p: any) => Date.parse(p.acquisition_time || p.acquired_at || '') || 0;
+    const withAcq = (p: any) => ({ ...p, acquired_at: p.acquired_at || p.acquisition_time });
+    const [before, after] = at(active) <= at(compare) ? [active, compare] : [compare, active];
+    setChangePair({ before: withAcq(before), after: withAcq(after) });
+  }, [imagery, selectedImagery, compareImageryId]);
+
   // Bubble cursor coords up to the global status bar.
   useEffect(() => {
     if (!onCursorChange) return;
@@ -1310,6 +1389,7 @@ export default function GaiaMap({
                 comparePassId={compareImageryId}
                 onPassPin={(id) => setCompareImageryId(id === compareImageryId ? null : id)}
                 onClearCompare={() => setCompareImageryId(null)}
+                onRunChange={openChangeDetection}
               />
             </div>
           )}
@@ -1736,6 +1816,14 @@ export default function GaiaMap({
           }
         }}
       />
+
+      {changePair && (
+        <ChangeDetectionDialog
+          before={changePair.before}
+          after={changePair.after}
+          onClose={() => setChangePair(null)}
+        />
+      )}
     </div>
   );
 }

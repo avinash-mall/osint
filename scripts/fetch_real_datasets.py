@@ -71,8 +71,26 @@ def _parse_dota_label(text: str, img_w: int, img_h: int) -> list[dict]:
     return out
 
 
-def fetch_dota(max_chips: int = 30) -> None:
+def _already_complete(out_dir: Path, min_records: int) -> bool:
+    """Per-dataset idempotency (matches the module docstring): True when
+    labels.json already references at least ``min_records`` records, so a re-run
+    is a no-op. Returns False on any read/parse error so a corrupt file refetches.
+    """
+    labels = out_dir / "labels.json"
+    if not labels.exists():
+        return False
+    try:
+        recs = json.loads(labels.read_text())
+    except Exception:
+        return False
+    return isinstance(recs, list) and len(recs) >= min_records
+
+
+def fetch_dota(max_chips: int = 30, force: bool = False) -> None:
     """Download DOTA-v1.0 val slice with real labels."""
+    if not force and _already_complete(DOTA_OUT, max_chips):
+        print(f"[fetch_real] DOTA already complete (labels.json ≥ {max_chips} records) — skipping. Use --force to refetch.")
+        return
     print(f"[fetch_real] Downloading DOTA-v1.0 val slice (max {max_chips}) ...")
     DOTA_OUT.mkdir(parents=True, exist_ok=True)
     chips_dir = DOTA_OUT / "chips"
@@ -162,8 +180,11 @@ def _save_hls6(out_path: Path, arr6: np.ndarray) -> None:
         dst.write(arr6)
 
 
-def fetch_sen1floods(max_chips: int = 10) -> None:
+def fetch_sen1floods(max_chips: int = 10, force: bool = False) -> None:
     """Download Sen1Floods11 S2Hand + LabelHand slice; convert S2 13-band -> HLS 6-band."""
+    if not force and _already_complete(HLS_OUT, max_chips):
+        print(f"[fetch_real] Sen1Floods already complete (labels.json ≥ {max_chips} records) — skipping. Use --force to refetch.")
+        return
     print(f"[fetch_real] Downloading Sen1Floods11 slice (max {max_chips}) ...")
     HLS_OUT.mkdir(parents=True, exist_ok=True)
     chips_dir = HLS_OUT / "chips"
@@ -242,11 +263,13 @@ def main() -> int:
                         help="DOTA-v1.0 validation chips to fetch (default 200; bumped from 30 in Phase 9.42).")
     parser.add_argument("--hls-chips", type=int, default=20,
                         help="Sen1Floods11 chips to fetch (default 20).")
+    parser.add_argument("--force", action="store_true",
+                        help="Refetch even when labels.json already has enough records (overrides per-dataset idempotency).")
     args = parser.parse_args()
     if not args.skip_dota:
-        fetch_dota(max_chips=args.dota_chips)
+        fetch_dota(max_chips=args.dota_chips, force=args.force)
     if not args.skip_hls:
-        fetch_sen1floods(max_chips=args.hls_chips)
+        fetch_sen1floods(max_chips=args.hls_chips, force=args.force)
     print("[fetch_real] Done.")
     return 0
 

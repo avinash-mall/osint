@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import itertools
 import json
 import logging
 import random
@@ -128,27 +129,41 @@ def main() -> int:
         else:
             counters["err"] += 1
 
+    # Bound the number of in-flight futures: materialising every 4**z future up
+    # front (z=14 → ~268M Future objects) exhausts host memory long before the
+    # network does. Keep a sliding window of ~max_inflight tasks and feed the
+    # next coordinate each time one completes.
+    max_inflight = max(args.concurrency * 4, 64)
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
         for z in zooms:
             n = 2 ** z
+            total_z = n * n
             LOG.info("zoom %d: %d × %d tiles", z, n, n)
-            futures = []
-            for x in range(n):
-                for y in range(n):
-                    futures.append(pool.submit(fetch_one, root, z, x, y))
+            coords = ((x, y) for x in range(n) for y in range(n))  # lazy
+            inflight = {
+                pool.submit(fetch_one, root, z, x, y)
+                for x, y in itertools.islice(coords, max_inflight)
+            }
             done = 0
-            for fut in concurrent.futures.as_completed(futures):
-                update(fut.result())
-                done += 1
-                if done % 500 == 0 or done == len(futures):
-                    elapsed = time.time() - started
-                    LOG.info(
-                        "z%d %d/%d  (ok=%d skip=%d 404=%d err=%d, %.0fs)",
-                        z, done, len(futures),
-                        counters["ok"], counters["skip"], counters["404"], counters["err"],
-                        elapsed,
-                    )
-                    progress_path.write_text(json.dumps({**counters, "elapsed_s": elapsed}), encoding="utf-8")
+            while inflight:
+                completed, inflight = concurrent.futures.wait(
+                    inflight, return_when=concurrent.futures.FIRST_COMPLETED
+                )
+                for fut in completed:
+                    update(fut.result())
+                    done += 1
+                    nxt = next(coords, None)
+                    if nxt is not None:
+                        inflight.add(pool.submit(fetch_one, root, z, nxt[0], nxt[1]))
+                    if done % 500 == 0 or done == total_z:
+                        elapsed = time.time() - started
+                        LOG.info(
+                            "z%d %d/%d  (ok=%d skip=%d 404=%d err=%d, %.0fs)",
+                            z, done, total_z,
+                            counters["ok"], counters["skip"], counters["404"], counters["err"],
+                            elapsed,
+                        )
+                        progress_path.write_text(json.dumps({**counters, "elapsed_s": elapsed}), encoding="utf-8")
 
     LOG.info("done: %s", counters)
     return 0 if counters["err"] == 0 else 1

@@ -206,8 +206,18 @@ def detect_ships_cfar(
     # in proportional terms to approximate "background outside guard".
     gd_weight = (gd_window ** 2) / (bg_window ** 2)
     mu_clutter = (mu_bg - gd_weight * mu_gd) / max(1e-6, 1.0 - gd_weight)
-    var_bg = _box_kernel_mean(vv ** 2, bg_window) - mu_bg ** 2
-    sigma_clutter = np.sqrt(np.maximum(0.01, var_bg))
+    # Variance must be taken over the SAME guard-excluded background as the
+    # mean. Computing E[x^2] over the full window and subtracting mu_bg^2 used
+    # the guard-INCLUSIVE second moment + mean while the Z-score uses the
+    # guard-EXCLUDED mu_clutter — mixing populations inflated sigma next to
+    # bright targets (the guard region's energy leaked into the clutter sigma),
+    # depressing the Z-score exactly where detections live. Subtract the guard
+    # window's second moment in the same proportional way as the mean.
+    e2_bg = _box_kernel_mean(vv ** 2, bg_window)
+    e2_gd = _box_kernel_mean(vv ** 2, gd_window)
+    e2_clutter = (e2_bg - gd_weight * e2_gd) / max(1e-6, 1.0 - gd_weight)
+    var_clutter = e2_clutter - mu_clutter ** 2
+    sigma_clutter = np.sqrt(np.maximum(0.01, var_clutter))
     # Z-score of every pixel vs its local clutter.
     z_vv = (vv - mu_clutter) / sigma_clutter
     detection_mask = z_vv > threshold_sigma

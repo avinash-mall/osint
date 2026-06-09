@@ -149,6 +149,7 @@ decisions/audit-fixes-ui-correctness-2026-06-08.md|decision,frontend|page-by-pag
 decisions/borders-vs-graticule-split.md|decision,frontend|LayerPanel "Tactical Grid" split into Borders (admin GeoJSON) and Graticule (coordinate grid)
 decisions/cached-forward-device-normalise.md|decision,sam3|multi-GPU _get_img_feats crash: pin image-model build device so vis_pos_enc lands on replica GPU
 decisions/completed-dead-ui-controls.md|decision,frontend|wired FMV fullscreen + export-clip (source_url); removed action-less admin "More" buttons
+decisions/completed-deferred-items-2026-06-09.md|decision|deferred audit batch: CFAR variance, time-machine playback, change-detection mount + overlay, AI target-resolve, bake OOM/idempotency
 decisions/completed-stubbed-graph-ui.md|decision,frontend|real co-occurrence histogram, site-rollup FMV/reports render, ProvenancePanel wired as SelectionPanel Prov tab
 decisions/disable-addmm-cuda-lt.md|decision,gpu|routes nn.Linear off cuBLAS-Lt to dodge A100/cu130 corruption bug
 decisions/fmv-default-sidetab-clips.md|decision,frontend,fmv|FMV right panel opens on Clips when no cross-nav; Tracks default hid uploaded clip
@@ -180,6 +181,7 @@ decisions/why-bake-reference-corpora-into-assets.md|decision,deployment|referenc
 decisions/why-celery-task-from-lifespan.md|decision,backend|first place lifespan enqueues a task; reference-DB bake is too slow to seed sync without blocking /api/health
 decisions/why-basemap-overlay-composition.md|decision,frontend|imagery is bottom ground-truth; BASE/TERRAIN are reference overlays on top; opacity fades overlay
 decisions/why-basemap-z14-cap.md|decision,frontend,deployment|offline bake to z=14 + overlay unmounts above; imagery is source of truth past z=14
+decisions/why-batched-presence-gate-floor.md|decision,sam3,inference|batched text path postprocesses at low gate floor so SegEarth presence-ratio gate sees full distribution; emit-filter at score_threshold
 decisions/why-bbox-toggle-removed.md|decision,frontend|BBOX toggle removed; detection boxes always render, GEOM toolbar defaults to OBB
 decisions/why-branch-scoped-default.md|decision,frontend,ontology|imagery ingest UX defaults to branch-scoped prompts (~15-25 vs ~131); 15x F1 gain per LAE-80C
 decisions/why-custom-tour-engine.md|decision,frontend|Map workspace Product Tour built in-repo; no react-joyride/intro.js/shepherd dependency

@@ -6,7 +6,7 @@
  * caller maps that back to ISO timestamps for the imagery filter.
  */
 
-import { Pause, Play, RotateCcw, SplitSquareHorizontal, X } from 'lucide-react';
+import { Activity, Pause, Play, RotateCcw, SplitSquareHorizontal, X } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { ModalityBadge, Panel } from '../atoms';
 
@@ -46,6 +46,7 @@ export default function TimeMachineBar({
   comparePassId = null,
   onPassPin,
   onClearCompare,
+  onRunChange,
 }: {
   passes: ImageryPass[];
   range: Range;
@@ -66,6 +67,8 @@ export default function TimeMachineBar({
   onPassPin?: (id: number) => void;
   /** Clear the compare slot. */
   onClearCompare?: () => void;
+  /** Run pass-vs-pass change detection between the active and compare passes. */
+  onRunChange?: () => void;
 }) {
   const comparePass = comparePassId != null ? passes.find((p) => p.id === comparePassId) : null;
   const ms = RANGE_HOURS[range] * 3600_000;
@@ -182,6 +185,22 @@ export default function TimeMachineBar({
               >
                 <SplitSquareHorizontal size={10} />
                 vs Pass {comparePass.id}
+                {onRunChange && (
+                  <button
+                    type="button"
+                    onClick={() => onRunChange()}
+                    title="Run change detection between these two passes"
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 3,
+                      padding: '1px 5px', marginLeft: 2,
+                      background: 'var(--accent)', color: 'var(--bg-0)',
+                      border: 'none', cursor: 'pointer',
+                      fontFamily: 'var(--font-mono)', fontSize: 9.5, letterSpacing: '.04em',
+                    }}
+                  >
+                    <Activity size={9} /> CHANGE
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => onClearCompare?.()}

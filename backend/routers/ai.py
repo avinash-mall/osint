@@ -261,6 +261,38 @@ def approve_action_proposal(proposal_id: int, user: SessionUser = Depends(get_cu
     return {"proposal": proposal}
 
 
+def _resolve_target_observer(target_id) -> Optional[dict]:
+    """Resolve a proposal ``target_id`` to an observer ``{latitude, longitude}``
+    from the centroid of the detections accepted/confirmed as that target, so a
+    queued analytic runs at the target rather than at a default location.
+
+    Returns None when the target has no resolvable geometry.
+    """
+    if not target_id:
+        return None
+    try:
+        with postgis_db.get_cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT ST_Y(ST_Centroid(ST_Collect(d.geom))) AS lat,
+                       ST_X(ST_Centroid(ST_Collect(d.geom))) AS lon
+                FROM detections d
+                JOIN detection_target_candidates dtc ON dtc.detection_id = d.id
+                WHERE dtc.target_id = %s
+                  AND dtc.status IN ('accepted', 'confirmed')
+                  AND d.geom IS NOT NULL
+                """,
+                (str(target_id),),
+            )
+            row = cursor.fetchone()
+    except Exception:  # noqa: BLE001 — fall back to "unresolvable"
+        logger.warning("ai: target observer resolution failed for %s", target_id, exc_info=True)
+        return None
+    if not row or row.get("lat") is None or row.get("lon") is None:
+        return None
+    return {"latitude": float(row["lat"]), "longitude": float(row["lon"])}
+
+
 @router.post("/api/actions/proposals/{proposal_id}/execute")
 def execute_action_proposal(proposal_id: int):
     ensure_platform_tables()
@@ -284,7 +316,20 @@ def execute_action_proposal(proposal_id: int):
     result = {"executed": True, "mode": "internal_only"}
     if proposal["action_type"] == "queue_analytic":
         from routers.analytics import run_viewshed
-        result["analytic"] = run_viewshed(AnalyticsRequest(target_id=proposal.get("target_id"), radius_m=payload.get("radius_m", 5000))).get("job")
+        # Resolve the proposal's target to its real location so the viewshed runs
+        # AT the target, not at run_viewshed's hardcoded default observer.
+        observer = _resolve_target_observer(proposal.get("target_id"))
+        if observer is None:
+            result["analytic_warning"] = (
+                f"target {proposal.get('target_id')!r} has no resolvable location; "
+                "skipping the queued viewshed (it would have run at the default observer)."
+            )
+        else:
+            result["analytic"] = run_viewshed(AnalyticsRequest(
+                target_id=proposal.get("target_id"),
+                observer=observer,
+                radius_m=payload.get("radius_m", 5000),
+            )).get("job")
     elif proposal["action_type"] == "generate_report":
         from reports import create_target_package
         result["report"] = create_target_package(

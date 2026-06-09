@@ -14,6 +14,7 @@ Constant False Alarm Rate ship detection on Sentinel-1 GRD. Cell-Averaging CFAR 
 - **CPU-only** — runs in the worker process without GPU. A 50000×50000 GRD chip processes in seconds.
 - **dB scale** — works on log-magnitude backscatter (-30 to 0 dB clipped), not linear amplitude.
 - **Connected components → bboxes** — contiguous suprathreshold pixels merged. Minimum 4 pixels suppresses single-pixel noise.
+- **Guard-excluded clutter statistics** — both the clutter mean (`mu_clutter`) AND variance are estimated over the background window *minus* the guard band (proportional subtraction of the guard window's first and second moments). The Z-score `(x − mu_clutter) / sigma_clutter` therefore uses a consistent population; estimating σ over the guard-*inclusive* window (the earlier bug) let a bright target's own energy leak into its clutter σ, depressing the Z-score exactly where detections live. See [decisions/completed-deferred-items-2026-06-09.md](../decisions/completed-deferred-items-2026-06-09.md).
 
 ## Key symbols
 
