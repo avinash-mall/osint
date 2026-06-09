@@ -35,6 +35,8 @@ python scripts/build_offline_basemap.py --out assets/static/basemap --zoom 6
 
 Idempotent: tiles already on disk are skipped, so a crashed run resumes with the same command.
 
+**Memory bound:** tiles are fetched through a bounded sliding window of in-flight futures (`max(concurrency*4, 64)`), feeding the next coordinate as each completes — *not* by submitting all `4**z` futures up front. A full z=14 world is ~268 M tiles; materialising that many `Future` objects exhausted host memory long before the network did. The terrain baker uses the same pattern.
+
 ## Sizes (approximate, full world)
 
 | Zoom range | Tile count | On-disk     |

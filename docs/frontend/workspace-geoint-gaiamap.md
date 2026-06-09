@@ -1,7 +1,7 @@
 # Geoint Workspace — `GaiaMap.tsx`
 
 **Path:** [frontend/src/components/GaiaMap.tsx](../../frontend/src/components/GaiaMap.tsx)
-**Lines:** ~1708
+**Lines:** ~1830
 **Depends on:** React hooks, `axios`, Leaflet/React-Leaflet components, map panels, ontology utilities, detection/imagery/analytics backend APIs
 
 ## Purpose
@@ -48,7 +48,7 @@ The Common Operating Picture: a 2D Leaflet map with all detection layers, satell
 
 ## Detection rendering
 
-`GaiaMap` owns the detection-layer view state: `bboxMode` (`hbb`/`obb`/`mask`, default `obb`) and the derived `showDetectionCenterMarkers` flag (`count` 1–`DETECTION_CENTER_MARKER_LIMIT`). Detection bounding boxes always render; no `showBbox` toggle. See [map-stage-and-layers.md](map-stage-and-layers.md), [decisions/why-bbox-toggle-removed.md](../decisions/why-bbox-toggle-removed.md).
+`GaiaMap` owns the detection-layer view state: `bboxMode` (`hbb`/`obb`/`mask`, default `obb`) and the derived `showDetectionCenterMarkers` flag (`count` 1–`DETECTION_CENTER_MARKER_LIMIT`). Detection bounding boxes always render; no `showBbox` toggle. The **OBB** mode rebuilds the oriented polygon from `feature.properties.metadata.geo_polygon` (the backend's geo-projected flat `[lon,lat,…]` box) — it previously read `metadata.obb` (pixel-space, never matched) and silently fell back to the feature geometry. See [map-stage-and-layers.md](map-stage-and-layers.md), [decisions/why-bbox-toggle-removed.md](../decisions/why-bbox-toggle-removed.md).
 
 The left Detection Classes list keeps `rawClass` as the hide/solo/API filter key. `displayLabel` is presentation-only; deterministic labels remain primary now that still-image YOLOE has been removed. LLM advisory text can still appear as secondary context in [LayerPanel](map-stage-and-layers.md).
 
@@ -57,6 +57,18 @@ The confidence slider's `confidenceThreshold` gates the sidebar as well as the m
 ## Live updates
 
 The `imagery` SSE handler ([GaiaMap.tsx#L790-L803](../../frontend/src/components/GaiaMap.tsx#L790-L803)) refreshes `fetchImagery()` on every imagery event and, on `ingest_succeeded`, **selects the freshly-cataloged `pass_id`**. The map only draws the *selected* pass (`selectedImageryData`, `GaiaMap.tsx#L250`) and `fetchImagery()` deliberately preserves the current selection when it is still in range (`GaiaMap.tsx#L671`). Without the explicit select, the first upload showed (selection starts `null` → auto-picks `rows[0]`) but a second upload landed only in the imagery list — the map kept the first pass selected, so the new scene "processed but never appeared." Pinning the new `pass_id` makes each completed upload the displayed layer.
+
+The `ops` SSE handler also calls `fetchData()` to refresh the static-feature/track layer — the previous `geotime` subscription was dead (the backend never publishes a `geotime` topic).
+
+## Time-machine, change detection & overlays
+
+`GaiaMap` owns the wiring that makes the otherwise-presentational [TimeMachineBar](map-time-machine.md) functional:
+
+- **Playhead → imagery**: `tmPassFracs` maps each pass to a `[0,1]` position in the window; a select-nearest effect picks the pass under `tmValue` whenever the analyst scrubs or clicks a diamond.
+- **Playback**: while `tmPlaying`, an interval steps `tmValue` through the passes oldest→newest (~1.2 s each), then stops.
+- **Event-timeline Play = live-follow**: while `timelinePlaying`, a 5 s interval re-runs `fetchDetections()` so the density strip advances in real time.
+- **Change detection**: pinning a compare pass shows a `CHANGE` button that opens [ChangeDetectionDialog](map-change-detection-dialog.md) (`changePair` state) for the active-vs-compare pair; the dialog's result is dispatched as `sentinel:overlay-geojson` and rendered by MapStage's generic overlay layer (see [map-stage-and-layers.md](map-stage-and-layers.md)).
+- **Pan-on-select**: the ⌘K-jump and cross-workspace nav call `mapStageRef.panToDetection(feat)` so a programmatically-selected detection recenters the map.
 
 ## Key symbols
 

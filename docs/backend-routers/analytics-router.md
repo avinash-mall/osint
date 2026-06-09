@@ -17,7 +17,7 @@ Spatial analyses from the **Analytics Tools** panel. Each endpoint is deliberate
 | `POST` | `/api/analytics/los` | [analytics.py#L146](../../backend/routers/analytics.py#L146) | Line-of-sight result between two points — each obstruction is its own `Point` feature with `elevation_m` / `clearance_m` / `distance_m`; see [decisions/los-obstruction-point-features.md](../decisions/los-obstruction-point-features.md) |
 | `GET`  | `/api/analytics/elevation` | [analytics.py#L210](../../backend/routers/analytics.py#L210) | DEM elevation at a single (lat, lon); used by the SelectionPanel ELEV row |
 | `POST` | `/api/analytics/routes` | [analytics.py#L245](../../backend/routers/analytics.py#L245) | Up to three driving routes via the OSRM sidecar |
-| `POST` | `/api/analytics/pol` | [analytics.py#L270](../../backend/routers/analytics.py#L270) | Patterns-of-life over a time window in an AOI |
+| `POST` | `/api/analytics/pol` | [analytics.py#L270](../../backend/routers/analytics.py#L270) | Patterns-of-life heatmap: clusters `track_points` into ~0.02° grid cells (`ST_SnapToGrid`) and returns each cell centroid + count. (Previously also grouped by raw lon/lat, which defeated the clustering — every point became its own cell.) |
 | `GET` | `/api/analytics/capabilities` | [analytics.py#L291](../../backend/routers/analytics.py#L291) | Booleans: `dem`, `routing`, `demo_fixtures` |
 | `GET` | `/api/analytics/jobs` | [analytics.py#L301](../../backend/routers/analytics.py#L301) | Past analytics jobs |
 

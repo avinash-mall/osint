@@ -44,6 +44,9 @@ arr = np.frombuffer(base64.b64decode(resp["fp16_b64"]), dtype=np.float16).astype
 ## Auto-heal behaviour
 The handler calls `_ensure_profile("imagery")` as its first action, matching the pattern of every other route in `inference-sam3/main.py`. First call against a cold container will block for ~10–30 s while the imagery profile loads.
 
+## Concurrency / device
+The GPU forward runs via `await run_in_threadpool(embedding.dinov3_pool, …)` (not on the event loop, which would block health checks), and `dinov3_pool` pins the current CUDA device with `device_ctx(bundle["device"])` — matching `embed_crops_batched`. Without the pin, on a multi-GPU host the bundle's forward could issue cross-device kernels (current device defaults to `cuda:0`) and illegal-access under concurrency.
+
 ## Cross-references
 - [reference-platform-baker.md](../backend/reference-platform-baker.md) — the primary consumer in Plan B.
 - [dinov3-embeddings.md](dinov3-embeddings.md) — the model bundle this route uses.

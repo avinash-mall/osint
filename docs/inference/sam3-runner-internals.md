@@ -1,7 +1,7 @@
 # `inference-sam3/sam3_runner.py` — SAM 3 Orchestration
 
 **Path:** [inference-sam3/sam3_runner.py](../../inference-sam3/sam3_runner.py)
-**Lines:** ~1685 (largest inference-side file)
+**Lines:** ~1860 (largest inference-side file)
 **Depends on:** `torch`, `transformers`, `huggingface_hub`, `sam3` (Meta SAM3 package)
 
 ## Purpose
@@ -18,6 +18,7 @@ Loads SAM 3 / SAM 3.1 image weights, runs text- and box-prompted detection paths
 ## Key symbols (text prompting + gating)
 
 - [`SAM3_PRESENCE_RATIO_FLOOR`, `SAM3_PRESENCE_RATIO_EPS`, `SAM3_PRESENCE_MODE`](../../inference-sam3/sam3_runner.py#L61-L79) — SegEarth-OV3-inspired score-distribution gate constants. Defaults `1.8 / 0.05 / "both"`. Mode `both` requires the legacy max-score gate AND the new presence-ratio gate to pass; `max` reverts to legacy behaviour; `ratio` runs only the new gate. See [why-segearth-presence-filter.md](../decisions/why-segearth-presence-filter.md).
+- [`SAM3_GATE_SCORE_FLOOR`](../../inference-sam3/sam3_runner.py#L75) — default `0.05`. Score floor the **batched** text paths postprocess at (`min(floor, score_threshold)`) so the presence gate sees the full score distribution — the same population the single-prompt path gates on — not just above-`score_threshold` survivors (which compressed the mean, collapsed the ratio to ~1.0, and over-dropped real prompts). Emitted detections are still filtered at `score_threshold` in `_collect_batched_candidates`. `0.0` = exact single-path parity. See [why-batched-presence-gate-floor.md](../decisions/why-batched-presence-gate-floor.md).
 - [`_load_per_class_category_thresholds`](../../inference-sam3/sam3_runner.py#L82) — `SAM3_PER_CLASS_CATEGORY_THRESHOLDS` env JSON.
 - [`_canonical_prompt_key`](../../inference-sam3/sam3_runner.py#L116) — same canonicalization as `backend.ontology._canonical`.
 - [`_category_threshold_for`](../../inference-sam3/sam3_runner.py#L131) — per-class override or fall through to `SAM3_CATEGORY_THRESHOLD`.

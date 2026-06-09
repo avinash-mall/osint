@@ -31,6 +31,7 @@
 - **Inference is its own image** — CUDA stack is heavy (~14 GB image), unrelated to the backend's Python runtime.
 - **Auth secrets fail fast** — `backend` requires `ADMIN_PASSWORD` and `SESSION_SECRET` from `.env`; no checked-in fallback starts the API.
 - **`llm-local-proxy` is a separate compose profile** (only started with `--profile llm-proxy`) — a loopback-bound `socat` forwarder so containers can reach a host-side vLLM/Ollama bound to `127.0.0.1`.
+- **`PYTHONDONTWRITEBYTECODE=1` on `backend`, `worker`, `worker_beat`, `inference-sam3`** — these run as root and bind-mount `backend/` / `inference-sam3/` from the repo, so without it CPython wrote root-owned `__pycache__/*.pyc` into the working tree. Disabling bytecode keeps the source tree clean and uniformly owned. (`inference-sam3/detection_policy.py` is also a docker mount point for `./backend/detection_policy.py:/app/detection_policy.py` and is gitignored — docker re-creates it root-owned on each start.)
 
 ## Named volumes
 

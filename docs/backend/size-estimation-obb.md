@@ -25,6 +25,7 @@ Convert an oriented bounding box (OBB) + georeferencing → real-world dimension
 
 - OBB has <4 distinct vertices → `{}`; UI hides the size widget.
 - Centroid lat/lon missing → `{}`.
+- `local_utm_crs` clamps the UTM zone to 1..60, so a centroid at/over the antimeridian (`lon == 180`, or an upstream wrap to `>180`) can't produce an invalid EPSG 32661/32761.
 
 ## Cross-references
 

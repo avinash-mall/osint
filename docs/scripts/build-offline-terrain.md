@@ -33,6 +33,8 @@ python scripts/build_offline_terrain.py --out assets/static/terrain --zoom 0-10
 python scripts/build_offline_terrain.py --out assets/static/terrain --zoom 0-4
 ```
 
+**Memory bound:** like the basemap baker, tiles are fetched through a bounded sliding window of in-flight futures (`max(concurrency*4, 64)`) rather than submitting every `4**z` future up front (which OOMs at high zoom). See [build-offline-basemap.md](build-offline-basemap.md).
+
 Idempotent: existing tiles are skipped, so a crashed/throttled run resumes with the same command. Default `--concurrency 4` is intentionally low to respect OpenTopoMap's volunteer-hosted policy — don't raise it.
 
 ## Sizes (approximate, full world)

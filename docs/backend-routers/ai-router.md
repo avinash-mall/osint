@@ -20,8 +20,8 @@ Routes that touch an LLM (Ava). All return a graceful "LLM unavailable" error wh
 | `POST` | `/api/ai/brief-area` | [ai.py#L319](../../backend/routers/ai.py#L319) | `BriefAreaRequest` — **read-only** AOI digest + `display_actions`; pure helpers `_summarize_detections` / `_build_brief_prompt` |
 | `POST` | `/api/ai/propose-actions` | [ai.py#L195](../../backend/routers/ai.py#L195) | `AIActionProposalRequest` — LLM suggests next-step analyst actions |
 | `GET` | `/api/actions/proposals` | [ai.py#L222](../../backend/routers/ai.py#L222) | List proposal queue |
-| `POST` | `/api/actions/proposals/{id}/approve` | [ai.py#L243](../../backend/routers/ai.py#L243) | Operator approves a proposal |
-| `POST` | `/api/actions/proposals/{id}/execute` | [ai.py#L263](../../backend/routers/ai.py#L263) | Runs an approved proposal |
+| `POST` | `/api/actions/proposals/{id}/approve` | [ai.py#L243](../../backend/routers/ai.py#L243) | Operator approves a proposal; records the real `SessionUser.username` as `approved_by` (was a hardcoded `'local_user'`) |
+| `POST` | `/api/actions/proposals/{id}/execute` | [ai.py#L263](../../backend/routers/ai.py#L263) | Runs an approved proposal. A `queue_analytic` action resolves the proposal's `target_id` to an observer via `_resolve_target_observer` (centroid of the target's accepted detections) so the viewshed runs AT the target, not at the default observer; skips with a warning if unresolvable |
 
 ## Why this design
 
