@@ -62,7 +62,20 @@
       "Bash(du -sh sample frontend/node_modules inference-sam3 backend)",
       "Bash(du -sh .)",
       "Bash(git check-ignore *)",
-      "Bash(python3)"
+      "Bash(python3)",
+      "Bash(nvidia-smi --query-gpu=index,name,memory.total,memory.used,memory.free --format=csv)",
+      "Bash(nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory,process_name --format=csv)",
+      "Bash(python3 -m py_compile sam3_runner.py)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(cd *)",
+      "Bash(git push *)",
+      "Bash(cat)",
+      "Bash(chmod +x /tmp/sam3_cuda_watch.sh)",
+      "Bash(/tmp/sam3_cuda_watch.sh *)",
+      "Bash(chmod +x /tmp/sam3_cuda_watch2.sh)",
+      "Bash(/tmp/sam3_cuda_watch2.sh *)"
     ]
   }
 }
