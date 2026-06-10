@@ -25,11 +25,21 @@ offline/open hard rules.
 **Why a sidecar, not in-process.** LAE-DINO is a *forked mmdetection*: it
 registers a custom `LAEDINO(DINO)` model plus the paper's DVC (Dynamic
 Vocabulary Construction) and VisGT modules, and is driven by mmengine/mmcv. Its
-upstream pins (torch 1.10+cu113, transformers 4.42) are irreconcilable with the
-main service, which needs torch 2.x + transformers ≥4.56 for SAM 3, TerraMind,
-Prithvi and YOLO26. You cannot host both in one Python process. A separate
-container with its own dependency closure is the only clean boundary. As a
-bonus, it frees VRAM in the inference-sam3 process (the client does no GPU work).
+transformers pin (4.42.3) is irreconcilable with the main service, which needs
+transformers ≥4.56 for SAM 3, TerraMind, Prithvi and YOLO26. You cannot host
+both in one Python process. A separate container with its own dependency closure
+is the only clean boundary. As a bonus, it frees VRAM in the inference-sam3
+process (the client does no GPU work).
+
+**Build stack.** The sidecar pins **torch 2.1.0 + cu121** with a *prebuilt* mmcv
+2.1.0 wheel (the newest combo mmcv ships wheels for and the mmdet-3.3 fork is
+validated against) — NOT the host's bleeding-edge cu130 GPU profile (mmcv has no
+cu130 wheels) and NOT LAE-DINO's 2021 upstream pins (torch 1.10+cu113, which
+can't target modern GPUs). cu121 runs natively on A100/H100 via the host's newer
+driver. The fork also needs `transformers==4.42.3` pinned (its
+requirements/multimodal.txt leaves it unpinned → resolves to a 5.x that crashes
+mmdet import) plus `clip-anytorch` + `open_clip_torch` (imported at model load
+but never instantiated — the LAE-1M model grounds via BERT).
 
 **Why keep the layer name `grounding_dino`.** The routing key threads through the
 auto-gate, the profile pool, `source_layer` provenance, the `/health` payload,
@@ -56,19 +66,46 @@ so provenance stays honest.
 - **In-process mmcv rebuild on torch 2.x:** would force a transformers downgrade
   that breaks SAM 3. Rejected.
 
-## Known risks / validation owed (cannot be verified offline)
+## Validation status — BUILT & TESTED on 4× A100 80GB (2026-06-10)
 
-1. **mmcv build against modern torch.** The sidecar Dockerfile compiles
-   `mmcv>=2.0,<2.2` from source against the host's torch/CUDA (not LAE-DINO's
-   2021 pins, which can't target H100/Blackwell). This is the #1 thing to
-   confirm on a real GPU host.
-2. **Fork API on torch 2.x.** The `mmdet==3.3.0` fork is exercised on a newer
-   torch than upstream tested; smoke-test `/detect` before trusting it.
-3. **Box convention.** `pred_instances.bboxes` is assumed xyxy (mmdet DINO
-   standard) — verify once running.
-4. **BERT offline.** `google-bert/bert-base-uncased` is baked and the config's
-   `language_model.name` is overridden to the local dir; confirm no runtime HF
-   fetch with `HF_HUB_OFFLINE=1`.
+The sidecar was built and exercised on the GPU host. Results:
+
+- **Build:** clean on torch 2.1.0+cu121 / mmcv 2.1.0 (prebuilt wheel) / mmengine
+  0.10.4 / the mmdet-3.3 fork (editable, `--no-build-isolation`). Image 17.2 GB.
+- **Model load:** LAE-DINO + BERT load in ~15 s, fully offline
+  (`HF_HUB_OFFLINE=1`); no runtime HF fetch.
+- **Direct `/detect`:** 54 detections on a real 1024² chip; **median 187 ms/call
+  (~5.4 req/s)** on one A100.
+- **Cross-service:** inference-sam3 `/detect` with `force_grounding_dino` →
+  `candidates_by_layer.grounding_dino = 75` via the HTTP client, fused into final
+  detections. Common-vocab prompt without force → correctly auto-gated.
+- **Box convention** confirmed xyxy. **`pred_instances.label_names`** carries the
+  matched entity strings (mapped back to canonical prompts by the client).
+
+### Build quirks that had to be solved (encoded in the Dockerfile / app.py)
+
+1. **`--no-build-isolation`** for the fork's editable install (its setup.py
+   imports torch at build time).
+2. **`huggingface-cli` → `hf`** for the weight bake (the CLI was removed in the
+   newer huggingface_hub).
+3. **`transformers==4.42.3`** pin (unpinned → 5.x → `NameError: nn` on mmdet
+   import).
+4. **`clip-anytorch` + `open_clip_torch`** (imported by the fork's
+   clip_text_backbone at module load).
+5. **`DetInferencer(palette="random")`** not `"none"` — `"none"` makes it build
+   the test dataset (missing training-annotation JSONs).
+6. **Hoist `cfg.test_pipeline`** onto the wrapped ConcatDataset cfg so
+   `_init_pipeline` finds it.
+7. **`chunked_size` disabled** — the fork's chunked predict path is broken
+   (`LAEDINOHead.predict() ... ** must be a mapping, not tuple`); the client
+   chunks prompts instead.
+
+### Residual notes
+
+- GSD: LAE-DINO is trained on sub-meter aerial; on 10 m Sentinel-2 it under-
+  detects. Feed it sub-meter chips.
+- The GD score floor on this host is 0.20 (legacy `.env`); 0.30 is the
+  recommended LAE-DINO default (`.env.example`).
 
 ## Cross-references
 

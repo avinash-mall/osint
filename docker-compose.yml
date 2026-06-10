@@ -432,26 +432,32 @@ services:
       context: ./inference-lae
       dockerfile: Dockerfile
       args:
-        # Reuse the host GPU profile that configure_host.py wrote for SAM3 so a
-        # single host config drives both images onto the same CUDA/torch.
-        CUDA_VERSION: ${SAM3_CUDA_VERSION:?Run python scripts/configure_host.py first}
+        # Pinned to torch 2.1/cu121 (prebuilt mmcv wheels; mmdet-3.3 fork's
+        # validated stack) — intentionally NOT the host's cu130 SAM3_* profile,
+        # which mmcv has no wheels for. cu121 runs on A100/H100 via the newer
+        # driver. Override LAE_* only if you must retarget.
+        CUDA_VERSION: ${LAE_CUDA_VERSION:-12.1.1}
         UBUNTU_VERSION: ${LAE_UBUNTU_VERSION:-22.04}
-        TORCH_INDEX_URL: ${SAM3_TORCH_INDEX_URL:?Run python scripts/configure_host.py first}
-        TORCH_VERSION: ${SAM3_TORCH_VERSION:?Run python scripts/configure_host.py first}
-        TORCHVISION_VERSION: ${SAM3_TORCHVISION_VERSION:?Run python scripts/configure_host.py first}
-        TORCH_CUDA_ARCH_LIST: ${SAM3_TORCH_CUDA_ARCH_LIST:?Run python scripts/configure_host.py first}
+        TORCH_INDEX_URL: ${LAE_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}
+        TORCH_VERSION: ${LAE_TORCH_VERSION:-2.1.0}
+        TORCHVISION_VERSION: ${LAE_TORCHVISION_VERSION:-0.16.0}
         HF_TOKEN: ${HF_TOKEN:-}
     image: sentinel-inference-lae:gpu
     runtime: nvidia
     restart: unless-stopped
     environment:
       PYTHONDONTWRITEBYTECODE: "1"
-      # LAE-DINO is single-GPU; pin it to one card (default: first visible).
-      NVIDIA_VISIBLE_DEVICES: ${LAE_VISIBLE_DEVICES:-0}
+      # LAE-DINO is single-GPU. By default it co-locates on the SAME card(s) the
+      # operator dedicated to inference-sam3 (SAM3_VISIBLE_DEVICES) — it's small
+      # (~2-4 GB) and those are the GEOINT cards, never a co-tenant's (e.g. vLLM
+      # on other GPUs). Set LAE_VISIBLE_DEVICES to pin a specific card. The
+      # container remaps the first visible card to cuda:0 (LAE_DEVICE).
+      NVIDIA_VISIBLE_DEVICES: ${LAE_VISIBLE_DEVICES:-${SAM3_VISIBLE_DEVICES:-all}}
       NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
       LAE_DEVICE: ${LAE_DEVICE:-cuda:0}
       LAE_DINO_THRESHOLD: ${GROUNDING_DINO_THRESHOLD:-0.30}
-      LAE_CHUNKED_SIZE: ${LAE_CHUNKED_SIZE:-10}
+      # 0 = disabled; the fork's chunked predict path is broken (client chunks).
+      LAE_CHUNKED_SIZE: ${LAE_CHUNKED_SIZE:-0}
       # Weights are baked into the image; never reach the network at runtime.
       HF_HOME: /models/hf
       HUGGINGFACE_HUB_CACHE: /models/hf/hub

@@ -55,11 +55,13 @@ LAE_WEIGHTS = os.getenv(
 LAE_BERT_DIR = os.getenv("LAE_BERT_DIR", "/models/bert-base-uncased")
 LAE_DEVICE = os.getenv("LAE_DEVICE", "cuda:0")
 LAE_SCORE_THR = float(os.getenv("LAE_DINO_THRESHOLD", "0.30"))
-# Cap classes per forward pass — mmdet's `chunked_size`. Long captions make
-# adjacent concepts bleed into each other's token spans (the dominant
-# open-vocab FP mode on overhead imagery); the client also chunks, so this is
-# a backstop. 0 → let mmdet decide.
-LAE_CHUNKED_SIZE = int(os.getenv("LAE_CHUNKED_SIZE", "10"))
+# mmdet's `chunked_size` caps classes per forward pass. DISABLED by default (0):
+# the LAE-DINO fork's chunked predict path is broken on this mmdet version
+# (`LAEDINOHead.predict() argument after ** must be a mapping, not tuple`), and
+# the client already chunks prompts to ≤GROUNDING_DINO_MAX_PHRASES per request,
+# so the token-bleed concern is handled upstream. Leave at 0 unless you've
+# confirmed the fork's chunked path works.
+LAE_CHUNKED_SIZE = int(os.getenv("LAE_CHUNKED_SIZE", "0"))
 
 app = FastAPI(title="inference-lae", version="1.0")
 
@@ -90,9 +92,24 @@ def _load() -> None:
                 cfg.model.backbone.init_cfg = None
         except Exception:
             pass
+        # The LAE-1M config wraps its test dataset in a ConcatDataset, so the
+        # test pipeline isn't at cfg.test_dataloader.dataset.pipeline where
+        # DetInferencer._init_pipeline looks for it. Hoist the top-level
+        # test_pipeline onto the dataset cfg. The dataset itself is never built
+        # for inference (palette != 'none' skips it; custom_entities supplies
+        # the classes), so the ConcatDataset's training annotation JSONs — which
+        # aren't shipped — are never read.
+        try:
+            cfg.test_dataloader.dataset.pipeline = cfg.test_pipeline
+        except Exception as exc:
+            logger.warning("could not hoist test_pipeline: %s", exc)
 
+        # palette='random' (not 'none') is deliberate: 'none' makes
+        # DetInferencer build the test dataset to read a palette, which fails on
+        # the missing training annotation files. We don't visualise, so the
+        # palette is irrelevant.
         inferencer = DetInferencer(
-            model=cfg, weights=LAE_WEIGHTS, device=LAE_DEVICE, palette="none",
+            model=cfg, weights=LAE_WEIGHTS, device=LAE_DEVICE, palette="random",
         )
         if LAE_CHUNKED_SIZE > 0:
             try:

@@ -1,8 +1,8 @@
 # `inference-lae/` — LAE-DINO Open-Vocabulary RS Detector Sidecar
 
 **Path:** [inference-lae/app.py](../../inference-lae/app.py), [inference-lae/Dockerfile](../../inference-lae/Dockerfile)
-**Lines:** ~210 (app.py ~210, Dockerfile ~80)
-**Depends on:** torch (host GPU profile), mmengine 0.10.4, mmcv 2.0–2.2 (built from source), LAE-DINO mmdetection fork (`jaychempan/LAE-DINO`), `bert-base-uncased`, FastAPI/uvicorn
+**Lines:** ~230 (app.py ~230, Dockerfile ~100)
+**Depends on:** torch 2.1.0+cu121, mmengine 0.10.4, mmcv 2.1.0 (prebuilt wheel), the LAE-DINO mmdetection fork (`jaychempan/LAE-DINO`, editable), `transformers==4.42.3`, `clip-anytorch` + `open_clip_torch`, `bert-base-uncased`, FastAPI/uvicorn
 
 ## Purpose
 
@@ -16,22 +16,30 @@ with the SAM 3 stack — see [decisions/why-lae-dino-replaces-grounding-dino.md]
 ## Why this design
 
 A forked-mmdet model can't co-reside with SAM 3 / TerraMind / Prithvi in one
-interpreter (torch 1.10 vs 2.x; transformers 4.42 vs ≥4.56). A sidecar with its
-own dependency closure is the only clean boundary. The image is built against
-the **same** CUDA/torch the host GPU profile selects (`SAM3_*` build args from
-`scripts/configure_host.py`) so it runs on the same modern GPUs as the rest of
-the stack — LAE-DINO's 2021 upstream pins are deliberately *not* used. The
-service is single-GPU and behind the `lae` compose profile (opt-in), since the
-`grounding_dino` layer defaults OFF.
+interpreter (transformers 4.42 vs ≥4.56). A sidecar with its own dependency
+closure is the only clean boundary. The image pins **torch 2.1.0 + cu121** with
+a prebuilt mmcv 2.1.0 wheel — the newest combo mmcv ships wheels for and the
+mmdet-3.3 fork is validated against — *not* the host's cu130 profile (no mmcv
+wheels) and *not* the fork's 2021 pins. cu121 runs natively on A100/H100 via the
+host driver. The service is single-GPU and behind the `lae` compose profile
+(opt-in), since the `grounding_dino` layer defaults OFF.
+
+**GPU selection** follows the existing `.env` logic and never hardcodes a card:
+`NVIDIA_VISIBLE_DEVICES: ${LAE_VISIBLE_DEVICES:-${SAM3_VISIBLE_DEVICES:-all}}`, so
+by default it co-locates on the GEOINT card(s) the operator already gave
+inference-sam3 — never a co-tenant's GPUs (e.g. vLLM). Override with
+`LAE_VISIBLE_DEVICES`.
 
 ## Key symbols
 
-- [`_load`](../../inference-lae/app.py#L70) — builds the mmdet `DetInferencer` once at
-  startup; overrides `language_model.name` → baked BERT dir and nulls the Swin
-  `init_cfg` so nothing is fetched at runtime. Failures are captured, not raised.
-- [`/health`](../../inference-lae/app.py#L116) — `{model_loaded, model, model_error}`; drives the compose healthcheck and the client's `load()` probe.
-- [`/detect`](../../inference-lae/app.py#L125) — multipart `file` + JSON `prompts` + `threshold`; runs `DetInferencer(texts="a . b . c", custom_entities=True)` and returns `{detections: [{bbox:[x1,y1,x2,y2], score, label}], model}`.
-- [`_extract`](../../inference-lae/app.py#L175) — pulls `pred_instances.bboxes/scores/label_names` out of the `DetDataSample`.
+- [`_load`](../../inference-lae/app.py#L72) — builds the mmdet `DetInferencer` once at
+  startup. Overrides `language_model.name` → baked BERT dir, nulls the Swin
+  `init_cfg`, hoists `cfg.test_pipeline` onto the wrapped ConcatDataset cfg, and
+  uses `palette="random"` (not `"none"`) so the missing training-annotation
+  dataset is never built. Failures are captured, not raised.
+- [`/health`](../../inference-lae/app.py#L133) — `{model_loaded, model, model_error}`; drives the compose healthcheck and the client's `load()` probe.
+- [`/detect`](../../inference-lae/app.py#L142) — multipart `file` + JSON `prompts` + `threshold`; runs `DetInferencer(texts="a . b . c", custom_entities=True)` and returns `{detections: [{bbox:[x1,y1,x2,y2], score, label}], model}`. `chunked_size` is left disabled (the fork's chunked predict path is broken; the client chunks prompts instead).
+- [`_extract`](../../inference-lae/app.py#L192) — pulls `pred_instances.bboxes/scores/label_names` out of the `DetDataSample`.
 
 ## Inputs / Outputs
 
