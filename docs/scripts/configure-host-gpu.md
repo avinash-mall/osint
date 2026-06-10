@@ -19,6 +19,14 @@ python scripts/configure_host.py --force    # overwrite even if block exists
 
 Build-time + runtime variables for the GPU layer. See [deployment/gpu-profile-detection.md](../deployment/gpu-profile-detection.md) for the full list.
 
+It also **divides the GPUs across services**: it reads the operator's
+`SENTINEL_RESERVED_GPUS` (a preserved input, e.g. `0,1` for a vLLM co-tenant) and
+generates `SAM3_VISIBLE_DEVICES` + `LAE_VISIBLE_DEVICES` — dedicating the last
+free card to inference-lae at ≥3 free, otherwise SAM3 keeps every card and LAE
+shares the last (protecting SAM3's replicas). `SAM3_SERIALIZE_FORWARDS` is
+emitted only for multi-replica SAM3, and the chip-dispatch knobs track the
+SAM3-allocated count. See [decisions/why-auto-gpu-division.md](../decisions/why-auto-gpu-division.md).
+
 ## What it never writes
 
 - `HF_TOKEN`, `SESSION_SECRET`, `ADMIN_PASSWORD` — operator concerns.

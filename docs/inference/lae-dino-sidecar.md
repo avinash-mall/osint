@@ -39,7 +39,7 @@ inference-sam3 — never a co-tenant's GPUs (e.g. vLLM). Override with
   dataset is never built. Failures are captured, not raised.
 - [`/health`](../../inference-lae/app.py#L133) — `{model_loaded, model, model_error}`; drives the compose healthcheck and the client's `load()` probe.
 - [`/detect`](../../inference-lae/app.py#L142) — multipart `file` + JSON `prompts` + `threshold`; runs `DetInferencer(texts="a . b . c", custom_entities=True)` and returns `{detections: [{bbox:[x1,y1,x2,y2], score, label}], model}`. `chunked_size` is left disabled (the fork's chunked predict path is broken; the client chunks prompts instead).
-- [`_extract`](../../inference-lae/app.py#L200) — pulls `pred_instances.bboxes/scores/label_names` out of the `DetDataSample`. (A batched `/detect_batch` path was evaluated and removed — see [decisions/why-lae-cross-chip-batching.md](../decisions/why-lae-cross-chip-batching.md).)
+- [`_extract`](../../inference-lae/app.py#L192) — pulls `pred_instances.bboxes/scores/label_names` out of the `DetDataSample`. (A batched `/detect_batch` path was evaluated and removed — see [decisions/why-lae-cross-chip-batching.md](../decisions/why-lae-cross-chip-batching.md).)
 
 ## Inputs / Outputs
 

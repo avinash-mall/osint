@@ -20,6 +20,7 @@ Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 |---|---|---|
 | `TITILER_URL` | `http://titiler:8080` | Internal tile server |
 | `INFERENCE_SAM3_URL` | `http://inference-sam3:8001` | Internal SAM3 service |
+| `LAE_DINO_URL` | `http://inference-lae:8010` | Internal LAE-DINO sidecar URL the `grounding_dino` layer calls. See [lae-dino-sidecar.md](../inference/lae-dino-sidecar.md) |
 | `ONTOLOGY_BACKEND_URL` | `http://backend:8080` | Backend URL inference queries for prompts |
 
 ## Volume Paths
@@ -81,6 +82,8 @@ Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 | `REMOTE_IMAGERY_MAX_BYTES` | `10737418240` | Remote imagery download cap before deleting partial files |
 | `CHANGE_DET_MAX_PIXELS` | `4000000` | Two-pass diff resolution cap |
 | `TRACKER_COST_WEIGHTS` | `{}` | JSON tracker cost-function weights |
+| `LIVE_DETECTIONS_STREAM` | `1` | Embed map-ready features in the per-chip `detections_partial` WS event so the map renders detections live (chip-by-chip) instead of after the whole pass. `0` = count-only events + end-of-pass load. See [decisions/why-live-streaming-detections.md](../decisions/why-live-streaming-detections.md) |
+| `LIVE_DETECTIONS_MAX_FEATURES` | `400` | A chip with more detections streams counts only (the end-of-pass load still reconciles), bounding the WS message size |
 
 ## Inference (`SAM3_*`)
 
@@ -121,7 +124,9 @@ Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 | `SAM3_LOAD_PRITHVI` | `0` | Prithvi flood/burn |
 | `SAM3_LOAD_TERRAMIND` | `1` | TerraMind S1→S2 |
 | `SAM3_LOAD_DOTA_OBB` | `1` | DOTA-OBB specialist |
-| `SAM3_LOAD_GROUNDING_DINO` | `0` | Grounding-DINO (auto-gated + explicitly enabled per request) |
+| `SAM3_LOAD_GROUNDING_DINO` | `0` | `grounding_dino` open-vocab layer — now backed by the **LAE-DINO** sidecar (auto-gated + explicitly enabled per request). Enabling it needs the `inference-lae` service (`docker compose --profile lae up`). See [why-lae-dino-replaces-grounding-dino.md](../decisions/why-lae-dino-replaces-grounding-dino.md) |
+| `GROUNDING_DINO_THRESHOLD` / `GROUNDING_DINO_TEXT_THRESHOLD` | `0.30` / `0.25` | LAE-DINO box / text score floors forwarded to the sidecar |
+| `LAE_VISIBLE_DEVICES` | (generated) | GPU(s) for the LAE sidecar — auto-set by `configure_host.py` (dedicated card at ≥3 free, else shares SAM3's last card). See [why-auto-gpu-division.md](../decisions/why-auto-gpu-division.md) |
 | `SAM3_LOAD_YOLOE` | `1` | YOLOE-26x FMV tracker |
 | `DOTA_OBB_MODEL_ID` | `yolo26m-obb.pt` | Default OBB checkpoint; `yolo11n-obb.pt` for low-VRAM fallback |
 | `EVIDENCE_MAX_ASPECT_RATIO` | `35` | Backend physical validator aspect-ratio ceiling |
@@ -145,6 +150,9 @@ Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 Written by `scripts/configure_host.py` — do not hand-edit:
 
 - `SAM3_CUDA_VERSION`, `SAM3_TORCH_INDEX_URL`, `SAM3_TORCH_VERSION`, `SAM3_TORCHVISION_VERSION`, `SAM3_TORCH_CUDA_ARCH_LIST`, `SAM3_GPU_PROFILE`, `SAM3_UBUNTU_VERSION`
+- **GPU division (generated):** `SAM3_VISIBLE_DEVICES`, `LAE_VISIBLE_DEVICES`, `SAM3_SERIALIZE_FORWARDS` (multi-replica only), `INFERENCE_CHIP_CONCURRENCY`/`INFERENCE_MIN_PENDING_CHIPS` (SAM3-allocated count).
+
+**Operator input (preserved, NOT generated):** `SENTINEL_RESERVED_GPUS` — comma list of GPU indices to keep away from Sentinel (e.g. `0,1` for a vLLM co-tenant). `configure_host` divides the remaining cards between the services. See [why-auto-gpu-division.md](../decisions/why-auto-gpu-division.md).
 
 See [gpu-profile-detection.md](gpu-profile-detection.md).
 
