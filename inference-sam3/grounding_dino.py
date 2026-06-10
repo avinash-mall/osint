@@ -133,107 +133,31 @@ def run(
             return []
         if payload.get("error"):
             print(f"[grounding_dino] LAE-DINO error: {payload['error']}")
-        return _dets_to_tuples(payload.get("detections", []), label_list, score_threshold, height, width)
+
+        chunk_out: list[tuple[np.ndarray, list[float], float, str]] = []
+        for det in payload.get("detections", []):
+            score_f = float(det.get("score", 0.0))
+            if score_f < score_threshold:
+                continue
+            # LAE-DINO returns the matched entity string; map it back to the
+            # operator's canonical prompt so the detection routes to the right
+            # ontology branch (drops opaque/unmappable labels).
+            canonical = _map_to_original_prompt(str(det.get("label", "")), label_list)
+            if canonical is None:
+                continue
+            box = det.get("bbox") or []
+            if len(box) < 4:
+                continue
+            x1, y1, x2, y2 = (float(v) for v in box[:4])
+            mask = _bbox_mask(x1, y1, x2, y2, height, width)
+            chunk_out.append((mask, [x1, y1, x2, y2], score_f, canonical))
+        return chunk_out
 
     all_prompts = list(prompts)
     out: list[tuple[np.ndarray, list[float], float, str]] = []
     for i in range(0, len(all_prompts), GROUNDING_DINO_MAX_PHRASES):
         out.extend(_forward_chunk(all_prompts[i:i + GROUNDING_DINO_MAX_PHRASES]))
     return out
-
-
-def run_batch(
-    bundle: dict[str, Any] | None,
-    images_rgb_uint8: list[np.ndarray],
-    prompts: Iterable[str],
-    score_threshold: float = GROUNDING_DINO_THR,
-) -> list[list[tuple[np.ndarray, list[float], float, str]]]:
-    """Batched variant of run(): POST N chips that share one prompt set to the
-    sidecar's /detect_batch (one mmdet forward) and return per-chip SAM3-shaped
-    tuples, in input order. Used by the inference-sam3 /detect_batch_raw path
-    when SENTINEL_ENABLE_BATCHING is on. Degrades to empty lists on any error.
-    """
-    n = len(images_rgb_uint8)
-    empty: list[list[tuple[np.ndarray, list[float], float, str]]] = [[] for _ in range(n)]
-    if bundle is None or bundle.get("model") is None or n == 0:
-        return empty
-    prompts = [p for p in prompts if p and not p.startswith("__")]
-    if not prompts:
-        return empty
-
-    try:
-        import json as _json
-        import requests
-        from PIL import Image
-    except Exception as exc:
-        print(f"[grounding_dino] dependency missing: {exc}")
-        return empty
-
-    url = bundle.get("url", LAE_DINO_URL)
-    dims = [(img.shape[0], img.shape[1]) for img in images_rgb_uint8]
-    png_list: list[bytes] = []
-    for img in images_rgb_uint8:
-        buf = io.BytesIO()
-        Image.fromarray(img).save(buf, format="PNG")
-        png_list.append(buf.getvalue())
-
-    out: list[list[tuple[np.ndarray, list[float], float, str]]] = [[] for _ in range(n)]
-    all_prompts = list(prompts)
-    for i in range(0, len(all_prompts), GROUNDING_DINO_MAX_PHRASES):
-        label_list = all_prompts[i:i + GROUNDING_DINO_MAX_PHRASES]
-        files = [("files", (f"chip{j}.png", png_list[j], "image/png")) for j in range(n)]
-        try:
-            resp = requests.post(
-                f"{url}/detect_batch",
-                files=files,
-                data={
-                    "prompts": _json.dumps(label_list),
-                    "threshold": str(score_threshold),
-                    "text_threshold": str(GROUNDING_DINO_TEXT_THR),
-                },
-                timeout=LAE_DINO_TIMEOUT * max(1, n),
-            )
-            resp.raise_for_status()
-            payload = resp.json()
-        except Exception as exc:
-            print(f"[grounding_dino] LAE-DINO batch request failed: {exc}")
-            continue
-        if payload.get("error"):
-            print(f"[grounding_dino] LAE-DINO batch error: {payload['error']}")
-        results = payload.get("results") or []
-        for j in range(n):
-            dets = results[j] if j < len(results) else []
-            h, w = dims[j]
-            out[j].extend(_dets_to_tuples(dets, label_list, score_threshold, h, w))
-    return out
-
-
-def _dets_to_tuples(
-    detections: list[dict[str, Any]],
-    label_list: list[str],
-    score_threshold: float,
-    height: int,
-    width: int,
-) -> list[tuple[np.ndarray, list[float], float, str]]:
-    """Convert the sidecar's JSON detections into SAM3-shaped tuples. LAE-DINO
-    returns the matched entity string; map it back to the operator's canonical
-    prompt so the detection routes to the right ontology branch (drops
-    opaque/unmappable labels)."""
-    tuples: list[tuple[np.ndarray, list[float], float, str]] = []
-    for det in detections:
-        score_f = float(det.get("score", 0.0))
-        if score_f < score_threshold:
-            continue
-        canonical = _map_to_original_prompt(str(det.get("label", "")), label_list)
-        if canonical is None:
-            continue
-        box = det.get("bbox") or []
-        if len(box) < 4:
-            continue
-        x1, y1, x2, y2 = (float(v) for v in box[:4])
-        mask = _bbox_mask(x1, y1, x2, y2, height, width)
-        tuples.append((mask, [x1, y1, x2, y2], score_f, canonical))
-    return tuples
 
 
 def _map_to_original_prompt(returned_label: str, prompts: list[str]) -> str | None:

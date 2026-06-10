@@ -212,7 +212,7 @@ decisions/why-generic-labels-when-unverified.md|decision,backend,ontology|generi
 decisions/why-grounding-dino-auto-gated.md|decision|forcing GDINO drops mAP via NMS suppression of DOTA detections
 decisions/why-imagery-dedup-is-hash-only.md|decision,backend,imagery|satellite_passes dedup on source_hash alone; footprint+acq_time+filename branches collapsed distinct uploads
 decisions/why-imagery-yoloe-mirrors-fmv.md|decision,imagery,inference|superseded: older image YOLOE routing experiment replaced by FMV-only YOLOE
-decisions/why-lae-cross-chip-batching.md|decision,inference|opt-in LAE batching path; no-op/slower on serialize-forwards hosts, kept for non-serialized GPUs
+decisions/why-lae-cross-chip-batching.md|decision,inference|cross-chip LAE batching evaluated + rejected; ~2x slower on serialize-forwards A100 hosts
 decisions/why-lae-dino-replaces-grounding-dino.md|decision,inference|RS-tuned LAE-DINO replaces generic Grounding-DINO; runs as inference-lae sidecar (dep conflict)
 decisions/why-layerpanel-dot-toggle.md|decision,frontend|eye-toggle column removed; 10px coloured dot is the visibility signal, locked analytics subgroup
 decisions/why-live-test-tier.md|decision,testing|third test tier vs real nginx:3000: catches wiring/auth/inference seams mocks can't; idle-gate + FMV opt-in

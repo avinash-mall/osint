@@ -113,15 +113,17 @@ def partition_gpus(gpu_count: int, reserved: frozenset[int]) -> tuple[list[int],
     """Divide the non-reserved GPUs between inference-sam3 and inference-lae.
 
     inference-sam3 is the throughput-critical service — it runs one model replica
-    per visible GPU, so its speed scales with card count. inference-lae is small
-    (~2-4 GB) and single-GPU. The division therefore protects SAM3's replicas:
+    per visible GPU, so its speed scales with card count (even under the
+    serialize-forwards lock, the non-forward work overlaps across replicas).
+    inference-lae is small (~2-4 GB) and single-GPU. The division therefore
+    protects SAM3's replicas:
 
-    - ``>= 3`` free: dedicate the LAST card to inference-lae and give SAM3 the
-      rest (still >= 2 replicas). LAE gets full isolation — no VRAM contention.
+    - ``>= 3`` free: dedicate the LAST card to inference-lae; SAM3 gets the rest
+      (still >= 2 replicas) — LAE fully isolated, no VRAM contention.
     - ``== 2`` free: SAM3 keeps BOTH cards (2 replicas); inference-lae SHARES the
       last card. Carving a whole 80 GB A100 out for the tiny LAE model would
-      halve SAM3 throughput, which costs more than the sharing does — especially
-      with cross-chip batching, which makes LAE's calls few and amortized.
+      drop SAM3 to a single replica, which benchmarked *slower* than sharing —
+      multi-replica SAM3 is the dominant lever on a 2-GPU host.
     - ``== 1`` free: both share the one card.
 
     The intra-SAM3 CUDA-poison race is handled separately by
@@ -217,10 +219,13 @@ def generated_env_values(info: HostGpuInfo, reserved: frozenset[int] = frozenset
         values["LAE_VISIBLE_DEVICES"] = ",".join(str(i) for i in lae_idx)
         sam3_gpu_count = len(sam3_idx)
         # Multi-replica SAM3 on A100+cu13x races a shared driver workspace; pin
-        # the serialize-forwards fix ON. Single-replica has no cross-replica
-        # race, so we leave the key unset there (compose default :-1 backstops,
-        # so this can never *weaken* the fix) and an operator can opt out for a
-        # single-GPU throughput win. See why-serialize-forwards-on-a100-cu13x.md.
+        # the serialize-forwards fix ON. We do NOT emit 0 for single-replica:
+        # besides the (absent) cross-replica race, the global forward lock also
+        # bounds intra-card VRAM by stopping a chip's SAM3 forward overlapping the
+        # previous chip's DINOv3 embedding on the same card — removing it spiked
+        # VRAM to ~49 GB and ran ~2x slower in benchmarks. Single-replica is left
+        # unset so the compose default (:-1) keeps it on. See
+        # why-serialize-forwards-on-a100-cu13x.md and why-auto-gpu-division.md.
         if sam3_gpu_count > 1:
             values["SAM3_SERIALIZE_FORWARDS"] = "1"
     else:

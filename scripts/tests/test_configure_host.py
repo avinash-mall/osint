@@ -84,7 +84,7 @@ def test_multi_gpu_scales_chip_dispatch_to_sam3_count():
 def test_reserved_gpus_two_free_keeps_sam3_replicas():
     """Reserving GPUs 0,1 (vLLM) leaves only 2,3 for Sentinel. With just 2 free
     cards SAM3 keeps BOTH (2 replicas) and inference-lae SHARES the last card —
-    carving a whole A100 out for the tiny LAE model would halve SAM3."""
+    dropping SAM3 to a single replica benchmarked slower than sharing."""
     info = HostGpuInfo(
         driver_version="595.58.03",
         gpus=tuple(HostGpu("NVIDIA A100 80GB PCIe", memory_mib=81920) for _ in range(4)),
@@ -95,13 +95,27 @@ def test_reserved_gpus_two_free_keeps_sam3_replicas():
     assert values["SAM3_VISIBLE_DEVICES"] == "2,3"
     assert values["LAE_VISIBLE_DEVICES"] == "3"  # shares SAM3's last card
     assert values["INFERENCE_MIN_PENDING_CHIPS"] == "2"
-    # Multi-replica SAM3 -> serialize-forwards pinned on.
-    assert values["SAM3_SERIALIZE_FORWARDS"] == "1"
+    assert values["SAM3_SERIALIZE_FORWARDS"] == "1"  # multi-replica
 
 
-def test_three_plus_free_dedicates_lae_card():
-    """With >=3 free cards, LAE gets its OWN card and SAM3 keeps the rest
-    (still multi-replica)."""
+def test_single_gpu_leaves_serialize_unset():
+    """A single-GPU host (single replica) leaves SAM3_SERIALIZE_FORWARDS unset —
+    the compose default (:-1) keeps it on (it also bounds intra-card VRAM)."""
+    info = HostGpuInfo(
+        driver_version="595.58.03",
+        gpus=(HostGpu("NVIDIA A100 80GB PCIe", memory_mib=81920),),
+    )
+
+    values = generated_env_values(info)
+
+    assert values["SAM3_VISIBLE_DEVICES"] == "0"
+    assert values["LAE_VISIBLE_DEVICES"] == "0"  # shares the one card
+    assert "SAM3_SERIALIZE_FORWARDS" not in values
+
+
+def test_three_plus_free_keeps_sam3_multi_replica_and_serialize():
+    """With >=3 free cards, LAE gets its own card and SAM3 stays multi-replica,
+    so serialize-forwards is pinned on (cross-replica poison)."""
     info = HostGpuInfo(
         driver_version="595.58.03",
         gpus=tuple(HostGpu("NVIDIA A100 80GB PCIe", memory_mib=81920) for _ in range(4)),
@@ -117,7 +131,7 @@ def test_three_plus_free_dedicates_lae_card():
 def test_partition_gpus_division_rules():
     from configure_host import partition_gpus
 
-    # >=3 free -> dedicate last card to LAE, SAM3 keeps the rest
+    # >=3 free -> dedicate last card to LAE, SAM3 keeps the rest (multi-replica)
     assert partition_gpus(4, frozenset()) == ([0, 1, 2], [3])
     assert partition_gpus(3, frozenset()) == ([0, 1], [2])
     # exactly 2 free -> SAM3 keeps both, LAE shares the last

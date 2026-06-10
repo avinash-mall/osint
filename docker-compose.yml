@@ -458,9 +458,6 @@ services:
       LAE_DINO_THRESHOLD: ${GROUNDING_DINO_THRESHOLD:-0.30}
       # 0 = disabled; the fork's chunked predict path is broken (client chunks).
       LAE_CHUNKED_SIZE: ${LAE_CHUNKED_SIZE:-0}
-      # Cross-chip batching: /detect_batch runs N chips through one mmdet forward.
-      SENTINEL_ENABLE_BATCHING: ${SENTINEL_ENABLE_BATCHING:-0}
-      INFERENCE_LAE_BATCH_SIZE: ${INFERENCE_LAE_BATCH_SIZE:-4}
       # Weights are baked into the image; never reach the network at runtime.
       HF_HOME: /models/hf
       HUGGINGFACE_HUB_CACHE: /models/hf/hub
@@ -520,11 +517,6 @@ services:
       - INFERENCE_MAX_PENDING_CHIPS=${INFERENCE_MAX_PENDING_CHIPS:-}
       - INFERENCE_MIN_PENDING_CHIPS=${INFERENCE_MIN_PENDING_CHIPS:-4}
       - INFERENCE_CHIP_TIMEOUT_S=${INFERENCE_CHIP_TIMEOUT_S:-600}
-      # Cross-chip batching: the worker groups raw RGB chips and POSTs them to
-      # inference-sam3 /detect_batch_raw, which batches the LAE-DINO call. OFF by
-      # default. See docs/decisions/why-lae-cross-chip-batching.md.
-      - SENTINEL_ENABLE_BATCHING=${SENTINEL_ENABLE_BATCHING:-0}
-      - INFERENCE_LAE_BATCH_SIZE=${INFERENCE_LAE_BATCH_SIZE:-4}
       # Phase 1: raster I/O tuning. Same block lives on inference-sam3 so
       # both processes share GDAL cache + vsicurl settings.
       - GDAL_CACHEMAX=${GDAL_CACHEMAX:-1024}

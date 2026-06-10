@@ -184,14 +184,6 @@ def _default_chip_concurrency() -> int:
 
 INFERENCE_CHIP_CONCURRENCY = max(1, env_int("INFERENCE_CHIP_CONCURRENCY", _default_chip_concurrency()))
 INFERENCE_CHIP_TIMEOUT_S = env_int("INFERENCE_CHIP_TIMEOUT_S", 120)
-# Cross-chip batching (global SENTINEL_ENABLE_BATCHING). When on, the raw-RGB
-# poster groups chips into batches of INFERENCE_LAE_BATCH_SIZE and POSTs them to
-# inference-sam3 /detect_batch_raw, where SAM3/DOTA still run per chip under the
-# serialize lock but the grounding_dino (LAE-DINO) call is made once per group
-# (one batched forward on the dedicated LAE GPU). OFF by default → the per-chip
-# /detect_raw path is used unchanged. See why-lae-cross-chip-batching.md.
-SENTINEL_ENABLE_BATCHING = os.getenv("SENTINEL_ENABLE_BATCHING", "0").strip().lower() in {"1", "true", "yes", "on"}
-INFERENCE_LAE_BATCH_SIZE = max(1, env_int("INFERENCE_LAE_BATCH_SIZE", 4))
 # A poisoned CUDA context makes inference-sam3 self-heal by exiting and letting
 # `restart: unless-stopped` respawn it with a clean context (~100 s). See
 # docs/decisions/why-exit-on-poisoned-cuda-context.md. During that window chip
@@ -1448,43 +1440,6 @@ def _post_chip_to_sam3_raw(
     return _post_chip_with_restart_retry(_send, chip_label)
 
 
-def _post_batch_to_sam3_raw(
-    session: requests.Session,
-    chips: list[np.ndarray],
-    chip_meta_payloads: list[str],
-    batch_label: str,
-) -> dict | None:
-    """POST N raw uint8 RGB chips as one ``/detect_batch_raw`` request.
-
-    All chips in a pass share the same prompt set, so the server batches the
-    grounding_dino (LAE-DINO) call into one forward while still running SAM3/DOTA
-    per chip under the serialize lock. Returns ``{"results": [<per-chip resp>]}``
-    or None. Used only when SENTINEL_ENABLE_BATCHING is on.
-    """
-    def _send():
-        shapes = ";".join(f"{int(c.shape[0])},{int(c.shape[1])},3" for c in chips)
-        # Each payload is already a JSON object string; join into a JSON array.
-        metas_json = "[" + ",".join(chip_meta_payloads) + "]"
-        metas_b64 = base64.b64encode(metas_json.encode("utf-8")).decode("ascii")
-        body = b"".join(c.tobytes() for c in chips)
-        headers = {
-            "Content-Type": "application/octet-stream",
-            "X-Chip-Modality": "rgb",
-            "X-Batch-Count": str(len(chips)),
-            "X-Batch-Shapes": shapes,
-            "X-Batch-Metas-B64": metas_b64,
-            "X-Chip-Dtype": "uint8",
-        }
-        return session.post(
-            f"{INFERENCE_SAM3_URL}/detect_batch_raw",
-            data=body,
-            headers=headers,
-            timeout=INFERENCE_CHIP_TIMEOUT_S * max(1, len(chips)),
-        )
-
-    return _post_chip_with_restart_retry(_send, batch_label)
-
-
 def _png_file(rgb: np.ndarray):
     chip_file = tempfile.SpooledTemporaryFile(max_size=INFERENCE_CHIP_SPOOL_MAX_BYTES)
     with _chip_stage_timer("encode_png"):
@@ -2161,11 +2116,22 @@ def slice_and_infer(
         _chip_latencies_ms: deque[float] = deque(maxlen=20)
         _effective_pending_limit = INFERENCE_MAX_PENDING_CHIPS
 
-        def _consume_chip_result(ctx: dict, response, chip_started) -> None:
-            """Apply one chip's inference response (dedupe, store, progress,
-            latency back-off). Shared by the per-chip and batched poster paths."""
+        def _consume_one(fut: concurrent.futures.Future) -> None:
             nonlocal processed_windows, failed_windows, completed_chip_count
             nonlocal _effective_pending_limit
+            ctx = pending.pop(fut)
+            chip_started = ctx.get("started")
+            try:
+                response = fut.result()
+            except Exception as exc:
+                failed_windows += 1
+                processed_windows += 1
+                logger.warning(
+                    "[WORKER] Inference failed for chip pass=%s x=%s y=%s: %s",
+                    pass_id, ctx["x"], ctx["y"], exc,
+                )
+                _report_inference_progress()
+                return
             if chip_started is not None:
                 # `post_roundtrip` measures wall time from `executor.submit` to a
                 # consumed result — covers HTTP transport + server decode +
@@ -2219,45 +2185,6 @@ def slice_and_infer(
                         )
                         _effective_pending_limit = new_limit
             _report_inference_progress()
-
-        def _consume_one(fut: concurrent.futures.Future) -> None:
-            nonlocal processed_windows, failed_windows
-            ctx = pending.pop(fut)
-            # Batched poster: ctx is a list of per-chip ctxs and the response is
-            # {"results": [<per-chip resp>, ...]} from /detect_batch_raw. Fan the
-            # N results back to the per-chip handler in order.
-            if isinstance(ctx, list):
-                try:
-                    response = fut.result()
-                except Exception as exc:
-                    for c in ctx:
-                        failed_windows += 1
-                        processed_windows += 1
-                        logger.warning(
-                            "[WORKER] Inference failed for chip pass=%s x=%s y=%s: %s",
-                            pass_id, c["x"], c["y"], exc,
-                        )
-                    _report_inference_progress()
-                    return
-                results = (response or {}).get("results") or []
-                for i, c in enumerate(ctx):
-                    resp_i = results[i] if i < len(results) else None
-                    _consume_chip_result(c, resp_i, c.get("started"))
-                return
-            # Single-chip poster (default path).
-            chip_started = ctx.get("started")
-            try:
-                response = fut.result()
-            except Exception as exc:
-                failed_windows += 1
-                processed_windows += 1
-                logger.warning(
-                    "[WORKER] Inference failed for chip pass=%s x=%s y=%s: %s",
-                    pass_id, ctx["x"], ctx["y"], exc,
-                )
-                _report_inference_progress()
-                return
-            _consume_chip_result(ctx, response, chip_started)
 
         # Cap in-flight chips and spool oversized PNGs to disk so large rasters
         # cannot accumulate unbounded encoded chip buffers in memory.
@@ -2321,27 +2248,6 @@ def slice_and_infer(
                 read_pending: dict[concurrent.futures.Future, tuple[int, int]] = {}
                 exhausted = False
 
-                # Cross-chip batching accumulator (SENTINEL_ENABLE_BATCHING).
-                # Raw RGB chips collect here and flush as one /detect_batch_raw
-                # POST; a partial batch is flushed at pass end (below).
-                batch_buf: list[tuple] = []
-
-                def _flush_batch() -> None:
-                    if not batch_buf:
-                        return
-                    chips = [b[0] for b in batch_buf]
-                    metas = [b[1] for b in batch_buf]
-                    ctxs = [b[2] for b in batch_buf]
-                    label = f"pass={pass_id} scale={pass_index} batch[{len(batch_buf)}]"
-                    now = time.perf_counter()
-                    for c in ctxs:
-                        c["started"] = now
-                    bf = poster_executor.submit(
-                        _post_batch_to_sam3_raw, session, chips, metas, label,
-                    )
-                    pending[bf] = ctxs  # list marks a batched future for _consume_one
-                    batch_buf.clear()
-
                 while not exhausted or read_pending or pending:
                     while (
                         not exhausted
@@ -2397,34 +2303,21 @@ def slice_and_infer(
                                 # else is a file-like (SpooledTemporaryFile
                                 # holding PNG or GeoTIFF bytes) and uses
                                 # the legacy multipart /detect path.
-                                if SENTINEL_ENABLE_BATCHING and isinstance(chip_file_local, np.ndarray):
-                                    # Accumulate; flushed as one /detect_batch_raw
-                                    # POST when full (or at pass end).
-                                    batch_buf.append(
-                                        (chip_file_local, chip_meta_payload_local, ctx_local, chip_label)
-                                    )
-                                    if len(batch_buf) >= INFERENCE_LAE_BATCH_SIZE:
-                                        _flush_batch()
-                                elif isinstance(chip_file_local, np.ndarray):
+                                if isinstance(chip_file_local, np.ndarray):
                                     pf = poster_executor.submit(
                                         _post_chip_to_sam3_raw,
                                         session, chip_file_local,
                                         chip_meta_payload_local, chip_label,
                                     )
-                                    pending[pf] = ctx_local
                                 else:
                                     pf = poster_executor.submit(
                                         _post_chip_to_sam3,
                                         session, chip_file_local,
                                         chip_meta_payload_local, chip_label,
                                     )
-                                    pending[pf] = ctx_local
+                            pending[pf] = ctx_local
                         else:
                             _consume_one(fut)
-
-                # Flush any partial batch before draining so the last few chips
-                # of the pass are actually POSTed.
-                _flush_batch()
 
                 # Drain any remaining POSTs before starting the next pass so
                 # per-pass detections are stored before the smaller-scale

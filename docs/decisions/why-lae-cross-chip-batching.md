@@ -1,56 +1,60 @@
-# Why LAE-DINO cross-chip batching is opt-in (and a no-op on serialize hosts)
+# Why cross-chip LAE-DINO batching was evaluated and rejected
 
-**Status:** accepted (implemented, OFF by default)
+**Status:** rejected (implemented, benchmarked, removed)
 **Date:** 2026-06-10
-**Scope:** `inference-lae/app.py`, `inference-sam3/main.py` (`/detect_batch_raw`), `inference-sam3/grounding_dino.py` (`run_batch`), `backend/worker_legacy.py`
+**Scope:** would have touched `inference-lae/app.py`, `inference-sam3/main.py`, `inference-sam3/grounding_dino.py`, `backend/worker_legacy.py`
 
 ## Decision
 
-Add an opt-in, **global** batching path (`SENTINEL_ENABLE_BATCHING`,
-`INFERENCE_LAE_BATCH_SIZE`) that groups raw RGB chips and runs the grounding_dino
-(LAE-DINO) call **once per group** as one batched mmdet forward, instead of one
-sidecar request per chip. SAM3/DOTA still run per chip under the serialize lock;
-only the LAE leg batches. **OFF by default.**
+A full end-to-end cross-chip batching path was built and benchmarked, then
+**removed**. It groups raw RGB chips and runs the grounding_dino (LAE-DINO) call
+once per group as one batched mmdet forward (instead of one sidecar request per
+chip). On the reference host it was **consistently slower** than the per-chip
+baseline, so the code was reverted. This doc records the finding so it isn't
+re-attempted without new hardware.
 
-## How it works
+## Why it doesn't help (the constraint)
 
-- Worker (`worker_legacy.py`) accumulates raw chips into `INFERENCE_LAE_BATCH_SIZE`
-  groups and POSTs `/detect_batch_raw` (partial batch flushed at pass end).
-- inference-sam3 `/detect_batch_raw`: gate grounding_dino once for the shared
-  prompt set → one `grounding_dino.run_batch(...)` over all N chips → then the
-  existing per-chip `_detect_pipeline` with `precomputed_gd` so it skips its own
-  LAE call. The batched LAE forward is held under `_detect_serial_lock` (it may
-  share a GPU with a SAM3 replica; an un-serialized 4-image LAE forward overlaps
-  SAM3 and spikes VRAM).
-- inference-lae `/detect_batch`: N images → one `DetInferencer(batch_size=N)`
-  forward (mmdet broadcasts the shared caption) → N detection lists.
+Batching only pays off when forwards run **concurrently**. On A100 + cu13x
+`SAM3_SERIALIZE_FORWARDS=1` is mandatory (the cross-replica CUDA-poison fix) and
+serializes every GPU forward process-wide, so grouping can't unlock parallelism.
+The serialize lock also bounds intra-card VRAM by stopping a chip's SAM3 forward
+overlapping the previous chip's DINOv3 embedding on the same card.
 
-The per-chip and single-chip `/detect_raw` paths are untouched.
+Attempting to "free" concurrency by isolating LAE to its own card + dropping
+serialize forces SAM3 to a **single replica** (else the poison returns), and
+single-replica SAM3 is the bottleneck — and without serialize the
+forward/embedding overlap spikes VRAM to ~49 GB and thrashes.
 
-## Why this design (and why it stays OFF by default)
+**Measured (4× A100, single 25-chip San Diego pass):**
 
-Batching only pays off when forwards can run **concurrently**. On the reference
-host (A100 + cu13x) `SAM3_SERIALIZE_FORWARDS=1` is mandatory for the
-cross-replica poison fix — it serializes *every* GPU forward process-wide. With
-that lock, grouping chips can't unlock parallelism; it only front-loads the LAE
-call and reduces the per-chip HTTP pipelining that the per-chip poster already
-exploits.
+| Config | Time |
+|---|---|
+| 2-replica SAM3 + LAE shared + serialize ON + no batch (baseline) | **~90 s** |
+| 2-replica + LAE shared + serialize ON + batch | ~130 s |
+| 1-replica + LAE dedicated + serialize ON + batch | ~156 s |
+| 1-replica + LAE dedicated + serialize OFF + batch | ~170 s |
 
-**Measured on 4× A100 (SAM3 2-replica + LAE shared, 25-chip pass):**
-non-batched **~90 s** vs batched **~130 s**. Batching was *slower*. (The ~49 GB
-VRAM spike seen on a couple of chips is pre-existing SAM3 behavior — the same
-`49481 MiB` appears in non-batched runs — not caused by batching.)
+Every batching/isolation variant was slower. On a 2-GPU host *fast* requires
+multi-replica SAM3 (needs serialize); *batching* needs concurrency (needs
+serialize off → single replica → bottleneck). They are mutually exclusive here.
 
-So batching is kept as a **functional, validated facility** (7 batched forwards,
-identical detection counts) for hosts where forwards are **not** serialized — a
-truly dedicated LAE GPU with `SAM3_SERIALIZE_FORWARDS=0`, or non-A100/cu13x
-hardware once that constraint is lifted. It must not be enabled on a
-serialize-forwards host. The real win on this class of host came from the GPU
-division + Fix B, not batching.
+## What was kept
+
+The two changes from the same investigation that **do** help/are neutral were
+kept: the automated GPU division ([why-auto-gpu-division.md](why-auto-gpu-division.md),
+which protects SAM3 replicas) and the embedding decouple
+([why-embeddings-not-layer-gated.md](why-embeddings-not-layer-gated.md), Fix B).
+
+## When to revisit
+
+Only on hardware where forwards are not serialized — i.e. SAM3 multi-replica is
+safe without `SAM3_SERIALIZE_FORWARDS` (non-A100/cu13x, or once that driver bug
+is fixed) AND inference-lae has a genuinely dedicated card. Until then, batching
+is a net loss and stays out of the tree.
 
 ## Cross-references
 
-- [inference/lae-dino-sidecar.md](../inference/lae-dino-sidecar.md)
-- [inference/grounding-dino-detector.md](../inference/grounding-dino-detector.md)
 - [decisions/why-serialize-forwards-on-a100-cu13x.md](why-serialize-forwards-on-a100-cu13x.md)
 - [decisions/why-auto-gpu-division.md](why-auto-gpu-division.md)
+- [inference/lae-dino-sidecar.md](../inference/lae-dino-sidecar.md)
