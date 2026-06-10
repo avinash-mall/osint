@@ -1,8 +1,8 @@
 # Analytics Router (`/api/analytics/*`)
 
 **Path:** [backend/routers/analytics.py](../../backend/routers/analytics.py)
-**Lines:** ~285
-**Depends on:** [backend/change_detection.py](../../backend/change_detection.py), [backend/terrain.py](../../backend/terrain.py), [backend/routing.py](../../backend/routing.py), [backend/geometry.py](../../backend/geometry.py)
+**Lines:** ~401
+**Depends on:** [backend/change_detection.py](../../backend/change_detection.py), [backend/terrain.py](../../backend/terrain.py), [backend/routing.py](../../backend/routing.py) (`compute_isochrone`), [backend/od_flows.py](../../backend/od_flows.py), [backend/geometry.py](../../backend/geometry.py)
 
 ## Purpose
 
@@ -17,6 +17,8 @@ Spatial analyses from the **Analytics Tools** panel. Each endpoint is deliberate
 | `POST` | `/api/analytics/los` | [analytics.py#L146](../../backend/routers/analytics.py#L146) | Line-of-sight result between two points — each obstruction is its own `Point` feature with `elevation_m` / `clearance_m` / `distance_m`; see [decisions/los-obstruction-point-features.md](../decisions/los-obstruction-point-features.md) |
 | `GET`  | `/api/analytics/elevation` | [analytics.py#L210](../../backend/routers/analytics.py#L210) | DEM elevation at a single (lat, lon); used by the SelectionPanel ELEV row |
 | `POST` | `/api/analytics/routes` | [analytics.py#L245](../../backend/routers/analytics.py#L245) | Up to three driving routes via the OSRM sidecar |
+| `POST` | `/api/analytics/isochrone` | [analytics.py#L292](../../backend/routers/analytics.py#L292) | Driving-time reachability polygon around an observer via the OSRM `/table` matrix (16 bearings × 6 radii). Real OSRM polygon (`mode="osrm"`) or fixture (`mode="fixture"`, only under `ANALYTICS_ALLOW_FIXTURES=1`). `nominal_speed_kmh` bounds the probes. See [routing-osrm.md](../backend/routing-osrm.md), [decisions/why-isochrone-reachability.md](../decisions/why-isochrone-reachability.md). |
+| `POST` | `/api/analytics/od-flows` | [analytics.py#L350](../../backend/routers/analytics.py#L350) | Origin-Destination flow graph: reads `track_points` ordered per track, snaps to a `cell_deg` grid, aggregates consecutive cell transitions into weighted LineString flows (drops edges below `min_flow`). Vendored from city2graph — see [od-flows.md](../backend/od-flows.md), [decisions/why-od-flow-graphs.md](../decisions/why-od-flow-graphs.md). |
 | `POST` | `/api/analytics/pol` | [analytics.py#L270](../../backend/routers/analytics.py#L270) | Patterns-of-life heatmap: clusters `track_points` into ~0.02° grid cells (`ST_SnapToGrid`) and returns each cell centroid + count. (Previously also grouped by raw lon/lat, which defeated the clustering — every point became its own cell.) |
 | `GET` | `/api/analytics/capabilities` | [analytics.py#L291](../../backend/routers/analytics.py#L291) | Booleans: `dem`, `routing`, `demo_fixtures` |
 | `GET` | `/api/analytics/jobs` | [analytics.py#L301](../../backend/routers/analytics.py#L301) | Past analytics jobs |
@@ -31,5 +33,8 @@ Spatial analyses from the **Analytics Tools** panel. Each endpoint is deliberate
 
 - [backend/change-detection-raster.md](../backend/change-detection-raster.md)
 - [backend/terrain-viewshed-los.md](../backend/terrain-viewshed-los.md)
-- [backend/routing-osrm.md](../backend/routing-osrm.md)
+- [backend/routing-osrm.md](../backend/routing-osrm.md) — `compute_isochrone`
+- [backend/od-flows.md](../backend/od-flows.md)
+- [decisions/why-isochrone-reachability.md](../decisions/why-isochrone-reachability.md)
+- [decisions/why-od-flow-graphs.md](../decisions/why-od-flow-graphs.md)
 - [frontend/map-analytics-tools.md](../frontend/map-analytics-tools.md)

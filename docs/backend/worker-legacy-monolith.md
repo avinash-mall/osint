@@ -1,7 +1,7 @@
 # `backend/worker_legacy.py` — Monolithic Celery Tasks
 
 **Path:** [backend/worker_legacy.py](../../backend/worker_legacy.py)
-**Lines:** ~5565 (largest file in the repo)
+**Lines:** ~5932 (largest file in the repo)
 **Depends on:** Most of the rest of `backend/` plus `celery`, `requests`, `numpy`, `rasterio`, `cv2`, `ipaddress`, `socket`, env `ALLOW_REMOTE_IMAGERY_URLS`, `REMOTE_IMAGERY_ALLOWED_HOSTS`, `REMOTE_IMAGERY_MAX_BYTES`
 
 ## Purpose
@@ -44,8 +44,10 @@ See [decisions/why-worker-legacy-monolith-kept.md](../decisions/why-worker-legac
 | `worker.tick_entity_resimilarity` | 7 d | Phase 4.E + 5.J + 5.K — POSSIBLY_SAME_AS candidate edges. Embedding cosine branch (when both entities have `re_id_embedding`) + name-match heuristic fallback. Time + AOI scoped. |
 | `worker.tick_propose_entities` | 24 h | Phase 4.F + 5.I — `entity_candidates` rows from REPEATED_AT clusters. LLM-first (via [ai.py](../../backend/ai.py)), heuristic fallback. Calls `get_llm_json(prompt=..., system=...)` with the client-owned zero-temperature JSON path. |
 | `worker.tick_aggregate_entity_embeddings` | 12 h | Phase 5.J — average `detection_tracks.embedding_anchor` per entity into `operational_entities.re_id_embedding` centroid. |
+| [`worker.tick_colocation_builder`](../../backend/worker_legacy.py#L3719-L3771) | 6 h | Phase 6 — MERGE `COLOCATED_WITH` proximity edges between recent detection centroids (kNN/fixed-radius graph from [graph_proximity.py](graph-proximity.md), vendored from city2graph). Idempotent MERGE, no per-site cursor. PostGIS read + Neo4j write only. `queue=default`. See [decisions/why-proximity-colocation-graph.md](../decisions/why-proximity-colocation-graph.md). |
+| [`worker.tick_gnn_link_prediction`](../../backend/worker_legacy.py#L3774-L3846) | 24 h | Phase 6 — GraphSAGE link prediction over the non-candidate entity graph; MERGEs the top predicted links as advisory `GNN_SUGGESTED_LINK` edges. **No-ops cleanly (`{"skipped": "torch_unavailable"}`) until torch is installed** — optional infra, like DEM/OSRM. `queue=default`. See [decisions/why-gnn-link-prediction.md](../decisions/why-gnn-link-prediction.md). |
 
-`grep -nE "@celery_app.task" backend/worker_legacy.py` for the full live list (≈25 tasks total as of Phase 5).
+`grep -nE "@celery_app.task" backend/worker_legacy.py` for the full live list (≈27 tasks total as of Phase 6).
 
 ## Key shared helpers (referenced from elsewhere)
 
@@ -105,5 +107,8 @@ Everything here is re-exported by [backend/worker/__init__.py](../../backend/wor
 - [decisions/why-precision-first-inference-defaults.md](../decisions/why-precision-first-inference-defaults.md)
 - [decisions/why-generic-labels-when-unverified.md](../decisions/why-generic-labels-when-unverified.md)
 - [operations/celery-queues-and-tasks.md](../operations/celery-queues-and-tasks.md)
+- [operations/celery-beat-schedule.md](../operations/celery-beat-schedule.md)
 - [conventions/adding-a-new-celery-task.md](../conventions/adding-a-new-celery-task.md)
 - [decisions/why-security-hardening-2026-05-31.md](../decisions/why-security-hardening-2026-05-31.md)
+- [backend/graph-proximity.md](graph-proximity.md), [backend/graph-pyg.md](graph-pyg.md) — Phase 6 builders
+- [decisions/why-proximity-colocation-graph.md](../decisions/why-proximity-colocation-graph.md), [decisions/why-gnn-link-prediction.md](../decisions/why-gnn-link-prediction.md)

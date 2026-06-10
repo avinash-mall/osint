@@ -359,6 +359,20 @@ export const TOUR_STEPS: TourStep[] = [
     placement: 'left',
   },
   {
+    id: 'analytics-isochrone',
+    selector: '[data-tour="analytics-isochrone"]',
+    title: 'Isochrone',
+    body: 'Pick an observer point, a time budget in minutes, and a nominal travel speed; the tool calls /api/analytics/isochrone over the OSRM road network and shades everywhere reachable within that window. Use to bound where a fleeing vehicle or responder could be after a known elapsed time.',
+    placement: 'left',
+  },
+  {
+    id: 'analytics-odflows',
+    selector: '[data-tour="analytics-odflows"]',
+    title: 'OD flows',
+    body: 'Aggregates every recorded track into origin–destination flow lines, binned to a grid cell size and filtered by a minimum flow count — no map pick needed, just press RUN. Use to surface dominant movement corridors across the whole AOR.',
+    placement: 'left',
+  },
+  {
     id: 'analytics-capabilities',
     selector: '[data-tour="analytics-capabilities"]',
     title: 'DEM · Routing graph status',

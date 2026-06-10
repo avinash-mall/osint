@@ -75,6 +75,8 @@ Sub-tabs in the panel header of [GraphExplorer.tsx](../../frontend/src/component
 | `PROPOSES` | LLM ontology pipeline (exists) | OntologyUpdate → OntologyCandidate. |
 | `CANDIDATE_RELATED_TO` | LLM (exists) | OntologyCandidate ↔ OntologyCandidate. |
 | `LABEL_OF` | detection-class projector (Phase 3) | Detection → OntologyObject. Powers "show me everything classed as TEL" without text-matching. |
+| `COLOCATED_WITH` | beat `worker.tick_colocation_builder` (Phase 6) | Detection ↔ Detection proximity edge from a vendored city2graph graph. `distance_m, method, computed_at`. See [decisions/why-proximity-colocation-graph.md](../decisions/why-proximity-colocation-graph.md). |
+| `GNN_SUGGESTED_LINK` | beat `worker.tick_gnn_link_prediction` (Phase 6) | Operational entity ↔ entity advisory GNN link prediction (GraphSAGE). `score, model='graphsage'`. Never auto-promoted — analyst review only. See [decisions/why-gnn-link-prediction.md](../decisions/why-gnn-link-prediction.md). |
 | `SUGGESTED_BRANCH` | UnknownLabel projector | UnknownLabel → OntologyBranch (from `ontology_unknown_labels.suggested_branch_id`). |
 | `MENTIONS` | Document projector | Document → Target/Asset (resolved from `documents.extracted_entities` JSONB at [routers/ingest.py](../../backend/routers/ingest.py)). |
 | `ABOUT` | report-link projector | Report → Target (from `reports.target_id`). |

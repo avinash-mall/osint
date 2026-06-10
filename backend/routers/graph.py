@@ -28,6 +28,7 @@ from graph_writes import (
     promote_candidate_to_detected_as,
 )
 from schemas import (
+    GnnSuggestRequest,
     GraphActionRequest,
     GraphContradictRequest,
     GraphPathRequest,
@@ -153,6 +154,202 @@ def get_graph_neighborhood(req: GraphActionRequest):
             if node is not None:
                 nodes[node.element_id] = _serialise_node(node)
         return {"nodes": list(nodes.values()), "links": record["links"]}
+
+
+@router.get("/api/graph/colocation")
+def get_colocation_graph(
+    method: str = Query("knn", description="knn | delaunay | gabriel | relative_neighborhood | mst | fixed_radius"),
+    k: int = Query(6, ge=1, le=50),
+    radius_m: float = Query(3000.0, gt=0),
+    window_days: int = Query(30, ge=1, le=3650),
+    limit: int = Query(1500, ge=2, le=5000),
+):
+    """Compute a proximity (co-location) graph over recent detection centroids.
+
+    Read-only preview of the same edges the ``worker.tick_colocation_builder``
+    beat task persists as ``COLOCATED_WITH``. The proximity maths is vendored
+    from city2graph — see
+    [decisions/why-proximity-colocation-graph.md](../../docs/decisions/why-proximity-colocation-graph.md).
+    Returns ``{method, nodes, edges}`` where each node is a detection
+    ``{id, lon, lat}`` and each edge is ``{source, target, distance_m}``.
+    """
+    from graph_proximity import build_proximity_edges
+
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT id, ST_X(centroid) AS lon, ST_Y(centroid) AS lat
+            FROM detections
+            WHERE deleted_at IS NULL AND centroid IS NOT NULL
+              AND created_at >= NOW() - (%s || ' days')::interval
+            ORDER BY id DESC
+            LIMIT %s
+            """,
+            (str(window_days), limit),
+        )
+        rows = cursor.fetchall()
+    records = [(int(r["id"]), float(r["lon"]), float(r["lat"])) for r in rows]
+    try:
+        edges = build_proximity_edges(records, method, k=k, radius_m=radius_m, max_distance_m=radius_m if method != "fixed_radius" else None)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "method": method,
+        "nodes": [{"id": rid, "lon": lon, "lat": lat} for (rid, lon, lat) in records],
+        "edges": [{"source": a, "target": b, "distance_m": d} for (a, b, d) in edges],
+    }
+
+
+@router.get("/api/graph/metrics")
+def get_graph_metrics(
+    include_candidates: bool = Query(False, description="Include pending CANDIDATE_* edges in the topology"),
+    limit: int = Query(1500, ge=2, le=5000),
+    top_k: int = Query(10, ge=1, le=50),
+):
+    """Graph-level metrics + top central nodes over a bounded Neo4j snapshot.
+
+    Pulls up to ``limit`` nodes and their edges, then computes density,
+    connected components, and degree / betweenness / PageRank centrality in
+    memory (rustworkx fast path, pure-Python fallback). See
+    [decisions/why-rustworkx-graph-metrics.md](../../docs/decisions/why-rustworkx-graph-metrics.md).
+    Top central nodes are enriched with their primary label + display name.
+    """
+    from graph_metrics import compute_metrics
+
+    node_meta: dict[str, dict[str, Any]] = {}
+    edges: list[tuple[str, str]] = []
+    with db.get_session() as session:
+        result = session.run(
+            """
+            MATCH (n)
+            OPTIONAL MATCH (n)-[r]->(m)
+            WHERE r IS NULL OR $include_candidates OR NOT type(r) STARTS WITH 'CANDIDATE_'
+            RETURN n, r, m
+            LIMIT $limit
+            """,
+            {"include_candidates": include_candidates, "limit": limit},
+        )
+        for record in result:
+            n = record["n"]
+            m = record["m"]
+            r = record["r"]
+            if n.element_id not in node_meta:
+                props = dict(n)
+                node_meta[n.element_id] = {
+                    "label": list(n.labels)[0] if n.labels else "Node",
+                    "name": props.get("name") or props.get("title") or props.get("class") or n.element_id,
+                }
+            if m is not None and m.element_id not in node_meta:
+                mp = dict(m)
+                node_meta[m.element_id] = {
+                    "label": list(m.labels)[0] if m.labels else "Node",
+                    "name": mp.get("name") or mp.get("title") or mp.get("class") or m.element_id,
+                }
+            if r is not None and m is not None:
+                edges.append((n.element_id, m.element_id))
+
+    node_ids = list(node_meta.keys())
+    metrics = compute_metrics(node_ids, edges, top_k=top_k)
+    for bucket in metrics.get("top_centrality", {}).values():
+        for entry in bucket:
+            meta = node_meta.get(entry["id"], {})
+            entry["label"] = meta.get("label")
+            entry["name"] = meta.get("name")
+    return metrics
+
+
+@router.get("/api/graph/gnn/status")
+def get_gnn_status():
+    """Report whether the GNN link-prediction path is runnable in this image.
+
+    The bridge + encoder ship in every image, but torch does not — so this
+    surfaces availability the way ``/api/analytics/capabilities`` does for DEM /
+    OSRM. See [decisions/why-gnn-link-prediction.md](../../docs/decisions/why-gnn-link-prediction.md).
+    """
+    from graph_pyg import is_pyg_available, is_torch_available
+
+    torch_ok = is_torch_available()
+    return {
+        "torch_available": torch_ok,
+        "torch_geometric_available": is_pyg_available(),
+        "ready": torch_ok,
+    }
+
+
+@router.post("/api/graph/gnn/suggest-links")
+def post_gnn_suggest_links(req: GnnSuggestRequest, user: SessionUser = Depends(get_current_user)):
+    """Predict missing links among operational entities with a GraphSAGE GNN.
+
+    Snapshots operational + detection nodes (with numeric features) and their
+    non-candidate edges, then ranks currently-unconnected operational pairs by
+    predicted link probability. Returns 503 when torch is not installed in the
+    image (the bridge/encoder are present; only the runtime is optional). See
+    [decisions/why-gnn-link-prediction.md](../../docs/decisions/why-gnn-link-prediction.md).
+    """
+    from graph_pyg import GNNUnavailable, suggest_links
+
+    feature_keys = req.feature_keys or ["confidence", "latitude", "longitude"]
+    nodes: list[dict] = []
+    node_meta: dict[str, dict[str, Any]] = {}
+    operational: list[str] = []
+    edges: list[tuple[str, str]] = []
+    adjacency: set[tuple[str, str]] = set()
+
+    with db.get_session() as session:
+        result = session.run(
+            """
+            MATCH (n)
+            OPTIONAL MATCH (n)-[r]->(m)
+            WHERE r IS NULL OR NOT type(r) STARTS WITH 'CANDIDATE_'
+            RETURN n, r, m
+            LIMIT $limit
+            """,
+            {"limit": req.limit},
+        )
+        for record in result:
+            n = record["n"]
+            m = record["m"]
+            r = record["r"]
+            for node in (n, m):
+                if node is None or node.element_id in node_meta:
+                    continue
+                props = dict(node)
+                label = list(node.labels)[0] if node.labels else "Node"
+                node_meta[node.element_id] = {"label": label, "name": props.get("name") or props.get("title") or props.get("class")}
+                rec = {"id": node.element_id}
+                for key in feature_keys:
+                    rec[key] = props.get(key)
+                nodes.append(rec)
+                if label in _OPERATIONAL_LABELS:
+                    operational.append(node.element_id)
+            if r is not None and m is not None:
+                edges.append((n.element_id, m.element_id))
+                adjacency.add((n.element_id, m.element_id))
+                adjacency.add((m.element_id, n.element_id))
+
+    # Candidate pairs: operational entities not already connected (bounded).
+    candidate_pairs: list[tuple[str, str]] = []
+    for i in range(len(operational)):
+        for j in range(i + 1, len(operational)):
+            a, b = operational[i], operational[j]
+            if (a, b) not in adjacency:
+                candidate_pairs.append((a, b))
+            if len(candidate_pairs) >= 20000:
+                break
+        if len(candidate_pairs) >= 20000:
+            break
+
+    try:
+        suggestions = suggest_links(nodes, edges, candidate_pairs, feature_keys, epochs=req.epochs, top_k=req.top_k)
+    except GNNUnavailable as exc:
+        raise HTTPException(status_code=503, detail=f"GNN link prediction unavailable: {exc}") from exc
+
+    for s in suggestions:
+        s["source_name"] = node_meta.get(s["source"], {}).get("name")
+        s["target_name"] = node_meta.get(s["target"], {}).get("name")
+        s["source_label"] = node_meta.get(s["source"], {}).get("label")
+        s["target_label"] = node_meta.get(s["target"], {}).get("label")
+    return {"suggestions": suggestions, "node_count": len(nodes), "candidate_count": len(candidate_pairs)}
 
 
 @router.get("/api/geotime/features")

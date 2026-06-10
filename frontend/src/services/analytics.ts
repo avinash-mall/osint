@@ -59,3 +59,20 @@ export async function runRoutes(args: {
   const r = await axios.post<AnalyticsResponse>(`${API_URL}/api/analytics/routes`, args);
   return r.data;
 }
+
+export async function runIsochrone(args: {
+  observer: LatLon;
+  minutes: number;
+  nominal_speed_kmh?: number;
+}): Promise<AnalyticsResponse> {
+  const r = await axios.post<AnalyticsResponse>(`${API_URL}/api/analytics/isochrone`, args);
+  return r.data;
+}
+
+export async function runODFlows(args: {
+  cell_deg?: number;
+  min_flow?: number;
+}): Promise<AnalyticsResponse> {
+  const r = await axios.post<AnalyticsResponse>(`${API_URL}/api/analytics/od-flows`, args);
+  return r.data;
+}

@@ -1,8 +1,8 @@
 # Graph Router (`/api/graph`, `/api/geotime/features`)
 
 **Path:** [backend/routers/graph.py](../../backend/routers/graph.py)
-**Lines:** ~1037
-**Depends on:** [backend/auth.py](../../backend/auth.py), [backend/database.py](../../backend/database.py) (`db` for Neo4j + `postgis_db`), [backend/graph_writes.py](../../backend/graph_writes.py), [backend/schemas.py](../../backend/schemas.py)
+**Lines:** ~1239
+**Depends on:** [backend/auth.py](../../backend/auth.py), [backend/database.py](../../backend/database.py) (`db` for Neo4j + `postgis_db`), [backend/graph_writes.py](../../backend/graph_writes.py), [backend/schemas.py](../../backend/schemas.py), and (lazily) [backend/graph_proximity.py](../../backend/graph_proximity.py), [backend/graph_metrics.py](../../backend/graph_metrics.py), [backend/graph_pyg.py](../../backend/graph_pyg.py)
 
 ## Purpose
 
@@ -31,6 +31,15 @@ Neo4j-backed read endpoints for the Link Graph workspace + the Phase 1 redesign 
 | `POST` | `/api/graph/candidate-edges/{candidate_id}/promote` | [graph.py#L949](../../backend/routers/graph.py#L949) | Graph-side equivalent of `/api/detection-target-candidates/{id}/approve`. Requires a session cookie, flips only pending PostGIS rows to `approved`, and promotes the Neo4j `CANDIDATE_DETECTED_AS` edge into `DETECTED_AS`. |
 | `GET`  | `/api/graph/export/stix` | [graph.py#L960](../../backend/routers/graph.py#L960) | **R3 — STIX 2.1 export.** Operational entities + FK-derived relationships → a STIX 2.1 bundle for OpenCTI/Splunk/Sentinel/QRadar. Read-only, offline (PostGIS only). Delegates to [stix_export.build_bundle](../backend/stix-export.md). |
 
+### Phase 6 (city2graph-inherited graph analytics)
+
+| Method | Path | Source | Behavior |
+|---|---|---|---|
+| `GET`  | `/api/graph/colocation` | [graph.py#L159](../../backend/routers/graph.py#L159) | Proximity (co-location) graph over recent detection centroids. Read-only preview of the `COLOCATED_WITH` edges the `worker.tick_colocation_builder` beat task persists. Query params: `method` (`knn`/`delaunay`/`gabriel`/`relative_neighborhood`/`mst`/`fixed_radius`), `k`, `radius_m`, `window_days`, `limit`. Proximity maths in [graph_proximity.py](../backend/graph-proximity.md). |
+| `GET`  | `/api/graph/metrics` | [graph.py#L203](../../backend/routers/graph.py#L203) | Graph-level metrics + top central nodes over a bounded Neo4j snapshot (density, connected components, degree/betweenness/PageRank). rustworkx fast path, pure-Python fallback — see [graph_metrics.py](../backend/graph-metrics.md). Top nodes enriched with primary label + display name. |
+| `GET`  | `/api/graph/gnn/status` | [graph.py#L261](../../backend/routers/graph.py#L261) | Reports `{torch_available, torch_geometric_available, ready}` — whether the GNN link-prediction path is runnable in this image (torch is optional, like DEM/OSRM). |
+| `POST` | `/api/graph/gnn/suggest-links` | [graph.py#L279](../../backend/routers/graph.py#L279) | GraphSAGE link prediction over operational entities. Snapshots operational + detection nodes and their non-candidate edges, ranks unconnected operational pairs by predicted link probability. **503 when torch is not installed.** Body: `GnnSuggestRequest`. See [graph_pyg.py](../backend/graph-pyg.md). |
+
 ## Why this design
 
 - **Synthesis removed.** The pre-redesign `/api/graph` route inlined a PostGIS query to fabricate `CANDIDATE_DETECTED_AS` edges in memory because the edge wasn't persisted. After Phase 1.B persists them ([decisions/why-candidate-edges-persisted.md](../decisions/why-candidate-edges-persisted.md)), the synthesis block is dead and was deleted — the existing Cypher loop returns candidate edges naturally.
@@ -41,7 +50,7 @@ Neo4j-backed read endpoints for the Link Graph workspace + the Phase 1 redesign 
 
 ## Inputs / Outputs
 
-Pydantic models in [schemas.py](../../backend/schemas.py): `GraphActionRequest`, `GraphPathRequest`, `GraphContradictRequest`.
+Pydantic models in [schemas.py](../../backend/schemas.py): `GraphActionRequest`, `GraphPathRequest`, `GraphContradictRequest`, `GnnSuggestRequest`. The Phase 6 read endpoints (`/colocation`, `/metrics`, `/gnn/status`) take query params only.
 
 Response shape across the new endpoints: `{nodes, links, ...meta}` where each node is `{id, label, labels, properties}` and each link is `{source, target, type, predicate, candidate, properties}`. The `predicate` field is what the frontend `PredicateChipBar` filters on ([frontend/workspace-link-graph.md](../frontend/workspace-link-graph.md)).
 
@@ -54,6 +63,8 @@ Response shape across the new endpoints: `{nodes, links, ...meta}` where each no
 - PostGIS query in `/site-composition` failures are logged and the `recent_detections` bucket is empty; the Neo4j side still returns.
 - `/path` with max_depth > 8 → 422 from Pydantic; >50 paths between two nodes → 10-result `LIMIT` clamps response.
 - Candidate-edge promote on an already-reviewed row → HTTP 409 with current row status/reviewer; missing row remains HTTP 404.
+- `/colocation` with an unknown `method` → 400 from the `ValueError` raised by `build_proximity_edges`.
+- `/gnn/suggest-links` when torch is not in the image → 503 (`GNNUnavailable`); `/gnn/status` reports `ready: false`.
 
 ## Cross-references
 
@@ -68,3 +79,5 @@ Response shape across the new endpoints: `{nodes, links, ...meta}` where each no
 - [decisions/why-reject-double-review-with-409.md](../decisions/why-reject-double-review-with-409.md)
 - [decisions/why-security-hardening-2026-05-31.md](../decisions/why-security-hardening-2026-05-31.md)
 - [frontend/workspace-link-graph.md](../frontend/workspace-link-graph.md)
+- [backend/graph-proximity.md](../backend/graph-proximity.md), [backend/graph-metrics.md](../backend/graph-metrics.md), [backend/graph-pyg.md](../backend/graph-pyg.md) — Phase 6 analytics modules
+- [decisions/why-proximity-colocation-graph.md](../decisions/why-proximity-colocation-graph.md), [decisions/why-rustworkx-graph-metrics.md](../decisions/why-rustworkx-graph-metrics.md), [decisions/why-gnn-link-prediction.md](../decisions/why-gnn-link-prediction.md)

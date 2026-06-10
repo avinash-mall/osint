@@ -10,8 +10,12 @@ backend/aircraft-class.md|backend|offline ICAO type-code -> coarse airframe clas
 backend/api-routes-reference.md|backend,router|route table by tag: auth/graph/detections/fmv/ontology/analytics/ai
 backend/auth-and-sessions.md|backend,auth|itsdangerous signed cookies, env-bootstrap admin, optional LDAP via auth_config row
 backend/database-connections.md|backend|Neo4j + PostGIS dual stack: pool, advisory locks, docker DNS fallback
+backend/graph-metrics.md|backend|in-memory Neo4j-snapshot metrics: density/components/centrality; rustworkx fast path + pure-Python fallback
+backend/graph-proximity.md|backend|vendored city2graph proximity builders (kNN/Delaunay/Gabriel/RNG/MST/fixed-radius) over lon/lat; powers COLOCATED_WITH
+backend/graph-pyg.md|backend|city2graph PyG bridge + GraphSAGE link predictor; torch-guarded, honest 503 when torch absent
 backend/graph-schema.md|backend|Neo4j uniqueness constraints + indexes; idempotent bootstrap from FastAPI lifespan
-backend/graph-writes.md|backend|shared Neo4j MERGE/DELETE helpers: candidate edge persistence, promote, backfill
+backend/graph-writes.md|backend|shared Neo4j MERGE/DELETE helpers: candidate edge persistence, promote, backfill, COLOCATED_WITH + GNN_SUGGESTED_LINK
+backend/od-flows.md|backend|vendored city2graph OD flow graphs from track points; weighted movement-corridor LineStrings, offline
 backend/ontology-system.md|backend,ontology|DB-canonical branches/objects/prompts, normalize() with read-through cache
 backend/tracker-satellite.md|backend,tracker|satellite-pass Hungarian tracker, V_MAX state gates, 14-day age cap, 3-miss timeout
 backend/fmv-track-consolidation.md|backend,fmv,tracker|post-inference fmv_detections consolidation: cross-window/prompt stitch + class vote
@@ -190,6 +194,7 @@ decisions/why-custom-tour-engine.md|decision,frontend|Map workspace Product Tour
 decisions/why-geom-prithvi-in-layerpanel.md|decision,frontend|GEOM box-mode + Prithvi overlay toggles moved from top toolbar into LayerPanel Overlays section
 decisions/why-dem-osrm-as-sibling-baker-images.md|decision,deployment|superseded: DEM+OSRM as sibling build-time images; replaced by runtime bake profile
 decisions/why-glo30-as-default-dem.md|decision,deployment|Copernicus GLO-30 (30 m, ~150 GB) chosen for tactical worldwide viewshed/LOS
+decisions/why-gnn-link-prediction.md|decision,backend|vendored city2graph PyG bridge + GraphSAGE link predictor; torch optional, advisory GNN_SUGGESTED_LINK edges
 decisions/why-candidate-edges-persisted.md|decision,backend|persist CANDIDATE_DETECTED_AS in Neo4j on candidate creation; makes pending edges Cypher-traversable
 decisions/why-category-presence-gate.md|decision,sam3|SegEarth-OV-3-style 0.40 filter suppresses absent concepts
 decisions/why-three-graph-modes.md|decision,frontend|Link Graph splits into Investigation/Evidence/Ontology sub-tabs; one workspace, shared state
@@ -212,11 +217,13 @@ decisions/why-generic-labels-when-unverified.md|decision,backend,ontology|generi
 decisions/why-grounding-dino-auto-gated.md|decision|forcing GDINO drops mAP via NMS suppression of DOTA detections
 decisions/why-imagery-dedup-is-hash-only.md|decision,backend,imagery|satellite_passes dedup on source_hash alone; footprint+acq_time+filename branches collapsed distinct uploads
 decisions/why-imagery-yoloe-mirrors-fmv.md|decision,imagery,inference|superseded: older image YOLOE routing experiment replaced by FMV-only YOLOE
+decisions/why-isochrone-reachability.md|decision,backend|driving-time isochrone polygon via OSRM /table matrix probes; reuses routing sidecar, offline
 decisions/why-lae-cross-chip-batching.md|decision,inference|cross-chip LAE batching evaluated + rejected; ~2x slower on serialize-forwards A100 hosts
 decisions/why-lae-dino-replaces-grounding-dino.md|decision,inference|RS-tuned LAE-DINO replaces generic Grounding-DINO; runs as inference-lae sidecar (dep conflict)
 decisions/why-layerpanel-dot-toggle.md|decision,frontend|eye-toggle column removed; 10px coloured dot is the visibility signal, locked analytics subgroup
 decisions/why-live-streaming-detections.md|decision,backend,frontend|detections render per-chip live via detections_partial features; preview-then-reconcile
 decisions/why-live-test-tier.md|decision,testing|third test tier vs real nginx:3000: catches wiring/auth/inference seams mocks can't; idle-gate + FMV opt-in
+decisions/why-od-flow-graphs.md|decision,backend|vendored city2graph OD flow graphs from track points; movement corridors as weighted lines, zero new dep
 decisions/why-offline-area-dossier.md|decision,backend|right-click area dossier from baked ne_countries (point-in-polygon), no Wikipedia/online
 decisions/why-offline-tle-import.md|decision,backend|TLEs imported over air-gap into PostGIS, never fetched at runtime; SGP4 maths is offline
 decisions/why-open-vocabulary.md|decision|no closed taxonomy: explicit/precision/ontology labels are first-class
@@ -226,6 +233,7 @@ decisions/why-postgis-and-neo4j-coexist.md|decision|PostGIS for spatial detectio
 decisions/why-postgis-max-connections-300.md|decision,backend,deployment|raise max_connections to 300 (env POSTGIS_MAX_CONNECTIONS) so concurrent imagery+FMV pools don't exhaust the default 100
 decisions/why-precision-first-inference-defaults.md|decision|bounded prompt defaults, source-layer provenance, specialist gates, nonzero policy floor
 decisions/why-preload-imagery-on-startup.md|decision,inference,deployment|inference-sam3 lifespan preloads imagery so healthcheck sees model_loaded; SAM3_SKIP_PRELOAD opts out
+decisions/why-proximity-colocation-graph.md|decision,backend|vendored city2graph proximity builders → COLOCATED_WITH edges; vendor-vs-dep air-gap tradeoff
 decisions/why-readonly-ai-brief-and-map-control.md|decision,backend|AI brief-area is read-only; map control via sentinel:map-control event, not agent writes
 decisions/why-reject-double-review-with-409.md|decision,backend|approve/reject UPDATE guarded WHERE status='pending'; 409 with prior reviewer instead of silent overwrite
 decisions/why-release-db-connection-before-enrichment.md|decision,backend|geojson holds the pooled conn only for the query, not the slow per-row enrichment; fixes pool exhaustion 500s
@@ -235,6 +243,7 @@ decisions/why-removed-auto-vram-cap.md|decision,deployment|configure_host no lon
 decisions/why-retry-chips-across-inference-restart.md|decision,backend,inference|imagery worker waits for /health model_loaded + retries chips across a self-heal restart; fails loudly past 5% failed-chip tolerance
 decisions/why-revert-inference-after-fmv.md|decision,backend|process_fmv reverts the GPU pool to imagery in a best-effort 409-tolerant finally so the COP keeps detecting
 decisions/why-runtime-bakers-into-assets.md|decision,deployment|geo-assets moved to runtime bake profile; BuildKit cache-mount rollback + OOM drove this
+decisions/why-rustworkx-graph-metrics.md|decision,backend|rustworkx fast path + pure-Python fallback for graph metrics; city2graph snapshot pattern
 decisions/why-sam3-as-foundation.md|decision,sam3|open-vocabulary segmentation across RGB/MSI/SAR with native API
 decisions/why-sar-confidence-cap.md|decision,imagery|SAR detections via TerraMind synthetic proxy capped at 0.85
 decisions/why-sar-logratio-change.md|decision,imagery|SAR change is a sar_logratio preset in compute_change (VV dB log-ratio), not a parallel pipeline

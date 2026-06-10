@@ -30,6 +30,10 @@ Link Graph redesign added the bulk of these — see [architecture/link-graph-red
 | `GET` | `/api/graph/ontology` | [graph-router.md](../backend-routers/graph-router.md) — ontology mode + co-occurrence |
 | `POST` | `/api/graph/contradict` | [graph-router.md](../backend-routers/graph-router.md) — dissent edge |
 | `POST` | `/api/graph/candidate-edges/{candidate_id}/promote` | [graph-router.md](../backend-routers/graph-router.md) |
+| `GET` | `/api/graph/colocation` | [graph-router.md](../backend-routers/graph-router.md) — Phase 6 proximity (co-location) graph preview |
+| `GET` | `/api/graph/metrics` | [graph-router.md](../backend-routers/graph-router.md) — Phase 6 density/components/centrality (rustworkx) |
+| `GET` | `/api/graph/gnn/status` | [graph-router.md](../backend-routers/graph-router.md) — GNN runnability (torch present?) |
+| `POST` | `/api/graph/gnn/suggest-links` | [graph-router.md](../backend-routers/graph-router.md) — Phase 6 GraphSAGE link prediction; 503 without torch |
 | `GET` `POST` `PATCH` `DELETE` | `/api/aois[/{id}]` | [aois-router.md](../backend-routers/aois-router.md) — projects Base/LaunchPoint/Facility |
 | `GET` | `/api/tracks` · `/api/tracks/detections` | [backend/main.py](../../backend/main.py) |
 | `POST` | `/api/tracks/detections/reprocess` · `pin` · `DELETE pin` | [backend/main.py](../../backend/main.py) |
@@ -88,7 +92,7 @@ Link Graph redesign added the bulk of these — see [architecture/link-graph-red
 
 | Method | Path | Source |
 |---|---|---|
-| `POST` | `/api/analytics/change` · `viewshed` · `los` · `routes` · `pol` | [analytics-router.md](../backend-routers/analytics-router.md) |
+| `POST` | `/api/analytics/change` · `viewshed` · `los` · `routes` · `isochrone` · `od-flows` · `pol` | [analytics-router.md](../backend-routers/analytics-router.md) |
 | `GET` | `/api/analytics/capabilities` · `/jobs` | [analytics-router.md](../backend-routers/analytics-router.md) |
 | `GET` `POST` | `/api/satellites/tle` · `/passes` · `/ground-track/{id}` | [satellites-router.md](../backend-routers/satellites-router.md) — offline SGP4 overpass |
 | `GET` `POST` | `/api/models` · `/datasets` · `/{id}/promote` · `/api/training/jobs` | [models-training-router.md](../backend-routers/models-training-router.md) — admin session required |

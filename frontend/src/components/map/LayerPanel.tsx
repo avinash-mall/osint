@@ -52,6 +52,8 @@ export type ActiveLayerMap = {
   viewshed: boolean;
   los: boolean;
   routes: boolean;
+  isochrone: boolean;
+  odflows: boolean;
 };
 
 export type DetectionGroup = {

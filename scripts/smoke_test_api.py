@@ -57,8 +57,10 @@ CATALOG = [
     ('GET', '/api/analytics/capabilities'),
     ('POST', '/api/analytics/change'),
     ('GET', '/api/analytics/elevation'),
+    ('POST', '/api/analytics/isochrone'),
     ('GET', '/api/analytics/jobs'),
     ('POST', '/api/analytics/los'),
+    ('POST', '/api/analytics/od-flows'),
     ('POST', '/api/analytics/pol'),
     ('POST', '/api/analytics/routes'),
     ('POST', '/api/analytics/viewshed'),
@@ -109,9 +111,13 @@ CATALOG = [
     ('GET', '/api/geotime/features'),
     ('GET', '/api/graph'),
     ('POST', '/api/graph/candidate-edges/{candidate_id}/promote'),
+    ('GET', '/api/graph/colocation'),
     ('POST', '/api/graph/contradict'),
     ('GET', '/api/graph/evidence/{node_id}'),
+    ('GET', '/api/graph/gnn/status'),
+    ('POST', '/api/graph/gnn/suggest-links'),
     ('GET', '/api/graph/investigation'),
+    ('GET', '/api/graph/metrics'),
     ('POST', '/api/graph/neighborhood'),
     ('GET', '/api/graph/ontology'),
     ('POST', '/api/graph/path'),
@@ -525,8 +531,17 @@ def flow_analytics(cli):
     if caps.get("routing"):
         hit(cli, "POST", "/api/analytics/routes", ok=(200,),
             json={"observer": obs, "destination": dst}, label="routes")
+        hit(cli, "POST", "/api/analytics/isochrone", ok=(200, 422),
+            json={"observer": obs, "minutes": 10, "nominal_speed_kmh": 50}, label="isochrone")
     else:
         skip("POST", "/api/analytics/routes", "OSRM routing not available")
+        skip("POST", "/api/analytics/isochrone", "OSRM routing not available")
+    # OD-flows aggregates recorded tracks; always 200 (empty FC when no tracks).
+    hit(cli, "POST", "/api/analytics/od-flows", ok=(200,),
+        json={"cell_deg": 0.02, "min_flow": 1}, label="od-flows")
+    # GNN link prediction: 200 when torch is installed, honest 503 otherwise.
+    hit(cli, "POST", "/api/graph/gnn/suggest-links", ok=(200, 503),
+        json={"limit": 300, "top_k": 10}, label="gnn suggest-links")
 
 
 def flow_detection(cli):

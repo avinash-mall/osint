@@ -1036,6 +1036,77 @@ def project_near_edges_batch(rows: list[dict[str, Any]]) -> int:
         return 0
 
 
+def project_colocation_edges_batch(rows: list[dict[str, Any]]) -> int:
+    """MERGE ``(a:Detection)-[:COLOCATED_WITH {distance_m, method}]->(b:Detection)``
+    proximity edges between two detections that a proximity graph linked.
+
+    Each row carries ``a_id, b_id, distance_m, method`` where ``a_id``/``b_id``
+    are PostGIS ``detections.id`` values (``a_id < b_id`` by construction in
+    :mod:`graph_proximity`, so the stored direction is stable and re-running is
+    idempotent). Both endpoints must already be projected as ``:Detection``
+    nodes by the satellite worker. Returns the number of edges written.
+
+    See [docs/decisions/why-proximity-colocation-graph.md](../docs/decisions/why-proximity-colocation-graph.md).
+    """
+    if not rows:
+        return 0
+    try:
+        with db.get_session() as session:
+            result = session.run(
+                """
+                UNWIND $rows AS row
+                MATCH (a:Detection {postgis_id: row.a_id})
+                MATCH (b:Detection {postgis_id: row.b_id})
+                MERGE (a)-[r:COLOCATED_WITH]->(b)
+                  ON CREATE SET r.created_at = datetime()
+                SET r.distance_m = row.distance_m,
+                    r.method = row.method,
+                    r.computed_at = datetime()
+                RETURN count(r) AS edges
+                """,
+                {"rows": rows},
+            )
+            record = result.single()
+            return int(record["edges"]) if record else 0
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("graph_writes: project_colocation_edges_batch(%d rows) failed: %s", len(rows), exc)
+        return 0
+
+
+def project_gnn_suggested_links_batch(rows: list[dict[str, Any]]) -> int:
+    """MERGE ``(a)-[:GNN_SUGGESTED_LINK {score, model}]->(b)`` advisory edges.
+
+    Each row carries ``source`` / ``target`` (Neo4j elementId) and ``score``.
+    These are non-authoritative GNN predictions surfaced for analyst review — an
+    advisory overlay, never a promoted relationship. Both endpoints must already
+    exist. Returns the number of edges written. See
+    [docs/decisions/why-gnn-link-prediction.md](../docs/decisions/why-gnn-link-prediction.md).
+    """
+    if not rows:
+        return 0
+    try:
+        with db.get_session() as session:
+            result = session.run(
+                """
+                UNWIND $rows AS row
+                MATCH (a) WHERE elementId(a) = row.source
+                MATCH (b) WHERE elementId(b) = row.target
+                MERGE (a)-[r:GNN_SUGGESTED_LINK]->(b)
+                  ON CREATE SET r.created_at = datetime()
+                SET r.score = row.score,
+                    r.model = 'graphsage',
+                    r.computed_at = datetime()
+                RETURN count(r) AS edges
+                """,
+                {"rows": rows},
+            )
+            record = result.single()
+            return int(record["edges"]) if record else 0
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("graph_writes: project_gnn_suggested_links_batch(%d) failed: %s", len(rows), exc)
+        return 0
+
+
 def project_repeated_at_batch(rows: list[dict[str, Any]]) -> int:
     """MERGE ``(any:Detection)-[:REPEATED_AT {detection_class, count, window_days, radius_m}]->(site)``
     representative edges.

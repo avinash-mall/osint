@@ -29,3 +29,4 @@ reportlab>=4.0
 mgrs>=1.4
 pgvector>=0.3
 sgp4>=2.23
+rustworkx>=0.14

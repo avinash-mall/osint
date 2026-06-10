@@ -85,6 +85,22 @@ Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 | `LIVE_DETECTIONS_STREAM` | `1` | Embed map-ready features in the per-chip `detections_partial` WS event so the map renders detections live (chip-by-chip) instead of after the whole pass. `0` = count-only events + end-of-pass load. See [decisions/why-live-streaming-detections.md](../decisions/why-live-streaming-detections.md) |
 | `LIVE_DETECTIONS_MAX_FEATURES` | `400` | A chip with more detections streams counts only (the end-of-pass load still reconciles), bounding the WS message size |
 
+## Graph analytics (Phase 6)
+
+Tuning for the city2graph-inherited beat builders. See [operations/celery-beat-schedule.md](../operations/celery-beat-schedule.md), [decisions/why-proximity-colocation-graph.md](../decisions/why-proximity-colocation-graph.md), [decisions/why-gnn-link-prediction.md](../decisions/why-gnn-link-prediction.md).
+
+| Variable | Default | Description |
+|---|---|---|
+| `COLOCATION_BUILDER_INTERVAL_S` | `21600` | Cadence of `worker.tick_colocation_builder` (`COLOCATED_WITH` edges) |
+| `COLOCATION_WINDOW_DAYS` | `30` | Only detections created within this window feed the co-location graph |
+| `COLOCATION_MAX_NODES` | `2000` | Cap on detection centroids per build |
+| `COLOCATION_METHOD` | `knn` | Proximity method: `knn` / `delaunay` / `gabriel` / `relative_neighborhood` / `mst` / `fixed_radius` |
+| `COLOCATION_KNN_K` | `6` | Neighbour count for the `knn` method |
+| `COLOCATION_RADIUS_M` | `3000` | Radius cap (metres); the distance bound for kNN and the radius for `fixed_radius` |
+| `GNN_LINK_PREDICTION_INTERVAL_S` | `86400` | Cadence of `worker.tick_gnn_link_prediction` (skips cleanly when torch is absent) |
+| `GNN_LINK_TOP_K` | `50` | Max advisory `GNN_SUGGESTED_LINK` edges written per run |
+| `GNN_SNAPSHOT_LIMIT` | `1500` | Node bound on the entity-graph snapshot the GNN trains on |
+
 ## Inference (`SAM3_*`)
 
 | Variable | Default | Description |

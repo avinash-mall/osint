@@ -20,6 +20,7 @@ router has always emitted, with ``properties.mode = "osrm"``).
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from typing import Optional
@@ -163,3 +164,121 @@ def compute_routes(
             },
         })
     return out or None
+
+
+EARTH_RADIUS_M = 6_371_008.8
+# OSRM ships ``--max-table-size 100`` by default; bearings*rings + 1 source must
+# stay under it. 16 bearings × 6 rings + 1 = 97 probes.
+ISO_BEARINGS = 16
+ISO_RINGS = 6
+
+
+def _destination_point(lat: float, lon: float, bearing_deg: float, distance_m: float) -> tuple[float, float]:
+    """Great-circle forward: point ``distance_m`` along ``bearing_deg`` from (lat, lon)."""
+    ang = distance_m / EARTH_RADIUS_M
+    brg = math.radians(bearing_deg)
+    lat1 = math.radians(lat)
+    lon1 = math.radians(lon)
+    lat2 = math.asin(math.sin(lat1) * math.cos(ang) + math.cos(lat1) * math.sin(ang) * math.cos(brg))
+    lon2 = lon1 + math.atan2(
+        math.sin(brg) * math.sin(ang) * math.cos(lat1),
+        math.cos(ang) - math.sin(lat1) * math.sin(lat2),
+    )
+    return math.degrees(lat2), math.degrees(lon2)
+
+
+def compute_isochrone(
+    center_lat: float,
+    center_lon: float,
+    minutes: float,
+    *,
+    nominal_speed_kmh: float = 60.0,
+) -> Optional[dict]:
+    """Driving-time isochrone polygon around a center point via the OSRM matrix.
+
+    Fires a ring of probe points outward along ``ISO_BEARINGS`` bearings at
+    ``ISO_RINGS`` increasing radii, asks OSRM ``/table`` for the driving duration
+    from the center to every probe in one request, then for each bearing keeps the
+    farthest probe reachable within the time budget. Connecting those per-bearing
+    extremes yields a star-shaped reachable polygon. Returns a single-Polygon
+    FeatureCollection (``mode = "osrm"``) or ``None`` when OSRM is unreachable or
+    nothing is reachable. See docs/decisions/why-isochrone-reachability.md.
+    """
+    if not osrm_available():
+        return None
+    if minutes <= 0:
+        return None
+
+    speed_mps = max(1.0, nominal_speed_kmh * 1000.0 / 3600.0)
+    # Straight-line bound the matrix probes: time budget at nominal speed. OSRM
+    # filters anything not actually reachable by road within the threshold.
+    max_radius_m = minutes * 60.0 * speed_mps
+    radii = [max_radius_m * (r / ISO_RINGS) for r in range(1, ISO_RINGS + 1)]
+    bearings = [b * (360.0 / ISO_BEARINGS) for b in range(ISO_BEARINGS)]
+
+    coords = [(center_lon, center_lat)]
+    probe_meta: list[tuple[int, int]] = []  # (bearing_idx, ring_idx) per probe
+    for bi, brg in enumerate(bearings):
+        for ri, rad in enumerate(radii):
+            plat, plon = _destination_point(center_lat, center_lon, brg, rad)
+            coords.append((plon, plat))
+            probe_meta.append((bi, ri))
+
+    coord_str = ";".join(f"{lon:.6f},{lat:.6f}" for lon, lat in coords)
+    url = f"{osrm_url()}/table/v1/driving/{coord_str}"
+    params = {"sources": "0", "annotations": "duration"}
+    try:
+        r = requests.get(url, params=params, timeout=ROUTE_TIMEOUT_S)
+    except Exception as exc:
+        logger.warning("osrm isochrone table request failed: %s", exc)
+        return None
+    if r.status_code != 200:
+        logger.warning("osrm isochrone table HTTP %s: %s", r.status_code, r.text[:200])
+        return None
+    body = r.json()
+    if body.get("code") != "Ok":
+        logger.info("osrm isochrone non-Ok: code=%s", body.get("code"))
+        return None
+
+    durations = (body.get("durations") or [[]])[0]  # seconds from source to each coord
+    if not durations:
+        return None
+    threshold_s = minutes * 60.0
+
+    # Per bearing, the farthest reachable ring index → that probe's coordinate.
+    farthest: dict[int, tuple[int, float, float]] = {}
+    for k, (bi, ri) in enumerate(probe_meta):
+        dur = durations[k + 1]  # +1: index 0 is the source itself
+        if dur is None or dur > threshold_s:
+            continue
+        plon, plat = coords[k + 1]
+        if bi not in farthest or ri > farthest[bi][0]:
+            farthest[bi] = (ri, plon, plat)
+
+    if len(farthest) < 3:
+        return None  # not enough reachable spokes to form a polygon
+
+    ring: list[list[float]] = []
+    for bi in range(ISO_BEARINGS):
+        if bi in farthest:
+            ring.append([farthest[bi][1], farthest[bi][2]])
+        else:
+            # Spoke unreachable: collapse to center so the polygon stays valid.
+            ring.append([center_lon, center_lat])
+    ring.append(ring[0])  # close
+
+    return {
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "geometry": {"type": "Polygon", "coordinates": [ring]},
+            "properties": {
+                "minutes": minutes,
+                "nominal_speed_kmh": nominal_speed_kmh,
+                "reachable_spokes": len(farthest),
+                "spokes": ISO_BEARINGS,
+                "mode": "osrm",
+            },
+        }],
+        "mode": "osrm",
+    }

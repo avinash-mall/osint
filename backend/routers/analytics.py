@@ -22,7 +22,7 @@ from geometry import make_square_feature
 from platform_schema import ensure_platform_tables
 from schemas import AnalyticsRequest
 from terrain import dem_available, line_of_sight, sample_elevation, viewshed as compute_viewshed
-from routing import compute_routes, osrm_available
+from routing import compute_isochrone, compute_routes, osrm_available
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -269,6 +269,57 @@ def run_route_options(req: AnalyticsRequest):
     return {"job": _store_analytics_result("routes", req.dict(), result), "result": result}
 
 
+def _isochrone_fixture(lat: float, lon: float, minutes: float, speed_kmh: float) -> dict:
+    # Star-shaped canned reachability blob scaled to the time budget.
+    reach = minutes * 60.0 * (speed_kmh * 1000.0 / 3600.0) * 0.6 / 111_000.0
+    points = []
+    for idx in range(0, 361, 22):
+        angle = math.radians(idx)
+        scale = (0.7 + 0.3 * abs(math.sin(angle * 3.0))) * reach
+        points.append([lon + math.cos(angle) * scale, lat + math.sin(angle) * scale])
+    points.append(points[0])
+    return {
+        "type": "FeatureCollection",
+        "features": [{
+            "type": "Feature",
+            "geometry": {"type": "Polygon", "coordinates": [points]},
+            "properties": {"minutes": minutes, "mode": "fixture_no_graph"},
+        }],
+        "mode": "fixture_no_graph",
+    }
+
+
+@router.post("/api/analytics/isochrone")
+def run_isochrone(req: AnalyticsRequest):
+    """Driving-time reachability polygon around the observer point via OSRM.
+
+    503 when OSRM is unreachable (or canned fixture under
+    ``ANALYTICS_ALLOW_FIXTURES=1``). See
+    docs/decisions/why-isochrone-reachability.md.
+    """
+    lat, lon = _observer_lat_lon(req.observer, 25.078, 55.179)
+    minutes = float(req.minutes if req.minutes is not None else 15)
+    speed_kmh = float(req.nominal_speed_kmh if req.nominal_speed_kmh is not None else 60.0)
+
+    if not osrm_available():
+        if not _demo_fixtures_enabled():
+            raise HTTPException(status_code=503, detail="Isochrone unavailable: OSRM service is not reachable.")
+        result = _isochrone_fixture(lat, lon, minutes, speed_kmh)
+    else:
+        try:
+            real = compute_isochrone(lat, lon, minutes, nominal_speed_kmh=speed_kmh)
+        except Exception as exc:
+            logger.warning("isochrone: osrm matrix failed: %s", exc)
+            if _demo_fixtures_enabled():
+                result = _isochrone_fixture(lat, lon, minutes, speed_kmh)
+                return {"job": _store_analytics_result("isochrone", req.dict(), result), "result": result}
+            raise HTTPException(status_code=503, detail=f"Isochrone unavailable: {exc}") from exc
+        if real is None:
+            raise HTTPException(status_code=422, detail="Isochrone unavailable: OSRM reached too few points to form a polygon.")
+        result = real
+    return {"job": _store_analytics_result("isochrone", req.dict(), result), "result": result}
+
+
 @router.post("/api/analytics/pol")
 def run_pattern_of_life(req: AnalyticsRequest):
     ensure_platform_tables()
@@ -294,6 +345,37 @@ def run_pattern_of_life(req: AnalyticsRequest):
     ]
     result = {"type": "FeatureCollection", "features": features}
     return {"job": _store_analytics_result("pol", req.dict(), result), "result": result}
+
+
+@router.post("/api/analytics/od-flows")
+def run_od_flows(req: AnalyticsRequest):
+    """Origin-Destination flow graph from recorded track points.
+
+    Reads ``track_points`` ordered per track, snaps to a ``cell_deg`` grid, and
+    aggregates consecutive-cell movements into weighted flow LineStrings. Always
+    200 (an empty FeatureCollection when no tracks exist). See
+    docs/decisions/why-od-flow-graphs.md.
+    """
+    from od_flows import build_od_flows_from_tracks, flows_to_geojson
+
+    ensure_platform_tables()
+    cell_deg = float(req.cell_deg if req.cell_deg is not None else 0.02)
+    min_flow = int(req.min_flow if req.min_flow is not None else 1)
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute("""
+            SELECT track_id, ST_X(geom) AS lon, ST_Y(geom) AS lat
+            FROM track_points
+            WHERE geom IS NOT NULL
+            ORDER BY track_id, observed_at
+            LIMIT 50000
+        """)
+        rows = cursor.fetchall()
+    tracks: dict[int, list[tuple[float, float]]] = {}
+    for row in rows:
+        tracks.setdefault(row["track_id"], []).append((float(row["lon"]), float(row["lat"])))
+    edges = build_od_flows_from_tracks(list(tracks.values()), cell_deg=cell_deg, min_flow=min_flow)
+    result = {**flows_to_geojson(edges), "mode": "od_flows", "track_count": len(tracks), "edge_count": len(edges)}
+    return {"job": _store_analytics_result("od_flows", req.dict(), result), "result": result}
 
 
 @router.get("/api/analytics/capabilities")

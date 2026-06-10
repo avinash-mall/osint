@@ -332,10 +332,22 @@ celery_app.conf.beat_schedule = {
         "task": "worker.tick_near_builder",
         "schedule": float(env_int("NEAR_BUILDER_INTERVAL_S", 60 * 60)),
     },
+    # Phase 6: MERGE COLOCATED_WITH proximity edges between recent detections
+    # (kNN / fixed-radius graph from graph_proximity, vendored from city2graph).
+    "tick-colocation-builder": {
+        "task": "worker.tick_colocation_builder",
+        "schedule": float(env_int("COLOCATION_BUILDER_INTERVAL_S", 6 * 60 * 60)),
+    },
     # Phase 4.D: detect classes that repeat at a site and write REPEATED_AT.
     "tick-repeat-detector": {
         "task": "worker.tick_repeat_detector",
         "schedule": float(env_int("REPEAT_DETECTOR_INTERVAL_S", 24 * 60 * 60)),
+    },
+    # Phase 6: GraphSAGE link prediction → advisory GNN_SUGGESTED_LINK edges.
+    # No-ops cleanly until torch is installed in the image (optional infra).
+    "tick-gnn-link-prediction": {
+        "task": "worker.tick_gnn_link_prediction",
+        "schedule": float(env_int("GNN_LINK_PREDICTION_INTERVAL_S", 24 * 60 * 60)),
     },
     # Phase 4.E: weekly name-match/embedding similarity → POSSIBLY_SAME_AS.
     "tick-entity-resimilarity": {
@@ -3702,6 +3714,136 @@ def tick_near_builder() -> dict:
         "sites_skipped": sites_skipped,
         "near_edges_written": total_edges,
     }
+
+
+@celery_app.task(name="worker.tick_colocation_builder", queue="default")
+def tick_colocation_builder() -> dict:
+    """Phase 6 beat task: MERGE ``COLOCATED_WITH`` proximity edges between
+    detections that a spatial proximity graph links.
+
+    Builds a kNN (default) or fixed-radius graph over the most-recent detection
+    centroids within ``COLOCATION_WINDOW_DAYS`` and writes one
+    ``COLOCATED_WITH`` edge per linked pair. MERGE makes re-running idempotent,
+    so — unlike the NEAR builder — no per-site cursor is needed. The proximity
+    maths lives in :mod:`graph_proximity` (vendored from city2graph); this task
+    only does the PostGIS read + Neo4j write. See
+    docs/decisions/why-proximity-colocation-graph.md.
+    """
+    from graph_proximity import build_colocation_edges
+    from graph_writes import project_colocation_edges_batch
+
+    window_days = env_int("COLOCATION_WINDOW_DAYS", 30)
+    max_nodes = env_int("COLOCATION_MAX_NODES", 2000)
+    method = (os.getenv("COLOCATION_METHOD") or "knn").strip().lower()
+    k = env_int("COLOCATION_KNN_K", 6)
+    radius_m = float(os.getenv("COLOCATION_RADIUS_M") or 3000.0)
+
+    try:
+        with postgis_db.get_cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, ST_X(centroid) AS lon, ST_Y(centroid) AS lat
+                FROM detections
+                WHERE deleted_at IS NULL
+                  AND centroid IS NOT NULL
+                  AND created_at >= NOW() - (%s || ' days')::interval
+                ORDER BY id DESC
+                LIMIT %s
+                """,
+                (str(window_days), max_nodes),
+            )
+            records = [(int(r["id"]), float(r["lon"]), float(r["lat"])) for r in cursor.fetchall()]
+    except Exception as exc:
+        logger.exception("tick_colocation_builder: detection fetch failed")
+        return {"error": "detection_fetch_failed", "detail": str(exc)}
+
+    if len(records) < 2:
+        return {"nodes": len(records), "edges_written": 0, "method": method}
+
+    try:
+        rows = build_colocation_edges(records, method=method, k=k, radius_m=radius_m)
+    except ValueError as exc:
+        return {"error": "bad_method", "detail": str(exc)}
+
+    written = 0
+    for i in range(0, len(rows), 5000):
+        written += project_colocation_edges_batch(rows[i:i + 5000])
+    return {"nodes": len(records), "edges_written": written, "method": method}
+
+
+@celery_app.task(name="worker.tick_gnn_link_prediction", queue="default")
+def tick_gnn_link_prediction() -> dict:
+    """Phase 6 beat task: GraphSAGE link prediction over the entity graph.
+
+    Trains a GNN on the observed (non-candidate) edges and MERGEs the top
+    predicted operational-entity links as advisory ``GNN_SUGGESTED_LINK`` edges
+    for analyst review. Optional infrastructure: torch is not in the backend
+    image by default, so this skips cleanly (mirroring the DEM/OSRM optionality)
+    until torch is installed. See docs/decisions/why-gnn-link-prediction.md.
+    """
+    from graph_pyg import GNNUnavailable, is_torch_available, suggest_links
+    from graph_writes import project_gnn_suggested_links_batch
+
+    if not is_torch_available():
+        return {"skipped": "torch_unavailable"}
+
+    top_k = env_int("GNN_LINK_TOP_K", 50)
+    limit = env_int("GNN_SNAPSHOT_LIMIT", 1500)
+    feature_keys = ["confidence", "latitude", "longitude"]
+    operational_labels = {"Target", "Asset", "Base", "LaunchPoint", "Facility", "Unit", "Vessel", "Aircraft", "Vehicle"}
+
+    nodes: list[dict] = []
+    seen: set[str] = set()
+    operational: list[str] = []
+    edges: list[tuple[str, str]] = []
+    adjacency: set[tuple[str, str]] = set()
+    try:
+        with db.get_session() as session:
+            result = session.run(
+                """
+                MATCH (n)
+                OPTIONAL MATCH (n)-[r]->(m)
+                WHERE r IS NULL OR NOT type(r) STARTS WITH 'CANDIDATE_'
+                RETURN n, r, m
+                LIMIT $limit
+                """,
+                {"limit": limit},
+            )
+            for record in result:
+                n = record["n"]
+                m = record["m"]
+                r = record["r"]
+                for node in (n, m):
+                    if node is None or node.element_id in seen:
+                        continue
+                    seen.add(node.element_id)
+                    props = dict(node)
+                    label = list(node.labels)[0] if node.labels else "Node"
+                    nodes.append({"id": node.element_id, **{k: props.get(k) for k in feature_keys}})
+                    if label in operational_labels:
+                        operational.append(node.element_id)
+                if r is not None and m is not None:
+                    edges.append((n.element_id, m.element_id))
+                    adjacency.add((n.element_id, m.element_id))
+                    adjacency.add((m.element_id, n.element_id))
+    except Exception as exc:
+        logger.exception("tick_gnn_link_prediction: snapshot failed")
+        return {"error": "snapshot_failed", "detail": str(exc)}
+
+    candidate_pairs: list[tuple[str, str]] = []
+    for i in range(len(operational)):
+        for j in range(i + 1, len(operational)):
+            a, b = operational[i], operational[j]
+            if (a, b) not in adjacency:
+                candidate_pairs.append((a, b))
+
+    try:
+        suggestions = suggest_links(nodes, edges, candidate_pairs, feature_keys, top_k=top_k)
+    except GNNUnavailable as exc:
+        return {"skipped": str(exc)}
+
+    written = project_gnn_suggested_links_batch(suggestions)
+    return {"nodes": len(nodes), "candidates": len(candidate_pairs), "suggested": len(suggestions), "edges_written": written}
 
 
 _CLASS_TO_ENTITY_KIND = {

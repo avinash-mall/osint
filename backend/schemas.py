@@ -352,6 +352,19 @@ class GraphPathRequest(BaseModel):
     max_depth: int = Field(default=4, ge=1, le=8)
 
 
+class GnnSuggestRequest(BaseModel):
+    """Body for ``POST /api/graph/gnn/suggest-links`` — GNN link prediction.
+
+    Snapshot bound + how many suggestions to return. ``feature_keys`` overrides
+    the default numeric node features fed to the encoder.
+    """
+
+    limit: int = Field(1000, ge=2, le=5000)
+    top_k: int = Field(20, ge=1, le=200)
+    epochs: int = Field(60, ge=1, le=500)
+    feature_keys: Optional[list[str]] = None
+
+
 class GraphContradictRequest(BaseModel):
     """Body for ``POST /api/graph/contradict`` — analyst flags evidence-against."""
 
@@ -381,6 +394,11 @@ class AnalyticsRequest(BaseModel):
     after_pass_id: Optional[int] = None
     # Change-detection method: "diff" (optical, default) or "sar_logratio" (Sentinel-1 dB).
     method: Optional[str] = None
+    # Isochrone-only: nominal driving speed used to bound the OSRM matrix probes.
+    nominal_speed_kmh: Optional[float] = 60.0
+    # OD-flows-only: grid cell size (deg) and minimum flow weight to keep an edge.
+    cell_deg: Optional[float] = 0.02
+    min_flow: Optional[int] = 1
 
 
 class TrainingJobCreate(BaseModel):

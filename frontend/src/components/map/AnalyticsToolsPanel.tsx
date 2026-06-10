@@ -12,11 +12,13 @@
  * through `onResult`; the parent owns layer-toggle state.
  */
 
-import { Crosshair, Eye, EyeOff, Route as RouteIcon, Spline, Sparkles } from 'lucide-react';
+import { Clock, Crosshair, Eye, EyeOff, Route as RouteIcon, Spline, Sparkles, Waypoints } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import {
   getCapabilities,
+  runIsochrone,
   runLineOfSight,
+  runODFlows,
   runRoutes,
   runViewshed,
   type AnalyticsCapabilities,
@@ -39,9 +41,15 @@ function isFallbackMode(mode: AnalyticsMode | undefined): boolean {
   return mode != null && FALLBACK_MODES.has(String(mode));
 }
 
-export type AnalyticsKind = 'viewshed' | 'los' | 'routes';
+export type AnalyticsKind = 'viewshed' | 'los' | 'routes' | 'isochrone' | 'odflows';
 
-export type AnalyticsPick = 'viewshed.observer' | 'los.observer' | 'los.target' | 'routes.start' | 'routes.end';
+export type AnalyticsPick =
+  | 'viewshed.observer'
+  | 'los.observer'
+  | 'los.target'
+  | 'routes.start'
+  | 'routes.end'
+  | 'isochrone.observer';
 
 export type AnalyticsLayerStatus = { on: boolean; disabled: boolean };
 
@@ -67,6 +75,10 @@ type ToolState = {
   observerHeight: number;
   targetHeight: number;
   strategy: 'shortest' | 'least_exposure' | 'balanced' | 'all';
+  minutes: number;
+  speedKmh: number;
+  cellDeg: number;
+  minFlow: number;
   busy: boolean;
   error: string | null;
 };
@@ -78,6 +90,10 @@ const initialTool: ToolState = {
   observerHeight: 1.8,
   targetHeight: 0,
   strategy: 'all',
+  minutes: 15,
+  speedKmh: 50,
+  cellDeg: 0.02,
+  minFlow: 1,
   busy: false,
   error: null,
 };
@@ -88,15 +104,18 @@ const initialToolStates: ToolStates = {
   viewshed: { ...initialTool },
   los: { ...initialTool },
   routes: { ...initialTool },
+  isochrone: { ...initialTool },
+  odflows: { ...initialTool },
 };
 
 function toolForPick(pick: AnalyticsPick): { kind: AnalyticsKind; slot: 'observer' | 'destination' } {
   switch (pick) {
-    case 'viewshed.observer': return { kind: 'viewshed', slot: 'observer' };
-    case 'los.observer':      return { kind: 'los',      slot: 'observer' };
-    case 'los.target':        return { kind: 'los',      slot: 'destination' };
-    case 'routes.start':      return { kind: 'routes',   slot: 'observer' };
-    case 'routes.end':        return { kind: 'routes',   slot: 'destination' };
+    case 'viewshed.observer':  return { kind: 'viewshed',  slot: 'observer' };
+    case 'los.observer':       return { kind: 'los',       slot: 'observer' };
+    case 'los.target':         return { kind: 'los',       slot: 'destination' };
+    case 'routes.start':       return { kind: 'routes',    slot: 'observer' };
+    case 'routes.end':         return { kind: 'routes',    slot: 'destination' };
+    case 'isochrone.observer': return { kind: 'isochrone', slot: 'observer' };
   }
 }
 
@@ -147,6 +166,8 @@ export default function AnalyticsToolsPanel({
     viewshed: undefined,
     los: undefined,
     routes: undefined,
+    isochrone: undefined,
+    odflows: undefined,
   });
 
   const recordMode = useCallback((kind: AnalyticsKind, res: AnalyticsResponse | null) => {
@@ -177,7 +198,7 @@ export default function AnalyticsToolsPanel({
         });
         onResult('los', res);
         recordMode('los', res);
-      } else {
+      } else if (kind === 'routes') {
         if (!s.observer || !s.destination) throw new Error('Pick both start and end');
         const res = await runRoutes({
           observer: s.observer,
@@ -186,6 +207,22 @@ export default function AnalyticsToolsPanel({
         });
         onResult('routes', res);
         recordMode('routes', res);
+      } else if (kind === 'isochrone') {
+        if (!s.observer) throw new Error('Pick an observer first');
+        const res = await runIsochrone({
+          observer: s.observer,
+          minutes: s.minutes,
+          nominal_speed_kmh: s.speedKmh,
+        });
+        onResult('isochrone', res);
+        recordMode('isochrone', res);
+      } else {
+        const res = await runODFlows({
+          cell_deg: s.cellDeg,
+          min_flow: s.minFlow,
+        });
+        onResult('odflows', res);
+        recordMode('odflows', res);
       }
     } catch (e: any) {
       updateTool(kind, { error: e?.response?.data?.detail ?? e?.message ?? String(e) });
@@ -205,6 +242,8 @@ export default function AnalyticsToolsPanel({
   const vs = tools.viewshed;
   const los = tools.los;
   const rt = tools.routes;
+  const iso = tools.isochrone;
+  const od = tools.odflows;
 
   return (
     <div className="bg-sentinel-panel-2 px-3 py-2 space-y-2">
@@ -342,6 +381,80 @@ export default function AnalyticsToolsPanel({
             <option value="balanced">Balanced</option>
           </select>
         </div>
+      </ToolCard>
+
+      <ToolCard
+        icon={<Clock className="h-3.5 w-3.5" />}
+        title="Isochrone"
+        dataTour="analytics-isochrone"
+        busy={iso.busy}
+        error={iso.error}
+        onRun={() => onRun('isochrone')}
+        onClear={() => onClear('isochrone')}
+        runDisabled={!iso.observer || iso.busy}
+        layerOn={layers.isochrone.on}
+        layerDisabled={layers.isochrone.disabled}
+        onToggleLayer={() => onToggleLayer('isochrone')}
+        fallbackMode={isFallbackMode(lastModeByKind.isochrone) ? lastModeByKind.isochrone : undefined}
+      >
+        <FieldPick
+          label="Observer"
+          value={pickLabel(iso.observer, 'Click on map…')}
+          active={pendingPick === 'isochrone.observer'}
+          onPick={() => startPick('isochrone.observer')}
+        />
+        <FieldRange
+          label="Minutes"
+          value={iso.minutes}
+          min={5}
+          max={120}
+          step={5}
+          suffix="min"
+          onChange={(v) => updateTool('isochrone', { minutes: v })}
+        />
+        <FieldRange
+          label="Speed"
+          value={iso.speedKmh}
+          min={5}
+          max={120}
+          step={5}
+          suffix="km/h"
+          onChange={(v) => updateTool('isochrone', { speedKmh: v })}
+        />
+      </ToolCard>
+
+      <ToolCard
+        icon={<Waypoints className="h-3.5 w-3.5" />}
+        title="OD flows"
+        dataTour="analytics-odflows"
+        busy={od.busy}
+        error={od.error}
+        onRun={() => onRun('odflows')}
+        onClear={() => onClear('odflows')}
+        runDisabled={od.busy}
+        layerOn={layers.odflows.on}
+        layerDisabled={layers.odflows.disabled}
+        onToggleLayer={() => onToggleLayer('odflows')}
+        fallbackMode={isFallbackMode(lastModeByKind.odflows) ? lastModeByKind.odflows : undefined}
+      >
+        <FieldRange
+          label="Cell size"
+          value={od.cellDeg}
+          min={0.005}
+          max={0.2}
+          step={0.005}
+          suffix="°"
+          onChange={(v) => updateTool('odflows', { cellDeg: v })}
+        />
+        <FieldRange
+          label="Min flow"
+          value={od.minFlow}
+          min={1}
+          max={20}
+          step={1}
+          suffix=""
+          onChange={(v) => updateTool('odflows', { minFlow: v })}
+        />
       </ToolCard>
 
       <div data-tour="analytics-capabilities" className="flex items-center justify-center gap-3 pt-1 font-mono text-[9px] uppercase tracking-wider">

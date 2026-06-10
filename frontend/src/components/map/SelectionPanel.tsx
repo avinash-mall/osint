@@ -663,6 +663,8 @@ export default function SelectionPanel(props: Props) {
               viewshed: { on: !!activeLayers.viewshed, disabled: !analyticsResults.viewshed },
               los: { on: !!activeLayers.los, disabled: !analyticsResults.los },
               routes: { on: !!activeLayers.routes, disabled: !analyticsResults.routes },
+              isochrone: { on: !!activeLayers.isochrone, disabled: !analyticsResults.isochrone },
+              odflows: { on: !!activeLayers.odflows, disabled: !analyticsResults.odflows },
             }}
             onToggleLayer={(kind: AnalyticsKind) =>
               setActiveLayers((prev) => ({ ...prev, [kind]: !prev[kind] }))

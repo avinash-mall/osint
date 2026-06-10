@@ -915,6 +915,49 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
             />
           )}
 
+          {activeLayers.isochrone && analyticsResults.isochrone?.result && (
+            <GeoJSON
+              key={`isochrone-${analyticsResults.isochrone.job.id}`}
+              data={analyticsResults.isochrone.result as any}
+              style={() => ({
+                color: '#ffb14a',
+                weight: 1.5,
+                opacity: 0.9,
+                fillColor: '#ffb14a',
+                fillOpacity: 0.18,
+              })}
+              onEachFeature={(_feature, layer) => {
+                const p: any = (analyticsResults.isochrone?.result as any)?.features?.[0]?.properties || {};
+                const min = p.minutes != null ? `${p.minutes} min` : 'isochrone';
+                const mode = (analyticsResults.isochrone?.result as any)?.mode;
+                const tip = mode === 'osrm'
+                  ? `Isochrone · ${min} · job ${analyticsResults.isochrone?.job.id}`
+                  : `Isochrone · demo fixture · job ${analyticsResults.isochrone?.job.id}`;
+                layer.bindTooltip(tip, { sticky: true, opacity: 0.92 });
+              }}
+            />
+          )}
+
+          {activeLayers.odflows && analyticsResults.odflows?.result && (
+            <GeoJSON
+              key={`odflows-${analyticsResults.odflows.job.id}`}
+              data={analyticsResults.odflows.result as any}
+              style={(feature) => {
+                const flow = Number(feature?.properties?.flow ?? feature?.properties?.weight ?? 1);
+                return {
+                  color: '#c87aff',
+                  weight: Math.min(8, 1.5 + flow),
+                  opacity: 0.85,
+                };
+              }}
+              onEachFeature={(feature, layer) => {
+                const p = feature?.properties || {};
+                const flow = p.flow ?? p.weight ?? 1;
+                layer.bindTooltip(`OD flow · ${flow}`, { sticky: true, opacity: 0.92 });
+              }}
+            />
+          )}
+
           {/* Satellite sub-satellite ground track (A1). Stored as [lon, lat];
               Leaflet wants [lat, lon]. Amber dashed polyline. */}
           {satGroundTrack && satGroundTrack.length > 1 && (

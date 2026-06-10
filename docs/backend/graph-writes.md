@@ -1,7 +1,7 @@
 # Graph Write Helpers
 
 **Path:** [backend/graph_writes.py](../../backend/graph_writes.py)
-**Lines:** ~1120
+**Lines:** ~1191
 **Depends on:** [backend/database.py](../../backend/database.py) (`db`)
 
 ## Purpose
@@ -51,6 +51,12 @@ Phase 5 helpers:
 - `delete_possibly_same_as` — remove a pending POSSIBLY_SAME_AS edge between two entities (direction-agnostic); used by the SAME_AS review-screen reject action.
 - `cosine_similarity` — pure-Python cosine over two equal-length float vectors. Returns `None` for missing / zero-vec / length-mismatch. Used by the DINOv3 embedding branch of `worker.tick_entity_resimilarity`.
 
+Phase 6 helpers (city2graph-inherited analytics):
+- [`project_colocation_edges_batch`](../../backend/graph_writes.py#L1039-L1073) — UNWIND-MERGE `(a:Detection)-[:COLOCATED_WITH {distance_m, method, computed_at}]->(b:Detection)` between detection pairs a proximity graph linked. `a_id < b_id` by construction in [graph_proximity.py](graph-proximity.md), so the stored direction is stable and re-running is idempotent. Both endpoints must already be projected as `:Detection` nodes. Written by [`worker.tick_colocation_builder`](worker-legacy-monolith.md). See [decisions/why-proximity-colocation-graph.md](../decisions/why-proximity-colocation-graph.md).
+- [`project_gnn_suggested_links_batch`](../../backend/graph_writes.py#L1076-L1107) — UNWIND-MERGE `(a)-[:GNN_SUGGESTED_LINK {score, model='graphsage', computed_at}]->(b)` advisory edges (keyed by Neo4j `elementId`). Non-authoritative GNN predictions for analyst review — an overlay, never a promoted relationship. Written by [`worker.tick_gnn_link_prediction`](worker-legacy-monolith.md). See [decisions/why-gnn-link-prediction.md](../decisions/why-gnn-link-prediction.md).
+
+**New edge predicates:** `COLOCATED_WITH` (Detection ↔ Detection, `distance_m, method`) and `GNN_SUGGESTED_LINK` (operational entity ↔ entity, `score, model`). Both are derived/advisory — never analyst-asserted.
+
 ## Inputs / Outputs
 
 All helpers take keyword args (no positional) — the candidate creation flow has eight properties to thread through, positional args would be a footgun.
@@ -71,3 +77,5 @@ Outputs are side effects on Neo4j plus a small return value (`bool` for merge/de
 - [operations/candidate-link-approval.md](../operations/candidate-link-approval.md) — approval flow.
 - [backend/graph-schema.md](graph-schema.md) — uniqueness constraints these helpers depend on.
 - [scripts/backend-scripts-train-and-seed.md](../scripts/backend-scripts-train-and-seed.md) — backfill scripts including `backfill_candidate_edges`.
+- [backend/graph-proximity.md](graph-proximity.md), [backend/graph-pyg.md](graph-pyg.md) — Phase 6 edge producers.
+- [decisions/why-proximity-colocation-graph.md](../decisions/why-proximity-colocation-graph.md), [decisions/why-gnn-link-prediction.md](../decisions/why-gnn-link-prediction.md).

@@ -20,7 +20,8 @@ Every router request body + most response shapes. Extracted from `main.py` so ro
 |---|---|---|
 | `AuthTestRequest` | [#L34](../../backend/schemas.py#L34) | [auth-router.md](../backend-routers/auth-router.md) |
 | `AIActionProposalRequest`, `AIAnalysisRequest` | | [ai-router.md](../backend-routers/ai-router.md) |
-| `AnalyticsRequest` | | [analytics-router.md](../backend-routers/analytics-router.md), [ai-router.md](../backend-routers/ai-router.md) |
+| `AnalyticsRequest` | | [analytics-router.md](../backend-routers/analytics-router.md), [ai-router.md](../backend-routers/ai-router.md) — also carries `nominal_speed_kmh` (isochrone), `cell_deg` + `min_flow` (od-flows) |
+| `GnnSuggestRequest` | [#L355](../../backend/schemas.py#L355-L365) | [graph-router.md](../backend-routers/graph-router.md) — `POST /api/graph/gnn/suggest-links` (`limit`, `top_k`, `epochs`, `feature_keys`) |
 | `ConfidenceConfig` | | [inference-router.md](../backend-routers/inference-router.md) |
 | `DetectionQuery` | [#L48](../../backend/schemas.py#L48) | `GET /api/detections` |
 | `DetectionTagUpdate` | [#L44](../../backend/schemas.py#L44) | tag PATCH |

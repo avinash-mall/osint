@@ -206,6 +206,8 @@ export default function GaiaMap({
     viewshed: false,
     los: false,
     routes: false,
+    isochrone: false,
+    odflows: false,
   });
   const [pendingPick, setPendingPick] = useState<AnalyticsPick | null>(null);
   const [lastMapClick, setLastMapClick] = useState<{ lat: number; lon: number; pickFor: AnalyticsPick | null } | null>(null);
@@ -213,6 +215,8 @@ export default function GaiaMap({
     viewshed: null,
     los: null,
     routes: null,
+    isochrone: null,
+    odflows: null,
   });
   // Satellite overpass planning (A1). Observer is picked on the map; the ground
   // track is drawn as a Leaflet polyline. State lives here so MapStage can render
