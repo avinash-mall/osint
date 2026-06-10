@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -81,6 +82,63 @@ def parse_gpu_query(output: str) -> tuple[HostGpu, ...]:
     return tuple(gpus)
 
 
+def parse_reserved_gpus(existing_env: str, gpu_count: int) -> frozenset[int]:
+    """Parse the operator's ``SENTINEL_RESERVED_GPUS`` line from an existing .env.
+
+    This is an operator INPUT (e.g. ``0,1`` for a vLLM co-tenant), preserved
+    across configure_host runs — it is never written into the generated block.
+    configure_host reads it to decide which GPUs the Sentinel services may use.
+    Tolerant: ignores blanks/garbage and clamps indices to ``[0, gpu_count)``.
+    """
+    reserved: set[int] = set()
+    for line in existing_env.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("SENTINEL_RESERVED_GPUS") or "=" not in stripped:
+            continue
+        value = stripped.split("=", 1)[1].strip()
+        for part in value.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                idx = int(part)
+            except ValueError:
+                continue
+            if 0 <= idx < gpu_count:
+                reserved.add(idx)
+    return frozenset(reserved)
+
+
+def partition_gpus(gpu_count: int, reserved: frozenset[int]) -> tuple[list[int], list[int]]:
+    """Divide the non-reserved GPUs between inference-sam3 and inference-lae.
+
+    inference-sam3 is the throughput-critical service — it runs one model replica
+    per visible GPU, so its speed scales with card count. inference-lae is small
+    (~2-4 GB) and single-GPU. The division therefore protects SAM3's replicas:
+
+    - ``>= 3`` free: dedicate the LAST card to inference-lae and give SAM3 the
+      rest (still >= 2 replicas). LAE gets full isolation — no VRAM contention.
+    - ``== 2`` free: SAM3 keeps BOTH cards (2 replicas); inference-lae SHARES the
+      last card. Carving a whole 80 GB A100 out for the tiny LAE model would
+      halve SAM3 throughput, which costs more than the sharing does — especially
+      with cross-chip batching, which makes LAE's calls few and amortized.
+    - ``== 1`` free: both share the one card.
+
+    The intra-SAM3 CUDA-poison race is handled separately by
+    SAM3_SERIALIZE_FORWARDS (emitted when SAM3 gets >1 replica).
+
+    Returns ``(sam3_indices, lae_indices)``. ``([], [])`` when no GPU is free
+    (all reserved / none present) — caller falls back to "all".
+    """
+    available = [i for i in range(gpu_count) if i not in reserved]
+    if len(available) >= 3:
+        return available[:-1], [available[-1]]
+    if len(available) >= 1:
+        # SAM3 keeps every free card (max replicas); LAE shares the last one.
+        return available, [available[-1]]
+    return [], []
+
+
 def detect_host_gpu_info() -> HostGpuInfo:
     try:
         header = subprocess.run(
@@ -124,7 +182,7 @@ def sam3_build_env(profile: GpuBuildProfile) -> dict[str, str]:
     return profile.build_env(prefix="SAM3_")
 
 
-def generated_env_values(info: HostGpuInfo) -> dict[str, str]:
+def generated_env_values(info: HostGpuInfo, reserved: frozenset[int] = frozenset()) -> dict[str, str]:
     primary_gpu = info.gpus[0]
     profile = resolve_gpu_profile(primary_gpu.name)
     validate_driver(profile, info.driver_version)
@@ -145,17 +203,44 @@ def generated_env_values(info: HostGpuInfo) -> dict[str, str]:
     # baseline matched to its architecture without code edits.
     values.update(profile.runtime_env(vram_mib=primary_gpu.memory_mib or None))
 
+    gpu_count = len(info.gpus)
+
+    # Automated GPU division across services. Non-reserved GPUs are split:
+    # inference-sam3 gets the bulk (one replica per card) and inference-lae gets
+    # a dedicated card when >=2 are free, so the LAE detector stops sharing VRAM
+    # with the SAM3 stack. SENTINEL_RESERVED_GPUS (operator input, preserved)
+    # carves out co-tenants like vLLM. These device keys are GENERATED here, so
+    # any prior hand-set SAM3_VISIBLE_DEVICES is migrated/replaced.
+    sam3_idx, lae_idx = partition_gpus(gpu_count, reserved)
+    if sam3_idx:
+        values["SAM3_VISIBLE_DEVICES"] = ",".join(str(i) for i in sam3_idx)
+        values["LAE_VISIBLE_DEVICES"] = ",".join(str(i) for i in lae_idx)
+        sam3_gpu_count = len(sam3_idx)
+        # Multi-replica SAM3 on A100+cu13x races a shared driver workspace; pin
+        # the serialize-forwards fix ON. Single-replica has no cross-replica
+        # race, so we leave the key unset there (compose default :-1 backstops,
+        # so this can never *weaken* the fix) and an operator can opt out for a
+        # single-GPU throughput win. See why-serialize-forwards-on-a100-cu13x.md.
+        if sam3_gpu_count > 1:
+            values["SAM3_SERIALIZE_FORWARDS"] = "1"
+    else:
+        print(
+            "[configure_host] warning: no GPUs free after SENTINEL_RESERVED_GPUS; "
+            "inference services fall back to all visible GPUs (NVIDIA_VISIBLE_DEVICES=all).",
+            file=sys.stderr,
+        )
+        sam3_gpu_count = gpu_count
+
     # Multi-GPU chip dispatch (GPU-count derived, not VRAM/arch). The inference
     # service runs one model replica per visible GPU and serves /detect_raw
     # lock-free, so to actually use every GPU the worker's poster pool must be
     # at least as wide as the GPU count, and the adaptive back-off must never
     # drop below it (otherwise it collapses onto one GPU under latency variance).
     # The per-profile INFERENCE_CHIP_CONCURRENCY is a VRAM/arch baseline; raise
-    # it to the GPU count when there are more GPUs than that baseline.
-    gpu_count = len(info.gpus)
+    # it to the SAM3-allocated GPU count when that exceeds the baseline.
     profile_concurrency = int(values.get("INFERENCE_CHIP_CONCURRENCY", "1") or "1")
-    values["INFERENCE_CHIP_CONCURRENCY"] = str(max(profile_concurrency, gpu_count))
-    values["INFERENCE_MIN_PENDING_CHIPS"] = str(gpu_count)
+    values["INFERENCE_CHIP_CONCURRENCY"] = str(max(profile_concurrency, sam3_gpu_count))
+    values["INFERENCE_MIN_PENDING_CHIPS"] = str(sam3_gpu_count)
 
     # NOTE: no automatic per-process VRAM cap is emitted. A previous build
     # detected GPU "co-tenants" from live memory.used and wrote a
@@ -211,8 +296,9 @@ def replace_generated_block(existing: str, block: str) -> str:
 
 
 def configure_env_file(env_path: Path, info: HostGpuInfo) -> dict[str, str]:
-    values = generated_env_values(info)
     existing = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+    reserved = parse_reserved_gpus(existing, len(info.gpus))
+    values = generated_env_values(info, reserved)
     env_path.write_text(replace_generated_block(existing, render_generated_block(values)), encoding="utf-8")
     return values
 
@@ -227,13 +313,16 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     info = detect_host_gpu_info()
-    values = generated_env_values(info)
+    # Read the operator's reserved-GPU list (e.g. vLLM on 0,1) from the existing
+    # .env so the generated block reflects it even on --dry-run.
+    existing = args.env_file.read_text(encoding="utf-8") if args.env_file.exists() else ""
+    reserved = parse_reserved_gpus(existing, len(info.gpus))
+    values = generated_env_values(info, reserved)
     block = render_generated_block(values)
     if args.dry_run:
         print(block)
         return 0
 
-    existing = args.env_file.read_text(encoding="utf-8") if args.env_file.exists() else ""
     args.env_file.write_text(replace_generated_block(existing, block), encoding="utf-8")
     print(
         f"Wrote GPU config for {values['GPU_MODEL']} "

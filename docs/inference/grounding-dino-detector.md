@@ -21,6 +21,8 @@ for why the name is kept while the model changed.
 - [`load`](../../inference-sam3/grounding_dino.py#L51) — probes the sidecar `/health` and returns a bundle (`model=True` sentinel when reachable, `None`+error otherwise). No GPU work in this process.
 - [`run`](../../inference-sam3/grounding_dino.py#L83) — text + image → `(mask, bbox_xyxy, score, label)` tuples. PNG-encodes the chip once, POSTs `/detect` per `GROUNDING_DINO_MAX_PHRASES_PER_QUERY`-sized chunk (default 10).
 - `_forward_chunk` — one `/detect` HTTP call over a single chunk of phrases.
+- `run_batch` — batched variant: POSTs N chips (sharing one prompt set) to the sidecar's `/detect_batch` in one call, returns per-chip tuples. Used by inference-sam3 `/detect_batch_raw` when `SENTINEL_ENABLE_BATCHING` is on. See [decisions/why-lae-cross-chip-batching.md](../decisions/why-lae-cross-chip-batching.md).
+- `_dets_to_tuples` — shared JSON-detections → SAM3-tuple converter (used by both `run` and `run_batch`).
 - [`_map_to_original_prompt`](../../inference-sam3/grounding_dino.py#L163) — LAE-DINO returns matched entity strings; maps them back to the operator's input prompt strings (drops unmappable labels).
 - [`_bbox_mask`](../../inference-sam3/grounding_dino.py#L196) — synthetic rectangular mask for SAM3-aware downstream code.
 - [`model_versions`](../../inference-sam3/grounding_dino.py#L205) — exposed in `/health` (reports the LAE-DINO model id + sidecar url).

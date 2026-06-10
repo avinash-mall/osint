@@ -39,7 +39,8 @@ inference-sam3 — never a co-tenant's GPUs (e.g. vLLM). Override with
   dataset is never built. Failures are captured, not raised.
 - [`/health`](../../inference-lae/app.py#L133) — `{model_loaded, model, model_error}`; drives the compose healthcheck and the client's `load()` probe.
 - [`/detect`](../../inference-lae/app.py#L142) — multipart `file` + JSON `prompts` + `threshold`; runs `DetInferencer(texts="a . b . c", custom_entities=True)` and returns `{detections: [{bbox:[x1,y1,x2,y2], score, label}], model}`. `chunked_size` is left disabled (the fork's chunked predict path is broken; the client chunks prompts instead).
-- [`_extract`](../../inference-lae/app.py#L192) — pulls `pred_instances.bboxes/scores/label_names` out of the `DetDataSample`.
+- `/detect_batch` — multipart `files` (N images) + shared `prompts`; one `DetInferencer(batch_size=INFERENCE_LAE_BATCH_SIZE)` forward → `{results: [[...]×N], model}`. Driven by global `SENTINEL_ENABLE_BATCHING` (OFF by default — a no-op/slower on serialize-forwards hosts; see [decisions/why-lae-cross-chip-batching.md](../decisions/why-lae-cross-chip-batching.md)).
+- `_extract_one` / `_extract` / `_extract_batch` — pull `pred_instances.bboxes/scores/label_names` out of one / first / all `DetDataSample`(s).
 
 ## Inputs / Outputs
 

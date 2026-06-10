@@ -69,15 +69,25 @@ Two optical-throughput optimisations are sized to the host automatically (see
   embedding path. VRAM-tiered via the profile field `sam3_embed_batch_size`: Turing 16;
   consumer Ampere / Ada / consumer Blackwell 32; datacenter Ampere (A100) 64; Hopper and
   datacenter Blackwell 96.
+- **`SAM3_VISIBLE_DEVICES` / `LAE_VISIBLE_DEVICES`** — `configure_host` **auto-divides** the GPUs
+  across services (`partition_gpus`): with ≥3 free cards it dedicates the last to inference-lae and
+  gives SAM3 the rest; with ≤2 free SAM3 keeps every card (max replicas) and inference-lae shares the
+  last. Set **`SENTINEL_RESERVED_GPUS`** (a preserved, non-generated operator line, e.g. `0,1` for a
+  vLLM co-tenant) to carve cards away from Sentinel. These device keys are generated, so a hand-set
+  `SAM3_VISIBLE_DEVICES` is migrated/replaced — use `SENTINEL_RESERVED_GPUS` instead. See
+  [decisions/why-auto-gpu-division.md](../decisions/why-auto-gpu-division.md).
+- **`SAM3_SERIALIZE_FORWARDS`** — emitted `=1` only when SAM3 gets >1 replica (the A100+cu13x
+  cross-replica poison case); the compose default `:-1` backstops single-replica, so emission can
+  never weaken the fix.
 - **`INFERENCE_CHIP_CONCURRENCY`** and **`INFERENCE_MIN_PENDING_CHIPS`** — derived from the
-  **GPU count** (`len(info.gpus)`), not the profile, because the inference pool runs one model
-  replica per visible GPU. `configure_host` raises concurrency to `max(profile_baseline, gpu_count)`
-  so the worker's poster pool can feed every replica, and sets the adaptive back-off floor
-  `INFERENCE_MIN_PENDING_CHIPS = gpu_count` so it never collapses onto one GPU under latency
-  variance. A single-GPU host keeps the profile baseline (concurrency 1, floor 1).
+  **SAM3-allocated** GPU count (not the raw host count), because the inference pool runs one model
+  replica per visible GPU. `configure_host` raises concurrency to `max(profile_baseline, sam3_gpu_count)`
+  and sets the adaptive back-off floor `INFERENCE_MIN_PENDING_CHIPS = sam3_gpu_count`. A single-GPU
+  host keeps the profile baseline (concurrency 1, floor 1).
 
-The docker-compose `inference-sam3` block must pass `SAM3_EMBED_BATCH_SIZE`, and the `worker`
-block `INFERENCE_MIN_PENDING_CHIPS`, for these to reach the containers.
+The docker-compose `inference-sam3` block must pass `SAM3_EMBED_BATCH_SIZE` + `SAM3_VISIBLE_DEVICES`,
+the `inference-lae` block `LAE_VISIBLE_DEVICES`, and the `worker` block `INFERENCE_MIN_PENDING_CHIPS`,
+for these to reach the containers.
 
 ## Per-process VRAM ceiling (manual only)
 

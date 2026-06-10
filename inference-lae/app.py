@@ -63,6 +63,14 @@ LAE_SCORE_THR = float(os.getenv("LAE_DINO_THRESHOLD", "0.30"))
 # confirmed the fork's chunked path works.
 LAE_CHUNKED_SIZE = int(os.getenv("LAE_CHUNKED_SIZE", "0"))
 
+# Cross-chip batching. The /detect_batch endpoint runs N chips through one mmdet
+# DetInferencer forward (all chips in a pass share the same prompt caption, which
+# mmdet broadcasts). Gated by the global SENTINEL_ENABLE_BATCHING; INFERENCE_LAE_
+# BATCH_SIZE caps the per-forward image count (VRAM headroom on the dedicated
+# LAE card). See docs/decisions/why-lae-cross-chip-batching.md.
+_BATCH_ENABLED = os.getenv("SENTINEL_ENABLE_BATCHING", "0").strip().lower() in {"1", "true", "yes", "on"}
+LAE_BATCH_SIZE = int(os.getenv("INFERENCE_LAE_BATCH_SIZE", "4")) if _BATCH_ENABLED else 1
+
 app = FastAPI(title="inference-lae", version="1.0")
 
 # Populated at startup by _load().
@@ -189,35 +197,106 @@ async def detect(
     return {"detections": detections, "model": _STATE["model"]}
 
 
-def _extract(out: Any, label_list: list[str], thr: float) -> list[dict[str, Any]]:
-    """Pull (bbox_xyxy, score, label) out of mmdet's DetDataSample. Tolerant of
-    both the return_datasamples shape and the serialized-dict fallback."""
-    preds = out.get("predictions") if isinstance(out, dict) else out
-    if not preds:
-        return []
-    sample = preds[0]
+@app.post("/detect_batch")
+async def detect_batch(
+    files: list[UploadFile] = File(...),
+    prompts: str = Form(...),
+    threshold: float = Form(LAE_SCORE_THR),
+    text_threshold: float = Form(0.25),  # accepted for parity; mmdet owns it
+) -> dict[str, Any]:
+    """Run N chips through ONE mmdet batched forward. All chips share the same
+    prompt caption (true for a Sentinel pass), which mmdet broadcasts across the
+    batch. Returns one detection list per input file, in order."""
+    inferencer = _STATE["inferencer"]
+    n = len(files)
+    if inferencer is None:
+        return {"results": [[] for _ in range(n)], "model": _STATE["model"], "error": _STATE["error"]}
+    try:
+        label_list = [p for p in json.loads(prompts) if isinstance(p, str) and p.strip()]
+    except Exception as exc:
+        return {"results": [[] for _ in range(n)], "model": _STATE["model"], "error": f"bad prompts: {exc}"}
+    if not label_list or n == 0:
+        return {"results": [[] for _ in range(n)], "model": _STATE["model"]}
+
+    try:
+        images = [_decode_bgr(await f.read()) for f in files]
+    except Exception as exc:
+        return {"results": [[] for _ in range(n)], "model": _STATE["model"], "error": f"bad image: {exc}"}
+
+    texts = " . ".join(label_list)
+    try:
+        out = inferencer(
+            inputs=images,
+            texts=texts,
+            custom_entities=True,
+            pred_score_thr=float(threshold),
+            batch_size=max(1, LAE_BATCH_SIZE),
+            return_datasamples=True,
+            no_save_vis=True,
+            no_save_pred=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("batched inference failed")
+        return {"results": [[] for _ in range(n)], "model": _STATE["model"], "error": str(exc)}
+
+    results = _extract_batch(out, label_list, float(threshold))
+    # Defensive: guarantee one list per input even if mmdet returns fewer.
+    if len(results) != n:
+        results = (results + [[] for _ in range(n)])[:n]
+    return {"results": results, "model": _STATE["model"]}
+
+
+def _preds_list(out: Any) -> Any:
+    """mmdet returns {'predictions': [DetDataSample, ...]} (or the bare list)."""
+    return out.get("predictions") if isinstance(out, dict) else out
+
+
+def _extract_one(sample: Any, label_list: list[str], thr: float) -> list[dict[str, Any]]:
+    """Pull (bbox_xyxy, score, label) out of one DetDataSample."""
     inst = getattr(sample, "pred_instances", None)
     dets: list[dict[str, Any]] = []
-    if inst is not None:
-        bboxes = _to_numpy(getattr(inst, "bboxes", None))
-        scores = _to_numpy(getattr(inst, "scores", None))
-        labels = _to_numpy(getattr(inst, "labels", None))
-        names = getattr(inst, "label_names", None)
-        if bboxes is None or scores is None:
-            return []
-        for i in range(len(bboxes)):
-            score = float(scores[i])
-            if score < thr:
-                continue
-            if names is not None and i < len(names):
-                label = str(names[i])
-            elif labels is not None and i < len(labels) and int(labels[i]) < len(label_list):
-                label = label_list[int(labels[i])]
-            else:
-                label = ""
-            x1, y1, x2, y2 = (float(v) for v in bboxes[i][:4])
-            dets.append({"bbox": [x1, y1, x2, y2], "score": score, "label": label})
+    if inst is None:
+        return dets
+    bboxes = _to_numpy(getattr(inst, "bboxes", None))
+    scores = _to_numpy(getattr(inst, "scores", None))
+    labels = _to_numpy(getattr(inst, "labels", None))
+    names = getattr(inst, "label_names", None)
+    if bboxes is None or scores is None:
+        return dets
+    for i in range(len(bboxes)):
+        score = float(scores[i])
+        if score < thr:
+            continue
+        if names is not None and i < len(names):
+            label = str(names[i])
+        elif labels is not None and i < len(labels) and int(labels[i]) < len(label_list):
+            label = label_list[int(labels[i])]
+        else:
+            label = ""
+        x1, y1, x2, y2 = (float(v) for v in bboxes[i][:4])
+        dets.append({"bbox": [x1, y1, x2, y2], "score": score, "label": label})
     return dets
+
+
+def _extract(out: Any, label_list: list[str], thr: float) -> list[dict[str, Any]]:
+    """Single-image extract (back-compat for /detect)."""
+    preds = _preds_list(out)
+    if not preds:
+        return []
+    return _extract_one(preds[0], label_list, thr)
+
+
+def _extract_batch(out: Any, label_list: list[str], thr: float) -> list[list[dict[str, Any]]]:
+    """One detection list per input image, in input order."""
+    preds = _preds_list(out)
+    return [_extract_one(s, label_list, thr) for s in (preds or [])]
+
+
+def _decode_bgr(raw: bytes) -> np.ndarray:
+    """Image bytes -> BGR ndarray (mmdet Grounding-DINO data_preprocessor expects
+    BGR via bgr_to_rgb=True)."""
+    rgb = np.asarray(Image.open(io.BytesIO(raw)).convert("RGB"))
+    return rgb[:, :, ::-1].copy()
 
 
 def _to_numpy(x: Any) -> np.ndarray | None:

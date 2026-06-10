@@ -176,6 +176,7 @@ decisions/why-503-on-unloaded-component.md|decision,inference|/detect guards a m
 decisions/why-admin-mutators-require-admin.md|decision,auth|global config/model/ontology/inference mutators require admin sessions
 decisions/why-amg-detection-classes-use-llm-labels.md|decision,frontend|superseded: YOLOE-PF imagery labels no longer promoted after image YOLOE removal
 decisions/why-analyst-username-from-session.md|decision|capture reviewed_by from SessionUser, not request-body analyst field
+decisions/why-auto-gpu-division.md|decision,gpu,deployment|configure_host partitions GPUs across services; protects SAM3 replicas, dedicates LAE card only at >=3 free
 decisions/why-auto-identify-in-backend-not-inference.md|decision|reference-DB auto-identify runs in the backend worker, not inference-sam3
 decisions/why-auto-write-with-threshold.md|decision|auto-write platform_* to object_details when top-1 cosine ≥ 0.85; below threshold land as pending
 decisions/why-bake-reference-corpora-into-assets.md|decision,deployment|reference chips baked into assets image; shared volume RW assets / RO backend+worker; rsync-on-startup
@@ -202,6 +203,7 @@ decisions/why-detection-boxes-use-polygon-map.md|decision,frontend|box layer is 
 decisions/why-dinov3-sat-only.md|decision|DINOv3 ViT-L SAT-493M keeps re-ID quality without DINOv3_LVD NaNs
 decisions/why-dynamic-modality-loading-on-tight-vram.md|decision,gpu,inference|16GB cards: per-modality profile swap + drop dead-weight detectors; fixes all-chunk OOM zero-detections
 decisions/why-deletable-imagery-and-clips.md|decision,backend|admin DELETE for imagery passes + FMV clips: rows + on-disk files + Neo4j nodes; frontend trash buttons
+decisions/why-embeddings-not-layer-gated.md|decision,inference|DINOv3 embeddings run regardless of enabled_layers (enrichment, not a detector); fixes auto-identify flood
 decisions/why-evidence-ranked-detections.md|decision|confirmed objects require source, verifier, physics, and SAR evidence signals
 decisions/why-exit-on-poisoned-cuda-context.md|decision,inference,gpu|illegal-memory-access in text-chunk loop → os._exit(1) self-heal instead of zombie serving 500s
 decisions/why-fair1m-specialist.md|decision,inference|SUPERSEDED: FAIR1M-OBB detector removed (no-op stub) — see removed-fair1m-and-remoteclip
@@ -210,6 +212,7 @@ decisions/why-generic-labels-when-unverified.md|decision,backend,ontology|generi
 decisions/why-grounding-dino-auto-gated.md|decision|forcing GDINO drops mAP via NMS suppression of DOTA detections
 decisions/why-imagery-dedup-is-hash-only.md|decision,backend,imagery|satellite_passes dedup on source_hash alone; footprint+acq_time+filename branches collapsed distinct uploads
 decisions/why-imagery-yoloe-mirrors-fmv.md|decision,imagery,inference|superseded: older image YOLOE routing experiment replaced by FMV-only YOLOE
+decisions/why-lae-cross-chip-batching.md|decision,inference|opt-in LAE batching path; no-op/slower on serialize-forwards hosts, kept for non-serialized GPUs
 decisions/why-lae-dino-replaces-grounding-dino.md|decision,inference|RS-tuned LAE-DINO replaces generic Grounding-DINO; runs as inference-lae sidecar (dep conflict)
 decisions/why-layerpanel-dot-toggle.md|decision,frontend|eye-toggle column removed; 10px coloured dot is the visibility signal, locked analytics subgroup
 decisions/why-live-test-tier.md|decision,testing|third test tier vs real nginx:3000: catches wiring/auth/inference seams mocks can't; idle-gate + FMV opt-in

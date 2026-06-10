@@ -58,9 +58,10 @@ def test_a100_compatible_driver_generates_datacenter_profile_values():
     assert values["SAM3_TORCHAUDIO_VERSION"] == "2.10.0+cu130"
 
 
-def test_multi_gpu_scales_chip_dispatch_to_gpu_count():
-    """A 4-GPU host feeds one replica per GPU: concurrency >= GPU count and the
-    adaptive back-off floor == GPU count. VRAM tier sets the embed batch size."""
+def test_multi_gpu_scales_chip_dispatch_to_sam3_count():
+    """A 4-GPU host with no reservation dedicates the last card to inference-lae
+    and gives SAM3 the other three (one replica each): chip dispatch tracks the
+    SAM3-allocated count (3), not the raw GPU count. VRAM tier sets embed batch."""
     info = HostGpuInfo(
         driver_version="595.58.03",
         gpus=tuple(HostGpu("NVIDIA A100-SXM4-80GB", memory_mib=81920) for _ in range(4)),
@@ -68,11 +69,74 @@ def test_multi_gpu_scales_chip_dispatch_to_gpu_count():
 
     values = generated_env_values(info)
 
-    assert values["INFERENCE_MIN_PENDING_CHIPS"] == "4"
-    # datacenter profile baseline is 2; raised to the GPU count (4).
-    assert int(values["INFERENCE_CHIP_CONCURRENCY"]) >= 4
+    # Last GPU goes to LAE; SAM3 keeps the rest.
+    assert values["SAM3_VISIBLE_DEVICES"] == "0,1,2"
+    assert values["LAE_VISIBLE_DEVICES"] == "3"
+    # Multi-replica SAM3 -> serialize-forwards pinned on.
+    assert values["SAM3_SERIALIZE_FORWARDS"] == "1"
+    assert values["INFERENCE_MIN_PENDING_CHIPS"] == "3"
+    # datacenter profile baseline is 2; raised to the SAM3 GPU count (3).
+    assert int(values["INFERENCE_CHIP_CONCURRENCY"]) >= 3
     # datacenter Ampere VRAM tier.
     assert values["SAM3_EMBED_BATCH_SIZE"] == "64"
+
+
+def test_reserved_gpus_two_free_keeps_sam3_replicas():
+    """Reserving GPUs 0,1 (vLLM) leaves only 2,3 for Sentinel. With just 2 free
+    cards SAM3 keeps BOTH (2 replicas) and inference-lae SHARES the last card —
+    carving a whole A100 out for the tiny LAE model would halve SAM3."""
+    info = HostGpuInfo(
+        driver_version="595.58.03",
+        gpus=tuple(HostGpu("NVIDIA A100 80GB PCIe", memory_mib=81920) for _ in range(4)),
+    )
+
+    values = generated_env_values(info, frozenset({0, 1}))
+
+    assert values["SAM3_VISIBLE_DEVICES"] == "2,3"
+    assert values["LAE_VISIBLE_DEVICES"] == "3"  # shares SAM3's last card
+    assert values["INFERENCE_MIN_PENDING_CHIPS"] == "2"
+    # Multi-replica SAM3 -> serialize-forwards pinned on.
+    assert values["SAM3_SERIALIZE_FORWARDS"] == "1"
+
+
+def test_three_plus_free_dedicates_lae_card():
+    """With >=3 free cards, LAE gets its OWN card and SAM3 keeps the rest
+    (still multi-replica)."""
+    info = HostGpuInfo(
+        driver_version="595.58.03",
+        gpus=tuple(HostGpu("NVIDIA A100 80GB PCIe", memory_mib=81920) for _ in range(4)),
+    )
+
+    values = generated_env_values(info, frozenset({0}))
+
+    assert values["SAM3_VISIBLE_DEVICES"] == "1,2"
+    assert values["LAE_VISIBLE_DEVICES"] == "3"  # dedicated
+    assert values["SAM3_SERIALIZE_FORWARDS"] == "1"
+
+
+def test_partition_gpus_division_rules():
+    from configure_host import partition_gpus
+
+    # >=3 free -> dedicate last card to LAE, SAM3 keeps the rest
+    assert partition_gpus(4, frozenset()) == ([0, 1, 2], [3])
+    assert partition_gpus(3, frozenset()) == ([0, 1], [2])
+    # exactly 2 free -> SAM3 keeps both, LAE shares the last
+    assert partition_gpus(4, frozenset({0, 1})) == ([2, 3], [3])
+    assert partition_gpus(2, frozenset()) == ([0, 1], [1])
+    # 1 free -> share
+    assert partition_gpus(1, frozenset()) == ([0], [0])
+    # none free -> fall back
+    assert partition_gpus(2, frozenset({0, 1})) == ([], [])
+    assert partition_gpus(0, frozenset()) == ([], [])
+
+
+def test_parse_reserved_gpus_is_tolerant():
+    from configure_host import parse_reserved_gpus
+
+    assert parse_reserved_gpus("SENTINEL_RESERVED_GPUS=0,1\n", 4) == frozenset({0, 1})
+    # clamp out-of-range, ignore garbage and whitespace
+    assert parse_reserved_gpus("SENTINEL_RESERVED_GPUS = 2, 3 ,x,9\n", 4) == frozenset({2, 3})
+    assert parse_reserved_gpus("", 4) == frozenset()
 
 
 def test_single_gpu_keeps_profile_chip_dispatch():

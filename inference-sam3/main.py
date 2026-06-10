@@ -1065,6 +1065,7 @@ async def _detect_pipeline(
     _enabled: set,
     _layer_active,
     _unavailable: list,
+    precomputed_gd: list | None = None,
 ) -> dict[str, Any]:
     """Shared post-decode inference path used by both /detect and /detect_raw.
 
@@ -1151,7 +1152,16 @@ async def _detect_pipeline(
     gd_should_run, gd_gated_reason = grounding_dino_gate.should_run_grounding_dino(
         prompts, force=gd_force,
     )
-    if (
+    if precomputed_gd is not None:
+        # Batched path: the grounding_dino (LAE-DINO) candidates for this chip
+        # were computed upstream in ONE /detect_batch call over all chips in the
+        # group (see /detect_batch_raw). Use them directly instead of issuing a
+        # per-chip sidecar request — the gate was already evaluated for the
+        # shared prompt set before the batch call.
+        gd_candidates = precomputed_gd
+        layer_candidates.extend(_tag_candidates("grounding_dino", gd_candidates))
+        candidates_by_layer["grounding_dino"] = len(gd_candidates)
+    elif (
         bundle.get("grounding_dino")
         and prompts
         and (gd_force or _layer_active("grounding_dino"))
@@ -1216,7 +1226,15 @@ async def _detect_pipeline(
     t0 = mark("postprocess", t0)
     # DINOv3-SAT crop embeddings: one batched encoder pass over all detections
     # (was one forward + host transfer per detection). Same per-crop output.
-    if SAM3_EMBED_DETECTIONS and _layer_active("dinov3_sat") and bundle.get("dinov3_sat") and detections:
+    #
+    # NOT gated by _layer_active("dinov3_sat"): the per-detection embedding is
+    # re-ID *enrichment* (it feeds the backend's reference-platform auto-identify
+    # and the similarity DB), not a detector layer. Gating it behind a request's
+    # enabled_layers filter meant a request that scoped layers to detectors only
+    # left every detection with the `{"model":"disabled"}` placeholder, which
+    # then made the backend's auto-identify error once per detection. Embeddings
+    # run whenever SAM3_EMBED_DETECTIONS is on and the model is resident.
+    if SAM3_EMBED_DETECTIONS and bundle.get("dinov3_sat") and detections:
         emb_start = time.perf_counter()
         embeddings = await run_in_threadpool(
             _locked, embedding.embed_crops_batched, bundle.get("dinov3_sat"), chip3, embed_bboxes,
@@ -1562,6 +1580,140 @@ async def detect_raw(request: "Request"):  # type: ignore[name-defined]
             started, timings, queue_depth, _peak_dev,
             _enabled, _layer_active, _unavailable,
         )
+    finally:
+        _leave_request()
+
+
+@app.post("/detect_batch_raw")
+async def detect_batch_raw(request: "Request"):  # type: ignore[name-defined]
+    """Batched raw-binary endpoint: N RGB chips sharing one prompt set.
+
+    SAM3 + DOTA-OBB still run per chip under the serialize lock (poison-safe),
+    but the grounding_dino (LAE-DINO) call is made ONCE over the whole group —
+    one batched forward on the dedicated LAE GPU — instead of N separate sidecar
+    requests. The worker uses this only when SENTINEL_ENABLE_BATCHING is on; the
+    per-chip /detect_raw path is unchanged.
+
+    Body: concatenated C-contiguous uint8 chip buffers.
+    Headers:
+        X-Chip-Modality   : "rgb"
+        X-Batch-Count     : N
+        X-Batch-Shapes    : "H,W,3;H,W,3;..."  (one ','-triple per chip, ';'-joined)
+        X-Batch-Metas-B64 : base64 JSON list of N per-chip meta dicts
+        X-Chip-Dtype      : "uint8"
+    Returns: {"results": [<per-chip _detect_pipeline response>, ...]} in order.
+    """
+    queue_depth = _enter_request()
+    _peak_dev: int | None = None
+    try:
+        import torch as _torch_peak
+        if _torch_peak.cuda.is_available():
+            _peak_dev = _torch_peak.cuda.current_device()
+            _torch_peak.cuda.reset_peak_memory_stats(_peak_dev)
+    except Exception:
+        _peak_dev = None
+    try:
+        if (request.headers.get("X-Chip-Modality") or "rgb").lower() != "rgb":
+            raise HTTPException(status_code=400, detail="/detect_batch_raw only supports modality=rgb")
+        try:
+            n = int(request.headers.get("X-Batch-Count") or "0")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid X-Batch-Count")
+        if n <= 0:
+            raise HTTPException(status_code=400, detail="X-Batch-Count must be >= 1")
+        shapes_hdr = request.headers.get("X-Batch-Shapes") or ""
+        try:
+            shapes = [
+                tuple(int(p) for p in s.split(",") if p.strip())
+                for s in shapes_hdr.split(";") if s.strip()
+            ]
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"invalid X-Batch-Shapes: {shapes_hdr!r}")
+        if len(shapes) != n or any(len(s) != 3 or s[2] != 3 for s in shapes):
+            raise HTTPException(status_code=400, detail="X-Batch-Shapes must be N 'H,W,3' triples")
+        metas_b64 = request.headers.get("X-Batch-Metas-B64") or ""
+        try:
+            metas = json.loads(base64.b64decode(metas_b64).decode("utf-8")) if metas_b64 else [{} for _ in range(n)]
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"invalid X-Batch-Metas-B64: {exc}") from exc
+        if not isinstance(metas, list) or len(metas) != n:
+            raise HTTPException(status_code=400, detail="X-Batch-Metas-B64 must decode to N meta dicts")
+        metas = [m if isinstance(m, dict) else {} for m in metas]
+
+        body = await request.body()
+        chips: list[np.ndarray] = []
+        off = 0
+        for s in shapes:
+            nbytes = int(np.prod(s))
+            seg = body[off:off + nbytes]
+            if len(seg) != nbytes:
+                raise HTTPException(status_code=400, detail="batch body shorter than declared shapes")
+            chips.append(np.frombuffer(seg, dtype=np.uint8).reshape(s).copy())
+            off += nbytes
+
+        _ensure_profile("imagery_rgb")
+        bundle = _next_bundle()
+
+        # One shared grounding_dino (LAE) call over the whole group. Decide the
+        # gate from chip[0]'s meta + prompts; require all chips to share the same
+        # resolved prompt set, else fall back to per-chip GD (precomputed=None)
+        # so correctness never rests on the uniformity assumption.
+        precomputed: list[list | None] = [None] * n
+        try:
+            resolved = [resolve_prompts(m) for m in metas]
+        except Exception:
+            resolved = [[] for _ in metas]
+        shared = resolved[0] if resolved else []
+        uniform = all(r == shared for r in resolved)
+        m0 = metas[0]
+        gd_force = bool(m0.get("force_grounding_dino", False))
+        _enabled0 = set(m0.get("enabled_layers")) if isinstance(m0.get("enabled_layers"), list) else set()
+        _layer_active0 = (lambda layer: layer in _enabled0) if _enabled0 else (lambda _: True)
+        gd_should_run, _gd_reason = grounding_dino_gate.should_run_grounding_dino(shared, force=gd_force)
+        run_gd = bool(
+            uniform and shared and bundle.get("grounding_dino")
+            and (gd_force or _layer_active0("grounding_dino"))
+            and gd_should_run and (gd_force or "grounding_dino" in _enabled0)
+        )
+        if run_gd:
+            with _track("grounding_dino"):
+                # Serialize the batched LAE forward with SAM3 forwards when
+                # SAM3_SERIALIZE_FORWARDS is on. The LAE GPU may be SHARED with a
+                # SAM3 replica (<=2-GPU hosts); letting a 4-image LAE forward
+                # overlap a SAM3 forward there spikes VRAM (~49 GB) and stalls.
+                # Holding the lock for just the LAE call keeps the batch's
+                # amortization without re-introducing the contention the
+                # poison-serialize lock already prevents.
+                if SAM3_SERIALIZE_FORWARDS:
+                    async with _detect_serial_lock:
+                        gd_batched = await run_in_threadpool(
+                            grounding_dino.run_batch,
+                            bundle["grounding_dino"], chips, shared, grounding_dino.GROUNDING_DINO_THR,
+                        )
+                else:
+                    gd_batched = await run_in_threadpool(
+                        grounding_dino.run_batch,
+                        bundle["grounding_dino"], chips, shared, grounding_dino.GROUNDING_DINO_THR,
+                    )
+            for j in range(n):
+                precomputed[j] = gd_batched[j] if j < len(gd_batched) else []
+
+        results: list[dict[str, Any]] = []
+        for j in range(n):
+            meta_j = metas[j]
+            _raw_enabled = meta_j.get("enabled_layers")
+            _enabled_j = set(_raw_enabled) if isinstance(_raw_enabled, list) else set()
+            _reject_image_yoloe_layers(_enabled_j)
+            _layer_active_j = (lambda layer, e=_enabled_j: layer in e) if _enabled_j else (lambda _: True)
+            _unavailable_j = [l for l in _enabled_j if l not in ("sam3",) and not bundle.get(l)]
+            res = await _detect_pipeline_guarded(
+                bundle, meta_j, "rgb", chips[j], None, None,
+                time.perf_counter(), {}, queue_depth, _peak_dev,
+                _enabled_j, _layer_active_j, _unavailable_j,
+                precomputed_gd=precomputed[j],
+            )
+            results.append(res)
+        return {"results": results}
     finally:
         _leave_request()
 
