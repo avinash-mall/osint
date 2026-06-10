@@ -786,7 +786,37 @@ export default function GaiaMap({
     fetchBasemap();
   }, []);
 
+  // Tracks the pass currently streaming live detections, so we auto-select it
+  // once (on its first chip) and reset on the authoritative end-of-pass reload.
+  const streamingPassRef = useRef<number | null>(null);
   useEventStream('detections', useCallback((message: any) => {
+    // Live per-chip preview: append this chip's detections as they're produced
+    // so the analyst sees results within seconds, not after the whole ~90s pass.
+    // Features are minimal previews; the final reload below reconciles them with
+    // the fully-enriched set. See docs/decisions/why-live-streaming-detections.md.
+    if (message?.type === 'detections_partial') {
+      const passId = message?.pass_id != null ? Number(message.pass_id) : null;
+      if (passId != null && streamingPassRef.current !== passId) {
+        // First chip of this pass: frame it so the streaming detections are in
+        // view (mirrors the ingest_succeeded auto-select, just earlier).
+        streamingPassRef.current = passId;
+        setSelectedImagery(passId);
+        fetchImagery();
+      }
+      const feats = Array.isArray(message?.features) ? message.features : [];
+      if (feats.length) {
+        setDetectionsGeoJSON((prev: any) => {
+          const seen = new Set((prev?.features || []).map((f: any) => f?.properties?.id));
+          const add = feats.filter((f: any) => f?.properties?.id == null || !seen.has(f.properties.id));
+          if (!add.length) return prev;
+          return { type: 'FeatureCollection', features: [...(prev?.features || []), ...add] };
+        });
+      }
+      return;
+    }
+    // Non-partial (final detections_updated): authoritative reload that
+    // reconciles the live preview with the fully-enriched feature set.
+    streamingPassRef.current = null;
     focusTimeRange(message?.acquisition_time);
     fetchDetections();
     fetchDetectionTracks();

@@ -184,6 +184,47 @@ def _default_chip_concurrency() -> int:
 
 INFERENCE_CHIP_CONCURRENCY = max(1, env_int("INFERENCE_CHIP_CONCURRENCY", _default_chip_concurrency()))
 INFERENCE_CHIP_TIMEOUT_S = env_int("INFERENCE_CHIP_TIMEOUT_S", 120)
+# Live (streaming) detections: the per-chip `detections_partial` WS event carries
+# map-ready GeoJSON features so the frontend renders detections AS each chip
+# completes, instead of waiting ~90s for the whole pass. ON by default; set 0 to
+# fall back to count-only events + an end-of-pass load. A chip that exceeds the
+# feature cap streams counts only (the final load still reconciles), bounding the
+# WS message size. See docs/decisions/why-live-streaming-detections.md.
+LIVE_DETECTIONS_STREAM = os.getenv("LIVE_DETECTIONS_STREAM", "1").strip().lower() in {"1", "true", "yes", "on"}
+LIVE_DETECTIONS_MAX_FEATURES = env_int("LIVE_DETECTIONS_MAX_FEATURES", 400)
+
+
+def _det_to_live_feature(det: dict) -> dict | None:
+    """Build a compact, map-ready GeoJSON Feature from a stored detection dict.
+
+    Used only for the live preview embedded in `detections_partial`; the
+    authoritative, fully-enriched feature set is loaded from
+    /api/detections/geojson when the pass completes (reconciliation). Returns
+    None if the detection has no usable geometry / id yet.
+    """
+    det_id = det.get("id")
+    geo_polygon = det.get("geo_polygon")
+    if det_id is None or not geo_polygon or len(geo_polygon) < 6:
+        return None
+    pts = list(zip(geo_polygon[0::2], geo_polygon[1::2]))
+    if pts and pts[0] != pts[-1]:
+        pts.append(pts[0])
+    conf = det.get("confidence")
+    return {
+        "type": "Feature",
+        "geometry": {"type": "Polygon", "coordinates": [[[lon, lat] for lon, lat in pts]]},
+        "properties": {
+            "id": det_id,
+            "class": det.get("class", "Unknown"),
+            "confidence": conf,
+            "calibrated_confidence": det.get("calibrated_confidence", conf),
+            "pass_id": det.get("pass_id"),
+            "review_status": det.get("review_status", "review_candidate"),
+            "live_preview": True,
+        },
+    }
+
+
 # A poisoned CUDA context makes inference-sam3 self-heal by exiting and letting
 # `restart: unless-stopped` respawn it with a clean context (~100 s). See
 # docs/decisions/why-exit-on-poisoned-cuda-context.md. During that window chip
@@ -2766,6 +2807,11 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
             ))
             
             det_id = cursor.fetchone()["id"]
+            # Back-fill the stored id + pass onto the in-memory dict so callers
+            # (e.g. the live-streaming _store_chip callback) can reference the
+            # persisted row without a re-query.
+            det["id"] = det_id
+            det["pass_id"] = pass_id
 
             # Plan C: attach reference-DB platform identification candidates and
             # (when top-1 score >= threshold) auto-apply platform_* to
@@ -4964,13 +5010,21 @@ def process_satellite_imagery(
                     }
             stored = store_detections(kept_dets, pass_id, ontology_cache)
             streaming_total["stored"] += stored
-            publish_event("detections", {
+            event = {
                 "type": "detections_partial",
                 "pass_id": pass_id,
                 "chip_index": chip_index,
                 "stored": stored,
                 "stored_total": streaming_total["stored"],
-            })
+            }
+            # Embed map-ready features so the frontend renders this chip's
+            # detections live (store_detections back-filled det["id"]). Skip the
+            # embed for an over-cap chip — the end-of-pass load still reconciles.
+            if LIVE_DETECTIONS_STREAM and 0 < len(kept_dets) <= LIVE_DETECTIONS_MAX_FEATURES:
+                feats = [f for f in (_det_to_live_feature(d) for d in kept_dets) if f]
+                if feats:
+                    event["features"] = feats
+            publish_event("detections", event)
 
         inference_result = slice_and_infer(
             cog_path,

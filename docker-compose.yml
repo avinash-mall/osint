@@ -517,6 +517,11 @@ services:
       - INFERENCE_MAX_PENDING_CHIPS=${INFERENCE_MAX_PENDING_CHIPS:-}
       - INFERENCE_MIN_PENDING_CHIPS=${INFERENCE_MIN_PENDING_CHIPS:-4}
       - INFERENCE_CHIP_TIMEOUT_S=${INFERENCE_CHIP_TIMEOUT_S:-600}
+      # Live (streaming) detections: per-chip detections_partial WS events carry
+      # map-ready features so the UI renders them as each chip completes. ON by
+      # default. See docs/decisions/why-live-streaming-detections.md.
+      - LIVE_DETECTIONS_STREAM=${LIVE_DETECTIONS_STREAM:-1}
+      - LIVE_DETECTIONS_MAX_FEATURES=${LIVE_DETECTIONS_MAX_FEATURES:-400}
       # Phase 1: raster I/O tuning. Same block lives on inference-sam3 so
       # both processes share GDAL cache + vsicurl settings.
       - GDAL_CACHEMAX=${GDAL_CACHEMAX:-1024}
