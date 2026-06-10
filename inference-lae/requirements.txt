@@ -1,0 +1,12 @@
+# inference-lae — FastAPI sidecar app-layer deps only.
+#
+# The heavy ML stack (torch, mmengine, mmcv, the LAE-DINO mmdet fork, the BERT
+# text encoder) is installed in Dockerfile via `mim` + an editable install of
+# the bundled fork — it cannot be expressed as a flat pip pin because mmcv is
+# compiled from source against the exact torch/CUDA in the image. See
+# docs/inference/lae-dino-sidecar.md.
+fastapi>=0.110,<1
+uvicorn[standard]>=0.29,<1
+python-multipart>=0.0.9
+pillow>=10
+numpy>=1.23,<2

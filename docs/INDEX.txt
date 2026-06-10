@@ -72,8 +72,9 @@ inference/sam3-runner-internals.md|inference,sam3|build_image_bundle, run_text_p
 inference/sam3-pcs-multiplex-video.md|inference,sam3,fmv|SAM3.1 multiplex one-prompt-per-session video tracker
 inference/sam3-perf-profiling.md|inference,sam3|stage_timer CUDA-sync per-stage latency accumulator
 inference/fusion-and-nms.md|inference|mask-aware fusion across SAM3/DOTA/GDINO/YOLOE detections
-inference/grounding-dino-detector.md|inference|IDEA-Research grounding-dino-{tiny,base} text-to-box
+inference/grounding-dino-detector.md|inference|grounding_dino layer = HTTP client for the LAE-DINO sidecar
 inference/grounding-dino-gate.md|inference|server-side gate skips GDINO on common-vocab prompts
+inference/lae-dino-sidecar.md|inference|LAE-DINO RS open-vocab detector sidecar (mmdet fork) behind grounding_dino layer
 inference/yoloe-tracker.md|inference,fmv|YOLOE-26x-seg(-pf) prompt-free + text-promptable, replaces SAM3 AMG
 inference/dota-obb-specialist.md|inference|Ultralytics YOLO26m-obb default with YOLO11n low-VRAM fallback
 inference/dinov3-embeddings.md|inference|DINOv3 ViT-L SAT-493M re-ID embedding head
@@ -209,6 +210,7 @@ decisions/why-generic-labels-when-unverified.md|decision,backend,ontology|generi
 decisions/why-grounding-dino-auto-gated.md|decision|forcing GDINO drops mAP via NMS suppression of DOTA detections
 decisions/why-imagery-dedup-is-hash-only.md|decision,backend,imagery|satellite_passes dedup on source_hash alone; footprint+acq_time+filename branches collapsed distinct uploads
 decisions/why-imagery-yoloe-mirrors-fmv.md|decision,imagery,inference|superseded: older image YOLOE routing experiment replaced by FMV-only YOLOE
+decisions/why-lae-dino-replaces-grounding-dino.md|decision,inference|RS-tuned LAE-DINO replaces generic Grounding-DINO; runs as inference-lae sidecar (dep conflict)
 decisions/why-layerpanel-dot-toggle.md|decision,frontend|eye-toggle column removed; 10px coloured dot is the visibility signal, locked analytics subgroup
 decisions/why-live-test-tier.md|decision,testing|third test tier vs real nginx:3000: catches wiring/auth/inference seams mocks can't; idle-gate + FMV opt-in
 decisions/why-offline-area-dossier.md|decision,backend|right-click area dossier from baked ne_countries (point-in-polygon), no Wikipedia/online

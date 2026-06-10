@@ -1,68 +1,83 @@
-"""Grounding DINO open-vocabulary text-to-box detector.
+"""Open-vocabulary text-to-box detector — HTTP client for the LAE-DINO sidecar.
 
-A second open-vocabulary detector that complements SAM 3:
-- SAM 3 is a strong segmenter but its objectness on small / dense overhead
-  targets is weaker than a purpose-built detector.
-- Grounding DINO produces text-conditioned boxes with explicit objectness
-  scoring; pairing it with SAM 3 gives "tight box from Grounding DINO,
-  pixel-perfect mask from SAM 3" which is the published best-practice
-  for zero-shot satellite detection.
+This module keeps the *layer identity* `grounding_dino` (gate, profile slot,
+`source_layer` provenance, health field, frontend toggle, calibration all key
+off this name) but the model behind it is now **LAE-DINO** ("Locate Anything on
+Earth", AAAI'25) — a Grounding-DINO derivative fine-tuned on the LAE-1M
+aerial/satellite corpus (DIOR + DOTAv2 + FAIR1M + xView + …) instead of the
+natural-image IDEA-Research weights it replaces.
 
-Returns the same `(mask, bbox_xyxy, score, label)` tuple shape SAM 3 emits, so
-detections merge into the existing `fusion.mask_aware_nms` pipeline alongside
-DOTA-OBB, YOLOv8m_defence, and SAM 3 itself.
+Why a remote call instead of in-process: LAE-DINO ships as a forked mmdetection
+(mmcv/mmengine + custom `LAEDINO(DINO)` registry) whose torch/transformers pins
+conflict with the SAM 3 / TerraMind / Prithvi stack in this service. It runs in
+the separate `inference-lae` container; this client POSTs chips to it and maps
+the returned boxes back into the SAM3-shaped `(mask, bbox_xyxy, score, label)`
+tuple so detections still merge into `fusion.mask_aware_nms` alongside DOTA-OBB
+and SAM 3. The "mask" is a filled bbox-rectangle (LAE-DINO emits boxes only);
+SAM 3 supplies pixel-perfect masks downstream.
 
-Source: IDEA-Research/grounding-dino-{tiny,base} on Hugging Face,
-Apache-2.0, transformers-native (no extra pip dep).
+See docs/decisions/why-lae-dino-replaces-grounding-dino.md and
+docs/inference/lae-dino-sidecar.md.
 """
 from __future__ import annotations
 
+import io
 import os
 from typing import Any, Iterable
 
 import numpy as np
 
 
-GROUNDING_DINO_REPO_ID = os.getenv("GROUNDING_DINO_REPO_ID", "IDEA-Research/grounding-dino-tiny")
-# 0.30 box / 0.25 text — stricter than the permissive 0.20/0.15 that let GD's
-# short token fragments (e.g. "oil" extracted from "oil or gas facility" at
-# conf 0.31) through as false positives on overhead imagery. Open-vocabulary
-# detectors run at a 69% FP rate on aerial scenes; a firmer floor is the cheap
-# part of the fix (the vocabulary scoping is the rest).
+# Sidecar endpoint. The layer is gated OFF by default (SAM3_LOAD_GROUNDING_DINO);
+# enabling it requires bringing up the inference-lae service.
+LAE_DINO_URL = os.getenv("LAE_DINO_URL", "http://inference-lae:8010").rstrip("/")
+LAE_DINO_TIMEOUT = float(os.getenv("LAE_DINO_TIMEOUT", "30"))
+# 0.30 box / 0.25 text — a firm floor keeps open-vocabulary false positives
+# down on overhead imagery (the dominant failure mode). Names kept as
+# GROUNDING_DINO_* so the existing env/compose/threshold wiring is untouched.
 GROUNDING_DINO_THR = float(os.getenv("GROUNDING_DINO_THRESHOLD", "0.30"))
 GROUNDING_DINO_TEXT_THR = float(os.getenv("GROUNDING_DINO_TEXT_THRESHOLD", "0.25"))
 GROUNDING_DINO_IMGSZ = int(os.getenv("GROUNDING_DINO_IMGSZ", "1024"))
-# Max phrases per GD forward pass. Concatenating a long caption makes adjacent
-# concepts "bleed" into each other's token spans; chunking the vocabulary into
-# short queries keeps each phrase cleanly grounded. Detections from every chunk
-# merge in fusion.mask_aware_nms downstream, so chunking is transparent.
+# Max phrases per request. Concatenating a long caption makes adjacent concepts
+# "bleed" into each other's token spans; chunking the vocabulary into short
+# queries keeps each phrase cleanly grounded. Detections from every chunk merge
+# in fusion.mask_aware_nms downstream, so chunking is transparent.
 GROUNDING_DINO_MAX_PHRASES = int(os.getenv("GROUNDING_DINO_MAX_PHRASES_PER_QUERY", "10"))
+
+# Human-readable identity surfaced in /health.
+_MODEL_ID = os.getenv("LAE_DINO_MODEL_ID", "LAE-DINO (lae_dino_swint_lae1m)")
 
 
 def load(device: str) -> dict[str, Any]:
-    """Load Grounding DINO via transformers. Auto-downloads to HF cache."""
+    """Probe the LAE-DINO sidecar and return a bundle.
+
+    No GPU work happens in this process — the sidecar owns its own device. The
+    `device` arg is kept for interface parity with the other detector loaders.
+    A reachable sidecar yields a truthy `model` sentinel so main.py's
+    `bundle.get("grounding_dino")` gate and `_model_loaded` checks behave exactly
+    as they did for the in-process detector. An unreachable sidecar returns a
+    bundle with `model=None` + an error, so the layer simply does not run
+    (graceful degradation, same as a missing dependency previously).
+    """
     try:
-        from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
+        import requests
     except ImportError as exc:
-        return {"model": None, "device": device, "repo_id": GROUNDING_DINO_REPO_ID, "error": str(exc)}
+        return {"model": None, "device": device, "repo_id": _MODEL_ID, "url": LAE_DINO_URL, "error": str(exc)}
     try:
-        processor = AutoProcessor.from_pretrained(GROUNDING_DINO_REPO_ID)
-        model = AutoModelForZeroShotObjectDetection.from_pretrained(GROUNDING_DINO_REPO_ID)
-        if device and device != "cpu":
-            try:
-                model = model.to(device)
-            except Exception:
-                pass
-        model.eval()
+        resp = requests.get(f"{LAE_DINO_URL}/health", timeout=5)
+        resp.raise_for_status()
+        info = resp.json()
+        loaded = bool(info.get("model_loaded"))
         return {
-            "model": model,
-            "processor": processor,
+            "model": True if loaded else None,
             "device": device,
-            "repo_id": GROUNDING_DINO_REPO_ID,
+            "repo_id": info.get("model", _MODEL_ID),
+            "url": LAE_DINO_URL,
+            "error": None if loaded else (info.get("model_error") or "sidecar model not loaded"),
         }
     except Exception as exc:
-        print(f"[grounding_dino] failed to load {GROUNDING_DINO_REPO_ID}: {exc}")
-        return {"model": None, "device": device, "repo_id": GROUNDING_DINO_REPO_ID, "error": str(exc)}
+        print(f"[grounding_dino] LAE-DINO sidecar unreachable at {LAE_DINO_URL}: {exc}")
+        return {"model": None, "device": device, "repo_id": _MODEL_ID, "url": LAE_DINO_URL, "error": str(exc)}
 
 
 def run(
@@ -71,12 +86,11 @@ def run(
     prompts: Iterable[str],
     score_threshold: float = GROUNDING_DINO_THR,
 ) -> list[tuple[np.ndarray, list[float], float, str]]:
-    """Run Grounding DINO on a chip with the supplied prompts.
+    """POST a chip to the LAE-DINO sidecar and return SAM3-shaped tuples.
 
     The vocabulary is split into chunks of at most GROUNDING_DINO_MAX_PHRASES
-    phrases per forward pass to avoid cross-concept token bleed. Output is the
-    SAM3-shaped tuple list so the existing `fusion.mask_aware_nms` step can
-    dedupe across chunks and across all detector sources.
+    phrases per request to avoid cross-concept token bleed; detections from
+    every chunk are concatenated and deduped later by fusion.mask_aware_nms.
     """
     if bundle is None or bundle.get("model") is None:
         return []
@@ -85,84 +99,54 @@ def run(
         return []
 
     try:
-        import torch
+        import requests
         from PIL import Image
     except Exception as exc:
         print(f"[grounding_dino] dependency missing: {exc}")
         return []
 
-    model = bundle["model"]
-    processor = bundle["processor"]
-    device = bundle.get("device", "cpu")
+    url = bundle.get("url", LAE_DINO_URL)
     height, width = image_rgb_uint8.shape[:2]
-    pil = Image.fromarray(image_rgb_uint8)
 
-    from inference_utils import safe_predict, cuda_cleanup, memory_guard, device_ctx
+    # Encode the chip once (PNG, lossless) and reuse the bytes across chunks.
+    buf = io.BytesIO()
+    Image.fromarray(image_rgb_uint8).save(buf, format="PNG")
+    png_bytes = buf.getvalue()
 
     def _forward_chunk(label_list: list[str]) -> list[tuple[np.ndarray, list[float], float, str]]:
-        # Grounding DINO's processor expects a list of phrases joined by ". "
-        # in a single text query string. The post-processor uses `text_labels`
-        # to map detected token spans back to the original phrase strings.
-        text_query = ". ".join(label_list) + "."
-
-        def _do_forward():
-            inputs = processor(images=pil, text=text_query, return_tensors="pt")
-            # Move every tensor in the BatchEncoding to the target device. The
-            # default `.to(device)` only walks the top-level dict and can leave
-            # nested ints/longs on CPU, triggering "tensors on different
-            # devices" at forward time.
-            # Pin the current CUDA device too: this runs in the anyio threadpool
-            # (current device defaults to cuda:0), so a forward on cuda:N would
-            # issue cross-device kernels and illegal-access under concurrency.
-            # See docs/decisions/optical-inference-throughput.md.
-            with device_ctx(device):
-                inputs_dev = {k: (v.to(device) if hasattr(v, "to") else v) for k, v in inputs.items()}
-                with torch.inference_mode():
-                    outputs = model(**inputs_dev)
-                return processor.post_process_grounded_object_detection(
-                    outputs,
-                    input_ids=inputs_dev.get("input_ids"),
-                    threshold=score_threshold,
-                    text_threshold=GROUNDING_DINO_TEXT_THR,
-                    target_sizes=[(height, width)],
-                    text_labels=[label_list],
-                )
-
+        import json as _json
         try:
-            with memory_guard("grounding_dino"):
-                results = safe_predict(
-                    _do_forward,
-                    on_oom=cuda_cleanup,
-                    max_retries=1,
-                    fallback=lambda: [],
-                    name="grounding_dino.run",
-                )
+            resp = requests.post(
+                f"{url}/detect",
+                files={"file": ("chip.png", png_bytes, "image/png")},
+                data={
+                    "prompts": _json.dumps(label_list),
+                    "threshold": str(score_threshold),
+                    "text_threshold": str(GROUNDING_DINO_TEXT_THR),
+                },
+                timeout=LAE_DINO_TIMEOUT,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
         except Exception as exc:
-            print(f"[grounding_dino] inference failed: {exc}")
+            print(f"[grounding_dino] LAE-DINO request failed: {exc}")
             return []
-
-        if not results:
-            return []
-        result = results[0]
-        boxes = result.get("boxes")
-        scores = result.get("scores")
-        labels = result.get("text_labels") or result.get("labels")
-        if boxes is None or scores is None or labels is None:
-            return []
+        if payload.get("error"):
+            print(f"[grounding_dino] LAE-DINO error: {payload['error']}")
 
         chunk_out: list[tuple[np.ndarray, list[float], float, str]] = []
-        boxes_np = boxes.detach().cpu().numpy() if hasattr(boxes, "detach") else np.asarray(boxes)
-        scores_np = scores.detach().cpu().numpy() if hasattr(scores, "detach") else np.asarray(scores)
-        for box, score, label in zip(boxes_np, scores_np, labels):
-            score_f = float(score)
+        for det in payload.get("detections", []):
+            score_f = float(det.get("score", 0.0))
             if score_f < score_threshold:
                 continue
-            # Grounding DINO's post-processor returns short token-span strings
-            # (e.g. "oil" from "oil or gas facility", or "fixed - wing
-            # aircraft" with mangled punctuation). Map back to the canonical
-            # prompt so the detection routes to the right ontology branch.
-            canonical = _map_to_original_prompt(str(label), label_list)
+            # LAE-DINO returns the matched entity string; map it back to the
+            # operator's canonical prompt so the detection routes to the right
+            # ontology branch (drops opaque/unmappable labels).
+            canonical = _map_to_original_prompt(str(det.get("label", "")), label_list)
             if canonical is None:
+                continue
+            box = det.get("bbox") or []
+            if len(box) < 4:
                 continue
             x1, y1, x2, y2 = (float(v) for v in box[:4])
             mask = _bbox_mask(x1, y1, x2, y2, height, width)
@@ -177,7 +161,7 @@ def run(
 
 
 def _map_to_original_prompt(returned_label: str, prompts: list[str]) -> str | None:
-    """Map Grounding DINO's parsed label back to the original prompt string.
+    """Map LAE-DINO's parsed entity string back to the original prompt string.
 
     Returns the original prompt that best contains the returned tokens. If
     nothing matches, returns ``None`` so the candidate is dropped — better to
@@ -224,6 +208,7 @@ def model_versions(bundle: dict[str, Any] | None) -> dict[str, Any]:
     return {
         "loaded": bundle.get("model") is not None,
         "repo_id": bundle.get("repo_id"),
+        "url": bundle.get("url", LAE_DINO_URL),
         "threshold": GROUNDING_DINO_THR,
         "text_threshold": GROUNDING_DINO_TEXT_THR,
         "imgsz": GROUNDING_DINO_IMGSZ,
