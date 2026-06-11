@@ -288,7 +288,16 @@ def build_colocation_edges(
     edges = build_proximity_edges(
         records, method, k=k, radius_m=radius_m or 1000.0, max_distance_m=cap
     )
-    return [
-        {"a_id": a, "b_id": b, "distance_m": dist, "method": method}
-        for (a, b, dist) in edges
-    ]
+    # build_proximity_edges stringifies node ids internally; map them back to the
+    # caller's original id type (detection postgis ids are ints) so the persistence
+    # MATCH against Neo4j's integer ``postgis_id`` succeeds. Re-canonicalise the
+    # direction by value when both ids are ints so re-runs stay idempotent.
+    id_lookup = {str(rec[0]): rec[0] for rec in records}
+    rows: list[dict] = []
+    for (a, b, dist) in edges:
+        ia = id_lookup.get(a, a)
+        ib = id_lookup.get(b, b)
+        if isinstance(ia, int) and isinstance(ib, int) and ia > ib:
+            ia, ib = ib, ia
+        rows.append({"a_id": ia, "b_id": ib, "distance_m": dist, "method": method})
+    return rows

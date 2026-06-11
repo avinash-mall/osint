@@ -99,6 +99,19 @@ def test_build_colocation_rows_shape():
         assert row["method"] == "knn"
 
 
+def test_colocation_rows_preserve_int_ids():
+    # Regression: build_proximity_edges stringifies node ids internally, but the
+    # persistence MATCH compares against Neo4j's integer `postgis_id`. The rows
+    # must carry the caller's original int ids (not "10"-style strings), and the
+    # direction must be value-ordered so "10" doesn't sort before "9".
+    recs = [(9, 0.0, 0.0), (10, 0.0001, 0.0), (11, 0.0002, 0.0)]
+    rows = build_colocation_edges(recs, method="knn", k=2)
+    assert rows
+    for row in rows:
+        assert isinstance(row["a_id"], int) and isinstance(row["b_id"], int)
+        assert row["a_id"] < row["b_id"]  # value-ordered, not lexicographic
+
+
 def test_degenerate_inputs():
     assert knn_edges([], k=3) == []
     assert knn_edges([("only", 1.0, 1.0)], k=3) == []

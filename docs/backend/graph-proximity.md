@@ -1,7 +1,7 @@
 # `backend/graph_proximity.py` — Proximity-graph builders
 
 **Path:** [backend/graph_proximity.py](../../backend/graph_proximity.py)
-**Lines:** ~294
+**Lines:** ~303
 **Depends on:** `numpy`, `scipy` (`spatial.Delaunay`, `spatial.cKDTree`, `sparse.csgraph.minimum_spanning_tree`) — both already in [backend/requirements.txt](../../backend/requirements.txt). No network, no online loaders.
 
 ## Purpose
@@ -23,7 +23,7 @@ Vendored from the proximity models in the open-source **city2graph** library (BS
 - [`euclidean_mst_edges(records)`](../../backend/graph_proximity.py#L185-L202) — Euclidean MST over the Delaunay edge set (which provably contains it).
 - [`build_proximity_edges(records, method, **kw)`](../../backend/graph_proximity.py#L215-L222) — dispatch by name; unknown method → `ValueError`.
 - [`bridge_edges(source, target, method, k, radius_m)`](../../backend/graph_proximity.py#L225-L267) — heterogeneous edges from each source node to nearby target nodes (city2graph `bridge_nodes` semantics).
-- [`build_colocation_edges(records, method, k, radius_m, max_distance_m)`](../../backend/graph_proximity.py#L270-L294) — high-level helper; returns persistence-ready `{a_id, b_id, distance_m, method}` rows for `project_colocation_edges_batch`. Applies a default 5 km cap.
+- [`build_colocation_edges(records, method, k, radius_m, max_distance_m)`](../../backend/graph_proximity.py#L270-L303) — high-level helper; returns persistence-ready `{a_id, b_id, distance_m, method}` rows for `project_colocation_edges_batch`. Applies a default 5 km cap. **Remaps the stringified ids back to the caller's original int type** and value-orders the direction — `build_proximity_edges` stringifies node ids internally, but the persistence MATCH compares against Neo4j's integer `postgis_id`, so emitting `"31915"` instead of `31915` silently wrote zero edges (caught by the San Diego airport real-imagery test, 2026-06-11).
 
 ## Inputs / Outputs
 
@@ -34,6 +34,7 @@ Vendored from the proximity models in the open-source **city2graph** library (BS
 - Unknown `method` → `ValueError` (the `/api/graph/colocation` route maps it to HTTP 400; the builder task returns `{"error": "bad_method"}`).
 - `< 2` records → empty edge list.
 - Collinear/degenerate input to Delaunay → falls back to the complete graph.
+- **Id-type mismatch (fixed):** `build_colocation_edges` must return the caller's original int ids; if rows leak the internal string ids, `project_colocation_edges_batch`'s `MATCH (:Detection {postgis_id: ...})` matches nothing and persists zero edges with no error (it swallows misses). Regression-guarded in [tests/test_graph_proximity.py](../../backend/tests/test_graph_proximity.py) `test_colocation_rows_preserve_int_ids`.
 
 ## Cross-references
 
