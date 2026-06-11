@@ -19,16 +19,16 @@ live preview (reconciliation).
 (`id`, `class`, `confidence`, `calibrated_confidence`, `pass_id`, polygon
 geometry, `live_preview: true`) built from the in-memory detection dict —
 `store_detections` back-fills `det["id"]` from its `RETURNING id` so no re-query
-is needed. The full feature shape (parent_class, review_status, threshold,
-provenance, uncertainty halo) still comes from `GET /api/detections/geojson` on
-the final `detections_updated` event. So the live view is a fast preview; the end
-state is authoritative and identical to before.
+is needed. On the final `detections_updated` event the map re-fetches the lite
+feed (`GET /api/detections/geojson-lite`) and bumps the MVT tile version; the
+full feature shape (parent_class, review_status, threshold, provenance) comes
+per-id from `GET /api/detections/{id}/enriched` on selection. So the live view
+is a fast preview; the end state is authoritative.
 
 **Why embed features (vs. re-poll per chip).** Embedding makes the map
 **append-only** with zero extra round-trips — each chip's `setDetectionsGeoJSON`
-spreads in the new features (deduped by `properties.id`). Re-polling
-`/api/detections/geojson` per chip would need a new `pass_id` filter and
-re-serialize a growing set 25× (more DB load, map flicker).
+spreads in the new features (deduped by `properties.id`). Re-polling the bulk
+feed per chip would re-serialize a growing set 25× (more DB load, map flicker).
 
 **Framing.** On the first chip of a pass the map auto-selects it and loads its
 imagery (the COG exists ~0.5 s into processing) — the same auto-select the final

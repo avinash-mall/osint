@@ -7,7 +7,7 @@ admin, then exercises every route group: all GET reads, the mutating CRUD
 flows (AOI / ontology / operational-entity / thresholds), and the heavy
 jobs/model paths (ingest, analytics, inference load/unload). Mutations are
 tagged ``SMOKE_TEST_`` and torn down; the inference profile is captured and
-restored. Coverage is scored against an embedded catalog of all 152 routes
+restored. Coverage is scored against an embedded catalog of all 164 routes
 (generated from the live OpenAPI spec) and drift is reported.
 
 Usage:
@@ -32,7 +32,7 @@ except ImportError:  # pragma: no cover
     sys.exit("requests is required: pip install requests")
 
 # ---------------------------------------------------------------------------
-# Embedded route catalog — all 154 endpoints, generated from the live
+# Embedded route catalog — all 164 endpoints, generated from the live
 # OpenAPI spec (GET /openapi.json inside the backend container). Used for
 # coverage scoring and drift detection against the running server.
 # ---------------------------------------------------------------------------
@@ -78,7 +78,6 @@ CATALOG = [
     ('POST', '/api/detection-target-candidates/{candidate_id}/reject'),
     ('GET', '/api/detections'),
     ('GET', '/api/detections/classes'),
-    ('GET', '/api/detections/geojson'),
     ('GET', '/api/detections/geojson-lite'),
     ('POST', '/api/detections/manual'),
     ('GET', '/api/detections/prithvi-overlays'),

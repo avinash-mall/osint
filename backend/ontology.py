@@ -69,10 +69,10 @@ _TREE_CACHE: dict[str, Any] = {
 
 # Result memo for normalize(): label matching is a regex/dict sweep (and an
 # unknown-label DB upsert) that ran on *every* call — ~1 ms each, dominating any
-# hot loop that normalizes thousands of detections (e.g. /api/detections/geojson
-# over a dense scene). The result is deterministic for a given ontology tree, so
-# we memoize it keyed by (canon, layer) and clear the memo whenever the tree is
-# rebuilt or invalidated. See decisions/why-memoize-ontology-normalize.md.
+# hot loop that normalizes thousands of detections (e.g. the /api/detections
+# list over a dense scene). The result is deterministic for a given ontology
+# tree, so we memoize it keyed by (canon, layer) and clear the memo whenever
+# the tree is rebuilt or invalidated. See decisions/why-memoize-ontology-normalize.md.
 _NORMALIZE_MEMO: dict[tuple[str, str], "NormalizedLabel"] = {}
 _NORMALIZE_MEMO_MAX = 50_000  # paranoia bound against unbounded novel input
 

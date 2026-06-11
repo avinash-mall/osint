@@ -681,8 +681,8 @@ def ensure_tile_sources() -> None:
     function source. It emits an MVT ``detections`` layer carrying only the ~10
     fields the map renders (all already materialised in ``detections.metadata``
     at write time by ``store_detections`` — no Python). It excludes soft-deleted
-    rows and accepts optional ``det_class`` / ``pass_id`` query params (mirroring
-    the class/image dropdowns). See docs/decisions/why-detection-mvt-tiles.md.
+    rows; the only query param is ``geom_mode`` (obb|hbb|mask).
+    See docs/decisions/why-detection-mvt-tiles.md.
 
     ``tile_version`` is a singleton counter bumped on every detection mutation;
     the frontend appends it to tile URLs so a write busts the nginx/browser cache.
@@ -732,8 +732,6 @@ def ensure_tile_sources() -> None:
             AS $$
             DECLARE
                 mvt bytea;
-                f_class text := NULLIF(query_params->>'det_class', '');
-                f_pass  int  := NULLIF(query_params->>'pass_id', '')::int;
                 f_mode  text := lower(COALESCE(NULLIF(query_params->>'geom_mode', ''), 'obb'));
             BEGIN
                 WITH bounds AS (
@@ -753,7 +751,6 @@ def ensure_tile_sources() -> None:
                         COALESCE(d.metadata->>'allegiance', d.affiliation, 'unknown') AS allegiance,
                         d.metadata->>'review_status'                         AS review_status,
                         d.pass_id,
-                        d.centroid,
                         CASE f_mode
                             WHEN 'mask' THEN d.geom
                             WHEN 'hbb'  THEN ST_Envelope(d.geom)
@@ -763,8 +760,6 @@ def ensure_tile_sources() -> None:
                     WHERE d.deleted_at IS NULL
                       AND d.geom IS NOT NULL
                       AND d.geom && ST_Transform(b.env_3857, 4326)   -- GIST index on geom(4326)
-                      AND (f_class IS NULL OR d.class = f_class)
-                      AND (f_pass  IS NULL OR d.pass_id = f_pass)
                 ),
                 poly AS (
                     SELECT ST_AsMVTGeom(ST_Transform(base.display_geom, 3857), b.env_3857) AS geom,
@@ -772,16 +767,9 @@ def ensure_tile_sources() -> None:
                            base.original_class, base.icon_key, base.label, base.threat_level,
                            base.allegiance, base.review_status, base.pass_id
                     FROM base, bounds b
-                ),
-                pts AS (
-                    SELECT ST_AsMVTGeom(ST_Transform(base.centroid, 3857), b.env_3857) AS geom,
-                           base.id, base.class, base.confidence, base.branch_id, base.icon_key
-                    FROM base, bounds b
-                    WHERE base.centroid IS NOT NULL
                 )
                 SELECT
-                    COALESCE((SELECT ST_AsMVT(poly.*, 'detections')       FROM poly WHERE poly.geom IS NOT NULL), ''::bytea)
-                  || COALESCE((SELECT ST_AsMVT(pts.*,  'detection_points') FROM pts  WHERE pts.geom  IS NOT NULL), ''::bytea)
+                    COALESCE((SELECT ST_AsMVT(poly.*, 'detections') FROM poly WHERE poly.geom IS NOT NULL), ''::bytea)
                 INTO mvt;
                 -- Empty tiles: return 0-byte MVT (HTTP 200, cacheable) instead of
                 -- NULL (which Martin serves as 404 — noisy + uncacheable at low zoom).
@@ -789,6 +777,13 @@ def ensure_tile_sources() -> None:
             END;
             $$ LANGUAGE plpgsql STABLE PARALLEL SAFE;
         """)
+        # The function shape can change across releases (e.g. the detection_points
+        # sublayer was dropped). Bump the cache-bust version on startup so nginx /
+        # browsers never serve a tile baked by an older function to a new bundle.
+        cursor.execute(
+            "UPDATE tile_version SET version_id = version_id + 1, updated_at = now() "
+            "WHERE singleton = TRUE"
+        )
 
 
 def bump_tile_version() -> int:

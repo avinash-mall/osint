@@ -198,9 +198,9 @@ def _det_to_live_feature(det: dict) -> dict | None:
     """Build a compact, map-ready GeoJSON Feature from a stored detection dict.
 
     Used only for the live preview embedded in `detections_partial`; the
-    authoritative, fully-enriched feature set is loaded from
-    /api/detections/geojson when the pass completes (reconciliation). Returns
-    None if the detection has no usable geometry / id yet.
+    authoritative feature set is loaded from
+    /api/detections/geojson-lite when the pass completes (reconciliation).
+    Returns None if the detection has no usable geometry / id yet.
     """
     det_id = det.get("id")
     geo_polygon = det.get("geo_polygon")

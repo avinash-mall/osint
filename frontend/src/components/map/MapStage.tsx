@@ -93,16 +93,6 @@ const TILE_PROXY_URL = (import.meta as any).env?.VITE_TILE_PROXY_URL || '/tiles'
 // one tile across the viewport — unmount it; imagery is the source of truth at high zoom.
 export const BASEMAP_OVERLAY_MAX_ZOOM = 14;
 
-// Martin vector-tile (MVT) rendering of persisted detections — DEFAULT ON.
-// Persisted detection BOXES render as styled vector-tile polygons
-// (DetectionTileLayer); markers/dots come from the lite centroid feed
-// (/api/detections/geojson-lite, held in detectionsGeoJSON) so the lucide
-// icons are preserved; selection routes through /api/detections/{id}/enriched.
-// Set VITE_DETECTION_TILES=0 at build time to restore the legacy fat-geojson
-// path (per-feature <Polygon> boxes + markers from the full /geojson feed).
-export const USE_DETECTION_TILES =
-  ((import.meta as any).env?.VITE_DETECTION_TILES) !== '0';
-
 export type MapHandle = {
   /** Imperatively pan the map to a detection feature's bounds. */
   panToDetection: (feature: any) => void;
@@ -134,7 +124,7 @@ export type Props = {
      receives the fully-enriched (fat) feature shape. */
   selectDetectionById: (id: any, fallback?: any) => void;
 
-  /* MVT detection tiles (default ON via USE_DETECTION_TILES). The version is the
+  /* MVT detection tiles (the sole renderer for persisted boxes). The version is the
      /api/detections/tile-version cache-bust token; geomMode mirrors the box
      mode (obb|hbb|mask); the filters mirror the box layer's client-side
      filters so the tile style matches. */
@@ -703,47 +693,13 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
             );
           })}
 
-          {/* Position-uncertainty halos. Render a faint circle at each
-              detection's centroid with radius = position_uncertainty_m when
-              zoomed in tight (z>=14). Skipped when there are too many visible
-              features. */}
-          {activeLayers.detections
-            && mapZoom >= 14
-            && filteredDetectionsGeoJSON.features
-            && filteredDetectionsGeoJSON.features.length > 0
-            && filteredDetectionsGeoJSON.features.length <= 400
-            && filteredDetectionsGeoJSON.features.map((feature: any) => {
-              const center = detectionCenter(feature);
-              const uncertainty = Number(feature?.properties?.position_uncertainty_m);
-              if (!center || !Number.isFinite(uncertainty) || uncertainty <= 0) return null;
-              const p = feature.properties || {};
-              return (
-                <Circle
-                  key={`uncert-${p.id}-${center[0]}-${center[1]}`}
-                  center={center}
-                  radius={uncertainty}
-                  pathOptions={{
-                    color: '#9ec8ff',
-                    weight: 1,
-                    opacity: 0.35,
-                    fillColor: '#9ec8ff',
-                    fillOpacity: 0.05,
-                    dashArray: '3,3',
-                  }}
-                  interactive={false}
-                />
-              );
-            })}
-
-          {/* Detection bounding boxes — one <Polygon> per feature. In the
-              DEFAULT (USE_DETECTION_TILES) path, persisted detections live in
-              detectionsGeoJSON as centroid Points (the lite feed), so
-              geojsonToLatLngs returns null for them and this layer renders
-              NOTHING for persisted boxes (the MVT tile layer below draws those).
-              What it DOES still render are live-preview Polygon features pushed
-              by the detections_partial WS handler — so previews keep their boxes.
-              In the legacy (VITE_DETECTION_TILES=0) path this is the sole box
-              layer over the fat /geojson polygons.
+          {/* LIVE-PREVIEW boxes — one <Polygon> per feature. Persisted
+              detections arrive as centroid Points from the lite feed
+              (/api/detections/geojson-lite), so geojsonToLatLngs returns null
+              for them and this layer renders NOTHING for persisted boxes —
+              those always come from the MVT tile layer below. What it DOES
+              render are streaming Polygon previews pushed by the
+              detections_partial WS handler, so in-flight runs keep their boxes.
 
               The per-feature map mirrors the icon-marker layer above; a single
               bad geometry only skips that one box instead of silently killing
@@ -763,15 +719,14 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
             );
           })}
 
-          {/* DEFAULT — MVT detection polygons for PERSISTED detections (same
-              category colours / confidence opacity / military dash, same
-              client-side filters as the legacy box layer). geomMode mirrors the
-              box-mode toggle (obb|hbb|mask). The point sublayer is hidden inside
-              the layer so we don't double-draw dots — markers/dots come from the
-              lite feed above. Click routes through selectDetectionById, which
+          {/* MVT detection polygons for PERSISTED detections (same category
+              colours / confidence opacity / military dash, same client-side
+              filters as the live-preview box layer). geomMode mirrors the
+              box-mode toggle (obb|hbb|mask). Markers/dots come from the lite
+              feed above. Click routes through selectDetectionById, which
               fetches the enriched feature so the SelectionPanel works
               identically. */}
-          {USE_DETECTION_TILES && activeLayers.detections && (
+          {activeLayers.detections && (
             <DetectionTileLayer
               version={detectionTileVersion}
               geomMode={geomMode}

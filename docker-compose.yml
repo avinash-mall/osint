@@ -143,11 +143,6 @@ services:
   frontend:
     build:
       context: ./frontend
-      args:
-        # MVT detection layer — DEFAULT ON. Persisted boxes render as Martin
-        # vector tiles + markers from the lite feed. Set to 0 to restore the
-        # legacy fat-geojson per-feature-polygon path.
-        VITE_DETECTION_TILES: ${VITE_DETECTION_TILES:-1}
     image: sentinel-frontend:latest
     restart: unless-stopped
     depends_on:

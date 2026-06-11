@@ -1,9 +1,12 @@
-# Why a Martin MVT detection layer (now DEFAULT ON)
+# Why a Martin MVT detection layer (now the ONLY path)
 
-**Status:** shipped and **DEFAULT ON** (`VITE_DETECTION_TILES`, default `1`).
-Set `VITE_DETECTION_TILES=0` at build time to restore the legacy fat-geojson
-path. Phase 2 landed it behind a flag (default OFF); the cutover (Option A —
-MVT boxes + lite-fed markers/dots + `/enriched` selection) flipped the default.
+**Status:** shipped and **the only path** — the `VITE_DETECTION_TILES` build
+flag and the legacy fat-`/geojson` path were **removed** (2026-06). History:
+Phase 2 landed MVT behind a flag (default OFF); the cutover (Option A — MVT
+boxes + lite-fed markers/dots + `/enriched` selection) flipped the default;
+the flag-removal pass then deleted the legacy branch entirely (frontend flag,
+`USE_DETECTION_TILES` export, position-uncertainty halo block, Docker build
+arg) alongside the backend's fat `/api/detections/geojson` endpoint.
 
 ## Context
 
@@ -15,41 +18,39 @@ ontology/metadata) and paints thousands of SVG paths — heavy on both the wire
 and the DOM.
 
 The backend MVT source: `GET /maps/detections_mvt/{z}/{x}/{y}?v=<version>&geom_mode=<obb|hbb|mask>`
-serves **two** layers — `detections` (Polygons, props `id, class, confidence,
+serves the `detections` layer (Polygons, props `id, class, confidence,
 branch_id, parent_class, original_class, icon_key, label, threat_level,
-allegiance, review_status, pass_id`) and `detection_points` (centroid Points).
-`geom_mode` (default `obb`) picks the polygon geometry. Selection uses the
-per-id `GET /api/detections/{id}/enriched`; cache-bust is `GET
-/api/detections/tile-version`. A NEW **lite feed** `GET
+allegiance, review_status, pass_id`); the `detection_points` centroid sublayer
+was dropped with the legacy path. `geom_mode` (default `obb`) picks the polygon
+geometry. Selection uses the per-id `GET /api/detections/{id}/enriched`;
+cache-bust is `GET /api/detections/tile-version`. The **lite feed** `GET
 /api/detections/geojson-lite` returns small centroid-Point features (light
 props, no polygon geometry, no fat metadata) — 2.7 MB/0.6 s for 6 441 vs
-57 MB/8 s for the fat `/geojson`.
+57 MB/8 s for the (removed) fat `/geojson`.
 
 ## Decision
 
 Cutover (Option A) — DEFAULT ON:
 
 - **Boxes** render from MVT (`DetectionTileLayer.tsx`, `L.vectorGrid.protobuf`
-  via `leaflet.vectorgrid`), gated by
-  `USE_DETECTION_TILES = import.meta.env.VITE_DETECTION_TILES !== '0'` in
-  `MapStage.tsx`. `geomMode` (GaiaMap's `bboxMode`) is appended to the tile URL,
-  so the OBB/HBB/mask toggle drives the served polygon (full geom-mode parity).
+  via `leaflet.vectorgrid`) whenever the detections layer is on (the
+  `USE_DETECTION_TILES` gate was removed with the flag). `geomMode` (GaiaMap's
+  `bboxMode`) is appended to the tile URL, so the OBB/HBB/mask toggle drives
+  the served polygon (full geom-mode parity).
 - **Markers/dots** render from the **lite feed**, kept in the existing
   `detectionsGeoJSON` state (now centroid Points). The lucide icon markers (≤800)
-  and dots (>800) are PRESERVED. The MVT `detection_points` sublayer is **hidden**
-  (`detection_points: () => ({ stroke:false, fill:false })`) so dots aren't doubled.
+  and dots (>800) are PRESERVED. The MVT `detection_points` centroid sublayer
+  was dropped from the tile (it was only ever hidden client-side to avoid
+  doubling the dots), and the frontend no longer styles it.
 - **Selection** routes through a single `selectDetectionById(id, fallback)` in
   GaiaMap → `/api/detections/{id}/enriched` (fat shape for the SelectionPanel),
   with a fallback to the in-memory feature on 404. ALL clicks use it: MVT polygon,
   icon marker, dot, and live previews.
 - **Live previews** (`detections_partial`, Polygon features) still append to
-  `detectionsGeoJSON` and render via the per-feature `<Polygon>` layer (the
-  `!USE_DETECTION_TILES` gate was removed — lite centroid Points yield `null` from
-  `geojsonToLatLngs` so only preview polygons draw). `detections_updated`
-  re-fetches the lite feed and bumps `detectionTileVersion`.
-
-`VITE_DETECTION_TILES=0` restores the exact legacy fat-`/geojson` behavior
-(per-feature `<Polygon>` boxes + markers/dots/halos from the full feed).
+  `detectionsGeoJSON` and render via the per-feature `<Polygon>` layer (lite
+  centroid Points yield `null` from `geojsonToLatLngs` so only preview polygons
+  draw). `detections_updated` re-fetches the lite feed and bumps
+  `detectionTileVersion`.
 
 ### Why these specific choices
 
@@ -74,15 +75,13 @@ Cutover (Option A) — DEFAULT ON:
   VectorGrid hides them — the *same* predicates as `filteredDetectionsGeoJSON`.
 - **Selection via `/enriched` (one helper).** Tile/marker/dot features carry only
   light props, so every click hands the `id` to `selectDetectionById`, which
-  fetches the fully-enriched GeoJSON Feature (same ~39-prop shape as the old
-  `/api/detections/geojson` feature) for the SelectionPanel. A 404 (e.g. an
-  unpersisted live preview) falls back to the in-memory feature so a click never
-  throws.
-- **Lite feed for the bulk fetch.** When tiles are on, GaiaMap's bulk
-  `fetchDetectionFeatures` calls `/api/detections/geojson-lite` (same
-  bbox/time/class params, `limit=100000`, all-at-once — no cursor pagination)
-  instead of the fat `/geojson`. It drives counts, the class filter, framing, and
-  the marker/dot layers.
+  fetches the fully-enriched GeoJSON Feature (~39-prop fat shape) for the
+  SelectionPanel. A 404 (e.g. an unpersisted live preview) falls back to the
+  in-memory feature so a click never throws.
+- **Lite feed for the bulk fetch.** GaiaMap's bulk `fetchDetectionFeatures`
+  calls `/api/detections/geojson-lite` (same bbox/time/class params,
+  `limit=100000`, all-at-once — no cursor pagination). It drives counts, the
+  class filter, framing, and the marker/dot layers.
 - **Live streaming stays on GeoJSON.** Tiles are static; `detections_partial`
   previews keep rendering via the per-feature `<Polygon>` path. On the
   authoritative `detections_updated`, `GaiaMap` re-fetches the lite feed and
@@ -109,36 +108,36 @@ Cutover (Option A) — DEFAULT ON:
   Martin serves as 404 — noisy in the console and uncacheable over empty
   ocean/land at low zoom. The function does `RETURN COALESCE(mvt, ''::bytea)` so
   an empty tile is a cacheable 0-byte 204.
-- **Toggle via build arg, not a runtime env.** `VITE_DETECTION_TILES` is a
-  frontend Docker build arg (default `1`, wired in docker-compose); Vite inlines
-  `import.meta.env` at build, so reverting to the legacy path needs `docker
-  compose build frontend` with `VITE_DETECTION_TILES=0`, not a container env
-  change.
-
 ## Build status
 
-Both production builds GREEN with Node 20 / Vite 8: default (tiles ON) and
-`VITE_DETECTION_TILES=0` (legacy fat path). `tsc` clean for both.
+Production build GREEN with Node 20 / Vite 8; `tsc` clean. (The
+`VITE_DETECTION_TILES` build arg and the legacy fat-path build variant no
+longer exist.)
 
 ## Known parity gaps / accepted casualties
 
 - **Box geometry modes**: now at parity — `geom_mode=<obb|hbb|mask>` follows
   GaiaMap's `bboxMode` toggle and the backend serves the matching polygon.
 - **Density / icon markers / dots**: PRESERVED — they render from the lite feed,
-  not from tiles (the MVT `detection_points` sublayer is hidden).
-- **Position-uncertainty halos**: DROPPED for persisted detections. The halo
-  block reads `position_uncertainty_ellipse` / `position_uncertainty_m`, which the
-  lite feed omits, so it no-ops. Accepted casualty; the code is left in place
-  (renders again only on the legacy fat path).
+  not from tiles.
+- **Position-uncertainty halos**: REMOVED. The halo block read
+  `position_uncertainty_ellipse` / `position_uncertainty_m`, which the lite feed
+  omits — permanently dead once the fat path was deleted, so the render block
+  was deleted from `MapStage.tsx`. Accepted casualty.
 - **Live `detections_partial`** previews stay on the per-feature `<Polygon>`
   path; they enter tiles only after `detections_updated` bumps the version.
 
 ## Consequences
 
-- MVT is the default; reverting to the legacy fat path is a one-line build arg.
-- `det_class` / `pass_id` server-side tile filters are intentionally **not** used
-  by the map — filtering is client-side to match the box layer's filter
-  semantics without re-fetching tiles (the params exist for other callers).
+- MVT is the only path; the legacy fat path (flag, fat `/geojson` feed,
+  per-feature persisted-box rendering, halos) is gone — reverting means a git
+  revert, not a build arg.
+- The tile function takes only `geom_mode` (plus the `v` cache-bust). The unused
+  `det_class` / `pass_id` server-side filters were removed with the legacy path —
+  detection filtering is client-side (`styleForTileProps` hides filtered
+  features) so a filter change never re-fetches tiles; callers that need
+  server-side filtering use `/api/detections/geojson-lite`, which has
+  bbox/time/class/pass params.
 
 ## Cross-references
 

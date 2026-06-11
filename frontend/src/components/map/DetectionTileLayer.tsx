@@ -1,11 +1,10 @@
 /**
  * DetectionTileLayer — Martin vector-tile (MVT) rendering of persisted
- * detection BOXES (DEFAULT ON; legacy fat path only when VITE_DETECTION_TILES=0
- * — see MapStage). The tile carries two layers: `detections` (polygons, styled
- * here) and `detection_points` (centroids, HIDDEN here so we don't double the
- * dots — markers/dots come from the lite feed, preserving the lucide icons).
- * `geomMode` (obb|hbb|mask) is appended to the tile URL so the box geometry
- * follows GaiaMap's box-mode toggle.
+ * detection BOXES (the sole box renderer for persisted detections). The tile
+ * carries one layer: `detections` (polygons, styled here); markers/dots come
+ * from the lite feed, preserving the lucide icons. `geomMode` (obb|hbb|mask)
+ * is appended to the tile URL so the box geometry follows GaiaMap's box-mode
+ * toggle.
  *
  * This is an imperative react-leaflet layer: Leaflet.VectorGrid has no
  * react-leaflet wrapper, so we attach/detach an `L.vectorGrid.protobuf`
@@ -24,9 +23,8 @@
  * Selection: VectorGrid features carry only tile props, so a click hands the
  * id to `onSelectById` (GaiaMap's shared selectDetectionById), which fetches
  * the fully-enriched GeoJSON Feature from /api/detections/{id}/enriched — the
- * enriched shape matches the old /api/detections/geojson feature, so the
- * SelectionPanel works identically. Marker/dot clicks route through the same
- * helper.
+ * fat per-detection shape the SelectionPanel's Details tab reads. Marker/dot
+ * clicks route through the same helper.
  *
  * The layer is re-created whenever `version` or any filter dep changes (Phase 2
  * keeps it simple — no per-feature setFeatureStyle), so style/visibility stay
@@ -137,10 +135,6 @@ export default function DetectionTileLayer({
         vectorTileLayerStyles: {
           // BOXES — styled persisted-detection polygons.
           detections: (props: any) => styleForTileProps(props),
-          // POINTS — hidden. The tile ships a `detection_points` centroid
-          // sublayer too, but markers/dots come from the lite feed (so the
-          // lucide icons are preserved); drawing this would double the dots.
-          detection_points: () => ({ stroke: false, fill: false }),
         },
       });
       layer.on('click', (e: any) => {

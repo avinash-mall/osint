@@ -118,6 +118,10 @@ export async function installMockApi(page: Page, options: MockOptions = {}) {
   await page.route('**/basemap/**', (route) => route.fulfill({ status: 200, contentType: 'image/png', body: png }));
   await page.route('**/terrain/**', (route) => route.fulfill({ status: 200, contentType: 'image/png', body: png }));
   await page.route('**/tiles/**', (route) => route.fulfill({ status: 200, contentType: 'image/png', body: png }));
+  // MVT detection tiles (DetectionTileLayer) — empty body so VectorGrid draws
+  // nothing and the request neither hangs nor 404-noises. Persisted-box pixels
+  // come from the geojson-lite fixture's Polygon features instead.
+  await page.route('**/maps/detections_mvt/**', (route) => route.fulfill({ status: 204, body: '' }));
 
   await page.route('**/api/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
@@ -140,7 +144,9 @@ export async function installMockApi(page: Page, options: MockOptions = {}) {
       branch_id: 'vehicles',
       threat_level: 'high',
     }] });
-    if (path === '/api/detections/geojson') return fulfillJson(route, detectionGeoJSON);
+    if (path === '/api/detections/geojson-lite') return fulfillJson(route, detectionGeoJSON);
+    if (path === '/api/detections/tile-version') return fulfillJson(route, { version: 1 });
+    if (path === '/api/detections/1/enriched') return fulfillJson(route, detectionGeoJSON.features[0]);
     if (path === '/api/detections/prithvi-overlays') return fulfillJson(route, { type: 'FeatureCollection', features: [] });
     if (path === '/api/tracks/detections') return fulfillJson(route, { tracks: [] });
     if (path === '/api/basemap/countries') return fulfillJson(route, { type: 'FeatureCollection', features: [] });

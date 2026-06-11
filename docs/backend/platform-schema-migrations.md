@@ -1,7 +1,7 @@
 # `backend/platform_schema.py` — Idempotent Migrations
 
 **Path:** [backend/platform_schema.py](../../backend/platform_schema.py)
-**Lines:** ~650
+**Lines:** ~1010
 **Depends on:** [backend/database.py](../../backend/database.py), PostgreSQL advisory locks
 
 ## Purpose
@@ -29,6 +29,7 @@
   - `repeat_detector_thresholds` — Phase 5.B per-kind admin-editable config (window_days, min_count, near_radius_m, `current` flag). Unique partial index on `(kind) WHERE current = TRUE`.
   - `operational_entity_tracks` — Phase 5.J association table linking entities to detection_tracks for embedding aggregation.
 - [`auto_seed_ontology_if_empty`](../../backend/platform_schema.py#L537).
+- [`ensure_tile_sources`](../../backend/platform_schema.py#L677) — Martin MVT function source `detections_mvt(z,x,y,query_params)` (one `detections` polygon layer; `geom_mode=obb|hbb|mask` is the only query param; empty tiles COALESCE to 0-byte MVT so Martin serves a cacheable 204, not 404), the `detection_obb_geom` OBB-from-`metadata.geo_polygon` helper, and the `tile_version` singleton + `bump_tile_version`/`get_tile_version`. The version is bumped on every detection mutation **and once at startup**, so tiles baked by an older function shape are never served to a new frontend bundle (VectorGrid paints unstyled tile layers with default Leaflet path options). See [decisions/why-detection-mvt-tiles.md](../decisions/why-detection-mvt-tiles.md) and [decisions/removed-legacy-detection-geojson-path.md](../decisions/removed-legacy-detection-geojson-path.md).
 
 ## Failure modes
 

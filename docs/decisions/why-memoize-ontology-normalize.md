@@ -29,7 +29,7 @@ Result-memoize `normalize()` keyed by `(canon, layer)` against the current ontol
 
 ## Consequences
 
-- `/api/detections/geojson` enrichment: **24 s → 1.2 s** (0.18 ms/row); the endpoint dropped from a 30 s timeout to ~8 s for the unbounded all-detections case and ~5 s bbox-scoped — the remainder is response serialization (≈57 MB for 6441 fully-enriched features), not CPU.
+- `/api/detections/geojson` enrichment: **24 s → 1.2 s** (0.18 ms/row); the endpoint dropped from a 30 s timeout to ~8 s for the unbounded all-detections case and ~5 s bbox-scoped — the remainder is response serialization (≈57 MB for 6441 fully-enriched features), not CPU. (That fat endpoint has since been removed — see [removed-legacy-detection-geojson-path.md](removed-legacy-detection-geojson-path.md); the memo still serves the surviving hot callers: `/api/detections`, `/api/detections/{id}/enriched`, and worker-side detection persistence.)
 - Ontology edits are reflected within ≤2 s for out-of-process changes, immediately for in-process edits (unchanged behaviour for the admin UI / worker, which go through `invalidate_cache`).
 - `ontology_unknown_labels.count` is now "distinct encounters per version window," not "normalize calls." Test updated ([tests/test_ontology.py](../../backend/tests/test_ontology.py) `test_unknown_label_recorded_and_memoized`). If a true per-detection occurrence metric is ever needed, count it once at detection-persist time, not inside `normalize`.
 

@@ -1,5 +1,11 @@
 # Release the pooled DB connection before per-row response enrichment
 
+> **Status note (2026-06-11):** the endpoint this decision modified,
+> `GET /api/detections/geojson`, has been removed (see
+> [removed-legacy-detection-geojson-path.md](removed-legacy-detection-geojson-path.md)).
+> The principle stands for any future bulk endpoint that does slow pure-Python
+> work per row: hold the pooled connection only for `execute()` + `fetchall()`.
+
 ## Decision
 
 In `GET /api/detections/geojson` ([backend/main.py](../../backend/main.py)) the pooled

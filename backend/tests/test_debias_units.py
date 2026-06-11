@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 import pytest
 from fastapi import HTTPException
 
 from candidate_linking import rank_candidate_links, score_candidate_link
-from main import _decode_detection_cursor, _encode_detection_cursor
 from routers import analytics
 from tracker import _embedding_payload, _observation_sigma_m, _predicted_position_sigma_m, _track_state
 from worker import _DetectionDedupeIndex, _WeightedBoxFusionIndex
@@ -53,15 +50,6 @@ def test_sar_overlap_dedupe_suppresses_cross_chip_duplicate():
     assert kept_b == []
     assert idx.raw_seen == 2
     assert idx.kept_count == 1
-
-
-def test_detection_cursor_round_trip_keeps_composite_order_key():
-    created = datetime(2026, 5, 18, 12, 30, tzinfo=timezone.utc)
-    token = _encode_detection_cursor(created, 17)
-    decoded_created, decoded_id = _decode_detection_cursor(token)
-    assert decoded_created == created.isoformat()
-    assert decoded_id == 17
-    assert isinstance(token, str)
 
 
 def test_tracker_reads_persisted_uncertainty_motion_and_embedding():

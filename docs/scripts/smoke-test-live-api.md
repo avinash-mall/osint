@@ -14,13 +14,13 @@ repeat-thresholds / prompt-profiles / confidence-overrides), the manual-detectio
 lifecycle (create → details/review/tag/identify/candidate-links/target-package →
 delete), graph read-POSTs, analytics (viewshed/LOS/routes), and the heavy
 jobs/model paths (ingest upload + job poll, inference load/unload). Scores coverage
-against an embedded catalog of all 154 routes and reports drift.
+against an embedded catalog of all 164 routes and reports drift.
 
 ## Why this design
 
 - **Catalog-driven coverage, not blind iteration.** `CATALOG` is generated from the
   live OpenAPI spec (`GET /openapi.json` *inside* the backend container — nginx does
-  not proxy `/openapi.json` to the host). The run reports `covered/154` and flags any
+  not proxy `/openapi.json` to the host). The run reports `covered/164` and flags any
   endpoint hit that is not in the catalog (spec drift).
 - **Tagged + torn-down mutations.** Every created row is prefixed `SMOKE_TEST_` and
   deleted in a `finally`; thresholds/prompt-profiles capture and restore the prior
@@ -37,7 +37,7 @@ against an embedded catalog of all 154 routes and reports drift.
 
 ## Key symbols
 
-- `CATALOG` [smoke_test_api.py#L39-L194](../../scripts/smoke_test_api.py#L39-L194) — all 154 `(method, path)` pairs.
+- `CATALOG` [smoke_test_api.py#L39-L204](../../scripts/smoke_test_api.py#L39-L204) — all 164 `(method, path)` pairs.
 - `record()` / `skip()` / `hit()` [#L204-L250](../../scripts/smoke_test_api.py#L204-L250) — call + PASS/FAIL/SKIP bookkeeping and coverage tracking.
 - `read_tier()` + `PARAM_GETS` — param-free + fixture-resolved path-param GETs.
 - `flow_*()` — one function per mutating area; `flow_inference()` + `_inference_idle()` + `restore_inference()` for the model paths.

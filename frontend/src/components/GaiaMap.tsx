@@ -44,7 +44,7 @@ import {
 } from './map/_helpers';
 import { makeDetectionIcon } from './map/_icons';
 import LayerPanel from './map/LayerPanel';
-import MapStage, { type MapHandle, USE_DETECTION_TILES } from './map/MapStage';
+import MapStage, { type MapHandle } from './map/MapStage';
 import ProductTour from './tour/ProductTour';
 import { useProductTour } from '../hooks/useProductTour';
 import SelectionPanel from './map/SelectionPanel';
@@ -95,10 +95,10 @@ export default function GaiaMap({
   const [data, setData] = useState<{ static: any[]; tracks: any[] }>({ static: [], tracks: [] });
   const [imagery, setImagery] = useState<any[]>([]);
   const [detectionsGeoJSON, setDetectionsGeoJSON] = useState<any>({ type: 'FeatureCollection', features: [] });
-  // Cache-bust token for the opt-in MVT detection layer (DetectionTileLayer).
+  // Cache-bust token for the MVT detection layer (DetectionTileLayer).
   // Fetched on mount and re-fetched after each authoritative detections_updated
   // reload so persisted tiles refresh after an ingest/delete. Defaults to 1 if
-  // the fetch fails. Only consumed when VITE_DETECTION_TILES is on.
+  // the fetch fails.
   const [detectionTileVersion, setDetectionTileVersion] = useState(1);
   const [detectionClasses, setDetectionClasses] = useState<any[]>([]);
   const [basemapGeoJSON, setBasemapGeoJSON] = useState<any>({ type: 'FeatureCollection', features: [] });
@@ -723,27 +723,19 @@ export default function GaiaMap({
         bbox: mapBounds,
         // Lite feed returns centroid Points + light props for the WHOLE bbox in
         // one fast call (no cursor pagination), so we ask for a high ceiling.
-        // The legacy fat /geojson path keeps the 20k limit it always used.
-        limit: USE_DETECTION_TILES ? '100000' : '20000',
+        limit: '100000',
       });
       if (detectionClassFilter) {
         geoParams.append('det_class', detectionClassFilter);
       }
-      // DEFAULT (USE_DETECTION_TILES): fetch the LITE centroid-Point feed —
-      // small/fast (~2.7 MB/0.6 s for 6 k), no polygon geometry, no fat
-      // metadata. This drives counts, the class filter, framing, and the
-      // marker/dot layers; persisted BOXES are drawn by the MVT tile layer and
-      // full per-detection detail is fetched on selection via /enriched.
-      //
-      // Legacy (VITE_DETECTION_TILES=0): the fat /geojson feed with full
-      // ontology/metadata + polygon geometry the box layer and selection panel
-      // read directly. Dense scenes can take tens of seconds to build/transfer,
-      // so a 60 s ceiling (vs the lite 20 s) lets the whole layer land.
-      const endpoint = USE_DETECTION_TILES
-        ? `${API_URL}/api/detections/geojson-lite`
-        : `${API_URL}/api/detections/geojson`;
+      // LITE centroid-Point feed — small/fast (~2.7 MB/0.6 s for 6 k), no
+      // polygon geometry, no fat metadata. This drives counts, the class
+      // filter, framing, and the marker/dot layers; persisted BOXES are drawn
+      // by the MVT tile layer and full per-detection detail is fetched on
+      // selection via /enriched.
+      const endpoint = `${API_URL}/api/detections/geojson-lite`;
       const response = await axios.get(`${endpoint}?${geoParams.toString()}`, {
-        timeout: USE_DETECTION_TILES ? 20000 : 60000,
+        timeout: 20000,
       });
       setDetectionsGeoJSON(response.data || { type: 'FeatureCollection', features: [] });
     } catch (error) {
@@ -875,7 +867,7 @@ export default function GaiaMap({
     fetchDetectionTracks();
     fetchImagery();
     // Bump the MVT cache-bust token so persisted detection tiles refresh after
-    // this ingest/delete (no-op visually unless VITE_DETECTION_TILES is on).
+    // this ingest/delete.
     fetchDetectionTileVersion();
   }, [focusTimeRange, fetchDetections, fetchDetectionTracks, fetchImagery, fetchDetectionTileVersion]));
   useEventStream('imagery', useCallback((message: any) => {

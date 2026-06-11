@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import json
 import logging
 import os
@@ -321,11 +320,11 @@ def enriched_detection_metadata(det_class: str, metadata: Optional[dict]) -> dic
 def _build_detection_feature(row: dict) -> dict:
     """One detection DB row → enriched GeoJSON Feature.
 
-    Single source of truth for the per-detection feature shape, shared by
-    ``/api/detections/geojson`` (bulk) and ``/api/detections/{id}/enriched``
-    (the MVT layer's per-id selection fetch). ``row`` must carry the geojson
-    SELECT columns (id, class, confidence, pass_id, created_at, metadata,
-    pass_name, acquisition_time, imagery_metadata, geometry).
+    Single source of truth for the per-detection feature shape, served by
+    ``/api/detections/{id}/enriched`` (the MVT layer's per-id selection
+    fetch). ``row`` must carry the geojson SELECT columns (id, class,
+    confidence, pass_id, created_at, metadata, pass_name, acquisition_time,
+    imagery_metadata, geometry).
     """
     raw_metadata = dict(row["metadata"] or {})
     raw_metadata["confidence"] = row["confidence"]
@@ -1510,91 +1509,6 @@ def get_detection_classes(
             })
         return {"classes": classes, "classification_status": "ok" if llm and any(item["classification_status"] == "ok" for item in classes) else "unavailable" if llm else "heuristic"}
 
-def _encode_detection_cursor(created_at: datetime, detection_id: int) -> str:
-    raw_cursor = json.dumps(
-        [created_at.isoformat(), int(detection_id)],
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return base64.urlsafe_b64encode(raw_cursor).decode("ascii").rstrip("=")
-
-
-def _decode_detection_cursor(cursor: str) -> tuple[str, int]:
-    raw = base64.urlsafe_b64decode(cursor.encode("ascii") + b"===")
-    cursor_created_at, cursor_id = json.loads(raw.decode("utf-8"))
-    return str(cursor_created_at), int(cursor_id)
-
-
-@app.get("/api/detections/geojson")
-def get_detections_geojson(
-    bbox: Optional[str] = Query(None, description="min_lon,min_lat,max_lon,max_lat"),
-    start_time: Optional[str] = None,
-    end_time: Optional[str] = None,
-    det_class: Optional[str] = None,
-    limit: int = Query(20000, ge=1, le=50000),
-    cursor: Optional[str] = Query(None, description="Opaque cursor from the previous page's next_cursor"),
-):
-    """Return detections as GeoJSON FeatureCollection.
-
-    Phase 7.32: cursor pagination. Pages are ordered by ``(created_at DESC, id
-    DESC)`` and the cursor encodes both values so ids inserted out-of-order do
-    not create gaps.
-    """
-    query = """
-        SELECT d.id, d.class, d.confidence, d.pass_id, d.created_at, d.metadata,
-               sp.name AS pass_name, sp.acquisition_time, sp.metadata AS imagery_metadata,
-               ST_AsGeoJSON(d.geom)::jsonb AS geometry
-        FROM detections d
-        JOIN satellite_passes sp ON d.pass_id = sp.id
-        WHERE d.deleted_at IS NULL AND ST_Intersects(d.geom, sp.footprint)
-    """
-    params = []
-    if bbox:
-        min_lon, min_lat, max_lon, max_lat = parse_bbox(bbox)
-        query += " AND ST_Intersects(d.geom, ST_MakeEnvelope(%s, %s, %s, %s, 4326))"
-        params.extend([min_lon, min_lat, max_lon, max_lat])
-    if start_time:
-        query += " AND sp.acquisition_time >= %s"
-        params.append(start_time)
-    if end_time:
-        query += " AND sp.acquisition_time <= %s"
-        params.append(end_time)
-    if det_class:
-        query += " AND d.class = %s"
-        params.append(det_class)
-    if cursor is not None:
-        try:
-            cursor_created_at, cursor_id = _decode_detection_cursor(cursor)
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail="invalid detection cursor") from exc
-        query += " AND (d.created_at, d.id) < (%s, %s)"
-        params.extend([cursor_created_at, int(cursor_id)])
-    # Fetch one extra row so we can tell the client whether more remain.
-    query += " ORDER BY d.created_at DESC, d.id DESC LIMIT %s"
-    params.append(limit + 1)
-    # Hold the pooled connection ONLY for the query+fetch — never for the row
-    # enrichment below. enriched_detection_metadata() is pure-Python and, on a
-    # dense scene (thousands of detections / tens of MB), runs for tens of
-    # seconds. Building the response inside the cursor block kept each request's
-    # connection "idle in transaction" the whole time, so ~10 concurrent map
-    # polls exhausted the pool (max 10) and 500'd every other endpoint. See
-    # decisions/why-release-db-connection-before-enrichment.md.
-    with postgis_db.get_cursor() as db_cursor:
-        db_cursor.execute(query, params)
-        rows = db_cursor.fetchall()
-    has_more = len(rows) > limit
-    rows = rows[:limit]
-    next_cursor = None
-    if has_more and rows:
-        next_cursor = _encode_detection_cursor(rows[-1]["created_at"], rows[-1]["id"])
-    features = [_build_detection_feature(row) for row in rows]
-    return {
-        "type": "FeatureCollection",
-        "features": features,
-        "next_cursor": next_cursor,
-        "has_more": has_more,
-    }
-
-
 @app.get("/api/detections/geojson-lite")
 def get_detections_geojson_lite(
     bbox: Optional[str] = Query(None, description="min_lon,min_lat,max_lon,max_lat"),
@@ -1609,8 +1523,8 @@ def get_detections_geojson_lite(
     light fields the map needs for counts / class filters / framing / marker+dot
     rendering — read straight from columns + materialised ``metadata`` (no Python
     enrichment, no polygon geometry). The MVT layer draws the boxes; selection
-    pulls full detail from ``/api/detections/{id}/enriched``. Orders of magnitude
-    smaller than ``/geojson``. See docs/decisions/why-detection-mvt-tiles.md.
+    pulls full detail from ``/api/detections/{id}/enriched``.
+    See docs/decisions/why-detection-mvt-tiles.md.
     """
     sql = (
         "SELECT d.id, d.class, d.pass_id,\n"
@@ -1669,7 +1583,6 @@ def get_detections_geojson_lite(
                 "allegiance": row["allegiance"],
                 "review_status": row["review_status"],
                 "pass_id": row["pass_id"],
-                "lite": True,
             },
         }
         for row in rows
@@ -1682,8 +1595,8 @@ def get_detection_enriched(detection_id: int, user: SessionUser = Depends(get_cu
     """Single fully-enriched detection Feature — the per-id detail fetch the map's
 
     vector-tile (MVT) layer needs when a detection is clicked, since tiles carry
-    only the ~10 render fields. Same shape as one ``/api/detections/geojson``
-    feature. See docs/decisions/why-detection-mvt-tiles.md.
+    only the ~10 render fields. Returns the full ~39-prop enriched feature
+    shape. See docs/decisions/why-detection-mvt-tiles.md.
     """
     with postgis_db.get_cursor() as cursor:
         cursor.execute(
