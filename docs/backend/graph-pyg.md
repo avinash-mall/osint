@@ -2,7 +2,7 @@
 
 **Path:** [backend/graph_pyg.py](../../backend/graph_pyg.py)
 **Lines:** ~219
-**Depends on:** `numpy` (always). `torch` (lazy, optional — not in the backend image by default) for the GNN path; `torch_geometric` (lazy, optional) only for `to_pyg_data`.
+**Depends on:** `numpy` (always). `torch` (lazy — now **baked CPU-only** into the backend + worker image as `torch==2.8.0+cpu`; [backend/requirements.txt](../../backend/requirements.txt), so `/api/graph/gnn/status` → `ready:true`) for the GNN path; `torch_geometric` (lazy, optional, *not* installed) only for `to_pyg_data`. The lazy-import guard is retained so the module still imports on stripped images without torch.
 
 ## Purpose
 

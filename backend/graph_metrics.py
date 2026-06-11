@@ -169,8 +169,18 @@ def compute_metrics(
         components = sorted((len(c) for c in rx.connected_components(g)), reverse=True)
         deg = [g.degree(i) for i in range(n)]
         deg_cent = [d / (n - 1) if n > 1 else 0.0 for d in deg]
-        between = list(rx.betweenness_centrality(g, normalized=True).values())
-        pr = list(rx.pagerank(g).values())
+        # Index by node id, not .values(): the CentralityMapping iteration order
+        # is not guaranteed to match node_ids order.
+        bc_map = rx.betweenness_centrality(g, normalized=True)
+        between = [bc_map[i] for i in range(n)]
+        # rustworkx.pagerank only accepts a directed graph, so mirror each
+        # undirected edge both ways — pagerank on the symmetric digraph equals
+        # undirected PageRank.
+        dg = rx.PyDiGraph()
+        dg.add_nodes_from(list(node_ids))
+        dg.add_edges_from_no_data([(a, b) for a, b in int_edges] + [(b, a) for a, b in int_edges])
+        pr_map = rx.pagerank(dg)
+        pr = [pr_map[i] for i in range(n)]
         backend = "rustworkx"
     else:
         adj = _adjacency(n, int_edges)

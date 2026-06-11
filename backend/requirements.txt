@@ -30,3 +30,10 @@ mgrs>=1.4
 pgvector>=0.3
 sgp4>=2.23
 rustworkx>=0.14
+# GNN link prediction (graph_pyg.py) — CPU-only torch from the PyTorch CPU index.
+# The +cpu local version pins pip to the CPU wheel (~190 MB) instead of the
+# default ~2 GB CUDA build; GPU torch lives in the inference-sam3 image, and the
+# backend GNN workload (small graph snapshots) sees no GPU benefit. See
+# docs/decisions/why-gnn-link-prediction.md.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.8.0+cpu

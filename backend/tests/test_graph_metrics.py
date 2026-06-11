@@ -62,3 +62,22 @@ def test_ignores_dangling_and_self_edges():
     edges = [("a", "b"), ("a", "a"), ("a", "ghost")]  # self + unknown node dropped
     m = compute_metrics(ids, edges, prefer_rustworkx=False)
     assert m["edge_count"] == 1
+
+
+def test_rustworkx_path_matches_fallback_when_available():
+    # Guards the PyDiGraph fix: rx.pagerank rejects an undirected PyGraph, so the
+    # rustworkx branch must build a mirrored digraph. Skips cleanly without rustworkx.
+    from graph_metrics import RUSTWORKX_AVAILABLE
+    if not RUSTWORKX_AVAILABLE:
+        import pytest
+        pytest.skip("rustworkx not installed")
+    ids = ["a", "b", "c", "d"]
+    edges = [("a", "b"), ("b", "c"), ("c", "d")]
+    rx_m = compute_metrics(ids, edges, prefer_rustworkx=True)
+    fb_m = compute_metrics(ids, edges, prefer_rustworkx=False)
+    assert rx_m["backend"] == "rustworkx"
+    assert rx_m["component_count"] == fb_m["component_count"] == 1
+    assert rx_m["edge_count"] == fb_m["edge_count"] == 3
+    # Interior nodes b/c outrank endpoints on both backends.
+    assert {e["id"] for e in rx_m["top_centrality"]["betweenness"][:2]} == {"b", "c"}
+    assert {e["id"] for e in rx_m["top_centrality"]["pagerank"][:2]} == {"b", "c"}

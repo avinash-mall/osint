@@ -11,7 +11,9 @@ Candidate links between operational entities are currently scored by the determi
 
 Inherit the GNN capability from the open-source **city2graph** library (BSD-3) by **vendoring** its `gdf_to_pyg` bridge into [backend/graph_pyg.py](../../backend/graph_pyg.py), and add a minimal 2-layer GraphSAGE auto-encoder that trains on observed edges (with negative sampling) and ranks currently-unconnected operational-entity pairs by predicted link probability. Surfaced as `POST /api/graph/gnn/suggest-links` and the beat task `worker.tick_gnn_link_prediction`, which MERGEs the top predictions as **advisory** `GNN_SUGGESTED_LINK` edges (never promoted automatically — analyst review only).
 
-The hard constraint is air-gap + image weight: PyTorch is large and the backend image does not ship it. So the module is **torch-guarded** — graph assembly is pure numpy and always importable, but the training path imports torch lazily and raises `GNNUnavailable` when it is absent. The request path then returns an honest **503**, mirroring `dem_available` / `osrm_available`, and `/api/graph/gnn/status` reports availability. Installing `torch` (CPU) into the image enables the feature with no code change; until then the beat task skips cleanly.
+The hard constraint is air-gap + image weight: PyTorch is large and the backend image did not originally ship it. So the module is **torch-guarded** — graph assembly is pure numpy and always importable, but the training path imports torch lazily and raises `GNNUnavailable` when it is absent. The request path then returns an honest **503**, mirroring `dem_available` / `osrm_available`, and `/api/graph/gnn/status` reports availability. The guard remains so the module stays importable on any image; it is no longer the active state in the shipped stack (see below).
+
+**Update (2026-06-11): CPU torch is now baked.** `torch==2.8.0+cpu` is pinned in [backend/requirements.txt](../../backend/requirements.txt) via the PyTorch CPU `--extra-index-url`, so the GNN path is live in the default backend + worker image (`/api/graph/gnn/status` → `ready:true`). The CPU wheel (~190 MB) is used deliberately, not the ~2 GB CUDA build: the backend snapshots are small (≤1500 nodes, 3-feature, 60-epoch GraphSAGE), so GPU gives no meaningful speedup, and the partitioned GPUs belong to `inference-sam3` / `inference-lae`. `torch_geometric` is *not* required — the encoder is pure torch. The 503/skip path is retained for stripped images that omit torch.
 
 Vendoring vs. depending on city2graph: same reasoning as the sibling proximity/OD decisions — copying the small bridge core (attributed in the docstring) avoids the heavy geo + online-loader dependency tree and preserves the offline guarantee.
 
@@ -23,7 +25,7 @@ Vendoring vs. depending on city2graph: same reasoning as the sibling proximity/O
 - Suggestions are advisory edges, so they never corrupt analyst-asserted graph state.
 
 **Negative / accepted**
-- The feature is inert until torch is installed — a deliberate trade to keep the default image lean.
+- CPU torch adds ~190 MB to the backend + worker image (now ~3.3 GB). Accepted to make the feature live by default; the CUDA wheel was rejected as ~10× heavier for no GPU benefit at this scale.
 - We own the vendored bridge; upstream city2graph fixes do not flow in automatically.
 
 ## Related
