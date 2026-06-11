@@ -1,13 +1,13 @@
 {
   "base": "http://localhost:3000",
   "summary": {
-    "PASS": 121,
+    "PASS": 113,
     "FAIL": 0,
-    "SKIP": 16
+    "SKIP": 24
   },
   "coverage": {
-    "covered": 106,
-    "total": 154,
+    "covered": 108,
+    "total": 164,
     "uncovered": [
       [
         "DELETE",
@@ -16,6 +16,10 @@
       [
         "DELETE",
         "/api/fmv/detections/{detection_id}"
+      ],
+      [
+        "DELETE",
+        "/api/imagery/{pass_id}"
       ],
       [
         "DELETE",
@@ -35,7 +39,31 @@
       ],
       [
         "GET",
+        "/api/fmv/clips/{clip_id}"
+      ],
+      [
+        "GET",
+        "/api/fmv/clips/{clip_id}/detections"
+      ],
+      [
+        "GET",
+        "/api/fmv/clips/{clip_id}/klv"
+      ],
+      [
+        "GET",
+        "/api/fmv/detections/{detection_id}/details"
+      ],
+      [
+        "GET",
+        "/api/fmv/detections/{detection_id}/similar"
+      ],
+      [
+        "GET",
         "/api/graph/site-composition/{base_id}"
+      ],
+      [
+        "GET",
+        "/api/ingest/jobs/{task_id}"
       ],
       [
         "GET",
@@ -135,6 +163,10 @@
       ],
       [
         "POST",
+        "/api/ingest/upload"
+      ],
+      [
+        "POST",
         "/api/ingest/url"
       ],
       [
@@ -211,7 +243,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "admin login",
-      "ms": 4.2
+      "ms": 7.5
     },
     {
       "method": "GET",
@@ -219,14 +251,14 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "session check",
-      "ms": 1.3
+      "ms": 3.1
     },
     {
       "method": "POST",
       "endpoint": "/api/inference/load",
       "status": 200,
       "outcome": "PASS",
-      "detail": "load imagery",
+      "detail": "load fmv",
       "ms": 0.0
     },
     {
@@ -243,103 +275,23 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "seed (force=false)",
-      "ms": 17.7
+      "ms": 7.1
     },
     {
       "method": "POST",
       "endpoint": "/api/ingest/upload",
-      "status": 200,
-      "outcome": "PASS",
-      "detail": "upload",
-      "ms": 239.8
+      "status": null,
+      "outcome": "SKIP",
+      "detail": "sample/austin1.tif missing",
+      "ms": 0.0
     },
     {
       "method": "GET",
       "endpoint": "/api/ingest/jobs/{task_id}",
-      "status": 200,
-      "outcome": "PASS",
-      "detail": "job poll",
-      "ms": 3.3
-    },
-    {
-      "method": "GET",
-      "endpoint": "/api/ingest/jobs/{task_id}",
-      "status": 200,
-      "outcome": "PASS",
-      "detail": "job poll",
-      "ms": 3.1
-    },
-    {
-      "method": "GET",
-      "endpoint": "/api/ingest/jobs/{task_id}",
-      "status": 200,
-      "outcome": "PASS",
-      "detail": "job poll",
-      "ms": 9.8
-    },
-    {
-      "method": "GET",
-      "endpoint": "/api/ingest/jobs/{task_id}",
-      "status": 200,
-      "outcome": "PASS",
-      "detail": "job poll",
-      "ms": 5.9
-    },
-    {
-      "method": "GET",
-      "endpoint": "/api/ingest/jobs/{task_id}",
-      "status": 200,
-      "outcome": "PASS",
-      "detail": "job poll",
-      "ms": 12.1
-    },
-    {
-      "method": "GET",
-      "endpoint": "/api/ingest/jobs/{task_id}",
-      "status": 200,
-      "outcome": "PASS",
-      "detail": "job poll",
-      "ms": 6.1
-    },
-    {
-      "method": "GET",
-      "endpoint": "/api/ingest/jobs/{task_id}",
-      "status": 200,
-      "outcome": "PASS",
-      "detail": "job poll",
-      "ms": 3.4
-    },
-    {
-      "method": "GET",
-      "endpoint": "/api/ingest/jobs/{task_id}",
-      "status": 200,
-      "outcome": "PASS",
-      "detail": "job poll",
-      "ms": 3.1
-    },
-    {
-      "method": "GET",
-      "endpoint": "/api/ingest/jobs/{task_id}",
-      "status": 200,
-      "outcome": "PASS",
-      "detail": "job poll",
-      "ms": 3.5
-    },
-    {
-      "method": "GET",
-      "endpoint": "/api/ingest/jobs/{task_id}",
-      "status": 200,
-      "outcome": "PASS",
-      "detail": "job poll",
-      "ms": 3.2
-    },
-    {
-      "method": "GET",
-      "endpoint": "/api/ingest/jobs/{task_id}",
-      "status": 200,
-      "outcome": "PASS",
-      "detail": "job poll",
-      "ms": 2.3
+      "status": null,
+      "outcome": "SKIP",
+      "detail": "sample missing",
+      "ms": 0.0
     },
     {
       "method": "GET",
@@ -379,7 +331,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 3.5
+      "ms": 7.7
     },
     {
       "method": "GET",
@@ -387,7 +339,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 2.0
+      "ms": 3.6
     },
     {
       "method": "GET",
@@ -395,7 +347,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 2.6
+      "ms": 4.9
     },
     {
       "method": "GET",
@@ -403,7 +355,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 6.5
+      "ms": 11.5
     },
     {
       "method": "GET",
@@ -411,7 +363,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 4.8
+      "ms": 71.4
     },
     {
       "method": "GET",
@@ -419,7 +371,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 19.9
+      "ms": 34.3
     },
     {
       "method": "GET",
@@ -427,7 +379,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 47.1
+      "ms": 58.9
     },
     {
       "method": "GET",
@@ -435,7 +387,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 2.8
+      "ms": 17.0
     },
     {
       "method": "GET",
@@ -451,7 +403,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 1.8
+      "ms": 3.1
     },
     {
       "method": "GET",
@@ -459,7 +411,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 1224.5
+      "ms": 676.5
     },
     {
       "method": "GET",
@@ -467,15 +419,15 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 122.9
+      "ms": 199.8
     },
     {
       "method": "GET",
-      "endpoint": "/api/detections/geojson",
+      "endpoint": "/api/detections/geojson-lite",
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 2584.8
+      "ms": 602.7
     },
     {
       "method": "GET",
@@ -483,7 +435,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 20.7
+      "ms": 33.6
     },
     {
       "method": "GET",
@@ -491,27 +443,11 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 32.0
+      "ms": 61.9
     },
     {
       "method": "GET",
-      "endpoint": "/api/detections/{detection_id}/candidate-links",
-      "status": 200,
-      "outcome": "PASS",
-      "detail": "",
-      "ms": 2.8
-    },
-    {
-      "method": "GET",
-      "endpoint": "/api/detections/{detection_id}/details",
-      "status": 200,
-      "outcome": "PASS",
-      "detail": "",
-      "ms": 2.8
-    },
-    {
-      "method": "GET",
-      "endpoint": "/api/detections/{detection_id}/identification-candidates",
+      "endpoint": "/api/detections/tile-version",
       "status": 200,
       "outcome": "PASS",
       "detail": "",
@@ -519,11 +455,43 @@
     },
     {
       "method": "GET",
+      "endpoint": "/api/detections/{detection_id}/candidate-links",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 4.1
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/detections/{detection_id}/details",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 4.3
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/detections/{detection_id}/enriched",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 5.1
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/detections/{detection_id}/identification-candidates",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 5.2
+    },
+    {
+      "method": "GET",
       "endpoint": "/api/detections/{detection_id}/similar",
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 2.4
+      "ms": 4.1
     },
     {
       "method": "GET",
@@ -531,7 +499,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 4.6
+      "ms": 5.5
     },
     {
       "method": "GET",
@@ -547,47 +515,47 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 2.2
+      "ms": 3.0
     },
     {
       "method": "GET",
       "endpoint": "/api/fmv/clips/{clip_id}",
-      "status": 200,
-      "outcome": "PASS",
-      "detail": "",
-      "ms": 2.0
+      "status": null,
+      "outcome": "SKIP",
+      "detail": "no fixture id available",
+      "ms": 0.0
     },
     {
       "method": "GET",
       "endpoint": "/api/fmv/clips/{clip_id}/detections",
-      "status": 200,
-      "outcome": "PASS",
-      "detail": "",
-      "ms": 92.7
+      "status": null,
+      "outcome": "SKIP",
+      "detail": "no fixture id available",
+      "ms": 0.0
     },
     {
       "method": "GET",
       "endpoint": "/api/fmv/clips/{clip_id}/klv",
-      "status": 200,
-      "outcome": "PASS",
-      "detail": "",
-      "ms": 3.7
+      "status": null,
+      "outcome": "SKIP",
+      "detail": "no fixture id available",
+      "ms": 0.0
     },
     {
       "method": "GET",
       "endpoint": "/api/fmv/detections/{detection_id}/details",
-      "status": 200,
-      "outcome": "PASS",
-      "detail": "",
-      "ms": 2.5
+      "status": null,
+      "outcome": "SKIP",
+      "detail": "no fixture id available",
+      "ms": 0.0
     },
     {
       "method": "GET",
       "endpoint": "/api/fmv/detections/{detection_id}/similar",
-      "status": 200,
-      "outcome": "PASS",
-      "detail": "",
-      "ms": 2.4
+      "status": null,
+      "outcome": "SKIP",
+      "detail": "no fixture id available",
+      "ms": 0.0
     },
     {
       "method": "GET",
@@ -595,7 +563,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 4.5
+      "ms": 7.2
     },
     {
       "method": "GET",
@@ -603,7 +571,23 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 537.5
+      "ms": 10123.8
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/graph/classes",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 10.5
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/graph/colocation",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 491.8
     },
     {
       "method": "GET",
@@ -611,7 +595,15 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 184.9
+      "ms": 225.6
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/graph/gnn/status",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 1091.7
     },
     {
       "method": "GET",
@@ -619,7 +611,23 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 27.3
+      "ms": 8.3
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/graph/metrics",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 7417.6
+    },
+    {
+      "method": "GET",
+      "endpoint": "/api/graph/passes",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "",
+      "ms": 7.8
     },
     {
       "method": "GET",
@@ -627,7 +635,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 65.0
+      "ms": 136.8
     },
     {
       "method": "GET",
@@ -643,7 +651,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 2.7
+      "ms": 3.6
     },
     {
       "method": "GET",
@@ -651,7 +659,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 2.5
+      "ms": 3.4
     },
     {
       "method": "GET",
@@ -659,7 +667,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 77.2
+      "ms": 172.5
     },
     {
       "method": "GET",
@@ -667,7 +675,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 2.4
+      "ms": 4.0
     },
     {
       "method": "GET",
@@ -675,7 +683,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 2.4
+      "ms": 3.7
     },
     {
       "method": "GET",
@@ -683,7 +691,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 3.8
+      "ms": 6.0
     },
     {
       "method": "GET",
@@ -691,7 +699,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 3.3
+      "ms": 5.4
     },
     {
       "method": "GET",
@@ -707,7 +715,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 5.4
+      "ms": 25.2
     },
     {
       "method": "GET",
@@ -715,7 +723,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 2.5
+      "ms": 4.2
     },
     {
       "method": "GET",
@@ -723,7 +731,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 2.3
+      "ms": 3.3
     },
     {
       "method": "GET",
@@ -731,7 +739,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 4.1
+      "ms": 7.2
     },
     {
       "method": "GET",
@@ -739,7 +747,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 6.0
+      "ms": 9.7
     },
     {
       "method": "GET",
@@ -747,7 +755,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 1.6
+      "ms": 3.0
     },
     {
       "method": "GET",
@@ -755,7 +763,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 2.7
+      "ms": 3.4
     },
     {
       "method": "GET",
@@ -763,7 +771,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 1.6
+      "ms": 3.8
     },
     {
       "method": "GET",
@@ -771,7 +779,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 2.3
+      "ms": 3.1
     },
     {
       "method": "GET",
@@ -779,7 +787,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 1.5
+      "ms": 2.2
     },
     {
       "method": "GET",
@@ -787,7 +795,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 3.9
+      "ms": 6.9
     },
     {
       "method": "GET",
@@ -795,7 +803,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 1.6
+      "ms": 2.7
     },
     {
       "method": "GET",
@@ -803,7 +811,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 15.9
+      "ms": 3.4
     },
     {
       "method": "GET",
@@ -827,7 +835,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 3.6
+      "ms": 3.5
     },
     {
       "method": "GET",
@@ -843,7 +851,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 2.8
+      "ms": 4.2
     },
     {
       "method": "GET",
@@ -851,7 +859,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 3.1
+      "ms": 4.1
     },
     {
       "method": "GET",
@@ -859,7 +867,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 1.5
+      "ms": 2.5
     },
     {
       "method": "GET",
@@ -875,7 +883,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 2.0
+      "ms": 2.4
     },
     {
       "method": "GET",
@@ -883,7 +891,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 3.7
+      "ms": 5.0
     },
     {
       "method": "GET",
@@ -891,7 +899,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 2.5
+      "ms": 3.3
     },
     {
       "method": "GET",
@@ -899,7 +907,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 2.5
+      "ms": 3.9
     },
     {
       "method": "GET",
@@ -915,7 +923,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 2.0
+      "ms": 3.0
     },
     {
       "method": "POST",
@@ -923,7 +931,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "create",
-      "ms": 5.7
+      "ms": 6.5
     },
     {
       "method": "PATCH",
@@ -931,7 +939,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "update",
-      "ms": 6.6
+      "ms": 7.9
     },
     {
       "method": "DELETE",
@@ -939,7 +947,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "delete",
-      "ms": 5.2
+      "ms": 6.7
     },
     {
       "method": "POST",
@@ -947,7 +955,7 @@
       "status": 201,
       "outcome": "PASS",
       "detail": "create branch",
-      "ms": 10.6
+      "ms": 11.3
     },
     {
       "method": "POST",
@@ -955,7 +963,7 @@
       "status": 201,
       "outcome": "PASS",
       "detail": "create object",
-      "ms": 10.3
+      "ms": 10.8
     },
     {
       "method": "PATCH",
@@ -963,7 +971,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "patch object",
-      "ms": 9.7
+      "ms": 9.8
     },
     {
       "method": "DELETE",
@@ -971,7 +979,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "delete object",
-      "ms": 7.8
+      "ms": 9.1
     },
     {
       "method": "DELETE",
@@ -979,7 +987,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "delete branch",
-      "ms": 17.6
+      "ms": 45.3
     },
     {
       "method": "PATCH",
@@ -995,7 +1003,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "create",
-      "ms": 20.4
+      "ms": 10.7
     },
     {
       "method": "GET",
@@ -1011,7 +1019,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "update",
-      "ms": 8.5
+      "ms": 7.0
     },
     {
       "method": "DELETE",
@@ -1019,7 +1027,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "delete",
-      "ms": 4.5
+      "ms": 7.1
     },
     {
       "method": "POST",
@@ -1027,7 +1035,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "create a",
-      "ms": 4.9
+      "ms": 6.2
     },
     {
       "method": "POST",
@@ -1035,7 +1043,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "create b",
-      "ms": 4.9
+      "ms": 6.7
     },
     {
       "method": "POST",
@@ -1043,7 +1051,7 @@
       "status": 404,
       "outcome": "PASS",
       "detail": "same-as (404 until entities graph-resident)",
-      "ms": 7.0
+      "ms": 9.0
     },
     {
       "method": "POST",
@@ -1051,7 +1059,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "merge-into (404 until entities graph-resident)",
-      "ms": 7.1
+      "ms": 10.2
     },
     {
       "method": "POST",
@@ -1059,7 +1067,7 @@
       "status": 201,
       "outcome": "PASS",
       "detail": "create",
-      "ms": 3.9
+      "ms": 5.9
     },
     {
       "method": "PUT",
@@ -1067,7 +1075,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "activate",
-      "ms": 3.3
+      "ms": 5.6
     },
     {
       "method": "DELETE",
@@ -1075,7 +1083,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "delete",
-      "ms": 6.2
+      "ms": 4.8
     },
     {
       "method": "POST",
@@ -1083,7 +1091,7 @@
       "status": 201,
       "outcome": "PASS",
       "detail": "create",
-      "ms": 5.3
+      "ms": 5.8
     },
     {
       "method": "PUT",
@@ -1091,7 +1099,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "activate",
-      "ms": 4.7
+      "ms": 5.5
     },
     {
       "method": "DELETE",
@@ -1099,7 +1107,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "delete",
-      "ms": 4.3
+      "ms": 4.9
     },
     {
       "method": "PUT",
@@ -1107,7 +1115,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "put current values back",
-      "ms": 4.6
+      "ms": 5.1
     },
     {
       "method": "POST",
@@ -1115,7 +1123,7 @@
       "status": 201,
       "outcome": "PASS",
       "detail": "create manual",
-      "ms": 84.0
+      "ms": 18.4
     },
     {
       "method": "GET",
@@ -1123,7 +1131,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 2.7
+      "ms": 3.3
     },
     {
       "method": "PUT",
@@ -1131,7 +1139,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "put details",
-      "ms": 8.6
+      "ms": 7.9
     },
     {
       "method": "PATCH",
@@ -1139,7 +1147,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "review",
-      "ms": 5.4
+      "ms": 5.6
     },
     {
       "method": "PATCH",
@@ -1147,7 +1155,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "tag",
-      "ms": 39.7
+      "ms": 19.9
     },
     {
       "method": "GET",
@@ -1155,7 +1163,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 3.1
+      "ms": 3.6
     },
     {
       "method": "POST",
@@ -1163,7 +1171,7 @@
       "status": 404,
       "outcome": "PASS",
       "detail": "recompute (404 if not in linkable set)",
-      "ms": 13.8
+      "ms": 17.6
     },
     {
       "method": "GET",
@@ -1171,7 +1179,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 3.4
+      "ms": 7.2
     },
     {
       "method": "POST",
@@ -1179,7 +1187,7 @@
       "status": 400,
       "outcome": "PASS",
       "detail": "identify (400 if manual det has no embedding)",
-      "ms": 3.4
+      "ms": 4.3
     },
     {
       "method": "GET",
@@ -1187,7 +1195,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "",
-      "ms": 2.3
+      "ms": 2.9
     },
     {
       "method": "POST",
@@ -1195,7 +1203,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "target-package pdf",
-      "ms": 136.0
+      "ms": 58.9
     },
     {
       "method": "DELETE",
@@ -1203,7 +1211,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "delete",
-      "ms": 5.5
+      "ms": 12.4
     },
     {
       "method": "POST",
@@ -1211,7 +1219,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "neighborhood",
-      "ms": 443.5
+      "ms": 86.0
     },
     {
       "method": "POST",
@@ -1219,7 +1227,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "path",
-      "ms": 20.6
+      "ms": 75.4
     },
     {
       "method": "POST",
@@ -1227,7 +1235,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "viewshed",
-      "ms": 1511.7
+      "ms": 1706.6
     },
     {
       "method": "POST",
@@ -1235,7 +1243,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "los",
-      "ms": 27.4
+      "ms": 40.4
     },
     {
       "method": "POST",
@@ -1243,7 +1251,31 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "routes",
-      "ms": 17.8
+      "ms": 19.0
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/analytics/isochrone",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "isochrone",
+      "ms": 42.8
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/analytics/od-flows",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "od-flows",
+      "ms": 8.8
+    },
+    {
+      "method": "POST",
+      "endpoint": "/api/graph/gnn/suggest-links",
+      "status": 200,
+      "outcome": "PASS",
+      "detail": "gnn suggest-links",
+      "ms": 2501.1
     },
     {
       "method": "POST",
@@ -1251,7 +1283,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "analyze",
-      "ms": 4.5
+      "ms": 8.4
     },
     {
       "method": "POST",
@@ -1259,7 +1291,7 @@
       "status": 503,
       "outcome": "SKIP",
       "detail": "extract: LLM upstream unavailable",
-      "ms": 3.9
+      "ms": 10.2
     },
     {
       "method": "POST",
@@ -1267,7 +1299,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "link",
-      "ms": 3.2
+      "ms": 5.0
     },
     {
       "method": "POST",
@@ -1275,7 +1307,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "propose",
-      "ms": 4.4
+      "ms": 8.5
     },
     {
       "method": "DELETE",
@@ -1288,10 +1320,10 @@
     {
       "method": "DELETE",
       "endpoint": "/api/imagery/{pass_id}",
-      "status": 200,
-      "outcome": "PASS",
-      "detail": "delete imagery",
-      "ms": 137.7
+      "status": null,
+      "outcome": "SKIP",
+      "detail": "no imagery created this run",
+      "ms": 0.0
     },
     {
       "method": "POST",
@@ -1299,7 +1331,7 @@
       "status": 200,
       "outcome": "PASS",
       "detail": "logout",
-      "ms": 2.0
+      "ms": 2.3
     }
   ]
 }
