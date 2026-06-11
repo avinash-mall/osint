@@ -203,6 +203,7 @@ decisions/why-tle-history-for-maneuvers.md|decision,backend|separate satellite_t
 decisions/why-postgis-to-neo4j-projectors.md|decision,backend|one-way PostGIS→Neo4j mirroring of identity + headline props; backfill for catchup
 decisions/why-llm-proposed-entities.md|decision,backend|operational entities are analyst-asserted; LLM/heuristic only proposes via entity_candidates queue
 decisions/why-llm-replaces-heuristic-proposer.md|decision,backend|tick_propose_entities tries LLM first, falls back to heuristic; both feed entity_candidates
+decisions/why-memoize-ontology-normalize.md|decision,ontology|result-memoize normalize() per (canon,layer); kills 24s geojson per-row regex/upsert; throttle version probe
 decisions/why-entity-embedding-aggregation.md|decision,backend|per-entity DINOv3 centroid (analyst-attached tracks) drives the embedding branch of POSSIBLY_SAME_AS
 decisions/why-deconflicted-detection-prompts.md|decision,ontology|one object per unique prompt; label IS the prompt; collapses overloaded false-positive prompts
 decisions/why-detection-boxes-use-polygon-map.md|decision,frontend|box layer is per-feature <Polygon> map; <GeoJSON> canvas layer silently failed to paint

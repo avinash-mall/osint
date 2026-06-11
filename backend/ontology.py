@@ -24,6 +24,7 @@ branch_id='Other' / icon_key='circle_help' and are UPSERTed into
 from __future__ import annotations
 
 import logging
+import os
 import re
 import threading
 import time
@@ -65,6 +66,22 @@ _TREE_CACHE: dict[str, Any] = {
     "prompts_by_sensor": {},       # sensor -> [prompt, ...]  (lower)
     "all_prompts": [],             # [prompt, ...]
 }
+
+# Result memo for normalize(): label matching is a regex/dict sweep (and an
+# unknown-label DB upsert) that ran on *every* call — ~1 ms each, dominating any
+# hot loop that normalizes thousands of detections (e.g. /api/detections/geojson
+# over a dense scene). The result is deterministic for a given ontology tree, so
+# we memoize it keyed by (canon, layer) and clear the memo whenever the tree is
+# rebuilt or invalidated. See decisions/why-memoize-ontology-normalize.md.
+_NORMALIZE_MEMO: dict[tuple[str, str], "NormalizedLabel"] = {}
+_NORMALIZE_MEMO_MAX = 50_000  # paranoia bound against unbounded novel input
+
+# The per-call ``SELECT version_id`` freshness probe is the secondary refresh
+# path; in-process edits already force an immediate rebuild via bump_version() ->
+# invalidate_cache(). So we throttle the DB probe to at most once per this window
+# (0 disables the throttle, restoring a probe on every call).
+_VERSION_CHECK_TTL_S = float(os.getenv("ONTOLOGY_VERSION_CHECK_TTL_S", "2.0") or 2.0)
+_VERSION_CHECK_AT = [0.0]  # monotonic timestamp of the last DB version probe
 
 
 def _canonical(text: Any) -> str:
@@ -235,8 +252,17 @@ def _get_tree() -> dict[str, Any]:
     forcing a rebuild on every call. On startup with no cache we still
     attempt the reload so the first failing call surfaces the problem.
     """
-    db_version = _read_db_version()
     cache_present = bool(_TREE_CACHE.get("branches"))
+    # Throttle the DB version probe: when the cache is populated and we probed
+    # within the TTL window, serve it without a round-trip. invalidate_cache()
+    # empties "branches" (cache_present=False), so an in-process edit still
+    # forces an immediate rebuild regardless of the throttle.
+    now = time.monotonic()
+    if cache_present and _VERSION_CHECK_TTL_S > 0 and (now - _VERSION_CHECK_AT[0]) < _VERSION_CHECK_TTL_S:
+        return _TREE_CACHE
+
+    db_version = _read_db_version()
+    _VERSION_CHECK_AT[0] = now
     if cache_present and (db_version is None or db_version == _TREE_CACHE.get("version_id")):
         return _TREE_CACHE
 
@@ -249,6 +275,8 @@ def _get_tree() -> dict[str, Any]:
         # Atomic-ish swap of dict contents.
         _TREE_CACHE.clear()
         _TREE_CACHE.update(new_cache)
+        # The tree changed, so every memoized normalize() result is now stale.
+        _NORMALIZE_MEMO.clear()
         return _TREE_CACHE
 
 
@@ -257,6 +285,8 @@ def _invalidate_cache() -> None:
     with _CACHE_LOCK:
         _TREE_CACHE["version_id"] = None
         _TREE_CACHE["branches"] = {}
+        _NORMALIZE_MEMO.clear()
+        _VERSION_CHECK_AT[0] = 0.0  # next _get_tree must re-probe immediately
 
 
 # Public alias
@@ -335,9 +365,31 @@ def _log_unknown(label: str, layer: str) -> None:
 # Public API
 # ---------------------------------------------------------------------------
 def normalize(label: Any, layer: str = "") -> NormalizedLabel:
-    """Return a :class:`NormalizedLabel` for ``label``. Never raises."""
+    """Return a :class:`NormalizedLabel` for ``label``. Never raises.
+
+    Result-memoized per ``(canon, layer)`` against the current ontology tree; the
+    memo is cleared on every tree rebuild / ``invalidate_cache()``. On a memo hit
+    the matching sweep and the unknown-label upsert are skipped — see
+    [decisions/why-memoize-ontology-normalize.md](../docs/decisions/why-memoize-ontology-normalize.md).
+    """
     raw = "" if label is None else str(label)
     canon = _canonical(raw)
+    # _get_tree() first: it refreshes the tree (and clears the memo) if the DB
+    # version changed, so a memo hit below is guaranteed current.
+    _get_tree()
+    memo_key = (canon, layer or "")
+    cached = _NORMALIZE_MEMO.get(memo_key)
+    if cached is not None:
+        return cached
+    result = _normalize_uncached(raw, canon, layer)
+    if len(_NORMALIZE_MEMO) >= _NORMALIZE_MEMO_MAX:
+        _NORMALIZE_MEMO.clear()
+    _NORMALIZE_MEMO[memo_key] = result
+    return result
+
+
+def _normalize_uncached(raw: str, canon: str, layer: str = "") -> NormalizedLabel:
+    """Compute the NormalizedLabel (matching sweep + unknown-label logging)."""
     canon_no_prefix = _canonical(_strip_source_prefix(canon))
 
     tree = _get_tree()

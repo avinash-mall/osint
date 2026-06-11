@@ -188,11 +188,22 @@ def test_unknown_label_logged():
     assert _unknown_count(label) >= 1
 
 
-def test_unknown_upsert_counter():
+def test_unknown_label_recorded_and_memoized():
+    # normalize() is result-memoized per ontology version, so a repeated unknown
+    # label is logged once — not once per call. occurrence_count is internal-only
+    # (consumed by no feature); the triage ROW is what matters, and it persists.
+    # A version bump clears the memo, so the label is re-logged on next sight.
     label = "zxqkk_test_repeat_label"
+    with postgis_db.get_cursor(commit=True) as cur:
+        cur.execute("DELETE FROM ontology_unknown_labels WHERE label=%s", (label,))
+    ontology.invalidate_cache()  # also clears the normalize memo
     ontology.normalize(label)
     ontology.normalize(label)
-    assert _unknown_count(label) == 2
+    assert _unknown_count(label) == 1  # memoized: second call is a no-op
+    ontology.bump_version()
+    ontology.invalidate_cache()
+    ontology.normalize(label)
+    assert _unknown_count(label) == 2  # memo cleared → re-logged
 
 
 def test_sam3_case_mismatch():
