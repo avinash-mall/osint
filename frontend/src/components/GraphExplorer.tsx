@@ -9,16 +9,19 @@ import {
   CircleDot,
   Database,
   Filter,
+  Gauge,
   Hash,
   Info,
   Layers,
   Maximize2,
   Plus,
+  Radar,
   Route,
   Search,
   Share2,
   Ship,
   Smartphone,
+  Sparkles,
   Truck,
   User,
   X,
@@ -219,7 +222,12 @@ export default function GraphExplorer() {
   const [selectedNode, setSelectedNode] = useState<any>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; node: any } | null>(null);
   const [showCandidateLinks, setShowCandidateLinks] = useState(false);
-  const [disabledPredicates, setDisabledPredicates] = useState<Set<string>>(new Set());
+  // Proximity (COLOCATED_WITH) and GNN (GNN_SUGGESTED_LINK) edges are dense /
+  // advisory, so they start hidden — the chip surfaces them on demand, and the
+  // co-location / suggest-links lenses re-enable them when explicitly invoked.
+  const [disabledPredicates, setDisabledPredicates] = useState<Set<string>>(
+    () => new Set(['COLOCATED_WITH', 'GNN_SUGGESTED_LINK']),
+  );
   const [classLens, setClassLens] = useState<Set<string>>(new Set());
   const [timeRange, setTimeRange] = useState<TimeRange>(defaultTimeRange);
   const [query, setQuery] = useState('');
@@ -231,6 +239,13 @@ export default function GraphExplorer() {
   const [evidenceFocusId, setEvidenceFocusId] = useState<string | null>(null);
   const [evidencePayload, setEvidencePayload] = useState<EvidencePayload | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Phase 6: graph-analytics state (metrics card, co-location lens, GNN overlay).
+  const [metrics, setMetrics] = useState<any | null>(null);
+  const [gnnStatus, setGnnStatus] = useState<{ ready: boolean } | null>(null);
+  const [gnnResult, setGnnResult] = useState<any | null>(null);
+  const [gnnSuggestions, setGnnSuggestions] = useState<any[]>([]);
+  const [lensBanner, setLensBanner] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
   // Phase 5.E: cluster keys ("${parentId}::${class}") the analyst has
   // manually expanded — those clusters render as their underlying nodes.
   const [expandedClusters, setExpandedClusters] = useState<Set<string>>(new Set());
@@ -277,6 +292,36 @@ export default function GraphExplorer() {
   useEffect(() => {
     fetchData().catch((error) => console.error('Error fetching graph data:', error));
   }, [fetchData]);
+
+  // A: pull graph-level metrics + centrality for the metrics card and the
+  // centrality-weighted node sizing. Scoped to Investigation; candidate edges
+  // included to mirror the visible topology.
+  const fetchMetrics = useCallback(async () => {
+    if (mode !== 'investigation') { setMetrics(null); return; }
+    try {
+      const resp = await axios.get(`${API_URL}/api/graph/metrics`, {
+        params: { include_candidates: showCandidateLinks, limit: 1500, top_k: 50 },
+      });
+      setMetrics(resp.data);
+    } catch (err) {
+      console.error('graph metrics fetch failed', err);
+      setMetrics(null);
+    }
+  }, [mode, showCandidateLinks]);
+
+  useEffect(() => {
+    fetchMetrics().catch((error) => console.error('graph metrics fetch failed', error));
+  }, [fetchMetrics]);
+
+  // C: probe whether the GNN runtime is installed so the "Suggest links"
+  // control can gate itself (honest disabled state, like the map's DEM/OSRM).
+  useEffect(() => {
+    let cancelled = false;
+    axios.get(`${API_URL}/api/graph/gnn/status`)
+      .then((resp) => { if (!cancelled) setGnnStatus({ ready: Boolean(resp.data?.ready) }); })
+      .catch(() => { if (!cancelled) setGnnStatus({ ready: false }); });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     const observer = new ResizeObserver((entries) => {
@@ -333,6 +378,27 @@ export default function GraphExplorer() {
     return out;
   }, [data.nodes]);
 
+  // A: centrality scores keyed by node id (Neo4j elementId), merged across the
+  // three measures the metrics endpoint returns. Drives node sizing + the card.
+  const centrality = useMemo(() => {
+    const map = new Map<string, { pagerank: number; betweenness: number; degree: number }>();
+    const tc = metrics?.top_centrality;
+    if (!tc) return { map, maxPagerank: 0 };
+    const merge = (arr: any[], key: 'pagerank' | 'betweenness' | 'degree') => {
+      (arr || []).forEach((e: any) => {
+        const cur = map.get(e.id) || { pagerank: 0, betweenness: 0, degree: 0 };
+        cur[key] = Number(e.score) || 0;
+        map.set(e.id, cur);
+      });
+    };
+    merge(tc.pagerank, 'pagerank');
+    merge(tc.betweenness, 'betweenness');
+    merge(tc.degree, 'degree');
+    let maxPagerank = 0;
+    for (const v of map.values()) maxPagerank = Math.max(maxPagerank, v.pagerank);
+    return { map, maxPagerank };
+  }, [metrics]);
+
   // Phase 5.E: collapse dense same-class neighbourhoods into a single
   // :Cluster virtual node. Threshold matches the plan (≥12).
   const CLUSTER_THRESHOLD = 12;
@@ -340,9 +406,26 @@ export default function GraphExplorer() {
   const graphData = useMemo(() => {
     const base = filteredData || data;
 
+    // C: fold GNN suggestion edges into the base graph, but only those whose
+    // both endpoints are in the current view (the model snapshots a wider slice
+    // than the time/class-scoped feed). They carry predicate GNN_SUGGESTED_LINK
+    // so they ride the normal predicate filter / colour path.
+    const baseNodeIds = new Set(base.nodes.map((n: any) => n.id));
+    const gnnLinks = gnnSuggestions
+      .filter((s: any) => baseNodeIds.has(s.source) && baseNodeIds.has(s.target))
+      .map((s: any) => ({
+        source: s.source,
+        target: s.target,
+        type: 'GNN_SUGGESTED_LINK',
+        predicate: 'GNN_SUGGESTED_LINK',
+        score: s.score,
+        properties: { score: s.score },
+        __gnn: true,
+      }));
+
     // First pass: predicate + candidate filtering (unchanged from prior).
     let nodes = base.nodes;
-    let links = base.links;
+    let links = [...base.links, ...gnnLinks];
     if (!showCandidateLinks) {
       links = links.filter((link: any) => !String(predicateOf(link)).startsWith('CANDIDATE_'));
     }
@@ -455,7 +538,7 @@ export default function GraphExplorer() {
       nodes: [...filteredNodes, ...clusterNodes],
       links: [...filteredLinks, ...clusterLinks],
     };
-  }, [filteredData, data, disabledPredicates, showCandidateLinks, expandedClusters]);
+  }, [filteredData, data, disabledPredicates, showCandidateLinks, expandedClusters, gnnSuggestions]);
 
   const nodeMap = useMemo(() => new Map(data.nodes.map((node: any) => [node.id, node])), [data.nodes]);
 
@@ -661,6 +744,77 @@ export default function GraphExplorer() {
     }
   }, []);
 
+  // B: co-location lens — render the live proximity graph of recent detections
+  // as a filtered view. Detections are keyed by PostGIS id (a separate id space
+  // from the Neo4j entity feed), so this replaces the canvas rather than merging.
+  const runColocationLens = useCallback(async () => {
+    setBusy('coloc');
+    try {
+      const startMs = Date.parse(timeRange.start);
+      const endMs = Date.parse(timeRange.end);
+      const windowDays = Math.max(1, Math.min(3650, Math.round((endMs - startMs) / 86_400_000)));
+      const resp = await axios.get(`${API_URL}/api/graph/colocation`, {
+        params: { method: 'knn', k: 6, radius_m: 3000, window_days: windowDays, limit: 1500 },
+      });
+      const nodes = (resp.data.nodes || []).map((n: any) => ({
+        id: `det-${n.id}`,
+        label: 'Detection',
+        labels: ['Detection'],
+        properties: { detection_id: n.id, longitude: n.lon, latitude: n.lat },
+      }));
+      const links = (resp.data.edges || []).map((e: any) => ({
+        source: `det-${e.source}`,
+        target: `det-${e.target}`,
+        type: 'COLOCATED_WITH',
+        predicate: 'COLOCATED_WITH',
+        properties: { distance_m: e.distance_m },
+      }));
+      setDisabledPredicates((cur) => { const next = new Set(cur); next.delete('COLOCATED_WITH'); return next; });
+      setSelectedNode(null); setPathResult(null); setSiteRollup(null); setGnnResult(null);
+      setFilteredData({ nodes, links });
+      setLensBanner(`Co-location lens · ${resp.data.method} · ${nodes.length} detections · ${links.length} edges`);
+    } catch (err) {
+      console.error('colocation lens failed', err);
+      setLensBanner('Co-location lens failed');
+    } finally {
+      setBusy(null);
+    }
+  }, [timeRange.start, timeRange.end]);
+
+  // C: run GNN link prediction and overlay the suggested operational-entity
+  // pairs as advisory dashed edges. Gated on gnnStatus.ready (torch installed).
+  const runGnnSuggest = useCallback(async () => {
+    if (!gnnStatus?.ready) return;
+    setBusy('gnn');
+    try {
+      const resp = await axios.post(`${API_URL}/api/graph/gnn/suggest-links`, { limit: 1000, top_k: 25 });
+      setGnnSuggestions(resp.data.suggestions || []);
+      setGnnResult(resp.data);
+      setDisabledPredicates((cur) => { const next = new Set(cur); next.delete('GNN_SUGGESTED_LINK'); return next; });
+      setPathResult(null); setSiteRollup(null);
+    } catch (err: any) {
+      console.error('gnn suggest failed', err);
+      setGnnResult({ suggestions: [], error: err?.response?.data?.detail || 'request failed' });
+    } finally {
+      setBusy(null);
+    }
+  }, [gnnStatus]);
+
+  const clearGnnOverlay = useCallback(() => {
+    setGnnSuggestions([]);
+    setGnnResult(null);
+  }, []);
+
+  // A: select a node by id from the metrics card (find it in the current feed).
+  const selectNodeById = useCallback((id: string) => {
+    const node = data.nodes.find((n: any) => n.id === id);
+    if (node) {
+      setSelectedNode(node);
+      setContextMenu(null);
+      requestAnimationFrame(() => focusNode(node));
+    }
+  }, [data.nodes, focusNode]);
+
   const exportSelected = useCallback(() => {
     const payload = selectedNode || graphData;
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -788,8 +942,37 @@ export default function GraphExplorer() {
               <Filter size={13} /> Candidates
             </button>
             <span className="sentinel-tag acc">{showCandidateLinks ? 'review' : 'approved'}</span>
+            {mode === 'investigation' && (
+              <>
+                <button
+                  type="button"
+                  onClick={(event) => { event.stopPropagation(); runColocationLens(); }}
+                  disabled={busy === 'coloc'}
+                  className="sentinel-btn"
+                  title="Build the live proximity (co-location) graph of recent detections"
+                >
+                  <Radar size={13} /> {busy === 'coloc' ? 'Co-loc…' : 'Co-loc'}
+                </button>
+                <button
+                  type="button"
+                  onClick={(event) => { event.stopPropagation(); if (gnnStatus?.ready) runGnnSuggest(); }}
+                  disabled={!gnnStatus?.ready || busy === 'gnn'}
+                  className={`sentinel-btn ${gnnSuggestions.length ? 'primary' : ''}`}
+                  title={gnnStatus?.ready
+                    ? 'Predict missing entity links with the GraphSAGE GNN'
+                    : 'GNN runtime not installed (torch absent in this image)'}
+                >
+                  <Sparkles size={13} /> {busy === 'gnn' ? 'Predicting…' : 'Suggest links'}
+                </button>
+                {gnnSuggestions.length > 0 && (
+                  <button type="button" onClick={(event) => { event.stopPropagation(); clearGnnOverlay(); }} className="sentinel-btn" title="Clear GNN overlay">
+                    <X size={13} /> GNN
+                  </button>
+                )}
+              </>
+            )}
             {filteredData && (
-              <button type="button" onClick={() => { setFilteredData(null); setPathResult(null); }} className="sentinel-btn">
+              <button type="button" onClick={() => { setFilteredData(null); setPathResult(null); setLensBanner(null); }} className="sentinel-btn">
                 <X size={13} /> Clear
               </button>
             )}
@@ -830,6 +1013,14 @@ export default function GraphExplorer() {
             {loadError && (
               <div className="px-3 py-1.5 text-[11px] font-mono bg-sentinel-warning/20 text-sentinel-warning">
                 {loadError}
+              </div>
+            )}
+            {lensBanner && (
+              <div className="px-3 py-1.5 text-[11px] font-mono bg-sentinel-accent/15 text-sentinel-accent flex items-center gap-2">
+                <Radar size={13} /> {lensBanner}
+                <button type="button" onClick={() => { setFilteredData(null); setLensBanner(null); }} className="ml-auto sentinel-btn">
+                  <X size={13} /> Exit lens
+                </button>
               </div>
             )}
           </>
@@ -883,7 +1074,7 @@ export default function GraphExplorer() {
                 // is legible at a glance, not just "lots of grey lines".
                 return predicateColor(predicateOf(link));
               }}
-              linkLineDash={(link: any) => link.candidate ? [4, 4] : null}
+              linkLineDash={(link: any) => link.candidate ? [4, 4] : link.__gnn ? [2, 3] : null}
               linkCanvasObjectMode={() => 'after'}
               linkCanvasObject={(link: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
                 // Only label edges once zoomed in enough to be readable.
@@ -951,7 +1142,13 @@ export default function GraphExplorer() {
                 const color = kindColor(kind);
                 const isSelected = selectedNode?.id === node.id;
                 const isNeighbor = selectedNeighborIds.has(node.id);
-                const radius = isSelected ? 5.2 : 3.8;
+                // A: scale the node by its PageRank centrality so hubs/brokers
+                // stand out from leaf nodes (up to +3.5px over the base radius).
+                const cent = centrality.map.get(node.id);
+                const centBoost = cent && centrality.maxPagerank > 0
+                  ? Math.min(3.5, (cent.pagerank / centrality.maxPagerank) * 3.5)
+                  : 0;
+                const radius = (isSelected ? 5.2 : 3.8) + centBoost;
                 if (isSelected) {
                   ctx.beginPath();
                   ctx.setLineDash([2 / globalScale, 3 / globalScale]);
@@ -990,11 +1187,34 @@ export default function GraphExplorer() {
           )}
           {mode === 'investigation' && (
             <>
-              <div className="absolute left-3 top-3 border border-sentinel-line bg-sentinel-panel/90 p-3 font-mono text-[10px] text-sentinel-muted">
-                <div className="sentinel-label mb-2">Graph</div>
+              <div className="absolute left-3 top-3 w-52 border border-sentinel-line bg-sentinel-panel/90 p-3 font-mono text-[10px] text-sentinel-muted">
+                <div className="sentinel-label mb-2 flex items-center gap-1"><Gauge size={11} /> Graph metrics</div>
                 <div>NODES <span className="text-sentinel-accent">{graphData.nodes.length}</span></div>
                 <div>EDGES <span className="text-sentinel-accent">{graphData.links.length}</span></div>
                 <div>DENSITY <span className="text-sentinel-accent">{density}</span></div>
+                {metrics && (
+                  <>
+                    <div>COMPONENTS <span className="text-sentinel-accent">{metrics.component_count}</span></div>
+                    <div>LARGEST <span className="text-sentinel-accent">{metrics.largest_component}</span></div>
+                    {metrics.top_centrality?.pagerank?.length > 0 && (
+                      <div className="mt-2 pt-2 border-t border-sentinel-line">
+                        <div className="sentinel-label mb-1">Top central</div>
+                        {metrics.top_centrality.pagerank.slice(0, 5).map((e: any) => (
+                          <button
+                            key={e.id}
+                            type="button"
+                            onClick={(event) => { event.stopPropagation(); selectNodeById(e.id); }}
+                            className="w-full text-left truncate hover:text-sentinel-accent"
+                            title={`${e.label || 'Node'} · PageRank ${Number(e.score).toFixed(4)}`}
+                          >
+                            <span className="text-sentinel-accent">{Number(e.score).toFixed(3)}</span> {e.name || e.label || String(e.id).slice(0, 10)}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <div className="mt-1 text-[9px] text-sentinel-muted/70">via {metrics.backend}</div>
+                  </>
+                )}
               </div>
               <div className="absolute right-3 bottom-3 border border-sentinel-line bg-sentinel-panel/90 p-3 text-[10px] text-sentinel-muted">
                 <div className="sentinel-label mb-2">Legend</div>
@@ -1030,11 +1250,11 @@ export default function GraphExplorer() {
       <aside className="graph-detail-panel sentinel-panel border-y-0 border-r-0 min-h-0 flex flex-col">
         <div className="sentinel-panel-header">
           <Info size={14} className="text-sentinel-accent" />
-          <span>{pathResult ? 'Path' : siteRollup ? 'Site rollup' : 'Entity'}</span>
-          {(pathResult || siteRollup) && (
+          <span>{pathResult ? 'Path' : siteRollup ? 'Site rollup' : gnnResult ? 'Suggested links' : 'Entity'}</span>
+          {(pathResult || siteRollup || gnnResult) && (
             <button
               type="button"
-              onClick={() => { setPathResult(null); setSiteRollup(null); setFilteredData(null); }}
+              onClick={() => { setPathResult(null); setSiteRollup(null); if (gnnResult) clearGnnOverlay(); else setFilteredData(null); }}
               className="sentinel-icon-btn ml-auto h-6 w-6"
               title="Close"
             >
@@ -1142,6 +1362,47 @@ export default function GraphExplorer() {
                 </div>
               ) : <div className="text-xs text-sentinel-muted font-mono">none linked to site entities</div>}
             </section>
+          </div>
+        ) : gnnResult ? (
+          <div className="sentinel-scroll flex-1 p-3 space-y-3">
+            <div>
+              <div className="sentinel-label mb-1 flex items-center gap-1"><Sparkles size={12} /> GNN link prediction</div>
+              <div className="text-[10px] text-sentinel-muted font-mono">
+                GraphSAGE · {gnnResult.node_count ?? 0} nodes · {gnnResult.candidate_count ?? 0} candidate pairs
+              </div>
+            </div>
+            {gnnResult.error ? (
+              <div className="text-xs text-sentinel-warning font-mono border border-sentinel-line bg-sentinel-bg p-2">{gnnResult.error}</div>
+            ) : (gnnResult.suggestions || []).length ? (
+              <div className="space-y-1">
+                {gnnResult.suggestions.map((s: any, i: number) => (
+                  <button
+                    key={`${s.source}-${s.target}-${i}`}
+                    type="button"
+                    onClick={() => selectNodeById(s.source)}
+                    className="w-full text-left border border-sentinel-line bg-sentinel-bg p-2 hover:border-sentinel-accent"
+                    title="Locate the source entity"
+                  >
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className="truncate flex-1">{s.source_name || s.source_label || String(s.source).slice(0, 10)}</span>
+                      <span className="text-sentinel-muted">↔</span>
+                      <span className="truncate flex-1 text-right">{s.target_name || s.target_label || String(s.target).slice(0, 10)}</span>
+                    </div>
+                    <div className="mt-1 flex items-center gap-2">
+                      <span className="h-1.5 flex-1 border border-sentinel-line bg-sentinel-panel">
+                        <span className="block h-full bg-sentinel-accent" style={{ width: `${Math.round((Number(s.score) || 0) * 100)}%` }} />
+                      </span>
+                      <span className="font-mono text-[10px] text-sentinel-accent">{(Number(s.score) || 0).toFixed(3)}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="text-xs text-sentinel-muted font-mono">No suggestions returned.</div>
+            )}
+            <div className="text-[10px] text-sentinel-muted/70 font-mono">
+              Advisory only — predictions persist as GNN_SUGGESTED_LINK edges for review, not as approved relationships.
+            </div>
           </div>
         ) : selectedNode ? (
           <>

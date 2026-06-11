@@ -1,7 +1,7 @@
 # Link Graph Workspace — `GraphExplorer.tsx`
 
 **Path:** [frontend/src/components/GraphExplorer.tsx](../../frontend/src/components/GraphExplorer.tsx)
-**Lines:** ~1260 (TSX). Companion: [frontend/src/components/graph/TimeScrubber.tsx](../../frontend/src/components/graph/TimeScrubber.tsx) (~120).
+**Lines:** ~1530 (TSX). Companion: [frontend/src/components/graph/TimeScrubber.tsx](../../frontend/src/components/graph/TimeScrubber.tsx) (~120).
 **Status:** Phases 1–5 of the [Link Graph redesign](../architecture/link-graph-redesign.md) shipped — all three modes (Investigation, Evidence, Ontology) are functional, each backed by a live endpoint.
 
 ## Purpose
@@ -40,6 +40,14 @@ Sub-tabs share selection state (current node, time range, class lens) — see [d
 
 Reads `/api/ontology/updates` (8-item cap). Pending OntologyUpdate cards across the bottom. Unchanged from pre-redesign.
 
+## Phase 6 additions (graph-analytics surface)
+
+Investigation mode consumes the three new graph-analytics endpoints (see [decisions/why-link-graph-uses-graph-analytics.md](../decisions/why-link-graph-uses-graph-analytics.md)):
+
+- **A — Metrics card + centrality node-sizing.** On load (and on the Candidates toggle), `GET /api/graph/metrics?limit=1500&top_k=50` populates the left-top "Graph metrics" card (density, component count, largest component, compute backend) plus a clickable Top-central list (by PageRank — each row selects + focuses the node). The force-graph `nodeCanvasObject` scales each node's radius by its PageRank centrality (up to +3.5 px), so hubs/brokers stand out. Scores key by Neo4j `elementId`, joining cleanly to the Investigation feed; nodes outside the top-50 just render at base size.
+- **B — Co-location lens + auto-surfaced edges.** `COLOCATED_WITH` is added to the default-hidden predicate set, so the persisted proximity edges (from `worker.tick_colocation_builder`) appear as an opt-in chip rather than cluttering the view. The **Co-loc** toolbar button calls `GET /api/graph/colocation` (kNN, window derived from the time scrubber) and renders the live proximity graph of recent detections as a filtered lens — detections are keyed in the PostGIS id space (`det-<id>` synthetic nodes), so the lens replaces the canvas rather than merging into the Neo4j feed. A banner reports method/node/edge counts with an "Exit lens" action.
+- **C — GNN suggested links (status-gated).** `GET /api/graph/gnn/status` is probed once on mount; the **Suggest links** button is disabled with an explanatory tooltip when the GNN runtime (torch) is absent — the same honest-capability pattern as the map's DEM/OSRM chip. When ready, it POSTs `/api/graph/gnn/suggest-links` and overlays the top predicted operational pairs as dashed advisory edges (predicate `GNN_SUGGESTED_LINK`, also default-hidden until invoked), with a "Suggested links" detail panel listing each pair + score (click to locate the source) and a clear-overlay control.
+
 ## Why this design
 
 Three modes are the minimum that cover the six analyst workflows the redesign targets — splitting them in one workspace (vs. siblings in the icon rail) keeps the analyst's selection context across mode switches. See [decisions/why-three-graph-modes.md](../decisions/why-three-graph-modes.md).
@@ -55,6 +63,8 @@ Investigation mode is intentionally bounded: cap the default payload, expose dri
 ## Cross-references
 
 - [architecture/link-graph-redesign.md](../architecture/link-graph-redesign.md) — full 5-phase roadmap; this doc covers the workspace surface in particular.
+- [decisions/why-link-graph-uses-graph-analytics.md](../decisions/why-link-graph-uses-graph-analytics.md) — Phase 6 metrics/co-location/GNN integration.
+- [backend/graph-metrics.md](../backend/graph-metrics.md), [backend/graph-proximity.md](../backend/graph-proximity.md), [backend/graph-pyg.md](../backend/graph-pyg.md) — the backing modules.
 - [backend-routers/graph-router.md](../backend-routers/graph-router.md) — backing routes.
 - [backend-routers/aois-router.md](../backend-routers/aois-router.md) — Base/LaunchPoint/Facility nodes are projected from `aois` tagged with `metadata.aoi_kind`.
 - [backend/graph-writes.md](../backend/graph-writes.md) — write helpers (used by the `/promote` endpoint).
