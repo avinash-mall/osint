@@ -285,13 +285,42 @@ def _velocity_sigma_after_update(track: dict, dt_seconds: float, observation_sig
 # Kalman gate balloons across continents over a long inter-pass gap.
 _STATIC_TRACKER_CATEGORIES = {"recreation", "nature"}
 
+# Open-vocabulary / DOTA-style labels the ontology cannot categorise come back
+# as "object" and would fall through to the mobile "default" bucket (16 m/s).
+# For clearly immobile site classes that is catastrophic: over a multi-day
+# inter-pass gap the gate admits a same-class detection thousands of km away,
+# so every tennis court pairs with every other tennis court on the continent
+# (rendered as a fan of cross-city track polylines on the map). Pin them.
+# Exact names first; the substring tokens are deliberately conservative —
+# nothing here ("court", "solar", ...) appears inside any mobile class name
+# (note: "tank" is NOT a token; battle tanks move — only the exact
+# "storage_tank" is pinned).
+_STATIC_CLASS_NAMES = {
+    "tennis_court", "basketball_court", "volleyball_court", "baseball_diamond",
+    "soccer_ball_field", "ground_track_field", "athletic_field", "golf_course",
+    "swimming_pool", "parking_lot", "solar_panel_array", "solar_panel",
+    "solar_farm", "roundabout", "bridge", "dam", "harbor", "harbour",
+    "helipad", "runway", "taxiway", "storage_tank", "road", "building",
+    "stadium", "windmill", "wind_turbine", "chimney", "pier", "dock",
+}
+_STATIC_CLASS_TOKENS = ("court", "field", "diamond", "pool", "parking", "solar", "stadium", "roundabout")
+
+
+def _is_static_class(class_name: str) -> bool:
+    name = (class_name or "").strip().lower().replace(" ", "_").replace("-", "_")
+    if not name:
+        return False
+    if name in _STATIC_CLASS_NAMES:
+        return True
+    return any(tok in name for tok in _STATIC_CLASS_TOKENS)
+
 
 def _tracker_category(class_name: str) -> str:
     """Map a detection class to one of the V_MAX category keys."""
     raw = category_for_class(class_name)  # may return "combat", "unknown", etc.
     if raw in V_MAX:
         return raw
-    if raw in _STATIC_TRACKER_CATEGORIES:
+    if raw in _STATIC_TRACKER_CATEGORIES or _is_static_class(class_name):
         return "infrastructure"
     return "default"
 

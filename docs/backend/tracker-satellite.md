@@ -24,10 +24,10 @@ Associates `detections` rows across **satellite passes** (`satellite_passes`) in
 - [`_load_tracker_weights`](../../backend/tracker.py#L75) — reads `TRACKER_COST_WEIGHTS` env JSON.
 - [`_embedding_cost`](../../backend/tracker.py#L150) — cosine distance between DINOv3-SAT embeddings.
 - [`_kalman_process_sigma_a`](../../backend/tracker.py#L201), [`_kalman_update_sigma`](../../backend/tracker.py#L238).
-- [`_tracker_category`](../../backend/tracker.py#L289) (with [`_STATIC_TRACKER_CATEGORIES`](../../backend/tracker.py#L286)) → [`_v_max`](../../backend/tracker.py#L311) / [`_v_max_ceiling`](../../backend/tracker.py#L299) → [`_track_state`](../../backend/tracker.py#L325).
-- [`_compute_cost`](../../backend/tracker.py#L448) — gate (`np.inf` outside) + weighted cost; the physical ceiling is at [tracker.py#L486-L490](../../backend/tracker.py#L486-L490), `GATE_MAX_SPEED_MARGIN` at [tracker.py#L206](../../backend/tracker.py#L206).
-- [`_haversine_metres`](../../backend/tracker.py#L334) — geodesic distance for cost.
-- [`_predict_position`](../../backend/tracker.py#L340), [`_velocity_from_observations`](../../backend/tracker.py#L364).
+- [`_tracker_category`](../../backend/tracker.py#L318) (with [`_STATIC_TRACKER_CATEGORIES`](../../backend/tracker.py#L286) and [`_is_static_class`](../../backend/tracker.py#L309) — pins ontology-unknown static NAMES like `tennis_court`/`parking_lot` to `infrastructure`, see [tracker-gate-physical-ceiling.md](../decisions/tracker-gate-physical-ceiling.md) defect 3) → [`_v_max`](../../backend/tracker.py#L339) / [`_v_max_ceiling`](../../backend/tracker.py#L328) → [`_track_state`](../../backend/tracker.py#L353).
+- [`_compute_cost`](../../backend/tracker.py#L476) — gate (`np.inf` outside) + weighted cost; the physical ceiling is at [tracker.py#L515-L519](../../backend/tracker.py#L515-L519), `GATE_MAX_SPEED_MARGIN` at [tracker.py#L206](../../backend/tracker.py#L206).
+- [`_haversine_metres`](../../backend/tracker.py#L392) — geodesic distance for cost.
+- [`_predict_position`](../../backend/tracker.py#L398), [`_velocity_from_observations`](../../backend/tracker.py#L422).
 
 ## Failure modes
 

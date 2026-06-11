@@ -63,6 +63,24 @@ def test_tracker_category_maps_static_buckets_to_infrastructure(monkeypatch):
     assert tracker._tracker_category("widget") == "default"
 
 
+def test_tracker_category_pins_ontology_unknown_static_names(monkeypatch):
+    # Open-vocab / DOTA labels the ontology can't categorise come back as
+    # "object". The class-NAME fallback must still pin clearly immobile site
+    # classes — otherwise they ride the mobile 16 m/s default and a 2-day
+    # inter-pass gap gates in same-class detections thousands of km away
+    # (the San Diego → Texas tennis-court streak fan).
+    monkeypatch.setattr(tracker, "category_for_class", lambda cls: "object")
+    for cls in ("tennis_court", "parking_lot", "solar_panel_array",
+                "basketball_court", "baseball_diamond", "swimming_pool",
+                "Tennis Court", "soccer-ball-field"):
+        assert tracker._tracker_category(cls) == "infrastructure", cls
+    # Mobile unknowns stay in the default bucket — "tank" is NOT a static
+    # token (battle tanks move); only the exact "storage_tank" is pinned.
+    for cls in ("truck", "tank", "excavator", "container_ship"):
+        assert tracker._tracker_category(cls) == "default", cls
+    assert tracker._tracker_category("storage_tank") == "infrastructure"
+
+
 def test_gate_rejects_cross_continent_jump_for_static_class():
     # A tennis court in Abu Dhabi cannot be the same object as one in Vienna.
     track = _static_track(*_ABU_DHABI, category="infrastructure",

@@ -175,7 +175,7 @@ decisions/removed-sam3-amg.md|decision,fmv|SAM3 AMG path removed in favor of YOL
 decisions/removed-yoloe-imagery.md|decision,imagery,inference|YOLOE removed from still-image inference; FMV YOLOE remains
 decisions/reset-db-pool-after-fork.md|decision,celery|worker_process_init resets PostGIS pool so prefork children don't share libpq sockets
 decisions/temporal-swipe-comparator.md|decision,frontend|side-by-side imagery comparator via custom Leaflet pane + clip-path; no plugin dependency
-decisions/tracker-gate-physical-ceiling.md|decision,backend,tracker|cap association gate at physical travel; static recreation/nature map to stationary; kills cross-continent track streaks
+decisions/tracker-gate-physical-ceiling.md|decision,backend,tracker|gate capped at physical travel; static categories AND static class names pinned stationary; kills track streak fans
 decisions/why-503-on-unloaded-component.md|decision,inference|/detect guards a missing sam3_image bundle (profile-swap race) → honest 503 instead of a NoneType 500
 decisions/why-admin-mutators-require-admin.md|decision,auth|global config/model/ontology/inference mutators require admin sessions
 decisions/why-amg-detection-classes-use-llm-labels.md|decision,frontend|superseded: YOLOE-PF imagery labels no longer promoted after image YOLOE removal
@@ -186,7 +186,7 @@ decisions/why-auto-write-with-threshold.md|decision|auto-write platform_* to obj
 decisions/why-bake-reference-corpora-into-assets.md|decision,deployment|reference chips baked into assets image; shared volume RW assets / RO backend+worker; rsync-on-startup
 decisions/why-celery-task-from-lifespan.md|decision,backend|first place lifespan enqueues a task; reference-DB bake is too slow to seed sync without blocking /api/health
 decisions/why-basemap-overlay-composition.md|decision,frontend|imagery is bottom ground-truth; BASE/TERRAIN are reference overlays on top; opacity fades overlay
-decisions/why-basemap-z14-cap.md|decision,frontend,deployment|offline bake to z=14 + overlay unmounts above; imagery is source of truth past z=14
+decisions/why-basemap-z14-cap.md|decision,frontend,deployment|bake to z=14, overlay unmounts above; partial bakes degrade via parent-tile fallback
 decisions/why-batched-presence-gate-floor.md|decision,sam3,inference|batched text path postprocesses at low gate floor so SegEarth presence-ratio gate sees full distribution; emit-filter at score_threshold
 decisions/why-bbox-toggle-removed.md|decision,frontend|BBOX toggle removed; detection boxes always render, GEOM toolbar defaults to OBB
 decisions/why-branch-scoped-default.md|decision,frontend,ontology|imagery ingest UX defaults to branch-scoped prompts (~15-25 vs ~131); 15x F1 gain per LAE-80C
