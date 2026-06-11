@@ -5300,6 +5300,13 @@ def process_satellite_imagery(
             },
             clear_metadata_keys=("error",),
         )
+        # Bust the detection vector-tile cache: this pass added/changed rows, so
+        # the frontend must re-fetch tiles with the new version token.
+        try:
+            from platform_schema import bump_tile_version
+            payload["tile_version"] = bump_tile_version()
+        except Exception:
+            logger.debug("bump_tile_version failed after ingest", exc_info=True)
         publish_event("detections", {"type": "detections_updated", **payload})
         publish_event("imagery", {"type": "ingest_succeeded", "stage": "ready", "progress": 100, **payload})
         publish_event("ops", {"type": "imagery_ready", "stage": "ready", "progress": 100, **payload})

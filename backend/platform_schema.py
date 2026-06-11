@@ -670,7 +670,98 @@ def ensure_platform_tables() -> None:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_onto_history_version ON ontology_version_history(version_id DESC)")
 
         ensure_reference_platform_tables()
+        ensure_tile_sources()
         _platform_schema_ready = True
+
+
+def ensure_tile_sources() -> None:
+    """Martin vector-tile source for detections + a cache-bust version row.
+
+    ``detections_mvt(z,x,y,query_params)`` is auto-discovered by Martin as a
+    function source. It emits an MVT ``detections`` layer carrying only the ~10
+    fields the map renders (all already materialised in ``detections.metadata``
+    at write time by ``store_detections`` — no Python). It excludes soft-deleted
+    rows and accepts optional ``det_class`` / ``pass_id`` query params (mirroring
+    the class/image dropdowns). See docs/decisions/why-detection-vector-tiles.md.
+
+    ``tile_version`` is a singleton counter bumped on every detection mutation;
+    the frontend appends it to tile URLs so a write busts the nginx/browser cache.
+    """
+    with postgis_db.get_cursor(commit=True) as cursor:
+        acquire_schema_xact_lock(cursor, "sentinel_tile_sources")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS tile_version (
+                singleton  BOOLEAN PRIMARY KEY DEFAULT TRUE,
+                version_id BIGINT NOT NULL DEFAULT 1,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                CONSTRAINT tile_one_row CHECK (singleton = TRUE)
+            )
+        """)
+        cursor.execute("INSERT INTO tile_version (singleton, version_id) VALUES (TRUE, 1) ON CONFLICT (singleton) DO NOTHING")
+        cursor.execute("""
+            CREATE OR REPLACE FUNCTION detections_mvt(z integer, x integer, y integer, query_params json DEFAULT '{}')
+            RETURNS bytea
+            AS $$
+            DECLARE
+                mvt bytea;
+                f_class text := NULLIF(query_params->>'det_class', '');
+                f_pass  int  := NULLIF(query_params->>'pass_id', '')::int;
+            BEGIN
+                WITH bounds AS (
+                    SELECT ST_TileEnvelope(z, x, y) AS env_3857
+                ),
+                src AS (
+                    SELECT
+                        ST_AsMVTGeom(ST_Transform(d.geom, 3857), b.env_3857) AS geom,
+                        d.id,
+                        d.class,
+                        round(COALESCE((d.metadata->>'calibrated_confidence')::numeric, d.confidence::numeric), 4)::double precision AS confidence,
+                        COALESCE(d.metadata->>'branch_id', 'Other')           AS branch_id,
+                        d.metadata->>'parent_class'                           AS parent_class,
+                        d.metadata->>'original_class'                         AS original_class,
+                        COALESCE(d.metadata->>'icon_key', 'circle_help')      AS icon_key,
+                        COALESCE(d.metadata->'ontology'->>'label', d.metadata->>'display_label', d.class) AS label,
+                        COALESCE(d.metadata->>'threat_level', d.threat_level) AS threat_level,
+                        COALESCE(d.metadata->>'allegiance', d.affiliation, 'unknown') AS allegiance,
+                        d.metadata->>'review_status'                         AS review_status,
+                        d.pass_id
+                    FROM detections d, bounds b
+                    WHERE d.deleted_at IS NULL
+                      AND d.geom IS NOT NULL
+                      AND d.geom && ST_Transform(b.env_3857, 4326)   -- GIST index on geom(4326)
+                      AND (f_class IS NULL OR d.class = f_class)
+                      AND (f_pass  IS NULL OR d.pass_id = f_pass)
+                )
+                SELECT ST_AsMVT(src.*, 'detections') INTO mvt FROM src WHERE src.geom IS NOT NULL;
+                RETURN mvt;
+            END;
+            $$ LANGUAGE plpgsql STABLE PARALLEL SAFE;
+        """)
+
+
+def bump_tile_version() -> int:
+    """Increment the tile cache-bust counter; return the new version. Best-effort."""
+    try:
+        with postgis_db.get_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE tile_version SET version_id = version_id + 1, updated_at = now() "
+                "WHERE singleton = TRUE RETURNING version_id"
+            )
+            row = cursor.fetchone()
+            return int(row["version_id"]) if row else 1
+    except Exception:
+        return 1
+
+
+def get_tile_version() -> int:
+    """Read the current tile cache-bust counter. Defaults to 1."""
+    try:
+        with postgis_db.get_cursor() as cursor:
+            cursor.execute("SELECT version_id FROM tile_version WHERE singleton = TRUE")
+            row = cursor.fetchone()
+            return int(row["version_id"]) if row else 1
+    except Exception:
+        return 1
 
 
 def auto_enqueue_reference_seed_if_empty() -> None:

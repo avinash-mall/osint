@@ -30,12 +30,22 @@ from detection_helpers import (
 )
 from detection_policy import parent_class_for_label
 from events import publish_event
-from platform_schema import ensure_platform_tables
+from platform_schema import bump_tile_version, ensure_platform_tables, get_tile_version
 from schemas import ManualDetectionBody, ObjectDetailsBody
 
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+@router.get("/api/detections/tile-version")
+def get_detections_tile_version():
+    """Current detection vector-tile cache-bust token. The map appends it to MVT
+
+    URLs (``?v=…``); a write bumps it so cached tiles refresh. See
+    docs/decisions/why-detection-vector-tiles.md.
+    """
+    return {"version": get_tile_version()}
 
 
 @router.get("/api/detections/{detection_id}/details")
@@ -182,6 +192,7 @@ def create_manual_detection(
     )
     _upsert_object_details("detection", str(row["id"]), detail_body, user.username)
 
+    bump_tile_version()  # new operator-drawn box → bust the tile cache
     publish_event(
         "detections",
         {"type": "detection_created", "id": row["id"], "source": "operator"},
@@ -242,6 +253,7 @@ def delete_detection(detection_id: int, user: SessionUser = Depends(get_current_
         logger.warning(
             "delete_detection: Neo4j cleanup failed for detection %s", detection_id, exc_info=True
         )
+    bump_tile_version()  # row tombstoned → bust the tile cache so it disappears
     publish_event(
         "detections",
         {"type": "detection_deleted", "id": detection_id, "by": user.username},

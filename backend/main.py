@@ -318,6 +318,71 @@ def enriched_detection_metadata(det_class: str, metadata: Optional[dict]) -> dic
     return enriched
 
 
+def _build_detection_feature(row: dict) -> dict:
+    """One detection DB row → enriched GeoJSON Feature.
+
+    Single source of truth for the per-detection feature shape, shared by
+    ``/api/detections/geojson`` (bulk) and ``/api/detections/{id}/enriched``
+    (the MVT layer's per-id selection fetch). ``row`` must carry the geojson
+    SELECT columns (id, class, confidence, pass_id, created_at, metadata,
+    pass_name, acquisition_time, imagery_metadata, geometry).
+    """
+    raw_metadata = dict(row["metadata"] or {})
+    raw_metadata["confidence"] = row["confidence"]
+    metadata = enriched_detection_metadata(row["class"], raw_metadata)
+    return {
+        "type": "Feature",
+        "geometry": row["geometry"],
+        "properties": {
+            "id": row["id"],
+            "class": row["class"],
+            "label": metadata["ontology"]["label"],
+            "confidence": row["confidence"],
+            "calibrated_confidence": metadata.get("calibrated_confidence", row["confidence"]),
+            # Phase 7.36: surface the pre-calibration score + the per-model
+            # temperature so the provenance panel can show the full
+            # "raw → calibrated" story.
+            "raw_confidence": metadata.get("raw_confidence"),
+            "model_temperature": metadata.get("model_temperature"),
+            "original_class": metadata.get("original_class", row["class"]),
+            "parent_class": metadata.get("parent_class", row["class"]),
+            "review_status": metadata.get("review_status", "review_candidate"),
+            "threshold_profile": metadata.get("threshold_profile"),
+            "class_threshold": metadata.get("class_threshold"),
+            "model_version": metadata.get("model_version"),
+            "taxonomy_version": metadata.get("taxonomy_version"),
+            "chip_id": metadata.get("chip_id"),
+            "coverage_fraction": metadata.get("coverage_fraction"),
+            # Phase 3.13: chip-sampling transparency — when the planner
+            # sub-samples a large raster (>MAX_INFERENCE_CHIPS), the analyst
+            # should see that this AOI is not fully covered.
+            "planned_chips": metadata.get("planned_chips"),
+            "source_total_chips": metadata.get("source_total_chips"),
+            "sampling_enabled": metadata.get("sampling_enabled"),
+            "pass_id": row["pass_id"],
+            "pass_name": row["pass_name"],
+            "acquisition_time": row["acquisition_time"],
+            "imagery_metadata": row["imagery_metadata"] or {},
+            "created_at": row["created_at"],
+            "metadata": metadata,
+            "ontology": metadata["ontology"],
+            "threat_level": metadata.get("threat_level"),
+            "threat_confidence": metadata.get("threat_confidence"),
+            "assessment_status": metadata.get("assessment_status"),
+            "evidence": metadata.get("evidence", []),
+            "allegiance": metadata.get("allegiance", "unknown"),
+            "branch_id": metadata.get("branch_id") or "Other",
+            "icon_key": metadata.get("icon_key") or "circle_help",
+            "canonical_label": metadata.get("canonical_label"),
+            "was_unknown": bool(metadata.get("was_unknown")),
+            "ontology_object_id": metadata.get("ontology_object_id"),
+            "position_uncertainty_m": metadata.get("position_uncertainty_m"),
+            "position_uncertainty_ellipse": metadata.get("position_uncertainty_ellipse"),
+            "scale_pass": metadata.get("scale_pass"),
+        },
+    }
+
+
 def safe_excerpt(value: Optional[str], limit: int = 12000) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
     return text[:limit]
@@ -1521,70 +1586,39 @@ def get_detections_geojson(
     next_cursor = None
     if has_more and rows:
         next_cursor = _encode_detection_cursor(rows[-1]["created_at"], rows[-1]["id"])
-    features = []
-    for row in rows:
-        raw_metadata = dict(row["metadata"] or {})
-        raw_metadata["confidence"] = row["confidence"]
-        metadata = enriched_detection_metadata(row["class"], raw_metadata)
-        features.append({
-            "type": "Feature",
-            "geometry": row["geometry"],
-            "properties": {
-                "id": row["id"],
-                "class": row["class"],
-                "label": metadata["ontology"]["label"],
-                "confidence": row["confidence"],
-                "calibrated_confidence": metadata.get("calibrated_confidence", row["confidence"]),
-                # Phase 7.36: surface the pre-calibration score + the per-
-                # model temperature so the provenance panel can show the
-                # full "raw → calibrated" story.
-                "raw_confidence": metadata.get("raw_confidence"),
-                "model_temperature": metadata.get("model_temperature"),
-                "original_class": metadata.get("original_class", row["class"]),
-                "parent_class": metadata.get("parent_class", row["class"]),
-                "review_status": metadata.get("review_status", "review_candidate"),
-                "threshold_profile": metadata.get("threshold_profile"),
-                "class_threshold": metadata.get("class_threshold"),
-                "model_version": metadata.get("model_version"),
-                "taxonomy_version": metadata.get("taxonomy_version"),
-                "chip_id": metadata.get("chip_id"),
-                "coverage_fraction": metadata.get("coverage_fraction"),
-                # Phase 3.13: chip-sampling transparency — when the
-                # planner sub-samples a large raster (>MAX_INFERENCE_CHIPS),
-                # the analyst should see that this AOI is not fully
-                # covered. These three fields ride alongside every
-                # detection so the UI can surface the gap.
-                "planned_chips": metadata.get("planned_chips"),
-                "source_total_chips": metadata.get("source_total_chips"),
-                "sampling_enabled": metadata.get("sampling_enabled"),
-                "pass_id": row["pass_id"],
-                "pass_name": row["pass_name"],
-                "acquisition_time": row["acquisition_time"],
-                "imagery_metadata": row["imagery_metadata"] or {},
-                "created_at": row["created_at"],
-                "metadata": metadata,
-                "ontology": metadata["ontology"],
-                "threat_level": metadata.get("threat_level"),
-                "threat_confidence": metadata.get("threat_confidence"),
-                "assessment_status": metadata.get("assessment_status"),
-                "evidence": metadata.get("evidence", []),
-                "allegiance": metadata.get("allegiance", "unknown"),
-                "branch_id": metadata.get("branch_id") or "Other",
-                "icon_key": metadata.get("icon_key") or "circle_help",
-                "canonical_label": metadata.get("canonical_label"),
-                "was_unknown": bool(metadata.get("was_unknown")),
-                "ontology_object_id": metadata.get("ontology_object_id"),
-                "position_uncertainty_m": metadata.get("position_uncertainty_m"),
-                "position_uncertainty_ellipse": metadata.get("position_uncertainty_ellipse"),
-                "scale_pass": metadata.get("scale_pass"),
-            },
-        })
+    features = [_build_detection_feature(row) for row in rows]
     return {
         "type": "FeatureCollection",
         "features": features,
         "next_cursor": next_cursor,
         "has_more": has_more,
     }
+
+
+@app.get("/api/detections/{detection_id}/enriched")
+def get_detection_enriched(detection_id: int, user: SessionUser = Depends(get_current_user)):
+    """Single fully-enriched detection Feature — the per-id detail fetch the map's
+
+    vector-tile (MVT) layer needs when a detection is clicked, since tiles carry
+    only the ~10 render fields. Same shape as one ``/api/detections/geojson``
+    feature. See docs/decisions/why-detection-vector-tiles.md.
+    """
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT d.id, d.class, d.confidence, d.pass_id, d.created_at, d.metadata,
+                   sp.name AS pass_name, sp.acquisition_time, sp.metadata AS imagery_metadata,
+                   ST_AsGeoJSON(d.geom)::jsonb AS geometry
+            FROM detections d
+            JOIN satellite_passes sp ON d.pass_id = sp.id
+            WHERE d.id = %s AND d.deleted_at IS NULL
+            """,
+            (detection_id,),
+        )
+        row = cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="detection not found")
+    return _build_detection_feature(row)
 
 
 @app.patch("/api/detections/{detection_id}/tag")
