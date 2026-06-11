@@ -80,6 +80,7 @@ import {
 import { fetchDossier, type Dossier } from '../../services/dossier';
 import RangeRingsDialog from './RangeRingsDialog';
 import DetectionTileLayer from './DetectionTileLayer';
+import FallbackTileLayer from './FallbackTileLayer';
 import type { ActiveLayerMap, BaseLayer } from './LayerPanel';
 import type { DetectionCategoryId } from '../../utils/detectionTaxonomy';
 
@@ -455,9 +456,11 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
           )}
 
           {/* 2. Cartographic fallback — only when there is no imagery, so SAT
-                 mode never renders an empty stage. */}
+                 mode never renders an empty stage. FallbackTileLayer: a 404
+                 (partial offline bake) substitutes the upscaled parent tile
+                 instead of leaving a hole. */}
           {!selectedImageryData && (
-            <TileLayer
+            <FallbackTileLayer
               key="base-fallback"
               url={activeBaseLayer === 'terrain' ? TERRAIN_BASEMAP_URL : CARTO_BASEMAP_URL}
               subdomains={activeBaseLayer === 'terrain' ? undefined : 'abcd'}
@@ -478,9 +481,11 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
                  opacity slider drives how much of the imagery shows through.
                  Unmounted past z=BASEMAP_OVERLAY_MAX_ZOOM (the offline bake
                  ceiling) so the overlay never stretches one tile across the
-                 viewport. */}
+                 viewport. FallbackTileLayer: hosts whose bake stops below z14
+                 (partial pyramid) get the upscaled parent tile instead of a
+                 blank overlay across the z12–14 working band. */}
           {selectedImageryData && mapZoom <= BASEMAP_OVERLAY_MAX_ZOOM && activeBaseLayer === 'base' && (
-            <TileLayer
+            <FallbackTileLayer
               key="overlay-carto"
               url={CARTO_BASEMAP_URL}
               subdomains="abcd"
@@ -492,7 +497,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
             />
           )}
           {selectedImageryData && mapZoom <= BASEMAP_OVERLAY_MAX_ZOOM && activeBaseLayer === 'terrain' && (
-            <TileLayer
+            <FallbackTileLayer
               key="overlay-terrain"
               url={TERRAIN_BASEMAP_URL}
               maxZoom={BASEMAP_OVERLAY_MAX_ZOOM}

@@ -47,6 +47,27 @@ The combined offline assets image grows from ~12 GB to ~47 GB. Acceptable for de
 
 The cartographic-fallback block (`!selectedImageryData`) still uses `maxNativeZoom={10}` — when there is no imagery, the analyst wants a basemap regardless of zoom, even if stretched. Treating that block is a follow-up question, not part of this change.
 
+## Partial bakes: parent-tile fallback (follow-up, shipped)
+
+The table above assumes the bake actually reaches z=14. In practice a host's
+pyramid can stop short (the long-running bake pipeline is incremental — one
+dev host shipped basemap z≤11 / terrain z≤10), and then **every** native tile
+request in the z12–14 band 404s: the BASE/TERRAIN overlay went completely
+blank exactly in the analyst's working zoom band, which read as "the basemap
+is broken". Fix: all three reference layers (fallback + both overlays) render
+via [`FallbackTileLayer`](../../frontend/src/components/map/FallbackTileLayer.tsx)
+— a vendored ES-module port of Leaflet.TileLayer.Fallback (BSD-2-Clause) that,
+on tile error, substitutes the parent tile (z−1, scaled ×2, cropped to the
+covering quadrant), recursively down to z0. Worst case inside the z≤14 band
+is an 8× stretch (z14 over a z11 bake) — a far cry from the 256× blob this
+decision was written to kill, and it only engages when native tiles are
+missing: a fully-baked host behaves exactly as before. The SAT/TiTiler
+imagery layer deliberately does **not** use it — tiles outside the COG
+footprint legitimately 404, and a parent fallback would smear a stretched
+low-zoom blob around the imagery edges. Vendored as an ES module (not the
+upstream UMD file) for the same global-`L` bundler hazard documented in
+[why-detection-mvt-tiles.md](why-detection-mvt-tiles.md).
+
 ## Cross-references
 
 - [why-basemap-overlay-composition.md](why-basemap-overlay-composition.md) — predecessor: the zIndex stack this builds on
