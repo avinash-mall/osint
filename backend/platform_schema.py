@@ -682,7 +682,7 @@ def ensure_tile_sources() -> None:
     fields the map renders (all already materialised in ``detections.metadata``
     at write time by ``store_detections`` — no Python). It excludes soft-deleted
     rows and accepts optional ``det_class`` / ``pass_id`` query params (mirroring
-    the class/image dropdowns). See docs/decisions/why-detection-vector-tiles.md.
+    the class/image dropdowns). See docs/decisions/why-detection-mvt-tiles.md.
 
     ``tile_version`` is a singleton counter bumped on every detection mutation;
     the frontend appends it to tile URLs so a write busts the nginx/browser cache.
@@ -733,7 +733,10 @@ def ensure_tile_sources() -> None:
                       AND (f_pass  IS NULL OR d.pass_id = f_pass)
                 )
                 SELECT ST_AsMVT(src.*, 'detections') INTO mvt FROM src WHERE src.geom IS NOT NULL;
-                RETURN mvt;
+                -- Empty tiles: return 0-byte MVT (HTTP 200, cacheable) instead of
+                -- NULL (which Martin serves as 404 — noisy in the browser console
+                -- and uncacheable at low zoom over empty ocean/land).
+                RETURN COALESCE(mvt, ''::bytea);
             END;
             $$ LANGUAGE plpgsql STABLE PARALLEL SAFE;
         """)

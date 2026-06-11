@@ -11,6 +11,11 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (!id.includes('node_modules')) return undefined
+          // leaflet.vectorgrid is a UMD plugin needing a global `L`; keep it in
+          // its OWN chunk so the dynamic import in DetectionTileLayer stays lazy
+          // (loaded after window.L is set) instead of being lumped into the
+          // eager vendor-misc chunk — see why-detection-mvt-tiles.md.
+          if (id.includes('leaflet.vectorgrid')) return 'vendor-vectorgrid'
           if (id.includes('/react/') || id.includes('/react-dom/')) return 'vendor-react'
           if (id.includes('/leaflet/') || id.includes('/react-leaflet/')) return 'vendor-map'
           if (id.includes('/three/') || id.includes('/react-force-graph-2d/') || id.includes('/react-globe.gl/') || id.includes('/cesium/')) {

@@ -43,7 +43,7 @@ def get_detections_tile_version():
     """Current detection vector-tile cache-bust token. The map appends it to MVT
 
     URLs (``?v=…``); a write bumps it so cached tiles refresh. See
-    docs/decisions/why-detection-vector-tiles.md.
+    docs/decisions/why-detection-mvt-tiles.md.
     """
     return {"version": get_tile_version()}
 

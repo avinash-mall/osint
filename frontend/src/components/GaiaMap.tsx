@@ -95,6 +95,11 @@ export default function GaiaMap({
   const [data, setData] = useState<{ static: any[]; tracks: any[] }>({ static: [], tracks: [] });
   const [imagery, setImagery] = useState<any[]>([]);
   const [detectionsGeoJSON, setDetectionsGeoJSON] = useState<any>({ type: 'FeatureCollection', features: [] });
+  // Cache-bust token for the opt-in MVT detection layer (DetectionTileLayer).
+  // Fetched on mount and re-fetched after each authoritative detections_updated
+  // reload so persisted tiles refresh after an ingest/delete. Defaults to 1 if
+  // the fetch fails. Only consumed when VITE_DETECTION_TILES is on.
+  const [detectionTileVersion, setDetectionTileVersion] = useState(1);
   const [detectionClasses, setDetectionClasses] = useState<any[]>([]);
   const [basemapGeoJSON, setBasemapGeoJSON] = useState<any>({ type: 'FeatureCollection', features: [] });
   const [selectedImagery, setSelectedImagery] = useState<number | null>(null);
@@ -740,6 +745,17 @@ export default function GaiaMap({
     await Promise.all([fetchDetectionClasses(), fetchDetectionFeatures()]);
   }, [fetchDetectionClasses, fetchDetectionFeatures]);
 
+  const fetchDetectionTileVersion = useCallback(async () => {
+    try {
+      const { data } = await axios.get(`${API_URL}/api/detections/tile-version`, { timeout: 10000 });
+      const v = Number(data?.version);
+      if (Number.isFinite(v)) setDetectionTileVersion(v);
+    } catch {
+      // Leave the previous version (default 1) — tiles still render, just not
+      // freshly cache-busted.
+    }
+  }, []);
+
   const handleDeleteImagery = useCallback(async (passId: number) => {
     await axios.delete(`${API_URL}/api/imagery/${passId}`);
     setSelectedImagery((current) => (current === passId ? null : current));
@@ -751,6 +767,7 @@ export default function GaiaMap({
   useEffect(() => { fetchDetectionClasses(); }, [fetchDetectionClasses]);
   useEffect(() => { fetchDetectionFeatures(); }, [fetchDetectionFeatures]);
   useEffect(() => { fetchDetectionTracks(); }, [fetchDetectionTracks]);
+  useEffect(() => { fetchDetectionTileVersion(); }, [fetchDetectionTileVersion]);
 
   // Fetch Prithvi overlay GeoJSON for any toggled kind. Each kind is loaded
   // lazily and cached until the user toggles it off.
@@ -825,7 +842,10 @@ export default function GaiaMap({
     fetchDetections();
     fetchDetectionTracks();
     fetchImagery();
-  }, [focusTimeRange, fetchDetections, fetchDetectionTracks, fetchImagery]));
+    // Bump the MVT cache-bust token so persisted detection tiles refresh after
+    // this ingest/delete (no-op visually unless VITE_DETECTION_TILES is on).
+    fetchDetectionTileVersion();
+  }, [focusTimeRange, fetchDetections, fetchDetectionTracks, fetchImagery, fetchDetectionTileVersion]));
   useEventStream('imagery', useCallback((message: any) => {
     focusTimeRange(message?.acquisition_time);
     // Auto-select a freshly-ingested pass so a new upload actually renders on
@@ -1326,6 +1346,9 @@ export default function GaiaMap({
         getDetectionStyle={getDetectionStyle}
         detectionCanvasRenderer={detectionCanvasRenderer}
         setSelectedDetection={setSelectedDetection}
+        detectionTileVersion={detectionTileVersion}
+        confidenceThreshold={confidenceThreshold}
+        hiddenDetectionCategories={hiddenDetectionCategories}
         activeLayers={activeLayers}
         data={data}
         detectionTracks={detectionTracks}

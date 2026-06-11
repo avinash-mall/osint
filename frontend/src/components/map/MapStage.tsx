@@ -79,7 +79,9 @@ import {
 } from './MapEventHandlers';
 import { fetchDossier, type Dossier } from '../../services/dossier';
 import RangeRingsDialog from './RangeRingsDialog';
+import DetectionTileLayer from './DetectionTileLayer';
 import type { ActiveLayerMap, BaseLayer } from './LayerPanel';
+import type { DetectionCategoryId } from '../../utils/detectionTaxonomy';
 
 const CARTO_BASEMAP_URL = '/basemap/{z}/{x}/{y}.png';
 const TERRAIN_BASEMAP_URL = '/terrain/{z}/{x}/{y}.png';
@@ -89,6 +91,14 @@ const TILE_PROXY_URL = (import.meta as any).env?.VITE_TILE_PROXY_URL || '/tiles'
 // and docs/decisions/why-basemap-z14-cap.md). Past this zoom the overlay would stretch
 // one tile across the viewport — unmount it; imagery is the source of truth at high zoom.
 export const BASEMAP_OVERLAY_MAX_ZOOM = 14;
+
+// Phase 2 — opt-in Martin vector-tile (MVT) rendering of persisted detections.
+// OFF by default: the per-feature <Polygon> box layer remains the default path.
+// When set (VITE_DETECTION_TILES='1' at build time), persisted detections render
+// as styled vector-tile polygons (DetectionTileLayer) and the box layer is
+// skipped; markers/dots and the live-preview GeoJSON path are unaffected.
+export const USE_DETECTION_TILES =
+  ((import.meta as any).env?.VITE_DETECTION_TILES) === '1';
 
 export type MapHandle = {
   /** Imperatively pan the map to a detection feature's bounds. */
@@ -115,6 +125,13 @@ export type Props = {
   getDetectionStyle: (feature: any) => L.PathOptions;
   detectionCanvasRenderer: L.Canvas;
   setSelectedDetection: (feature: any) => void;
+
+  /* MVT detection tiles (opt-in via USE_DETECTION_TILES). The version is the
+     /api/detections/tile-version cache-bust token; the filters mirror the
+     box layer's client-side filters so the tile style matches. */
+  detectionTileVersion: number;
+  confidenceThreshold: number;
+  hiddenDetectionCategories: DetectionCategoryId[];
 
   /* track + asset layers */
   activeLayers: ActiveLayerMap;
@@ -185,6 +202,9 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
     getDetectionStyle,
     detectionCanvasRenderer,
     setSelectedDetection,
+    detectionTileVersion,
+    confidenceThreshold,
+    hiddenDetectionCategories,
     activeLayers,
     data,
     detectionTracks,
@@ -708,7 +728,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
               map's default SVG renderer — the shared L.canvas() renderer never
               painted (it gated both the old <GeoJSON> box layer and this one),
               so it is deliberately not used here. */}
-          {activeLayers.detections && geomDisplayedDetectionsGeoJSON.features?.map((feature: any) => {
+          {!USE_DETECTION_TILES && activeLayers.detections && geomDisplayedDetectionsGeoJSON.features?.map((feature: any) => {
             const positions = geojsonToLatLngs(feature?.geometry);
             if (!positions) return null;
             const p = feature.properties || {};
@@ -721,6 +741,22 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
               />
             );
           })}
+
+          {/* Phase 2 — opt-in MVT detection polygons. Replaces the per-feature
+              <Polygon> box layer above (same category colours / confidence
+              opacity / military dash, same client-side filters), keeping the
+              markers/dots and live-preview GeoJSON path intact. Click fetches
+              the enriched feature so the SelectionPanel works identically. */}
+          {USE_DETECTION_TILES && activeLayers.detections && (
+            <DetectionTileLayer
+              version={detectionTileVersion}
+              categories={categories}
+              confidenceThreshold={confidenceThreshold}
+              detectionClassFilter={detectionClassFilter}
+              hiddenDetectionCategories={hiddenDetectionCategories}
+              onSelect={setSelectedDetection}
+            />
+          )}
 
           {activeLayers.tracks && data.tracks.map((track: any) => {
             const positions: [number, number][] = track.history.map((h: any) => [h.lat, h.lng]);

@@ -141,7 +141,12 @@ services:
       retries: 5
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        # Opt-in MVT detection layer; set to 1 to render detections as Martin
+        # vector tiles instead of per-feature polygons. Default off (per-feature).
+        VITE_DETECTION_TILES: ${VITE_DETECTION_TILES:-0}
     image: sentinel-frontend:latest
     restart: unless-stopped
     depends_on:

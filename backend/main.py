@@ -1601,7 +1601,7 @@ def get_detection_enriched(detection_id: int, user: SessionUser = Depends(get_cu
 
     vector-tile (MVT) layer needs when a detection is clicked, since tiles carry
     only the ~10 render fields. Same shape as one ``/api/detections/geojson``
-    feature. See docs/decisions/why-detection-vector-tiles.md.
+    feature. See docs/decisions/why-detection-mvt-tiles.md.
     """
     with postgis_db.get_cursor() as cursor:
         cursor.execute(

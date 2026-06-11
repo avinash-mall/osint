@@ -46,6 +46,7 @@ The Common Operating Picture: a 2D Leaflet map with all detection layers, satell
 - `GET /api/tracks/detections` — cross-image tracks
 - `GET /api/geotime/features` — Bases / LaunchPoints / asset tracks
 - Tile URLs for imagery from `GET /api/imagery/{id}/tiles`
+- `GET /api/detections/tile-version` — cache-bust token for the opt-in MVT detection layer. `GaiaMap` holds `detectionTileVersion` (default 1), fetches it on mount, and **re-fetches it inside the `detections_updated` handler** so persisted vector tiles refresh after an ingest/delete. Passed to `MapStage` → `DetectionTileLayer`. No-op visually unless `VITE_DETECTION_TILES='1'`. See [decisions/why-detection-mvt-tiles.md](../decisions/why-detection-mvt-tiles.md).
 
 ## Detection rendering
 
