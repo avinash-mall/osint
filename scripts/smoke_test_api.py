@@ -111,6 +111,7 @@ CATALOG = [
     ('GET', '/api/geotime/features'),
     ('GET', '/api/graph'),
     ('POST', '/api/graph/candidate-edges/{candidate_id}/promote'),
+    ('GET', '/api/graph/classes'),
     ('GET', '/api/graph/colocation'),
     ('POST', '/api/graph/contradict'),
     ('GET', '/api/graph/evidence/{node_id}'),

@@ -197,6 +197,7 @@ decisions/why-glo30-as-default-dem.md|decision,deployment|Copernicus GLO-30 (30 
 decisions/why-gnn-link-prediction.md|decision,backend|vendored city2graph PyG bridge + GraphSAGE link predictor; torch optional, advisory GNN_SUGGESTED_LINK edges
 decisions/why-candidate-edges-persisted.md|decision,backend|persist CANDIDATE_DETECTED_AS in Neo4j on candidate creation; makes pending edges Cypher-traversable
 decisions/why-category-presence-gate.md|decision,sam3|SegEarth-OV-3-style 0.40 filter suppresses absent concepts
+decisions/why-class-scope-replaces-node-limit.md|decision,frontend|drop fixed LIMIT 1500 on graph endpoints; class-scope dropdown fetches unbounded per-class slices + whole-graph metrics
 decisions/why-three-graph-modes.md|decision,frontend|Link Graph splits into Investigation/Evidence/Ontology sub-tabs; one workspace, shared state
 decisions/why-tle-history-for-maneuvers.md|decision,backend|separate satellite_tle_history table enables maneuver/decay detection without breaking latest-wins overpass
 decisions/why-postgis-to-neo4j-projectors.md|decision,backend|one-way PostGIS→Neo4j mirroring of identity + headline props; backfill for catchup

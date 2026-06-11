@@ -20,7 +20,8 @@ Link Graph redesign added the bulk of these — see [architecture/link-graph-red
 
 | Method | Path | Source |
 |---|---|---|
-| `GET` | `/api/graph` | [graph-router.md](../backend-routers/graph-router.md) — back-compat slice |
+| `GET` | `/api/graph` | [graph-router.md](../backend-routers/graph-router.md) — unbounded slice, `det_class` scope |
+| `GET` | `/api/graph/classes` | [graph-router.md](../backend-routers/graph-router.md) — detection classes + counts (dropdown) |
 | `POST` | `/api/graph/neighborhood` | [graph-router.md](../backend-routers/graph-router.md) |
 | `GET` | `/api/geotime/features` | [graph-router.md](../backend-routers/graph-router.md) |
 | `GET` | `/api/graph/investigation` | [graph-router.md](../backend-routers/graph-router.md) — bounded operational + 1-hop |

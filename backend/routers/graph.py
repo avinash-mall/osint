@@ -95,28 +95,68 @@ def _parse_iso(ts: str | None) -> datetime | None:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/api/graph")
-def get_graph(include_candidates: bool = Query(False, description="Include pending CANDIDATE_* edges")):
-    """Global slice up to 1500 nodes. Used by the legacy Link Graph workspace.
+@router.get("/api/graph/classes")
+def get_graph_classes():
+    """Distinct detection classes with counts — populates the Link Graph class
 
-    Candidate edges are now persisted (see
-    [decisions/why-candidate-edges-persisted.md](../../docs/decisions/why-candidate-edges-persisted.md)),
-    so the prior in-memory synthesis pass has been removed — `include_candidates`
-    now just toggles whether the Cypher WHERE-clause filters them out.
+    dropdown. Read from PostGIS (the authoritative detection store), descending
+    by count so the most populous classes surface first.
     """
-    with db.get_session() as session:
-        result = session.run(
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute(
             """
-            MATCH (n)
-            OPTIONAL MATCH (n)-[r]->(m)
-            WHERE r IS NULL OR $include_candidates OR NOT type(r) STARTS WITH 'CANDIDATE_'
-            RETURN n, r, m
-            LIMIT 1500
-            """,
-            {"include_candidates": include_candidates},
+            SELECT class, count(*) AS n
+            FROM detections
+            WHERE deleted_at IS NULL AND class IS NOT NULL
+            GROUP BY class
+            ORDER BY n DESC, class ASC
+            """
         )
+        return {"classes": [{"class": row["class"], "count": int(row["n"])} for row in cursor.fetchall()]}
+
+
+@router.get("/api/graph")
+def get_graph(
+    include_candidates: bool = Query(False, description="Include pending CANDIDATE_* edges"),
+    det_class: str | None = Query(None, description="Scope to Detection nodes of this class + their 1-hop neighbours"),
+    limit: int | None = Query(None, ge=1, description="Optional row cap; unbounded when omitted"),
+):
+    """Graph slice for the Link Graph. Unbounded by default — scope it instead
+
+    with ``det_class`` (the class dropdown), which returns every Detection of
+    that class plus its 1-hop neighbourhood (parent SatellitePass, COLOCATED_WITH
+    peers, NEAR sites, candidate links). ``limit`` is an optional safety cap, not
+    a default truncation — see [decisions/why-class-scope-replaces-node-limit.md](../../docs/decisions/why-class-scope-replaces-node-limit.md).
+
+    Candidate edges are persisted (see
+    [decisions/why-candidate-edges-persisted.md](../../docs/decisions/why-candidate-edges-persisted.md));
+    ``include_candidates`` toggles whether the WHERE-clause filters them out.
+    """
+    if det_class:
+        # Class-scoped: undirected 1-hop so both the incoming
+        # (SatellitePass)-[:CONTAINS_DETECTION]->(d) and the outgoing
+        # (d)-[:COLOCATED_WITH]->(peer) edges of each detection are returned.
+        cypher = (
+            "MATCH (n:Detection {class: $det_class})\n"
+            "OPTIONAL MATCH (n)-[r]-(m)\n"
+            "WHERE r IS NULL OR $include_candidates OR NOT type(r) STARTS WITH 'CANDIDATE_'\n"
+            "RETURN n, r, m"
+        )
+    else:
+        cypher = (
+            "MATCH (n)\n"
+            "OPTIONAL MATCH (n)-[r]->(m)\n"
+            "WHERE r IS NULL OR $include_candidates OR NOT type(r) STARTS WITH 'CANDIDATE_'\n"
+            "RETURN n, r, m"
+        )
+    if limit is not None:
+        cypher += "\nLIMIT $limit"
+
+    with db.get_session() as session:
+        result = session.run(cypher, {"include_candidates": include_candidates, "det_class": det_class, "limit": limit})
         nodes: dict[str, dict[str, Any]] = {}
         links: list[dict[str, Any]] = []
+        seen_rel: set[str] = set()
         for record in result:
             n = record["n"]
             m = record["m"]
@@ -124,8 +164,12 @@ def get_graph(include_candidates: bool = Query(False, description="Include pendi
             nodes[n.element_id] = _serialise_node(n)
             if m is not None:
                 nodes[m.element_id] = _serialise_node(m)
-            if r is not None and m is not None:
-                links.append(_serialise_relationship(r, source_id=n.element_id, target_id=m.element_id))
+            # Use the relationship's true start/end so undirected matches keep
+            # their real arrow direction; dedupe since a 1-hop undirected match
+            # can surface the same edge from both endpoints.
+            if r is not None and m is not None and r.element_id not in seen_rel:
+                seen_rel.add(r.element_id)
+                links.append(_serialise_relationship(r))
         return {"nodes": list(nodes.values()), "links": links}
 
 
@@ -162,7 +206,8 @@ def get_colocation_graph(
     k: int = Query(6, ge=1, le=50),
     radius_m: float = Query(3000.0, gt=0),
     window_days: int = Query(30, ge=1, le=3650),
-    limit: int = Query(1500, ge=2, le=5000),
+    det_class: str | None = Query(None, description="Restrict the proximity graph to detections of this class"),
+    limit: int | None = Query(None, ge=2, description="Optional cap on detections; unbounded when omitted"),
 ):
     """Compute a proximity (co-location) graph over recent detection centroids.
 
@@ -170,23 +215,27 @@ def get_colocation_graph(
     beat task persists as ``COLOCATED_WITH``. The proximity maths is vendored
     from city2graph — see
     [decisions/why-proximity-colocation-graph.md](../../docs/decisions/why-proximity-colocation-graph.md).
-    Returns ``{method, nodes, edges}`` where each node is a detection
-    ``{id, lon, lat}`` and each edge is ``{source, target, distance_m}``.
+    Scope with ``det_class`` (the class dropdown) to build the proximity graph of
+    one class only; ``limit`` is an optional cap, unbounded by default. Returns
+    ``{method, nodes, edges}`` where each node is a detection ``{id, lon, lat}``
+    and each edge is ``{source, target, distance_m}``.
     """
     from graph_proximity import build_proximity_edges
 
+    sql = (
+        "SELECT id, ST_X(centroid) AS lon, ST_Y(centroid) AS lat\n"
+        "FROM detections\n"
+        "WHERE deleted_at IS NULL AND centroid IS NOT NULL\n"
+        "  AND created_at >= NOW() - (%s || ' days')::interval\n"
+        "  AND (%s IS NULL OR class = %s)\n"
+        "ORDER BY id DESC"
+    )
+    params: list[Any] = [str(window_days), det_class, det_class]
+    if limit is not None:
+        sql += "\nLIMIT %s"
+        params.append(limit)
     with postgis_db.get_cursor() as cursor:
-        cursor.execute(
-            """
-            SELECT id, ST_X(centroid) AS lon, ST_Y(centroid) AS lat
-            FROM detections
-            WHERE deleted_at IS NULL AND centroid IS NOT NULL
-              AND created_at >= NOW() - (%s || ' days')::interval
-            ORDER BY id DESC
-            LIMIT %s
-            """,
-            (str(window_days), limit),
-        )
+        cursor.execute(sql, tuple(params))
         rows = cursor.fetchall()
     records = [(int(r["id"]), float(r["lon"]), float(r["lat"])) for r in rows]
     try:
@@ -203,32 +252,44 @@ def get_colocation_graph(
 @router.get("/api/graph/metrics")
 def get_graph_metrics(
     include_candidates: bool = Query(False, description="Include pending CANDIDATE_* edges in the topology"),
-    limit: int = Query(1500, ge=2, le=5000),
+    det_class: str | None = Query(None, description="Scope metrics to Detection nodes of this class + their 1-hop neighbours"),
+    limit: int | None = Query(None, ge=2, description="Optional node cap; unbounded (whole graph / whole class) when omitted"),
     top_k: int = Query(10, ge=1, le=50),
 ):
-    """Graph-level metrics + top central nodes over a bounded Neo4j snapshot.
+    """Graph-level metrics + top central nodes over a Neo4j snapshot.
 
-    Pulls up to ``limit`` nodes and their edges, then computes density,
-    connected components, and degree / betweenness / PageRank centrality in
-    memory (rustworkx fast path, pure-Python fallback). See
-    [decisions/why-rustworkx-graph-metrics.md](../../docs/decisions/why-rustworkx-graph-metrics.md).
+    Unbounded by default — metrics describe the *whole* graph, not an arbitrary
+    slice. Scope with ``det_class`` (the class dropdown) to measure one class +
+    its 1-hop neighbourhood. Computes density, connected components, and degree /
+    betweenness / PageRank centrality in memory (rustworkx fast path,
+    pure-Python fallback). See
+    [decisions/why-rustworkx-graph-metrics.md](../../docs/decisions/why-rustworkx-graph-metrics.md)
+    and [decisions/why-class-scope-replaces-node-limit.md](../../docs/decisions/why-class-scope-replaces-node-limit.md).
     Top central nodes are enriched with their primary label + display name.
     """
     from graph_metrics import compute_metrics
 
+    if det_class:
+        cypher = (
+            "MATCH (n:Detection {class: $det_class})\n"
+            "OPTIONAL MATCH (n)-[r]-(m)\n"
+            "WHERE r IS NULL OR $include_candidates OR NOT type(r) STARTS WITH 'CANDIDATE_'\n"
+            "RETURN n, r, m"
+        )
+    else:
+        cypher = (
+            "MATCH (n)\n"
+            "OPTIONAL MATCH (n)-[r]->(m)\n"
+            "WHERE r IS NULL OR $include_candidates OR NOT type(r) STARTS WITH 'CANDIDATE_'\n"
+            "RETURN n, r, m"
+        )
+    if limit is not None:
+        cypher += "\nLIMIT $limit"
+
     node_meta: dict[str, dict[str, Any]] = {}
     edges: list[tuple[str, str]] = []
     with db.get_session() as session:
-        result = session.run(
-            """
-            MATCH (n)
-            OPTIONAL MATCH (n)-[r]->(m)
-            WHERE r IS NULL OR $include_candidates OR NOT type(r) STARTS WITH 'CANDIDATE_'
-            RETURN n, r, m
-            LIMIT $limit
-            """,
-            {"include_candidates": include_candidates, "limit": limit},
-        )
+        result = session.run(cypher, {"include_candidates": include_candidates, "det_class": det_class, "limit": limit})
         for record in result:
             n = record["n"]
             m = record["m"]
