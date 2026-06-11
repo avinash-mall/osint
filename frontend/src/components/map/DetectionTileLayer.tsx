@@ -126,6 +126,13 @@ export default function DetectionTileLayer({
       layer = (L as any).vectorGrid.protobuf(url, {
         interactive: true,
         maxNativeZoom: 18,
+        // VectorGrid is a GridLayer → it renders into the TILE pane, where
+        // GridLayer's default zIndex is 1. The raster stack sits at 100
+        // (basemap fallback) / 200 (SAT imagery) / 300 (reference overlay),
+        // so without this the boxes draw UNDER the imagery and are invisible
+        // wherever any tile painted. 500 puts them above every raster layer
+        // (markers/popups live in higher panes and are unaffected).
+        zIndex: 500,
         getFeatureId: (f: any) => f.properties?.id,
         vectorTileLayerStyles: {
           // BOXES — styled persisted-detection polygons.

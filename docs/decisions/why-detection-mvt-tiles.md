@@ -98,6 +98,13 @@ Cutover (Option A) — DEFAULT ON:
   lumped into the eager `vendor-misc`; (2) `DetectionTileLayer` sets
   `window.L = L` then **dynamically** `await import('leaflet.vectorgrid')` inside
   the effect, so the plugin chunk loads lazily after the global exists.
+- **VectorGrid needs an explicit zIndex above the raster stack.** VectorGrid
+  is a GridLayer → it renders into the TILE pane, where GridLayer's default
+  zIndex is **1**. The raster layers sit at 100 (basemap fallback) / 200 (SAT
+  imagery) / 300 (reference overlay), so without `zIndex: 500` the detection
+  boxes drew UNDER the imagery and were invisible wherever any tile painted
+  ("the OBB is not displayed over the image"). Markers/popups live in higher
+  panes and are unaffected.
 - **Empty tiles return 204, not 404.** `ST_AsMVT` over zero rows is NULL, which
   Martin serves as 404 — noisy in the console and uncacheable over empty
   ocean/land at low zoom. The function does `RETURN COALESCE(mvt, ''::bytea)` so
