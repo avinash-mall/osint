@@ -251,6 +251,8 @@ export default function GraphExplorer() {
   // place of the bounded operational feed; metrics + co-location follow it.
   const [classOptions, setClassOptions] = useState<{ class: string; count: number }[]>([]);
   const [selectedClass, setSelectedClass] = useState<string>('');
+  const [passOptions, setPassOptions] = useState<{ id: number; name: string; sensor_type: string; acquisition_time: string | null; count: number }[]>([]);
+  const [selectedPass, setSelectedPass] = useState<string>('');  // '' = all images; else the pass id
   // Phase 5.E: cluster keys ("${parentId}::${class}") the analyst has
   // manually expanded — those clusters render as their underlying nodes.
   const [expandedClusters, setExpandedClusters] = useState<Set<string>>(new Set());
@@ -308,52 +310,63 @@ export default function GraphExplorer() {
       // its 1-hop neighbourhood. No node-count limit (the class scope is the bound).
       const params: Record<string, any> = { include_candidates: showCandidateLinks, top_k: 50 };
       if (selectedClass) params.det_class = selectedClass;
+      if (selectedPass) params.pass_id = selectedPass;
       const resp = await axios.get(`${API_URL}/api/graph/metrics`, { params });
       setMetrics(resp.data);
     } catch (err) {
       console.error('graph metrics fetch failed', err);
       setMetrics(null);
     }
-  }, [mode, showCandidateLinks, selectedClass]);
+  }, [mode, showCandidateLinks, selectedClass, selectedPass]);
 
   useEffect(() => {
     fetchMetrics().catch((error) => console.error('graph metrics fetch failed', error));
   }, [fetchMetrics]);
 
-  // Class dropdown options — distinct detection classes + counts.
+  // Dropdown options — detection classes and imagery passes (each with counts).
   useEffect(() => {
     let cancelled = false;
     axios.get(`${API_URL}/api/graph/classes`)
       .then((resp) => { if (!cancelled) setClassOptions(resp.data?.classes || []); })
       .catch(() => { if (!cancelled) setClassOptions([]); });
+    axios.get(`${API_URL}/api/graph/passes`)
+      .then((resp) => { if (!cancelled) setPassOptions(resp.data?.passes || []); })
+      .catch(() => { if (!cancelled) setPassOptions([]); });
     return () => { cancelled = true; };
   }, []);
 
-  // Class scope: selecting a class fetches the unbounded, class-scoped graph
-  // (every detection of that class + its 1-hop neighbourhood) and shows it as a
-  // filtered view; clearing the selection returns to the operational feed.
+  // Scope: the class (det_class) and image (pass_id) dropdowns, combinable. Any
+  // active selection fetches the unbounded scoped graph (matching detections +
+  // their 1-hop neighbourhood) and shows it as a filtered view; clearing both
+  // returns to the operational feed.
   useEffect(() => {
     if (mode !== 'investigation') return;
-    if (!selectedClass) {
-      setLensBanner((cur) => (cur && cur.startsWith('Class scope') ? null : cur));
-      setFilteredData((cur: any) => (cur && cur.__classScope ? null : cur));
+    if (!selectedClass && !selectedPass) {
+      setLensBanner((cur) => (cur && cur.startsWith('Scope') ? null : cur));
+      setFilteredData((cur: any) => (cur && cur.__scoped ? null : cur));
       return;
     }
     let cancelled = false;
-    setBusy('class');
-    axios.get(`${API_URL}/api/graph`, { params: { det_class: selectedClass, include_candidates: showCandidateLinks } })
+    setBusy('scope');
+    const params: Record<string, any> = { include_candidates: showCandidateLinks };
+    if (selectedClass) params.det_class = selectedClass;
+    if (selectedPass) params.pass_id = selectedPass;
+    const passName = passOptions.find((p) => String(p.id) === selectedPass)?.name;
+    const label = [selectedPass ? `image ${passName || selectedPass}` : null, selectedClass ? `class ${selectedClass}` : null]
+      .filter(Boolean).join(' · ');
+    axios.get(`${API_URL}/api/graph`, { params })
       .then((resp) => {
         if (cancelled) return;
-        const data = { nodes: resp.data.nodes || [], links: resp.data.links || [], __classScope: true };
+        const data = { nodes: resp.data.nodes || [], links: resp.data.links || [], __scoped: true };
         setDisabledPredicates((prev) => { const next = new Set(prev); next.delete('COLOCATED_WITH'); return next; });
         setSelectedNode(null); setPathResult(null); setSiteRollup(null); setGnnResult(null);
         setFilteredData(data);
-        setLensBanner(`Class scope · ${selectedClass} · ${data.nodes.length} nodes · ${data.links.length} edges`);
+        setLensBanner(`Scope · ${label} · ${data.nodes.length} nodes · ${data.links.length} edges`);
       })
-      .catch((err) => { if (!cancelled) { console.error('class-scoped graph fetch failed', err); setLensBanner(`Class scope · ${selectedClass} · failed`); } })
+      .catch((err) => { if (!cancelled) { console.error('scoped graph fetch failed', err); setLensBanner(`Scope · ${label} · failed`); } })
       .finally(() => { if (!cancelled) setBusy(null); });
     return () => { cancelled = true; };
-  }, [selectedClass, mode, showCandidateLinks]);
+  }, [selectedClass, selectedPass, mode, showCandidateLinks, passOptions]);
 
   // C: probe whether the GNN runtime is installed so the "Suggest links"
   // control can gate itself (honest disabled state, like the map's DEM/OSRM).
@@ -797,6 +810,7 @@ export default function GraphExplorer() {
       const windowDays = Math.max(1, Math.min(3650, Math.round((endMs - startMs) / 86_400_000)));
       const colParams: Record<string, any> = { method: 'knn', k: 6, radius_m: 3000, window_days: windowDays };
       if (selectedClass) colParams.det_class = selectedClass;  // scope to the dropdown class, unbounded
+      if (selectedPass) colParams.pass_id = selectedPass;      // scope to the dropdown image
       const resp = await axios.get(`${API_URL}/api/graph/colocation`, { params: colParams });
       const nodes = (resp.data.nodes || []).map((n: any) => ({
         id: `det-${n.id}`,
@@ -821,7 +835,7 @@ export default function GraphExplorer() {
     } finally {
       setBusy(null);
     }
-  }, [timeRange.start, timeRange.end, selectedClass]);
+  }, [timeRange.start, timeRange.end, selectedClass, selectedPass]);
 
   // C: run GNN link prediction and overlay the suggested operational-entity
   // pairs as advisory dashed edges. Gated on gnnStatus.ready (torch installed).
@@ -1014,7 +1028,7 @@ export default function GraphExplorer() {
               </>
             )}
             {filteredData && (
-              <button type="button" onClick={() => { setFilteredData(null); setPathResult(null); setLensBanner(null); setSelectedClass(''); }} className="sentinel-btn">
+              <button type="button" onClick={() => { setFilteredData(null); setPathResult(null); setLensBanner(null); setSelectedClass(''); setSelectedPass(''); }} className="sentinel-btn">
                 <X size={13} /> Clear
               </button>
             )}
@@ -1026,8 +1040,22 @@ export default function GraphExplorer() {
 
         {mode === 'investigation' && (
           <>
-            <div className="px-2 pt-2 flex items-center gap-2">
-              <span className="sentinel-label whitespace-nowrap">Class scope</span>
+            <div className="px-2 pt-2 flex items-center gap-2 flex-wrap">
+              <span className="sentinel-label whitespace-nowrap">Image</span>
+              <select
+                value={selectedPass}
+                onChange={(e) => setSelectedPass(e.target.value)}
+                className="bg-sentinel-bg text-xs text-slate-200 border border-sentinel-line-2 px-1.5 py-1 max-w-[260px]"
+                title="Fetch every detection from one imagery scene (unbounded) plus its 1-hop neighbourhood"
+              >
+                <option value="">All images</option>
+                {passOptions.map((p) => (
+                  <option key={p.id} value={String(p.id)}>
+                    {p.name} · {p.acquisition_time ? p.acquisition_time.slice(0, 10) : '—'} · {p.count.toLocaleString()}
+                  </option>
+                ))}
+              </select>
+              <span className="sentinel-label whitespace-nowrap ml-2">Class scope</span>
               <select
                 value={selectedClass}
                 onChange={(e) => setSelectedClass(e.target.value)}
@@ -1039,18 +1067,18 @@ export default function GraphExplorer() {
                   <option key={c.class} value={c.class}>{c.class} · {c.count.toLocaleString()}</option>
                 ))}
               </select>
-              {selectedClass && (
+              {(selectedClass || selectedPass) && (
                 <button
                   type="button"
-                  onClick={() => setSelectedClass('')}
+                  onClick={() => { setSelectedClass(''); setSelectedPass(''); }}
                   className="sentinel-btn h-6"
-                  title="Clear class scope"
+                  title="Clear image + class scope"
                 >
                   <X size={13} /> Clear scope
                 </button>
               )}
-              {busy === 'class' && <span className="text-[10px] font-mono text-sentinel-muted">loading…</span>}
-              <span className="ml-auto text-[10px] font-mono text-sentinel-muted">{classOptions.length} classes</span>
+              {busy === 'scope' && <span className="text-[10px] font-mono text-sentinel-muted">loading…</span>}
+              <span className="ml-auto text-[10px] font-mono text-sentinel-muted">{passOptions.length} images · {classOptions.length} classes</span>
             </div>
             <div className="px-2 pt-2 grid grid-cols-[minmax(0,1fr)_minmax(220px,320px)] gap-2">
               <ClassLensChipBar
@@ -1086,7 +1114,7 @@ export default function GraphExplorer() {
             {lensBanner && (
               <div className="px-3 py-1.5 text-[11px] font-mono bg-sentinel-accent/15 text-sentinel-accent flex items-center gap-2">
                 <Radar size={13} /> {lensBanner}
-                <button type="button" onClick={() => { setFilteredData(null); setLensBanner(null); setSelectedClass(''); }} className="ml-auto sentinel-btn">
+                <button type="button" onClick={() => { setFilteredData(null); setLensBanner(null); setSelectedClass(''); setSelectedPass(''); }} className="ml-auto sentinel-btn">
                   <X size={13} /> Exit lens
                 </button>
               </div>

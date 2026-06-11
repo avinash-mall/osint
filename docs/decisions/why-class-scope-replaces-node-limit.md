@@ -10,14 +10,14 @@
 
 ## Decision
 
-Remove the fixed node-count limits and replace them with **semantic scoping by detection class**:
+Remove the fixed node-count limits and replace them with **semantic scoping by two combinable dropdowns — detection class and source image (pass)**:
 
-- New `GET /api/graph/classes` returns the distinct detection classes + counts (from PostGIS), populating a **Class scope** dropdown in the Link Graph.
-- `/api/graph`, `/api/graph/metrics`, `/api/graph/colocation` gain an optional `det_class` param and make `limit` **optional / unbounded** (a safety cap, not a default truncation).
-- Selecting a class fetches *every* detection of that class plus its 1-hop neighbourhood (parent `SatellitePass`, `COLOCATED_WITH` peers, `NEAR` sites, candidate links) — unbounded, but naturally bounded by the class. Metrics and the co-location lens follow the same scope.
-- "All entities" (no class) returns the bounded operational overview for the force graph, and **whole-graph** (unbounded) metrics — so the metrics card finally describes the entire graph, not a slice.
+- New `GET /api/graph/classes` returns distinct detection classes + counts; new `GET /api/graph/passes` returns imagery scenes (satellite passes) that have detections, with counts + acquisition date. They populate the **Class scope** and **Image** dropdowns.
+- `/api/graph`, `/api/graph/metrics`, `/api/graph/colocation` gain optional `det_class` **and `pass_id`** params (combinable, ANDed) and make `limit` **optional / unbounded** (a safety cap, not a default truncation). The Neo4j scope Cypher is built by the shared `_scoped_graph_cypher` helper: `pass_id` matches `(SatellitePass {postgis_id})-[:CONTAINS_DETECTION]->(Detection)`, `det_class` matches `Detection {class}`, and they intersect.
+- Selecting a class and/or an image fetches *every* matching detection plus its 1-hop neighbourhood (parent `SatellitePass`, `COLOCATED_WITH` peers, `NEAR` sites, candidate links) — unbounded, but naturally bounded by the selection. Metrics and the co-location lens follow the same scope.
+- "All images" + "All entities" returns the bounded operational overview for the force graph, and **whole-graph** (unbounded) metrics — so the metrics card finally describes the entire graph, not a slice.
 
-The `Detection(class)` filter is index-backed by the existing `idx_detection_class_created` index, so class scoping is cheap.
+The `Detection(class)` filter is index-backed by the existing `idx_detection_class_created` index, and `pass_id` traverses the `CONTAINS_DETECTION` edge keyed on `SatellitePass.postgis_id`, so both scopes are cheap.
 
 ## Why this design
 

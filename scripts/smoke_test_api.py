@@ -119,6 +119,7 @@ CATALOG = [
     ('POST', '/api/graph/gnn/suggest-links'),
     ('GET', '/api/graph/investigation'),
     ('GET', '/api/graph/metrics'),
+    ('GET', '/api/graph/passes'),
     ('POST', '/api/graph/neighborhood'),
     ('GET', '/api/graph/ontology'),
     ('POST', '/api/graph/path'),

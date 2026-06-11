@@ -95,6 +95,44 @@ def _parse_iso(ts: str | None) -> datetime | None:
 # ---------------------------------------------------------------------------
 
 
+def _scoped_graph_cypher(det_class: str | None, pass_id: int | None, limit: int | None) -> str:
+    """Build the node/edge Cypher for the two filter dropdowns (class + image).
+
+    Three primary-node shapes, then a 1-hop expansion + candidate filter:
+    - ``pass_id`` (optionally AND ``det_class``): detections of one SatellitePass.
+    - ``det_class`` only: detections of one class (any pass).
+    - neither: the whole graph.
+    Scoped shapes expand undirected so both the incoming
+    ``(SatellitePass)-[:CONTAINS_DETECTION]->(d)`` and outgoing
+    ``(d)-[:COLOCATED_WITH]->(peer)`` edges surface. Returns ``n, r, m``.
+    """
+    if pass_id is not None:
+        cypher = (
+            "MATCH (sp:SatellitePass {postgis_id: $pass_id})-[:CONTAINS_DETECTION]->(n:Detection)\n"
+            "WHERE ($det_class IS NULL OR n.class = $det_class)\n"
+            "OPTIONAL MATCH (n)-[r]-(m)\n"
+            "WHERE r IS NULL OR $include_candidates OR NOT type(r) STARTS WITH 'CANDIDATE_'\n"
+            "RETURN n, r, m"
+        )
+    elif det_class:
+        cypher = (
+            "MATCH (n:Detection {class: $det_class})\n"
+            "OPTIONAL MATCH (n)-[r]-(m)\n"
+            "WHERE r IS NULL OR $include_candidates OR NOT type(r) STARTS WITH 'CANDIDATE_'\n"
+            "RETURN n, r, m"
+        )
+    else:
+        cypher = (
+            "MATCH (n)\n"
+            "OPTIONAL MATCH (n)-[r]->(m)\n"
+            "WHERE r IS NULL OR $include_candidates OR NOT type(r) STARTS WITH 'CANDIDATE_'\n"
+            "RETURN n, r, m"
+        )
+    if limit is not None:
+        cypher += "\nLIMIT $limit"
+    return cypher
+
+
 @router.get("/api/graph/classes")
 def get_graph_classes():
     """Distinct detection classes with counts — populates the Link Graph class
@@ -115,45 +153,61 @@ def get_graph_classes():
         return {"classes": [{"class": row["class"], "count": int(row["n"])} for row in cursor.fetchall()]}
 
 
+@router.get("/api/graph/passes")
+def get_graph_passes():
+    """Imagery passes (scenes) that have detections, with counts — populates the
+
+    Link Graph image dropdown. Most-recent acquisition first. Read from PostGIS.
+    """
+    with postgis_db.get_cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT sp.id, sp.name, sp.sensor_type, sp.acquisition_time, count(d.id) AS n
+            FROM satellite_passes sp
+            JOIN detections d ON d.pass_id = sp.id AND d.deleted_at IS NULL
+            GROUP BY sp.id, sp.name, sp.sensor_type, sp.acquisition_time
+            ORDER BY sp.acquisition_time DESC NULLS LAST, sp.id DESC
+            """
+        )
+        return {
+            "passes": [
+                {
+                    "id": int(row["id"]),
+                    "name": row["name"],
+                    "sensor_type": row["sensor_type"],
+                    "acquisition_time": row["acquisition_time"].isoformat() if row["acquisition_time"] else None,
+                    "count": int(row["n"]),
+                }
+                for row in cursor.fetchall()
+            ]
+        }
+
+
 @router.get("/api/graph")
 def get_graph(
     include_candidates: bool = Query(False, description="Include pending CANDIDATE_* edges"),
     det_class: str | None = Query(None, description="Scope to Detection nodes of this class + their 1-hop neighbours"),
+    pass_id: int | None = Query(None, description="Scope to detections of this imagery pass (image dropdown); combinable with det_class"),
     limit: int | None = Query(None, ge=1, description="Optional row cap; unbounded when omitted"),
 ):
     """Graph slice for the Link Graph. Unbounded by default — scope it instead
 
-    with ``det_class`` (the class dropdown), which returns every Detection of
-    that class plus its 1-hop neighbourhood (parent SatellitePass, COLOCATED_WITH
-    peers, NEAR sites, candidate links). ``limit`` is an optional safety cap, not
-    a default truncation — see [decisions/why-class-scope-replaces-node-limit.md](../../docs/decisions/why-class-scope-replaces-node-limit.md).
+    with the two dropdowns: ``det_class`` (class) and ``pass_id`` (image), which
+    are combinable (AND). Each returns the matching detections plus their 1-hop
+    neighbourhood (parent SatellitePass, COLOCATED_WITH peers, NEAR sites,
+    candidate links). ``limit`` is an optional safety cap, not a default
+    truncation — see [decisions/why-class-scope-replaces-node-limit.md](../../docs/decisions/why-class-scope-replaces-node-limit.md).
 
     Candidate edges are persisted (see
     [decisions/why-candidate-edges-persisted.md](../../docs/decisions/why-candidate-edges-persisted.md));
     ``include_candidates`` toggles whether the WHERE-clause filters them out.
     """
-    if det_class:
-        # Class-scoped: undirected 1-hop so both the incoming
-        # (SatellitePass)-[:CONTAINS_DETECTION]->(d) and the outgoing
-        # (d)-[:COLOCATED_WITH]->(peer) edges of each detection are returned.
-        cypher = (
-            "MATCH (n:Detection {class: $det_class})\n"
-            "OPTIONAL MATCH (n)-[r]-(m)\n"
-            "WHERE r IS NULL OR $include_candidates OR NOT type(r) STARTS WITH 'CANDIDATE_'\n"
-            "RETURN n, r, m"
-        )
-    else:
-        cypher = (
-            "MATCH (n)\n"
-            "OPTIONAL MATCH (n)-[r]->(m)\n"
-            "WHERE r IS NULL OR $include_candidates OR NOT type(r) STARTS WITH 'CANDIDATE_'\n"
-            "RETURN n, r, m"
-        )
-    if limit is not None:
-        cypher += "\nLIMIT $limit"
-
+    cypher = _scoped_graph_cypher(det_class, pass_id, limit)
     with db.get_session() as session:
-        result = session.run(cypher, {"include_candidates": include_candidates, "det_class": det_class, "limit": limit})
+        result = session.run(
+            cypher,
+            {"include_candidates": include_candidates, "det_class": det_class, "pass_id": pass_id, "limit": limit},
+        )
         nodes: dict[str, dict[str, Any]] = {}
         links: list[dict[str, Any]] = []
         seen_rel: set[str] = set()
@@ -207,6 +261,7 @@ def get_colocation_graph(
     radius_m: float = Query(3000.0, gt=0),
     window_days: int = Query(30, ge=1, le=3650),
     det_class: str | None = Query(None, description="Restrict the proximity graph to detections of this class"),
+    pass_id: int | None = Query(None, description="Restrict the proximity graph to detections of this imagery pass"),
     limit: int | None = Query(None, ge=2, description="Optional cap on detections; unbounded when omitted"),
 ):
     """Compute a proximity (co-location) graph over recent detection centroids.
@@ -215,10 +270,11 @@ def get_colocation_graph(
     beat task persists as ``COLOCATED_WITH``. The proximity maths is vendored
     from city2graph — see
     [decisions/why-proximity-colocation-graph.md](../../docs/decisions/why-proximity-colocation-graph.md).
-    Scope with ``det_class`` (the class dropdown) to build the proximity graph of
-    one class only; ``limit`` is an optional cap, unbounded by default. Returns
-    ``{method, nodes, edges}`` where each node is a detection ``{id, lon, lat}``
-    and each edge is ``{source, target, distance_m}``.
+    Scope with ``det_class`` (class dropdown) and/or ``pass_id`` (image dropdown)
+    to build the proximity graph of one class / one scene; ``limit`` is an
+    optional cap, unbounded by default. Returns ``{method, nodes, edges}`` where
+    each node is a detection ``{id, lon, lat}`` and each edge is
+    ``{source, target, distance_m}``.
     """
     from graph_proximity import build_proximity_edges
 
@@ -228,9 +284,10 @@ def get_colocation_graph(
         "WHERE deleted_at IS NULL AND centroid IS NOT NULL\n"
         "  AND created_at >= NOW() - (%s || ' days')::interval\n"
         "  AND (%s IS NULL OR class = %s)\n"
+        "  AND (%s IS NULL OR pass_id = %s)\n"
         "ORDER BY id DESC"
     )
-    params: list[Any] = [str(window_days), det_class, det_class]
+    params: list[Any] = [str(window_days), det_class, det_class, pass_id, pass_id]
     if limit is not None:
         sql += "\nLIMIT %s"
         params.append(limit)
@@ -253,43 +310,31 @@ def get_colocation_graph(
 def get_graph_metrics(
     include_candidates: bool = Query(False, description="Include pending CANDIDATE_* edges in the topology"),
     det_class: str | None = Query(None, description="Scope metrics to Detection nodes of this class + their 1-hop neighbours"),
-    limit: int | None = Query(None, ge=2, description="Optional node cap; unbounded (whole graph / whole class) when omitted"),
+    pass_id: int | None = Query(None, description="Scope metrics to detections of this imagery pass; combinable with det_class"),
+    limit: int | None = Query(None, ge=2, description="Optional node cap; unbounded (whole graph / whole scope) when omitted"),
     top_k: int = Query(10, ge=1, le=50),
 ):
     """Graph-level metrics + top central nodes over a Neo4j snapshot.
 
     Unbounded by default — metrics describe the *whole* graph, not an arbitrary
-    slice. Scope with ``det_class`` (the class dropdown) to measure one class +
-    its 1-hop neighbourhood. Computes density, connected components, and degree /
-    betweenness / PageRank centrality in memory (rustworkx fast path,
-    pure-Python fallback). See
+    slice. Scope with ``det_class`` (class dropdown) and/or ``pass_id`` (image
+    dropdown) to measure one class / scene + its 1-hop neighbourhood. Computes
+    density, connected components, and degree / betweenness / PageRank centrality
+    in memory (rustworkx fast path, pure-Python fallback). See
     [decisions/why-rustworkx-graph-metrics.md](../../docs/decisions/why-rustworkx-graph-metrics.md)
     and [decisions/why-class-scope-replaces-node-limit.md](../../docs/decisions/why-class-scope-replaces-node-limit.md).
     Top central nodes are enriched with their primary label + display name.
     """
     from graph_metrics import compute_metrics
 
-    if det_class:
-        cypher = (
-            "MATCH (n:Detection {class: $det_class})\n"
-            "OPTIONAL MATCH (n)-[r]-(m)\n"
-            "WHERE r IS NULL OR $include_candidates OR NOT type(r) STARTS WITH 'CANDIDATE_'\n"
-            "RETURN n, r, m"
-        )
-    else:
-        cypher = (
-            "MATCH (n)\n"
-            "OPTIONAL MATCH (n)-[r]->(m)\n"
-            "WHERE r IS NULL OR $include_candidates OR NOT type(r) STARTS WITH 'CANDIDATE_'\n"
-            "RETURN n, r, m"
-        )
-    if limit is not None:
-        cypher += "\nLIMIT $limit"
-
+    cypher = _scoped_graph_cypher(det_class, pass_id, limit)
     node_meta: dict[str, dict[str, Any]] = {}
     edges: list[tuple[str, str]] = []
     with db.get_session() as session:
-        result = session.run(cypher, {"include_candidates": include_candidates, "det_class": det_class, "limit": limit})
+        result = session.run(
+            cypher,
+            {"include_candidates": include_candidates, "det_class": det_class, "pass_id": pass_id, "limit": limit},
+        )
         for record in result:
             n = record["n"]
             m = record["m"]

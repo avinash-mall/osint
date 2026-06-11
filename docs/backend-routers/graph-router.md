@@ -1,7 +1,7 @@
 # Graph Router (`/api/graph`, `/api/geotime/features`)
 
 **Path:** [backend/routers/graph.py](../../backend/routers/graph.py)
-**Lines:** ~1300
+**Lines:** ~1345
 **Depends on:** [backend/auth.py](../../backend/auth.py), [backend/database.py](../../backend/database.py) (`db` for Neo4j + `postgis_db`), [backend/graph_writes.py](../../backend/graph_writes.py), [backend/schemas.py](../../backend/schemas.py), and (lazily) [backend/graph_proximity.py](../../backend/graph_proximity.py), [backend/graph_metrics.py](../../backend/graph_metrics.py), [backend/graph_pyg.py](../../backend/graph_pyg.py)
 
 ## Purpose
@@ -14,8 +14,9 @@ Neo4j-backed read endpoints for the Link Graph workspace + the Phase 1 redesign 
 
 | Method | Path | Source | Behavior |
 |---|---|---|---|
-| `GET`  | `/api/graph`                | [graph.py#L116](../../backend/routers/graph.py#L116) | Graph slice. **Unbounded by default** (the old hard `LIMIT 1500` is gone); `det_class` scopes to every Detection of that class + its 1-hop neighbourhood, `limit` is an optional cap, `include_candidates` toggles `CANDIDATE_*` filtering. See [decisions/why-class-scope-replaces-node-limit.md](../decisions/why-class-scope-replaces-node-limit.md). |
-| `GET`  | `/api/graph/classes`        | [graph.py#L98](../../backend/routers/graph.py#L98) | Distinct detection classes + counts (PostGIS, desc by count) — populates the Link Graph Class-scope dropdown. |
+| `GET`  | `/api/graph`                | [graph.py#L156](../../backend/routers/graph.py#L156) | Graph slice. **Unbounded by default** (the old hard `LIMIT 1500` is gone); two combinable scope params — `det_class` (class dropdown) and `pass_id` (image dropdown) — return the matching detections + their 1-hop neighbourhood, `limit` is an optional cap, `include_candidates` toggles `CANDIDATE_*` filtering. Cypher built by `_scoped_graph_cypher`. See [decisions/why-class-scope-replaces-node-limit.md](../decisions/why-class-scope-replaces-node-limit.md). |
+| `GET`  | `/api/graph/classes`        | [graph.py#L136](../../backend/routers/graph.py#L136) | Distinct detection classes + counts (PostGIS, desc by count) — populates the Class-scope dropdown. |
+| `GET`  | `/api/graph/passes`         | [graph.py#L155](../../backend/routers/graph.py#L155) | Imagery passes (scenes) that have detections, with counts + acquisition time (PostGIS, most-recent first) — populates the Image dropdown. |
 | `POST` | `/api/graph/neighborhood`   | [graph.py#L120](../../backend/routers/graph.py#L120) | 1-hop neighborhood of a seed node |
 | `GET`  | `/api/geotime/features`     | [graph.py#L150](../../backend/routers/graph.py#L150) | Static features (Bases, LaunchPoints) + asset track history for the map |
 
@@ -36,8 +37,8 @@ Neo4j-backed read endpoints for the Link Graph workspace + the Phase 1 redesign 
 
 | Method | Path | Source | Behavior |
 |---|---|---|---|
-| `GET`  | `/api/graph/colocation` | [graph.py#L176](../../backend/routers/graph.py#L176) | Proximity (co-location) graph over recent detection centroids. Read-only preview of the `COLOCATED_WITH` edges the `worker.tick_colocation_builder` beat task persists. Query params: `method` (`knn`/`delaunay`/`gabriel`/`relative_neighborhood`/`mst`/`fixed_radius`), `k`, `radius_m`, `window_days`, **`det_class`** (scope to one class), `limit` (optional/unbounded). Proximity maths in [graph_proximity.py](../backend/graph-proximity.md). |
-| `GET`  | `/api/graph/metrics` | [graph.py#L226](../../backend/routers/graph.py#L226) | Graph-level metrics + top central nodes over a Neo4j snapshot (density, connected components, degree/betweenness/PageRank). **Unbounded by default** (whole graph), or scoped with `det_class`; `limit` optional. rustworkx fast path, pure-Python fallback — see [graph_metrics.py](../backend/graph-metrics.md). Top nodes enriched with primary label + display name. Whole-graph runs are O(V·E) on betweenness (~7 s at 6600 nodes); class scope is the fast path — [decisions/why-class-scope-replaces-node-limit.md](../decisions/why-class-scope-replaces-node-limit.md). |
+| `GET`  | `/api/graph/colocation` | [graph.py#L176](../../backend/routers/graph.py#L176) | Proximity (co-location) graph over recent detection centroids. Read-only preview of the `COLOCATED_WITH` edges the `worker.tick_colocation_builder` beat task persists. Query params: `method` (`knn`/`delaunay`/`gabriel`/`relative_neighborhood`/`mst`/`fixed_radius`), `k`, `radius_m`, `window_days`, **`det_class`** (scope to one class), **`pass_id`** (scope to one image), `limit` (optional/unbounded). Proximity maths in [graph_proximity.py](../backend/graph-proximity.md). |
+| `GET`  | `/api/graph/metrics` | [graph.py#L226](../../backend/routers/graph.py#L226) | Graph-level metrics + top central nodes over a Neo4j snapshot (density, connected components, degree/betweenness/PageRank). **Unbounded by default** (whole graph), or scoped with `det_class` and/or `pass_id` (combinable); `limit` optional. rustworkx fast path, pure-Python fallback — see [graph_metrics.py](../backend/graph-metrics.md). Top nodes enriched with primary label + display name. Whole-graph / whole-scene runs are O(V·E) on betweenness (~7–10 s at 4–6 k nodes); class scope is the fast path — [decisions/why-class-scope-replaces-node-limit.md](../decisions/why-class-scope-replaces-node-limit.md). |
 | `GET`  | `/api/graph/gnn/status` | [graph.py#L261](../../backend/routers/graph.py#L261) | Reports `{torch_available, torch_geometric_available, ready}` — whether the GNN link-prediction path is runnable in this image (torch is optional, like DEM/OSRM). |
 | `POST` | `/api/graph/gnn/suggest-links` | [graph.py#L279](../../backend/routers/graph.py#L279) | GraphSAGE link prediction over operational entities. Snapshots operational + detection nodes and their non-candidate edges, ranks unconnected operational pairs by predicted link probability. **503 when torch is not installed.** Body: `GnnSuggestRequest`. See [graph_pyg.py](../backend/graph-pyg.md). |
 
