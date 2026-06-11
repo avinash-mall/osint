@@ -7,10 +7,11 @@ RUN npm install
 
 COPY . .
 
-# Opt-in Martin vector-tile detection layer (default off). Set to 1 via the
-# compose build arg to render detections from MVT instead of per-feature
-# polygons. See docs/decisions/why-detection-mvt-tiles.md.
-ARG VITE_DETECTION_TILES=0
+# Martin vector-tile detection layer — DEFAULT ON. Persisted detection boxes
+# render from MVT tiles + markers from the lite feed. Set to 0 via the compose
+# build arg to restore the legacy fat-geojson per-feature-polygon path.
+# See docs/decisions/why-detection-mvt-tiles.md.
+ARG VITE_DETECTION_TILES=1
 ENV VITE_DETECTION_TILES=$VITE_DETECTION_TILES
 
 RUN npm run build

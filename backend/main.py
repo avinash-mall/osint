@@ -1595,6 +1595,88 @@ def get_detections_geojson(
     }
 
 
+@app.get("/api/detections/geojson-lite")
+def get_detections_geojson_lite(
+    bbox: Optional[str] = Query(None, description="min_lon,min_lat,max_lon,max_lat"),
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    det_class: Optional[str] = None,
+    pass_id: Optional[int] = None,
+    limit: int = Query(100000, ge=1, le=500000),
+):
+    """Lightweight detection feed for the MVT cutover: centroid Points + only the
+
+    light fields the map needs for counts / class filters / framing / marker+dot
+    rendering — read straight from columns + materialised ``metadata`` (no Python
+    enrichment, no polygon geometry). The MVT layer draws the boxes; selection
+    pulls full detail from ``/api/detections/{id}/enriched``. Orders of magnitude
+    smaller than ``/geojson``. See docs/decisions/why-detection-mvt-tiles.md.
+    """
+    sql = (
+        "SELECT d.id, d.class, d.pass_id,\n"
+        "       ST_AsGeoJSON(d.centroid)::jsonb AS geometry,\n"
+        "       d.confidence,\n"
+        "       round(COALESCE((d.metadata->>'calibrated_confidence')::numeric, d.confidence::numeric), 4)::float8 AS calibrated_confidence,\n"
+        "       COALESCE(d.metadata->>'branch_id', 'Other')           AS branch_id,\n"
+        "       d.metadata->>'parent_class'                           AS parent_class,\n"
+        "       d.metadata->>'original_class'                         AS original_class,\n"
+        "       COALESCE(d.metadata->>'icon_key', 'circle_help')      AS icon_key,\n"
+        "       COALESCE(d.metadata->'ontology'->>'label', d.metadata->>'display_label', d.class) AS label,\n"
+        "       COALESCE(d.metadata->>'threat_level', d.threat_level) AS threat_level,\n"
+        "       COALESCE(d.metadata->>'allegiance', d.affiliation, 'unknown') AS allegiance,\n"
+        "       d.metadata->>'review_status'                          AS review_status\n"
+        "FROM detections d\n"
+        "JOIN satellite_passes sp ON d.pass_id = sp.id\n"
+        "WHERE d.deleted_at IS NULL AND d.centroid IS NOT NULL\n"
+    )
+    params: list = []
+    if bbox:
+        min_lon, min_lat, max_lon, max_lat = parse_bbox(bbox)
+        sql += "  AND ST_Intersects(d.centroid, ST_MakeEnvelope(%s, %s, %s, %s, 4326))\n"
+        params.extend([min_lon, min_lat, max_lon, max_lat])
+    if start_time:
+        sql += "  AND sp.acquisition_time >= %s\n"
+        params.append(start_time)
+    if end_time:
+        sql += "  AND sp.acquisition_time <= %s\n"
+        params.append(end_time)
+    if det_class:
+        sql += "  AND d.class = %s\n"
+        params.append(det_class)
+    if pass_id is not None:
+        sql += "  AND d.pass_id = %s\n"
+        params.append(pass_id)
+    sql += "ORDER BY d.created_at DESC, d.id DESC LIMIT %s"
+    params.append(limit)
+    with postgis_db.get_cursor() as db_cursor:
+        db_cursor.execute(sql, params)
+        rows = db_cursor.fetchall()
+    features = [
+        {
+            "type": "Feature",
+            "geometry": row["geometry"],
+            "properties": {
+                "id": row["id"],
+                "class": row["class"],
+                "label": row["label"],
+                "confidence": row["confidence"],
+                "calibrated_confidence": row["calibrated_confidence"],
+                "branch_id": row["branch_id"],
+                "parent_class": row["parent_class"],
+                "original_class": row["original_class"],
+                "icon_key": row["icon_key"],
+                "threat_level": row["threat_level"],
+                "allegiance": row["allegiance"],
+                "review_status": row["review_status"],
+                "pass_id": row["pass_id"],
+                "lite": True,
+            },
+        }
+        for row in rows
+    ]
+    return {"type": "FeatureCollection", "features": features}
+
+
 @app.get("/api/detections/{detection_id}/enriched")
 def get_detection_enriched(detection_id: int, user: SessionUser = Depends(get_current_user)):
     """Single fully-enriched detection Feature — the per-id detail fetch the map's

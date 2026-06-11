@@ -92,13 +92,15 @@ const TILE_PROXY_URL = (import.meta as any).env?.VITE_TILE_PROXY_URL || '/tiles'
 // one tile across the viewport — unmount it; imagery is the source of truth at high zoom.
 export const BASEMAP_OVERLAY_MAX_ZOOM = 14;
 
-// Phase 2 — opt-in Martin vector-tile (MVT) rendering of persisted detections.
-// OFF by default: the per-feature <Polygon> box layer remains the default path.
-// When set (VITE_DETECTION_TILES='1' at build time), persisted detections render
-// as styled vector-tile polygons (DetectionTileLayer) and the box layer is
-// skipped; markers/dots and the live-preview GeoJSON path are unaffected.
+// Martin vector-tile (MVT) rendering of persisted detections — DEFAULT ON.
+// Persisted detection BOXES render as styled vector-tile polygons
+// (DetectionTileLayer); markers/dots come from the lite centroid feed
+// (/api/detections/geojson-lite, held in detectionsGeoJSON) so the lucide
+// icons are preserved; selection routes through /api/detections/{id}/enriched.
+// Set VITE_DETECTION_TILES=0 at build time to restore the legacy fat-geojson
+// path (per-feature <Polygon> boxes + markers from the full /geojson feed).
 export const USE_DETECTION_TILES =
-  ((import.meta as any).env?.VITE_DETECTION_TILES) === '1';
+  ((import.meta as any).env?.VITE_DETECTION_TILES) !== '0';
 
 export type MapHandle = {
   /** Imperatively pan the map to a detection feature's bounds. */
@@ -125,11 +127,18 @@ export type Props = {
   getDetectionStyle: (feature: any) => L.PathOptions;
   detectionCanvasRenderer: L.Canvas;
   setSelectedDetection: (feature: any) => void;
+  /* Selection entry point — fetches /api/detections/{id}/enriched and falls
+     back to the in-memory feature on 404 (live previews). All clicks (MVT
+     polygon, icon marker, dot) route through this so the SelectionPanel always
+     receives the fully-enriched (fat) feature shape. */
+  selectDetectionById: (id: any, fallback?: any) => void;
 
-  /* MVT detection tiles (opt-in via USE_DETECTION_TILES). The version is the
-     /api/detections/tile-version cache-bust token; the filters mirror the
-     box layer's client-side filters so the tile style matches. */
+  /* MVT detection tiles (default ON via USE_DETECTION_TILES). The version is the
+     /api/detections/tile-version cache-bust token; geomMode mirrors the box
+     mode (obb|hbb|mask); the filters mirror the box layer's client-side
+     filters so the tile style matches. */
   detectionTileVersion: number;
+  geomMode: 'obb' | 'hbb' | 'mask';
   confidenceThreshold: number;
   hiddenDetectionCategories: DetectionCategoryId[];
 
@@ -201,8 +210,9 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
     detectionIcon,
     getDetectionStyle,
     detectionCanvasRenderer,
-    setSelectedDetection,
+    selectDetectionById,
     detectionTileVersion,
+    geomMode,
     confidenceThreshold,
     hiddenDetectionCategories,
     activeLayers,
@@ -628,7 +638,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
                 key={`det-marker-${p.id || p.class}-${badgePosition[0]}-${badgePosition[1]}`}
                 position={badgePosition}
                 icon={detectionIcon(feature)}
-                eventHandlers={{ click: () => setSelectedDetection(feature) }}
+                eventHandlers={{ click: () => selectDetectionById(p.id, feature) }}
               >
                 <Popup className="sentinel-popup">
                   <div className="border border-sentinel-line bg-sentinel-panel p-2 text-slate-200">
@@ -667,7 +677,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
                   fillOpacity: 0.8,
                   weight: 1,
                 }}
-                eventHandlers={{ click: () => setSelectedDetection(feature) }}
+                eventHandlers={{ click: () => selectDetectionById(p.id, feature) }}
               >
                 <Popup className="sentinel-popup">
                   <div className="border border-sentinel-line bg-sentinel-panel p-2 text-slate-200">
@@ -720,15 +730,21 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
               );
             })}
 
-          {/* Detection bounding boxes — one <Polygon> per feature. The
-              per-feature map mirrors the icon-marker layer above; it is
-              reactive to data changes and a single bad geometry only skips
-              that one box instead of silently killing the whole layer (the
-              failure mode of the previous <GeoJSON> canvas layer). Uses the
-              map's default SVG renderer — the shared L.canvas() renderer never
-              painted (it gated both the old <GeoJSON> box layer and this one),
-              so it is deliberately not used here. */}
-          {!USE_DETECTION_TILES && activeLayers.detections && geomDisplayedDetectionsGeoJSON.features?.map((feature: any) => {
+          {/* Detection bounding boxes — one <Polygon> per feature. In the
+              DEFAULT (USE_DETECTION_TILES) path, persisted detections live in
+              detectionsGeoJSON as centroid Points (the lite feed), so
+              geojsonToLatLngs returns null for them and this layer renders
+              NOTHING for persisted boxes (the MVT tile layer below draws those).
+              What it DOES still render are live-preview Polygon features pushed
+              by the detections_partial WS handler — so previews keep their boxes.
+              In the legacy (VITE_DETECTION_TILES=0) path this is the sole box
+              layer over the fat /geojson polygons.
+
+              The per-feature map mirrors the icon-marker layer above; a single
+              bad geometry only skips that one box instead of silently killing
+              the whole layer (the failure mode of the previous <GeoJSON> canvas
+              layer). Uses the map's default SVG renderer. */}
+          {activeLayers.detections && geomDisplayedDetectionsGeoJSON.features?.map((feature: any) => {
             const positions = geojsonToLatLngs(feature?.geometry);
             if (!positions) return null;
             const p = feature.properties || {};
@@ -737,24 +753,28 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
                 key={`det-box-${p.id ?? p.class}`}
                 positions={positions}
                 pathOptions={getDetectionStyle(feature)}
-                eventHandlers={{ click: () => setSelectedDetection(feature) }}
+                eventHandlers={{ click: () => selectDetectionById(p.id, feature) }}
               />
             );
           })}
 
-          {/* Phase 2 — opt-in MVT detection polygons. Replaces the per-feature
-              <Polygon> box layer above (same category colours / confidence
-              opacity / military dash, same client-side filters), keeping the
-              markers/dots and live-preview GeoJSON path intact. Click fetches
-              the enriched feature so the SelectionPanel works identically. */}
+          {/* DEFAULT — MVT detection polygons for PERSISTED detections (same
+              category colours / confidence opacity / military dash, same
+              client-side filters as the legacy box layer). geomMode mirrors the
+              box-mode toggle (obb|hbb|mask). The point sublayer is hidden inside
+              the layer so we don't double-draw dots — markers/dots come from the
+              lite feed above. Click routes through selectDetectionById, which
+              fetches the enriched feature so the SelectionPanel works
+              identically. */}
           {USE_DETECTION_TILES && activeLayers.detections && (
             <DetectionTileLayer
               version={detectionTileVersion}
+              geomMode={geomMode}
               categories={categories}
               confidenceThreshold={confidenceThreshold}
               detectionClassFilter={detectionClassFilter}
               hiddenDetectionCategories={hiddenDetectionCategories}
-              onSelect={setSelectedDetection}
+              onSelectById={selectDetectionById}
             />
           )}
 

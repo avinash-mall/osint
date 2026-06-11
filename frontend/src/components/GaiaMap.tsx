@@ -44,7 +44,7 @@ import {
 } from './map/_helpers';
 import { makeDetectionIcon } from './map/_icons';
 import LayerPanel from './map/LayerPanel';
-import MapStage, { type MapHandle } from './map/MapStage';
+import MapStage, { type MapHandle, USE_DETECTION_TILES } from './map/MapStage';
 import ProductTour from './tour/ProductTour';
 import { useProductTour } from '../hooks/useProductTour';
 import SelectionPanel from './map/SelectionPanel';
@@ -721,18 +721,30 @@ export default function GaiaMap({
         start_time: timeRange.start,
         end_time: timeRange.end,
         bbox: mapBounds,
-        limit: '20000',
+        // Lite feed returns centroid Points + light props for the WHOLE bbox in
+        // one fast call (no cursor pagination), so we ask for a high ceiling.
+        // The legacy fat /geojson path keeps the 20k limit it always used.
+        limit: USE_DETECTION_TILES ? '100000' : '20000',
       });
       if (detectionClassFilter) {
         geoParams.append('det_class', detectionClassFilter);
       }
-      // Dense scenes (a full pass over a city) can return thousands of
-      // detections — each carrying full ontology/metadata the selection panel
-      // and OBB renderer need — which legitimately takes tens of seconds to
-      // build and transfer. A 10s ceiling silently dropped the whole layer on
-      // such scenes; 60s lets it land (the "Loading detections" spinner covers
-      // the wait). The bbox+limit params still scope normal working zooms.
-      const response = await axios.get(`${API_URL}/api/detections/geojson?${geoParams.toString()}`, { timeout: 60000 });
+      // DEFAULT (USE_DETECTION_TILES): fetch the LITE centroid-Point feed —
+      // small/fast (~2.7 MB/0.6 s for 6 k), no polygon geometry, no fat
+      // metadata. This drives counts, the class filter, framing, and the
+      // marker/dot layers; persisted BOXES are drawn by the MVT tile layer and
+      // full per-detection detail is fetched on selection via /enriched.
+      //
+      // Legacy (VITE_DETECTION_TILES=0): the fat /geojson feed with full
+      // ontology/metadata + polygon geometry the box layer and selection panel
+      // read directly. Dense scenes can take tens of seconds to build/transfer,
+      // so a 60 s ceiling (vs the lite 20 s) lets the whole layer land.
+      const endpoint = USE_DETECTION_TILES
+        ? `${API_URL}/api/detections/geojson-lite`
+        : `${API_URL}/api/detections/geojson`;
+      const response = await axios.get(`${endpoint}?${geoParams.toString()}`, {
+        timeout: USE_DETECTION_TILES ? 20000 : 60000,
+      });
       setDetectionsGeoJSON(response.data || { type: 'FeatureCollection', features: [] });
     } catch (error) {
       console.error('Error fetching detections:', error);
@@ -740,6 +752,26 @@ export default function GaiaMap({
       setIsLoading(false);
     }
   }, [detectionClassFilter, mapBounds, timeRange]);
+
+  // Single selection entry point. Tile clicks, marker clicks, and dot clicks
+  // all carry only LIGHT props (lite centroid Points or MVT tile props), so we
+  // fetch the fully-enriched Feature (same ~39-prop shape the SelectionPanel's
+  // Details tab reads) from /api/detections/{id}/enriched. On failure — most
+  // commonly a live-preview feature whose row isn't persisted yet (404) — fall
+  // back to the in-memory feature so a click never throws and live previews
+  // still select.
+  const selectDetectionById = useCallback(async (id: any, fallback?: any) => {
+    if (id == null) {
+      if (fallback) setSelectedDetection(fallback);
+      return;
+    }
+    try {
+      const r = await axios.get(`${API_URL}/api/detections/${id}/enriched`, { timeout: 15000 });
+      setSelectedDetection(r.data);
+    } catch {
+      if (fallback) setSelectedDetection(fallback);
+    }
+  }, []);
 
   const fetchDetections = useCallback(async () => {
     await Promise.all([fetchDetectionClasses(), fetchDetectionFeatures()]);
@@ -1346,7 +1378,9 @@ export default function GaiaMap({
         getDetectionStyle={getDetectionStyle}
         detectionCanvasRenderer={detectionCanvasRenderer}
         setSelectedDetection={setSelectedDetection}
+        selectDetectionById={selectDetectionById}
         detectionTileVersion={detectionTileVersion}
+        geomMode={bboxMode}
         confidenceThreshold={confidenceThreshold}
         hiddenDetectionCategories={hiddenDetectionCategories}
         activeLayers={activeLayers}

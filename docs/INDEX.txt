@@ -207,7 +207,7 @@ decisions/why-memoize-ontology-normalize.md|decision,ontology|result-memoize nor
 decisions/why-entity-embedding-aggregation.md|decision,backend|per-entity DINOv3 centroid (analyst-attached tracks) drives the embedding branch of POSSIBLY_SAME_AS
 decisions/why-deconflicted-detection-prompts.md|decision,ontology|one object per unique prompt; label IS the prompt; collapses overloaded false-positive prompts
 decisions/why-detection-boxes-use-polygon-map.md|decision,frontend|box layer is per-feature <Polygon> map; <GeoJSON> canvas layer silently failed to paint
-decisions/why-detection-mvt-tiles.md|decision,frontend|opt-in Martin MVT detection layer (VITE_DETECTION_TILES); leaflet.vectorgrid, branch_id styling parity, /enriched selection
+decisions/why-detection-mvt-tiles.md|decision,frontend|Martin MVT detection-box layer DEFAULT ON (VITE_DETECTION_TILES); lite feed markers, geom_mode parity, /enriched selection, halos dropped
 decisions/why-dinov3-sat-only.md|decision|DINOv3 ViT-L SAT-493M keeps re-ID quality without DINOv3_LVD NaNs
 decisions/why-dynamic-modality-loading-on-tight-vram.md|decision,gpu,inference|16GB cards: per-modality profile swap + drop dead-weight detectors; fixes all-chunk OOM zero-detections
 decisions/why-deletable-imagery-and-clips.md|decision,backend|admin DELETE for imagery passes + FMV clips: rows + on-disk files + Neo4j nodes; frontend trash buttons

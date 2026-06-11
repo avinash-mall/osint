@@ -698,6 +698,34 @@ def ensure_tile_sources() -> None:
             )
         """)
         cursor.execute("INSERT INTO tile_version (singleton, version_id) VALUES (TRUE, 1) ON CONFLICT (singleton) DO NOTHING")
+        # OBB builder: reconstruct the oriented box from the flat
+        # ``metadata.geo_polygon`` ([lon,lat,...] corner list) the inference writes,
+        # so the tile can serve the same OBB the map's GEOM toolbar draws. Falls
+        # back to the raw mask geometry on any malformed input.
+        cursor.execute("""
+            CREATE OR REPLACE FUNCTION detection_obb_geom(meta jsonb, fallback geometry)
+            RETURNS geometry
+            AS $$
+            DECLARE
+                gp  jsonb := meta->'geo_polygon';
+                n   int;
+                pts geometry[];
+                i   int;
+            BEGIN
+                IF gp IS NULL OR jsonb_typeof(gp) <> 'array' THEN RETURN fallback; END IF;
+                n := jsonb_array_length(gp);
+                IF n < 6 OR (n % 2) <> 0 THEN RETURN fallback; END IF;
+                pts := ARRAY[]::geometry[];
+                FOR i IN 0..(n/2 - 1) LOOP
+                    pts := pts || ST_SetSRID(ST_MakePoint((gp->>(2*i))::float8, (gp->>(2*i+1))::float8), 4326);
+                END LOOP;
+                pts := pts || pts[1];  -- close the ring
+                RETURN ST_MakePolygon(ST_MakeLine(pts));
+            EXCEPTION WHEN OTHERS THEN
+                RETURN fallback;
+            END;
+            $$ LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE;
+        """)
         cursor.execute("""
             CREATE OR REPLACE FUNCTION detections_mvt(z integer, x integer, y integer, query_params json DEFAULT '{}')
             RETURNS bytea
@@ -706,13 +734,13 @@ def ensure_tile_sources() -> None:
                 mvt bytea;
                 f_class text := NULLIF(query_params->>'det_class', '');
                 f_pass  int  := NULLIF(query_params->>'pass_id', '')::int;
+                f_mode  text := lower(COALESCE(NULLIF(query_params->>'geom_mode', ''), 'obb'));
             BEGIN
                 WITH bounds AS (
                     SELECT ST_TileEnvelope(z, x, y) AS env_3857
                 ),
-                src AS (
+                base AS (
                     SELECT
-                        ST_AsMVTGeom(ST_Transform(d.geom, 3857), b.env_3857) AS geom,
                         d.id,
                         d.class,
                         round(COALESCE((d.metadata->>'calibrated_confidence')::numeric, d.confidence::numeric), 4)::double precision AS confidence,
@@ -724,18 +752,39 @@ def ensure_tile_sources() -> None:
                         COALESCE(d.metadata->>'threat_level', d.threat_level) AS threat_level,
                         COALESCE(d.metadata->>'allegiance', d.affiliation, 'unknown') AS allegiance,
                         d.metadata->>'review_status'                         AS review_status,
-                        d.pass_id
+                        d.pass_id,
+                        d.centroid,
+                        CASE f_mode
+                            WHEN 'mask' THEN d.geom
+                            WHEN 'hbb'  THEN ST_Envelope(d.geom)
+                            ELSE detection_obb_geom(d.metadata, d.geom)
+                        END AS display_geom
                     FROM detections d, bounds b
                     WHERE d.deleted_at IS NULL
                       AND d.geom IS NOT NULL
                       AND d.geom && ST_Transform(b.env_3857, 4326)   -- GIST index on geom(4326)
                       AND (f_class IS NULL OR d.class = f_class)
                       AND (f_pass  IS NULL OR d.pass_id = f_pass)
+                ),
+                poly AS (
+                    SELECT ST_AsMVTGeom(ST_Transform(base.display_geom, 3857), b.env_3857) AS geom,
+                           base.id, base.class, base.confidence, base.branch_id, base.parent_class,
+                           base.original_class, base.icon_key, base.label, base.threat_level,
+                           base.allegiance, base.review_status, base.pass_id
+                    FROM base, bounds b
+                ),
+                pts AS (
+                    SELECT ST_AsMVTGeom(ST_Transform(base.centroid, 3857), b.env_3857) AS geom,
+                           base.id, base.class, base.confidence, base.branch_id, base.icon_key
+                    FROM base, bounds b
+                    WHERE base.centroid IS NOT NULL
                 )
-                SELECT ST_AsMVT(src.*, 'detections') INTO mvt FROM src WHERE src.geom IS NOT NULL;
+                SELECT
+                    COALESCE((SELECT ST_AsMVT(poly.*, 'detections')       FROM poly WHERE poly.geom IS NOT NULL), ''::bytea)
+                  || COALESCE((SELECT ST_AsMVT(pts.*,  'detection_points') FROM pts  WHERE pts.geom  IS NOT NULL), ''::bytea)
+                INTO mvt;
                 -- Empty tiles: return 0-byte MVT (HTTP 200, cacheable) instead of
-                -- NULL (which Martin serves as 404 — noisy in the browser console
-                -- and uncacheable at low zoom over empty ocean/land).
+                -- NULL (which Martin serves as 404 — noisy + uncacheable at low zoom).
                 RETURN COALESCE(mvt, ''::bytea);
             END;
             $$ LANGUAGE plpgsql STABLE PARALLEL SAFE;

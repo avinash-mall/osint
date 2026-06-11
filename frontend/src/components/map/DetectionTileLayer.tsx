@@ -1,6 +1,11 @@
 /**
- * DetectionTileLayer — opt-in Martin vector-tile (MVT) rendering of persisted
- * detections, behind the VITE_DETECTION_TILES flag (see MapStage).
+ * DetectionTileLayer — Martin vector-tile (MVT) rendering of persisted
+ * detection BOXES (DEFAULT ON; legacy fat path only when VITE_DETECTION_TILES=0
+ * — see MapStage). The tile carries two layers: `detections` (polygons, styled
+ * here) and `detection_points` (centroids, HIDDEN here so we don't double the
+ * dots — markers/dots come from the lite feed, preserving the lucide icons).
+ * `geomMode` (obb|hbb|mask) is appended to the tile URL so the box geometry
+ * follows GaiaMap's box-mode toggle.
  *
  * This is an imperative react-leaflet layer: Leaflet.VectorGrid has no
  * react-leaflet wrapper, so we attach/detach an `L.vectorGrid.protobuf`
@@ -16,11 +21,12 @@
  * threshold, SOLO class, hidden categories) are applied in `styleForTileProps`
  * by returning `{ stroke:false, fill:false }` for filtered-out features.
  *
- * Selection: VectorGrid features carry only tile props, so a click fetches the
- * fully-enriched GeoJSON Feature from /api/detections/{id}/enriched and hands
- * it to `onSelect` (the same setSelectedDetection the boxes use) — the enriched
- * shape matches /api/detections/geojson, so the SelectionPanel works
- * identically.
+ * Selection: VectorGrid features carry only tile props, so a click hands the
+ * id to `onSelectById` (GaiaMap's shared selectDetectionById), which fetches
+ * the fully-enriched GeoJSON Feature from /api/detections/{id}/enriched — the
+ * enriched shape matches the old /api/detections/geojson feature, so the
+ * SelectionPanel works identically. Marker/dot clicks route through the same
+ * helper.
  *
  * The layer is re-created whenever `version` or any filter dep changes (Phase 2
  * keeps it simple — no per-feature setFeatureStyle), so style/visibility stay
@@ -30,7 +36,6 @@
 import { useEffect } from 'react';
 import { useMap } from 'react-leaflet';
 import L from 'leaflet';
-import axios from 'axios';
 // leaflet.vectorgrid is a UMD plugin that registers on a *global* `L` at module
 // eval and has no import of leaflet for the bundler to order — so it is imported
 // DYNAMICALLY inside the effect, only after we set window.L. vite.config isolates
@@ -50,23 +55,29 @@ const API_URL = (import.meta as any).env?.VITE_API_URL || '';
 type Props = {
   /** Cache-bust token from /api/detections/tile-version; bumped on ingest/delete. */
   version: number;
+  /** Box geometry mode — mirrors GaiaMap's bboxMode toggle. Appended to the
+      tile URL as &geom_mode=; the backend serves the matching polygon
+      (oriented box / horizontal box / mask). Default `obb`. */
+  geomMode: 'obb' | 'hbb' | 'mask';
   /** Live ontology category → colour map (same map the box layer uses). */
   categories: DetectionCategoryMap;
   /** Client-side filters — must mirror filteredDetectionsGeoJSON in GaiaMap. */
   confidenceThreshold: number;
   detectionClassFilter: string | null;
   hiddenDetectionCategories: DetectionCategoryId[];
-  /** Hand the enriched GeoJSON Feature to the same setSelectedDetection the boxes use. */
-  onSelect: (feature: any) => void;
+  /** Select by id — fetches /api/detections/{id}/enriched (the shared
+      selectDetectionById in GaiaMap) so the SelectionPanel gets the fat shape. */
+  onSelectById: (id: any) => void;
 };
 
 export default function DetectionTileLayer({
   version,
+  geomMode,
   categories,
   confidenceThreshold,
   detectionClassFilter,
   hiddenDetectionCategories,
-  onSelect,
+  onSelectById,
 }: Props) {
   const map = useMap();
 
@@ -111,24 +122,26 @@ export default function DetectionTileLayer({
       (window as any).L = L;          // expose the global the UMD plugin needs
       await import('leaflet.vectorgrid');  // lazy chunk; now patches L.vectorGrid
       if (cancelled) return;
-      const url = `${API_URL}/maps/detections_mvt/{z}/{x}/{y}?v=${version}`;
+      const url = `${API_URL}/maps/detections_mvt/{z}/{x}/{y}?v=${version}&geom_mode=${geomMode}`;
       layer = (L as any).vectorGrid.protobuf(url, {
         interactive: true,
         maxNativeZoom: 18,
         getFeatureId: (f: any) => f.properties?.id,
         vectorTileLayerStyles: {
+          // BOXES — styled persisted-detection polygons.
           detections: (props: any) => styleForTileProps(props),
+          // POINTS — hidden. The tile ships a `detection_points` centroid
+          // sublayer too, but markers/dots come from the lite feed (so the
+          // lucide icons are preserved); drawing this would double the dots.
+          detection_points: () => ({ stroke: false, fill: false }),
         },
       });
-      layer.on('click', async (e: any) => {
+      layer.on('click', (e: any) => {
         const id = e.layer?.properties?.id;
         if (id == null) return;
-        try {
-          const r = await axios.get(`${API_URL}/api/detections/${id}/enriched`);
-          onSelect(r.data);
-        } catch {
-          /* ignore — a missing/deleted detection just won't select */
-        }
+        // Selection routes through GaiaMap's selectDetectionById, which fetches
+        // /api/detections/{id}/enriched (fat shape) for the SelectionPanel.
+        onSelectById(id);
       });
       layer.addTo(map);
     })();
@@ -141,11 +154,12 @@ export default function DetectionTileLayer({
   }, [
     map,
     version,
+    geomMode,
     categories,
     confidenceThreshold,
     detectionClassFilter,
     hiddenDetectionCategories,
-    onSelect,
+    onSelectById,
   ]);
 
   return null;

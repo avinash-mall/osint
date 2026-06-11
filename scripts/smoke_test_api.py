@@ -79,6 +79,7 @@ CATALOG = [
     ('GET', '/api/detections'),
     ('GET', '/api/detections/classes'),
     ('GET', '/api/detections/geojson'),
+    ('GET', '/api/detections/geojson-lite'),
     ('POST', '/api/detections/manual'),
     ('GET', '/api/detections/prithvi-overlays'),
     ('GET', '/api/detections/queue'),
