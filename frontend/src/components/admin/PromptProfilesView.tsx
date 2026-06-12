@@ -15,6 +15,7 @@
 import axios from 'axios';
 import { Check, ChevronDown, ChevronRight, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { apiErrorMessage } from '../../utils/apiError';
 import { ModalityBadge, Panel } from '../atoms';
 
 const API_URL = (import.meta as any).env?.VITE_API_URL || '';
@@ -63,7 +64,7 @@ export default function PromptProfilesView() {
       setProfiles(data?.profiles || []);
       setDefaults(data?.ontology_defaults || {});
     } catch (err: any) {
-      setError(err?.response?.data?.detail || err?.message || 'failed to load profiles');
+      setError(apiErrorMessage(err, 'failed to load profiles'));
     } finally {
       setBusy(false);
     }
@@ -97,7 +98,7 @@ export default function PromptProfilesView() {
       setNewPromptText('');
       await load();
     } catch (err: any) {
-      setError(err?.response?.data?.detail || err?.message || 'create failed');
+      setError(apiErrorMessage(err, 'create failed'));
     } finally {
       setBusy(false);
     }
@@ -111,7 +112,7 @@ export default function PromptProfilesView() {
         await axios.put(`${API_URL}/api/ontology/prompt-profiles/${id}/activate`);
         await load();
       } catch (err: any) {
-        setError(err?.response?.data?.detail || err?.message || 'activate failed');
+        setError(apiErrorMessage(err, 'activate failed'));
       } finally {
         setBusy(false);
       }
@@ -128,7 +129,7 @@ export default function PromptProfilesView() {
         await axios.delete(`${API_URL}/api/ontology/prompt-profiles/${id}`);
         await load();
       } catch (err: any) {
-        setError(err?.response?.data?.detail || err?.message || 'delete failed');
+        setError(apiErrorMessage(err, 'delete failed'));
       } finally {
         setBusy(false);
       }

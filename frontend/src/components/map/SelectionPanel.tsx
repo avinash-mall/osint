@@ -106,10 +106,8 @@ type Props = {
 
   /* selected detection + cross-coupled data */
   selectedDetection: any;
-  setSelectedDetection: (feature: any) => void;
   detectionTracks: DetectionTrack[];
   selectedImageryData: any;
-  detectionsGeoJSON: { features?: any[]; [k: string]: any };
   candidateLinks: CandidateLink[];
 
   /* analytics tab */
@@ -142,6 +140,10 @@ type Props = {
 
   /* cross-nav */
   onOpenFmv?: (clipId: number) => void;
+  /** Jump to a detection that may be OUTSIDE the viewport's bbox/time GeoJSON
+      (review queue and /similar are global): GaiaMap fetches the enriched
+      feature and pans, falling back to flying to the supplied lat/lon. */
+  onJumpToDetection: (id: number, lat?: number, lon?: number) => void;
 
   /* action callbacks */
   actions: SelectionPanelActions;
@@ -155,10 +157,8 @@ export default function SelectionPanel(props: Props) {
     setSelectionTab,
     onClose,
     selectedDetection,
-    setSelectedDetection,
     detectionTracks,
     selectedImageryData,
-    detectionsGeoJSON,
     candidateLinks,
     pendingPick,
     setPendingPick,
@@ -175,6 +175,7 @@ export default function SelectionPanel(props: Props) {
     branchById,
     userRole,
     onOpenFmv,
+    onJumpToDetection,
     actions,
     satellitesSlot,
   } = props;
@@ -210,11 +211,13 @@ export default function SelectionPanel(props: Props) {
   const [objectDetailsRefreshKey, setObjectDetailsRefreshKey] = useState(0);
 
   const [exportingPkg, setExportingPkg] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const exportTargetPackage = async () => {
     if (!selectedDetection || exportingPkg) return;
     const id = selectedDetection.properties?.id;
     if (id == null) return;
     setExportingPkg(true);
+    setExportError(null);
     try {
       const r = await fetch(`${API_URL}/api/reports/target-package/${id}`, {
         method: 'POST',
@@ -230,8 +233,9 @@ export default function SelectionPanel(props: Props) {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-    } catch (err) {
+    } catch (err: any) {
       console.warn('Target package export failed', err);
+      setExportError(err?.message || 'export failed');
     } finally {
       setExportingPkg(false);
     }
@@ -246,9 +250,11 @@ export default function SelectionPanel(props: Props) {
                                { Icon: Crosshair,   label: selectedDetection ? `DET-${selectedDetection.properties?.id}` : 'Selection', tag: 'DETAIL' };
   const HeaderIcon = rightHeader.Icon;
   const allegianceLabel = String(selectedDetection?.properties?.allegiance || '').toLowerCase();
+  // Tolerate both spellings: the tag endpoint historically stored 'friendly'
+  // while newer writes are normalised to 'friend' — old DB rows must render.
   const allegianceTagClass =
     allegianceLabel === 'hostile'  ? 'crit' :
-    allegianceLabel === 'friendly' ? 'ok' :
+    allegianceLabel === 'friendly' || allegianceLabel === 'friend' ? 'ok' :
     allegianceLabel === 'neutral'  ? 'info' :
     'acc';
 
@@ -446,7 +452,11 @@ export default function SelectionPanel(props: Props) {
                 </div>
                 <div className="grid grid-cols-[92px_1fr] gap-y-1 font-mono text-[10.5px]">
                   <span className="text-sentinel-muted">WGS84</span>
-                  <span>{centroid ? `${centroid[0].toFixed(4)}° N, ${centroid[1].toFixed(4)}° E` : 'n/a'}</span>
+                  <span>
+                    {centroid
+                      ? `${Math.abs(centroid[0]).toFixed(4)}° ${centroid[0] >= 0 ? 'N' : 'S'}, ${Math.abs(centroid[1]).toFixed(4)}° ${centroid[1] >= 0 ? 'E' : 'W'}`
+                      : 'n/a'}
+                  </span>
                   <span className="text-sentinel-muted">MGRS</span><span>{mgrsString || 'n/a'}</span>
                   <span className="text-sentinel-muted">ELEV</span>
                   <span>
@@ -468,6 +478,19 @@ export default function SelectionPanel(props: Props) {
                   <FileDown size={12} />
                   {exportingPkg ? 'Generating…' : 'Generate Target Package'}
                 </button>
+                {exportError && (
+                  <div
+                    className="mono mt-2 px-2 py-1"
+                    role="alert"
+                    style={{
+                      fontSize: 10.5,
+                      color: 'var(--nato-hostile)',
+                      border: '1px solid var(--nato-hostile)',
+                    }}
+                  >
+                    Target package failed: {exportError}
+                  </div>
+                )}
               </div>
 
               {sizeEstimate && (
@@ -505,6 +528,11 @@ export default function SelectionPanel(props: Props) {
               </div>
 
               <IdentificationPanel
+                /* Remount per detection: the panel otherwise persisted across
+                   selections and a late candidates response could leave the
+                   PREVIOUS detection's candidates under the new header —
+                   approving one wrote platform identity to the wrong row. */
+                key={`ident-${detProps.id}`}
                 detectionId={Number(detProps.id)}
                 onChanged={() => {
                   // Approve/reject landed platform_* on object_details — force
@@ -587,12 +615,7 @@ export default function SelectionPanel(props: Props) {
                 <ReviewPanel
                   selectedDetection={selectedDetection}
                   onReviewed={() => actions.fetchDetections()}
-                  onJump={(id) => {
-                    const feat = detectionsGeoJSON?.features?.find(
-                      (f: any) => Number(f.properties?.id) === id,
-                    );
-                    if (feat) setSelectedDetection(feat);
-                  }}
+                  onJump={(id, lat, lon) => onJumpToDetection(id, lat, lon)}
                 />
               )}
 
@@ -683,12 +706,7 @@ export default function SelectionPanel(props: Props) {
           selectedDetection ? (
             <SimilarPanel
               selectedDetection={selectedDetection}
-              onSelect={(id) => {
-                const feat = detectionsGeoJSON?.features?.find(
-                  (f: any) => Number(f.properties?.id) === id,
-                );
-                if (feat) setSelectedDetection(feat);
-              }}
+              onSelect={(id, lat, lon) => onJumpToDetection(id, lat, lon)}
             />
           ) : (
             <div className="border-b border-sentinel-line p-3 text-xs text-sentinel-muted">Select a detection polygon to inspect similar objects.</div>

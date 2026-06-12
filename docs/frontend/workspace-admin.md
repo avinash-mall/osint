@@ -23,7 +23,7 @@ Consolidates all operator tooling into a tab set.
 
 **Model loading** tab loads inference profiles via `/api/inference/load`, frees VRAM via `/api/inference/unload` — destructive unload gated behind a `ConfirmDialog`; `disabled` models render as a neutral `NEEDS SETUP` step (UX-AUDIT F27/F28). **Sign-in & users** tab renamed from `Auth · LDAP` (F29).
 
-`admin/*View.tsx` files share a common pattern: small components, each calling a small set of REST endpoints. Shared header [admin/ViewHeader.tsx](../../frontend/src/components/admin/ViewHeader.tsx); timestamp formatter [admin/time.ts](../../frontend/src/components/admin/time.ts).
+`admin/*View.tsx` files share a common pattern: small components, each calling a small set of REST endpoints. Shared header [admin/ViewHeader.tsx](../../frontend/src/components/admin/ViewHeader.tsx); timestamp formatter [admin/time.ts](../../frontend/src/components/admin/time.ts); error normalizer [utils/apiError.ts](../../frontend/src/utils/apiError.ts) (FastAPI 422 `detail` arrays must never be rendered raw — see [decisions/audit-fixes-frontend-shell-admin-2026-06-12.md](../decisions/audit-fixes-frontend-shell-admin-2026-06-12.md)).
 
 ## Cross-references
 

@@ -1,7 +1,7 @@
 # Detections Router (`/api/detections/*`)
 
 **Path:** [backend/routers/detections.py](../../backend/routers/detections.py)
-**Lines:** ~226
+**Lines:** ~270
 **Depends on:** [backend/detection_helpers.py](../../backend/detection_helpers.py), [backend/detection_policy.py](../../backend/detection_policy.py), [backend/auth.py](../../backend/auth.py), [backend/schemas.py](../../backend/schemas.py)
 
 ## Purpose
@@ -16,8 +16,8 @@ Bulk read endpoints (`GET /api/detections`, `/api/detections/geojson-lite`, `/ap
 |---|---|---|---|
 | `GET` | `/api/detections/{id}/details` | [detections.py#L34](../../backend/routers/detections.py#L34) | Operator-editable object_details row |
 | `PUT` | `/api/detections/{id}/details` | [detections.py#L53](../../backend/routers/detections.py#L53) | Update threat/affiliation/notes via [`ObjectDetailsBody`](../../backend/schemas.py) |
-| `POST` | `/api/detections/manual` | [detections.py#L101](../../backend/routers/detections.py#L101) | Operator-drawn detection with `ManualDetectionBody` |
-| `DELETE` | `/api/detections/{id}` | [detections.py#L197](../../backend/routers/detections.py#L197) | Soft-delete (sets `deleted_at`, keeps row) + purges projections (candidate links, track membership, empty tracks, `object_details`, Neo4j node) via [cascade_delete.py](../../backend/cascade_delete.py) |
+| `POST` | `/api/detections/manual` | [detections.py#L118](../../backend/routers/detections.py#L118) | Operator-drawn detection with `ManualDetectionBody`. `detections.geom` is `GEOMETRY(POLYGON)`: a single-part MultiPolygon is stored as its one polygon (`ST_GeometryN(…, 1)`); multi-part MultiPolygons are rejected with 400 rather than silently dropping parts |
+| `DELETE` | `/api/detections/{id}` | [detections.py#L223](../../backend/routers/detections.py#L223) | Soft-delete (sets `deleted_at`, keeps row) + purges projections (candidate links, track membership, empty tracks, `object_details`, Neo4j node) via [cascade_delete.py](../../backend/cascade_delete.py) |
 
 ## Why this design
 
@@ -32,3 +32,4 @@ Bulk read endpoints (`GET /api/detections`, `/api/detections/geojson-lite`, `/ap
 - [decisions/removed-yoloe-imagery.md](../decisions/removed-yoloe-imagery.md)
 - [frontend/object-details-form.md](../frontend/object-details-form.md)
 - [operations/candidate-link-approval.md](../operations/candidate-link-approval.md)
+- [decisions/audit-fixes-api-layer-2026-06-11.md](../decisions/audit-fixes-api-layer-2026-06-11.md) — the 2026-06-11 API-layer audit batch

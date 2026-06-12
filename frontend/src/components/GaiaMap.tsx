@@ -354,7 +354,10 @@ export default function GaiaMap({
   const filteredDetectionsGeoJSON = useMemo(() => ({
     ...detectionsGeoJSON,
     features: (detectionsGeoJSON.features || []).filter((feature: any) => {
-      const rawConf = feature?.properties?.confidence;
+      // Prefer calibrated confidence (the MVT tile SQL COALESCEs it into the
+      // tile's confidence prop) so marker and tile thresholds agree.
+      const rawConf = feature?.properties?.calibrated_confidence
+        ?? feature?.properties?.confidence;
       const conf = (typeof rawConf === 'number' && Number.isFinite(rawConf)) ? rawConf : 1;
       if (conf < confidenceThreshold) return false;
       const labels = detectionClassKeys(feature);
@@ -397,7 +400,8 @@ export default function GaiaMap({
     let worstCoverage = 1.0;
     let sampledPassesSeen = new Set<number>();
     for (const feature of all) {
-      const rawConf = feature?.properties?.confidence;
+      const rawConf = feature?.properties?.calibrated_confidence
+        ?? feature?.properties?.confidence;
       const conf = (typeof rawConf === 'number' && Number.isFinite(rawConf)) ? rawConf : 1;
       if (confidenceThreshold > 0 && conf < confidenceThreshold) byConfidence += 1;
       if (hiddenDetectionCategories.length > 0
@@ -636,7 +640,18 @@ export default function GaiaMap({
     }
   }, []);
 
+  // Monotonic sequence tokens — viewport/time fetches have no inherent
+  // ordering, so a slow stale response (e.g. a world-bbox query) must not
+  // overwrite the newer result. Each callback bumps its token on entry and
+  // discards the response if a newer call has since started.
+  const tracksSeqRef = useRef(0);
+  const imagerySeqRef = useRef(0);
+  const classesSeqRef = useRef(0);
+  const featuresSeqRef = useRef(0);
+  const selectSeqRef = useRef(0);
+
   const fetchDetectionTracks = useCallback(async () => {
+    const seq = ++tracksSeqRef.current;
     try {
       const params = new URLSearchParams({
         status: 'confirmed,coast,pinned,tentative',
@@ -646,6 +661,7 @@ export default function GaiaMap({
       });
       if (mapBounds) params.set('bbox', mapBounds);
       const response = await axios.get(`${API_URL}/api/tracks/detections?${params.toString()}`, { timeout: 10000 });
+      if (seq !== tracksSeqRef.current) return;
       setDetectionTracks(response.data?.tracks || []);
     } catch (error) {
       console.error('Error fetching detection tracks:', error);
@@ -668,7 +684,16 @@ export default function GaiaMap({
   }, [fetchDetectionTracks]);
 
 
+  // Non-reactive mirror of selectedImagery so fetchImagery can read the
+  // current selection WITHOUT closing over it. A reactive selectedImagery dep
+  // re-created the callback on every pass selection; the refetch chain then
+  // gave `imagery` a new array identity, which re-ran the time-machine snap
+  // effect and stomped any manual older-pass selection back to "now".
+  const selectedImageryRef = useRef(selectedImagery);
+  useEffect(() => { selectedImageryRef.current = selectedImagery; }, [selectedImagery]);
+
   const fetchImagery = useCallback(async () => {
+    const seq = ++imagerySeqRef.current;
     try {
       const params = new URLSearchParams();
       params.append('start_time', timeRange.start);
@@ -681,22 +706,26 @@ export default function GaiaMap({
         rows = latestResponse.data.imagery || [];
         usedLatestFallback = rows.length > 0;
       }
+      if (seq !== imagerySeqRef.current) return;
       setImagery(rows);
-      const selectedRow = rows.find((row: any) => row.id === selectedImagery) || rows[0] || null;
       setSelectedImagery((current) => (current && rows.some((row: any) => row.id === current) ? current : rows[0]?.id || null));
-      if (usedLatestFallback && selectedRow?.acquisition_time && !timestampInRange(selectedRow.acquisition_time, timeRange)) {
-        focusTimeRange(selectedRow.acquisition_time);
+      if (usedLatestFallback) {
+        const selectedRow = rows.find((row: any) => row.id === selectedImageryRef.current) || rows[0] || null;
+        if (selectedRow?.acquisition_time && !timestampInRange(selectedRow.acquisition_time, timeRange)) {
+          focusTimeRange(selectedRow.acquisition_time);
+        }
       }
     } catch (error) {
       console.error('Error fetching imagery:', error);
     }
-  }, [focusTimeRange, selectedImagery, timeRange]);
+  }, [focusTimeRange, timeRange]);
 
   const fetchDetectionClasses = useCallback(async () => {
     // The class legend shows every class present in the timeframe globally â€”
     // bbox is intentionally NOT applied so the panel stays useful even when
     // the map viewport doesn't yet cover newly-uploaded imagery. Map-rendered
     // features are still bbox-filtered separately by fetchDetectionFeatures().
+    const seq = ++classesSeqRef.current;
     try {
       const classParams = new URLSearchParams({
         start_time: timeRange.start,
@@ -704,6 +733,7 @@ export default function GaiaMap({
         llm: 'true',
       });
       const response = await axios.get(`${API_URL}/api/detections/classes?${classParams.toString()}`, { timeout: 10000 });
+      if (seq !== classesSeqRef.current) return;
       setDetectionClasses(response.data?.classes || []);
     } catch (error) {
       console.error('Error fetching detection classes:', error);
@@ -711,6 +741,7 @@ export default function GaiaMap({
   }, [timeRange]);
 
   const fetchDetectionFeatures = useCallback(async () => {
+    const seq = ++featuresSeqRef.current;
     if (!mapBounds) {
       setDetectionsGeoJSON({ type: 'FeatureCollection', features: [] });
       return;
@@ -737,11 +768,12 @@ export default function GaiaMap({
       const response = await axios.get(`${endpoint}?${geoParams.toString()}`, {
         timeout: 20000,
       });
+      if (seq !== featuresSeqRef.current) return;
       setDetectionsGeoJSON(response.data || { type: 'FeatureCollection', features: [] });
     } catch (error) {
       console.error('Error fetching detections:', error);
     } finally {
-      setIsLoading(false);
+      if (seq === featuresSeqRef.current) setIsLoading(false);
     }
   }, [detectionClassFilter, mapBounds, timeRange]);
 
@@ -752,18 +784,41 @@ export default function GaiaMap({
   // commonly a live-preview feature whose row isn't persisted yet (404) — fall
   // back to the in-memory feature so a click never throws and live previews
   // still select.
+  // Returns the feature it selected (or null) so jump flows can pan to it.
+  // The sequence guard keeps a slow enriched response for detection A from
+  // overwriting a quicker click on detection B.
   const selectDetectionById = useCallback(async (id: any, fallback?: any) => {
     if (id == null) {
       if (fallback) setSelectedDetection(fallback);
-      return;
+      return fallback ?? null;
     }
+    const seq = ++selectSeqRef.current;
     try {
       const r = await axios.get(`${API_URL}/api/detections/${id}/enriched`, { timeout: 15000 });
-      setSelectedDetection(r.data);
+      if (seq === selectSeqRef.current) setSelectedDetection(r.data);
+      return r.data;
     } catch {
-      if (fallback) setSelectedDetection(fallback);
+      if (fallback && seq === selectSeqRef.current) setSelectedDetection(fallback);
+      return fallback ?? null;
     }
   }, []);
+
+  // Jump to a detection that may be OUTSIDE the current viewport's bbox/time
+  // GeoJSON (review queue and /similar are global): fetch the enriched feature
+  // directly (bbox-independent), select it, and pan to its geometry. Falls
+  // back to flying to the caller-supplied lat/lon when no geometry came back.
+  const jumpToDetection = useCallback(async (id: number, lat?: number, lon?: number) => {
+    const fallback = detectionsGeoJSON?.features?.find(
+      (f: any) => Number(f.properties?.id) === Number(id),
+    );
+    const feat = await selectDetectionById(id, fallback);
+    if (feat?.geometry) {
+      mapStageRef.current?.panToDetection?.(feat);
+    } else if (lat != null && lon != null) {
+      mapStageRef.current?.flyTo?.(lat, lon);
+    }
+    return feat;
+  }, [selectDetectionById, detectionsGeoJSON]);
 
   const fetchDetections = useCallback(async () => {
     await Promise.all([fetchDetectionClasses(), fetchDetectionFeatures()]);
@@ -917,38 +972,51 @@ export default function GaiaMap({
       .sort((a: any, b: any) => a.frac - b.frac) as Array<{ id: number; frac: number }>;
   }, [imagery, tmRange]);
 
+  // Non-reactive mirror: the snap and play effects read the pass stops from a
+  // ref so they run only on actual scrubs / play toggles. tmPassFracs gets a
+  // new identity on every imagery refetch (WS detections_updated, ingest,
+  // selection-triggered reloads); depending on it re-ran the snap with the
+  // default tmValue=1 ("now") and stomped any manual older-pass selection,
+  // and made the play loop advance at network speed instead of on its tick.
+  const tmPassFracsRef = useRef(tmPassFracs);
+  useEffect(() => { tmPassFracsRef.current = tmPassFracs; }, [tmPassFracs]);
+
   // Scrubbing (or stepping) the playhead selects the pass nearest under it.
   useEffect(() => {
-    if (tmPassFracs.length === 0) return;
-    let best = tmPassFracs[0];
-    for (const p of tmPassFracs) {
+    const fracs = tmPassFracsRef.current;
+    if (fracs.length === 0) return;
+    let best = fracs[0];
+    for (const p of fracs) {
       if (Math.abs(p.frac - tmValue) < Math.abs(best.frac - tmValue)) best = p;
     }
     setSelectedImagery((cur) => (cur === best.id ? cur : best.id));
-  }, [tmValue, tmPassFracs]);
+  }, [tmValue]);
 
   const tmValueRef = useRef(tmValue);
   useEffect(() => { tmValueRef.current = tmValue; }, [tmValue]);
 
   // Play: step through the passes oldest→newest, ~1.2 s each, then stop.
+  // The stop list is snapshotted at play start; advances happen ONLY from the
+  // interval tick, and playback ends (setTmPlaying(false)) past the last stop.
   useEffect(() => {
     if (!tmPlaying) return;
-    if (tmPassFracs.length === 0) { setTmPlaying(false); return; }
+    const fracs = tmPassFracsRef.current;
+    if (fracs.length === 0) { setTmPlaying(false); return; }
     // Resume from the next stop after the current playhead, else restart.
-    let i = tmPassFracs.findIndex((p) => p.frac > tmValueRef.current + 1e-3);
+    let i = fracs.findIndex((p) => p.frac > tmValueRef.current + 1e-3);
     if (i < 0) i = 0;
-    setTmValue(tmPassFracs[i].frac);
+    setTmValue(fracs[i].frac);
     const id = window.setInterval(() => {
       i += 1;
-      if (i >= tmPassFracs.length) {
+      if (i >= fracs.length) {
         setTmPlaying(false);
         window.clearInterval(id);
         return;
       }
-      setTmValue(tmPassFracs[i].frac);
+      setTmValue(fracs[i].frac);
     }, 1200);
     return () => window.clearInterval(id);
-  }, [tmPlaying, tmPassFracs]);
+  }, [tmPlaying]);
 
   // Event-timeline "play" = live-follow: auto-refresh detections so the
   // density strip advances in real time (was presentational — icon only).
@@ -977,24 +1045,22 @@ export default function GaiaMap({
     onCursorChange(cursor);
   }, [cursor, onCursorChange]);
 
-  // Listen for global "jump to detection" events (Shell's Jump search).
+  // Listen for global "jump to detection" events (Shell's Jump search). The
+  // enriched fetch inside jumpToDetection is bbox-independent, so this works
+  // even before the viewport GeoJSON has loaded (fresh map mount).
   useEffect(() => {
     const handler = (evt: Event) => {
       const id = Number((evt as CustomEvent).detail?.id);
       if (!Number.isFinite(id)) return;
-      const feat = detectionsGeoJSON?.features?.find(
-        (f: any) => Number(f.properties?.id) === id,
-      );
-      if (feat) {
-        setSelectedDetection(feat);
+      void jumpToDetection(id).then((feat) => {
+        if (!feat) return;
         setRightOpen(true);
         if (!pendingPick) setRightTab('details');
-        mapStageRef.current?.panToDetection?.(feat);
-      }
+      });
     };
     window.addEventListener('sentinel:jump-to-detection', handler);
     return () => window.removeEventListener('sentinel:jump-to-detection', handler);
-  }, [detectionsGeoJSON, pendingPick]);
+  }, [jumpToDetection, pendingPick]);
 
   // AI map-control display directives (B1). The read-only "brief this AOI" path
   // drives the map by dispatching `sentinel:map-control` events — the in-app,
@@ -1012,27 +1078,29 @@ export default function GaiaMap({
   }, []);
 
   // Consume cross-workspace navigation: when the user clicks "Open on GEOINT"
-  // from Ontology or FMV we land here with a detectionId or className. Select
-  // the matching detection, fit the map to it, then notify the parent so the
-  // intent is consumed only once.
+  // from Ontology or FMV we land here with a detectionId or className. On a
+  // fresh mount the viewport GeoJSON is still empty, so the detection is
+  // fetched directly via the bbox-independent enriched path; the intent is
+  // consumed only after that fetch settles (not before fulfilment). The ref
+  // guard keeps re-runs from double-handling the same intent object.
+  const crossNavHandledRef = useRef<GaiaMapProps['crossNav']>(null);
   useEffect(() => {
-    if (!crossNav) return;
-    if (crossNav.detectionId) {
-      const feat = detectionsGeoJSON?.features?.find(
-        (f: any) => Number(f.properties?.id) === Number(crossNav.detectionId),
-      );
-      if (feat) {
-        setSelectedDetection(feat);
-        setRightOpen(true);
-        if (!pendingPick) setRightTab('details');
-        mapStageRef.current?.panToDetection?.(feat);
+    if (!crossNav || crossNavHandledRef.current === crossNav) return;
+    crossNavHandledRef.current = crossNav;
+    void (async () => {
+      if (crossNav.detectionId) {
+        const feat = await jumpToDetection(Number(crossNav.detectionId));
+        if (feat) {
+          setRightOpen(true);
+          if (!pendingPick) setRightTab('details');
+        }
       }
-    }
-    if (crossNav.className) {
-      setDetectionClassFilter(crossNav.className);
-    }
-    consumeCrossNav?.();
-  }, [crossNav, detectionsGeoJSON, consumeCrossNav, pendingPick]);
+      if (crossNav.className) {
+        setDetectionClassFilter(crossNav.className);
+      }
+      consumeCrossNav?.();
+    })();
+  }, [crossNav, jumpToDetection, consumeCrossNav, pendingPick]);
   useEffect(() => {
     if (!onCursorChange) return;
     return () => onCursorChange(null);
@@ -1375,6 +1443,7 @@ export default function GaiaMap({
         geomMode={bboxMode}
         confidenceThreshold={confidenceThreshold}
         hiddenDetectionCategories={hiddenDetectionCategories}
+        hiddenDetectionLabels={hiddenDetectionLabels}
         activeLayers={activeLayers}
         data={data}
         detectionTracks={detectionTracks}
@@ -1787,10 +1856,8 @@ export default function GaiaMap({
         setSelectionTab={setSelectionTab}
         onClose={() => setRightOpen(false)}
         selectedDetection={selectedDetection}
-        setSelectedDetection={setSelectedDetection}
         detectionTracks={detectionTracks}
         selectedImageryData={selectedImageryData}
-        detectionsGeoJSON={detectionsGeoJSON}
         candidateLinks={candidateLinks}
         pendingPick={pendingPick}
         setPendingPick={setPendingPick}
@@ -1815,6 +1882,7 @@ export default function GaiaMap({
         branchById={branchById}
         userRole={user?.role}
         onOpenFmv={onOpenFmv}
+        onJumpToDetection={(id, lat, lon) => { void jumpToDetection(id, lat, lon); }}
         actions={{
           tagDetection,
           deleteDetection,

@@ -26,10 +26,13 @@ export type Affiliation = AffiliationId;
 
 export function natoTagClass(aff: string | undefined): string {
   switch (aff) {
-    case 'hostile': return 'hostile';
-    case 'friend':  return 'friend';
-    case 'neutral': return 'neutral';
-    default:        return 'unknown';
+    case 'hostile':  return 'hostile';
+    // The tag endpoint historically stored 'friendly'; newer writes are
+    // normalised to 'friend'. Accept both so old DB rows still render.
+    case 'friend':
+    case 'friendly': return 'friend';
+    case 'neutral':  return 'neutral';
+    default:         return 'unknown';
   }
 }
 
@@ -42,7 +45,9 @@ type AffGlyphProps = {
   style?: CSSProperties;
 };
 
-export function AffGlyph({ aff, size = 18, filled = true, style }: AffGlyphProps) {
+export function AffGlyph({ aff: rawAff, size = 18, filled = true, style }: AffGlyphProps) {
+  // Legacy rows store 'friendly'; normalise so they render the friend glyph.
+  const aff = rawAff === 'friendly' ? 'friend' : rawAff;
   const color = taxonomyNatoColor(aff);
   const sw = 2;
   const fill = filled ? `color-mix(in oklab, ${color} 22%, transparent)` : 'none';

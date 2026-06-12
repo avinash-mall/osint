@@ -11,6 +11,8 @@ Per-class confidence floor editor. Surfaces the `PER_CLASS_CONFIDENCE_OVERRIDES`
 
 `PER_CLASS_CONFIDENCE_OVERRIDES` was originally env-only → a restart for any threshold change. Source moved to PostGIS + admin UI → operators tune in-flight (e.g. raise the "person" floor to 0.5 to silence noisy detections in a busy scene).
 
+Env-sourced rows (`from_env`) cannot be deleted from the UI — they are excluded from the save payload and rebuilt from env config on every load, so the trash button was a silent no-op; it is now disabled with a "set via env — override the value instead" tooltip. Error states pass through [`apiErrorMessage`](../../frontend/src/utils/apiError.ts).
+
 ## Data sources
 
 - `GET /api/inference/confidence-overrides`

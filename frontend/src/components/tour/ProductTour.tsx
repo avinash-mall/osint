@@ -104,16 +104,49 @@ export default function ProductTour({
     return TOUR_STEPS[stepIndex];
   }, [running, stepIndex]);
 
-  const targetExists = useMemo(() => {
-    if (!currentStep) return false;
-    return !!document.querySelector(currentStep.selector);
+  // Target existence is tri-state: null = still resolving (prep pending),
+  // boolean = sampled. A plain render-time useMemo raced the parent's
+  // onStepChange prep — the auto-skip effect saw `false` and advanced past
+  // the first step of every prep-gated group (tab-*, tm-*, event-*, …)
+  // before the panel the parent opened had committed to the DOM.
+  const [targetExists, setTargetExists] = useState<boolean | null>(null);
+
+  // Fire onStepChange whenever the parent needs to ready prerequisite state
+  // for the upcoming step (open the right panel, switch a tab, …). Declared
+  // BEFORE the sampling effect below so the parent's prep runs first within
+  // the same commit.
+  useEffect(() => {
+    onStepChange?.(running && currentStep ? currentStep.id : null);
+  }, [running, currentStep, onStepChange]);
+
+  // Resolve target existence. If the target is already in the DOM, anchor
+  // immediately; otherwise wait a frame + a macrotask so the panel opened by
+  // onStepChange has rendered before we declare the target missing.
+  useEffect(() => {
+    if (!currentStep) { setTargetExists(null); return; }
+    if (document.querySelector(currentStep.selector)) {
+      setTargetExists(true);
+      return;
+    }
+    setTargetExists(null);
+    let timer: number | undefined;
+    const raf = requestAnimationFrame(() => {
+      timer = window.setTimeout(() => {
+        setTargetExists(!!document.querySelector(currentStep.selector));
+      }, 0);
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      if (timer != null) window.clearTimeout(timer);
+    };
   }, [currentStep]);
 
-  // Auto-skip missing targets. Bounded by TOUR_STEPS.length — when we walk
-  // off the end of the array in either direction we finish cleanly.
+  // Auto-skip missing targets — only once existence has resolved to `false`
+  // (post-prep). Bounded by TOUR_STEPS.length — when we walk off the end of
+  // the array in either direction we finish cleanly.
   useEffect(() => {
     if (!running || !currentStep) return;
-    if (targetExists) return;
+    if (targetExists !== false) return;
     if (moveDir === 1) {
       if (stepIndex + 1 >= TOUR_STEPS.length) { finish(); return; }
       next();
@@ -122,15 +155,6 @@ export default function ProductTour({
       prev();
     }
   }, [running, currentStep, targetExists, moveDir, stepIndex, next, prev, finish]);
-
-  // Fire onStepChange whenever the parent needs to ready prerequisite state
-  // for the upcoming step (open the right panel, switch a tab, …). Runs on
-  // every step transition AND on the very first render of a new running
-  // tour so the parent gets a chance to prepare before targetExists is
-  // sampled in the next render pass.
-  useEffect(() => {
-    onStepChange?.(running && currentStep ? currentStep.id : null);
-  }, [running, currentStep, onStepChange]);
 
   // Compute card + spotlight position. Recompute on resize / scroll.
   const [anchor, setAnchor] = useState<Anchor | null>(null);
@@ -157,12 +181,20 @@ export default function ProductTour({
     if (!running) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape')           { e.preventDefault(); skip(); }
-      else if (e.key === 'ArrowRight')  { e.preventDefault(); setMoveDir(1);  next(); }
+      else if (e.key === 'ArrowRight')  {
+        e.preventDefault();
+        // On the last step → finish; next() would push stepIndex past the
+        // end, unmounting the overlay while `running` stays true and this
+        // handler keeps swallowing arrow keys app-wide.
+        if (stepIndex >= TOUR_STEPS.length - 1) { finish(); return; }
+        setMoveDir(1);
+        next();
+      }
       else if (e.key === 'ArrowLeft')   { e.preventDefault(); setMoveDir(-1); prev(); }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [running, next, prev, skip]);
+  }, [running, stepIndex, next, prev, skip, finish]);
 
   // Welcome-modal keyboard: Esc = "Maybe later".
   useEffect(() => {

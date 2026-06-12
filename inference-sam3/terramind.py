@@ -34,12 +34,18 @@ def s1_to_s2_rgb(bundle: dict[str, Any] | None, chip2_norm: np.ndarray, target_h
         import torch
         import sar as sar_mod
 
+        from inference_utils import device_ctx
+
         arr224 = sar_mod.resize_to_terramind(chip2_norm)
-        with torch.inference_mode():
+        # Pin the current CUDA device to this replica's GPU — this forward runs
+        # in the anyio threadpool, same rationale as embedding.dinov3_pool.
+        with device_ctx(bundle["device"]), torch.inference_mode():
             x = torch.from_numpy(arr224).unsqueeze(0).to(bundle["device"])
             generated = bundle["generator"]({"S1GRD": x})
         s2 = generated["S2L2A"].squeeze(0).detach().cpu().numpy()
-        rgb = s2[[3, 2, 1]]
+        # Belt-and-braces against NaN escaping the generator: mirrors
+        # multispectral.hls_to_rgb_preview's nan_to_num-before-percentile.
+        rgb = np.nan_to_num(s2[[3, 2, 1]], nan=0.0)
         p2, p98 = np.percentile(rgb, [2, 98], axis=(1, 2), keepdims=True)
         rgb = np.clip((rgb - p2) / np.maximum(p98 - p2, 1e-6), 0.0, 1.0)
         preview = (rgb * 255).astype(np.uint8).transpose(1, 2, 0)
@@ -56,9 +62,13 @@ def pool_patches(bundle: dict[str, Any] | None, chip2_norm: np.ndarray) -> dict[
         return {"model": TERRAMIND_MODEL_ID, "dim": 0, "fp16_b64": ""}
     import torch
     import sar as sar_mod
+    from inference_utils import device_ctx
 
     arr224 = sar_mod.resize_to_terramind(chip2_norm)
-    with torch.inference_mode():
+    # Pin the current CUDA device to this replica's GPU, matching how the other
+    # specialists (dota_obb, embedding) pin theirs — this forward runs in the
+    # anyio threadpool where the current device defaults to cuda:0.
+    with device_ctx(bundle["device"]), torch.inference_mode():
         x = torch.from_numpy(arr224).unsqueeze(0).to(bundle["device"])
         out = bundle["backbone"]({"S1GRD": x})
     tokens = out[-1] if isinstance(out, list) else out

@@ -18,7 +18,7 @@ Renders top-k reference-platform candidates for a detection inside SelectionPane
 
 ## Key symbols
 
-- `IdentificationPanel({ detectionId, onChanged })` — default export. Mounted by [SelectionPanel](map-selection-panel.md).
+- `IdentificationPanel({ detectionId, onChanged })` — default export. Mounted by [SelectionPanel](map-selection-panel.md) with `key={'ident-'+detectionId}`, so changing the selected detection REMOUNTS the panel: a late candidates response for the previous detection can never render under the new detection's header (approving such a stale candidate wrote platform identity to the wrong detection).
 - `load()` — fetches `GET /api/detections/{id}/identification-candidates` on mount + when detectionId changes.
 - `handleApprove(id)`, `handleReject(id)` — POST to `/api/identification-candidates/{id}/{approve|reject}` and re-fetch.
 - `handleReidentify()` — POST to `/api/detections/{id}/identify` with `view_domain=overhead, top_k=3`.

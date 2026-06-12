@@ -128,8 +128,37 @@ def _lookup_threat_rule_uncached(
 
 
 # ── Coarse semantic buckets used by category_for_class ─────────────────────
+# Primary mapping: ontology branch_id → category. The runtime parent_class is
+# the object's own canonical label ("destroyer", "boeing_737", …), so matching
+# on parent strings alone misses almost every seeded object; the branch the
+# normalizer resolved is the stable categorical signal. Keys are the lowercased
+# branch ids from backend/scripts/seeds/defenceOntology.seed.json. Battle_Damage
+# is deliberately unmapped (mixes static damaged buildings with the generic
+# mobile Vehicle/Ship objects) and falls through to the parent-string sets.
+_BRANCH_CATEGORIES = {
+    "airfield_aviation": "air",
+    "naval_maritime": "maritime",
+    "military_forces": "ground",
+    "armored_vehicles": "ground",
+    "artillery": "ground",
+    "tactical_vehicles": "ground",
+    "air_defense_ew": "ground",
+    "sam_system": "ground",
+    "logistics": "ground",
+    "radar": "infrastructure",
+    "electronic_warfare": "infrastructure",
+    "missile_strategic": "infrastructure",
+    "military_installations": "infrastructure",
+    "fortifications_obstacles": "infrastructure",
+    "activity_change": "infrastructure",
+    "industrial_dual_use": "infrastructure",
+    "transportation_terrain": "infrastructure",
+    "urban_tactical": "infrastructure",
+    "auxiliary": "nature",
+}
+
 _AIR_PARENTS         = {"aircraft", "airfield"}
-_MARITIME_PARENTS    = {"vessel", "harbor"}
+_MARITIME_PARENTS    = {"vessel", "ship", "harbor"}
 _GROUND_PARENTS      = {"vehicle", "train"}
 _INFRA_PARENTS       = {
     "storage_tank", "building", "bridge", "infrastructure",
@@ -164,7 +193,17 @@ def clean_detection_class(det_class: str) -> str:
 
 def category_for_class(det_class: str) -> str:
     """Map a detection class to a coarse semantic bucket — no military bucket."""
-    parent = parent_class_for_label(det_class)
+    branch_id = ""
+    try:
+        from ontology import normalize as _normalize
+        normalized = _normalize(det_class or "")
+        parent = normalized.parent_class
+        branch_id = (normalized.branch_id or "").strip().lower()
+    except Exception:
+        parent = parent_class_for_label(det_class)
+    category = _BRANCH_CATEGORIES.get(branch_id)
+    if category:
+        return category
     if parent in _AIR_PARENTS:      return "air"
     if parent in _MARITIME_PARENTS: return "maritime"
     if parent in _GROUND_PARENTS:   return "ground"

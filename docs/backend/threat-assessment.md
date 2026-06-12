@@ -1,7 +1,7 @@
 # `backend/threat_assessment.py` — Open-Vocab Categorical Binning
 
 **Path:** [backend/threat_assessment.py](../../backend/threat_assessment.py)
-**Lines:** ~271
+**Lines:** ~310
 **Depends on:** [backend/database.py](../../backend/database.py), [backend/ontology.py](../../backend/ontology.py)
 
 ## Purpose
@@ -12,19 +12,24 @@ Bin a detection's class into one of a small category set (`air`, `maritime`, `gr
 
 - **Open-vocab neutral** — `threat_level` defaults to `"unrated"` for every detection. Automated threat assignment is out of scope without explicit operator-loaded rules. See [decisions/why-open-vocabulary.md](../decisions/why-open-vocabulary.md).
 - **TTL-cached rule lookup** — `_lookup_threat_rule` reads from `threat_rules` (PostGIS), caches by `(class, sensor)` for 60 s. Without cache, every detection-emit call re-reads.
-- **Category, not threat, is load-bearing** — UI uses category to pick an icon style; optional threat rules layer on top.
+- **Category, not threat, is load-bearing** — UI uses category to pick an icon style; optional threat rules layer on top. The tracker also keys its V_MAX gates / Kalman process noise off the category, so a wrong bucket has kinematic consequences.
+- **Branch-first category mapping** — `category_for_class` resolves via `ontology.normalize().branch_id` against `_BRANCH_CATEGORIES` (seed branch ids → category: `Naval_Maritime`→maritime, `Airfield_Aviation`→air, force/logistics branches→ground, installations/industrial/transport branches→infrastructure, `Auxiliary`→nature). The runtime `parent_class` is the object's own canonical label ("destroyer", "boeing_737"), so the legacy parent-string sets matched almost nothing; they remain only as a fallback for unmapped branches (e.g. `Battle_Damage`'s generic Vehicle/Ship objects). See [decisions/audit-fixes-backend-core-2026-06-11.md](../decisions/audit-fixes-backend-core-2026-06-11.md).
 
 ## Key symbols
 
 - [`clear_threat_rule_cache`](../../backend/threat_assessment.py#L52).
 - [`_lookup_threat_rule`](../../backend/threat_assessment.py#L58) (cached) wraps [`_lookup_threat_rule_uncached`](../../backend/threat_assessment.py#L79).
-- [`ThreatAssessment`](../../backend/threat_assessment.py#L143) — return dataclass.
-- [`clean_detection_class`](../../backend/threat_assessment.py#L151) — strip/lower normalization.
-- [`category_for_class`](../../backend/threat_assessment.py#L165) — bucket assignment.
-- [`assess_detection_threat`](../../backend/threat_assessment.py#L180) — main entry.
-- [`conservative_detection_ontology`](../../backend/threat_assessment.py#L245) — exposes the closed category set for the UI.
+- [`_BRANCH_CATEGORIES`](../../backend/threat_assessment.py#L138-L158) — lowercased seed branch id → category map.
+- [`ThreatAssessment`](../../backend/threat_assessment.py#L172) — return dataclass.
+- [`clean_detection_class`](../../backend/threat_assessment.py#L180) — strip/lower normalization.
+- [`category_for_class`](../../backend/threat_assessment.py#L194) — branch-first bucket assignment with parent-string fallback.
+- [`assess_detection_threat`](../../backend/threat_assessment.py#L219) — main entry.
+- [`conservative_detection_ontology`](../../backend/threat_assessment.py#L284) — exposes the closed category set for the UI.
 
 ## Cross-references
 
 - [backend/detection-policy.md](detection-policy.md) — `parent_class_for_label` complements `category_for_class`
+- [backend/tracker-satellite.md](tracker-satellite.md) — `_tracker_category` consumes the buckets
+- [decisions/audit-fixes-backend-core-2026-06-11.md](../decisions/audit-fixes-backend-core-2026-06-11.md)
+- Tests: [backend/tests/test_threat_category.py](../../backend/tests/test_threat_category.py)
 - [frontend/utils-ontology-and-icons.md](../frontend/utils-ontology-and-icons.md)

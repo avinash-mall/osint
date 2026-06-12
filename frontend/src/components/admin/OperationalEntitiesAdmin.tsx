@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import { Boxes, CheckCircle2, Plus, RefreshCw, Ship, Trash2, Triangle, Truck, Building2, Users, GitMerge, XCircle } from 'lucide-react';
+import { apiErrorMessage } from '../../utils/apiError';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -107,7 +108,7 @@ export default function OperationalEntitiesAdmin() {
       setNewName(''); setNewCallsign(''); setNewEntityClass('');
       await reload();
     } catch (err: any) {
-      setError(err?.response?.data?.detail || err?.message || 'create failed');
+      setError(apiErrorMessage(err, 'create failed'));
     } finally {
       setBusy(false);
     }
@@ -132,7 +133,7 @@ export default function OperationalEntitiesAdmin() {
       await axios.post(`${API_URL}/api/operational-entity-candidates/${cid}/approve`);
       await reload();
     } catch (err: any) {
-      setError(err?.response?.data?.detail || err?.message || 'approve failed');
+      setError(apiErrorMessage(err, 'approve failed'));
     } finally {
       setBusy(false);
     }
@@ -159,7 +160,7 @@ export default function OperationalEntitiesAdmin() {
       );
       await reload();
     } catch (err: any) {
-      setError(err?.response?.data?.detail || err?.message || 'same-as failed');
+      setError(apiErrorMessage(err, 'same-as failed'));
     } finally {
       setBusy(false);
     }
@@ -173,7 +174,7 @@ export default function OperationalEntitiesAdmin() {
       });
       await reload();
     } catch (err: any) {
-      setError(err?.response?.data?.detail || err?.message || 'reject failed');
+      setError(apiErrorMessage(err, 'reject failed'));
     } finally {
       setBusy(false);
     }
@@ -203,7 +204,7 @@ export default function OperationalEntitiesAdmin() {
       setMergeTarget(null);
       await reload();
     } catch (err: any) {
-      setError(err?.response?.data?.detail || err?.message || 'merge failed');
+      setError(apiErrorMessage(err, 'merge failed'));
     } finally {
       setBusy(false);
     }

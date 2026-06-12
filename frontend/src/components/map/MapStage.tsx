@@ -132,6 +132,7 @@ export type Props = {
   geomMode: 'obb' | 'hbb' | 'mask';
   confidenceThreshold: number;
   hiddenDetectionCategories: DetectionCategoryId[];
+  hiddenDetectionLabels: string[];
 
   /* track + asset layers */
   activeLayers: ActiveLayerMap;
@@ -206,6 +207,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
     geomMode,
     confidenceThreshold,
     hiddenDetectionCategories,
+    hiddenDetectionLabels,
     activeLayers,
     data,
     detectionTracks,
@@ -734,6 +736,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
               confidenceThreshold={confidenceThreshold}
               detectionClassFilter={detectionClassFilter}
               hiddenDetectionCategories={hiddenDetectionCategories}
+              hiddenDetectionLabels={hiddenDetectionLabels}
               onSelectById={selectDetectionById}
             />
           )}

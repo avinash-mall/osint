@@ -2,8 +2,10 @@
  * MgrsGraticule — pure-Leaflet coordinate graticule overlay.
  *
  * Renders WGS84 / MGRS reference grid lines on top of the map. At low zoom
- * draws a degree graticule; at higher zoom switches to an MGRS 100 km / 10 km
- * grid using the `mgrs` package already vendored for the cursor readout.
+ * draws a degree graticule; at higher zoom adds an accent grid at MGRS
+ * spacings (100 km / 10 km / 1 km / 100 m, degree-quantized — not true UTM
+ * cell boundaries). The vendored `mgrs` package (cursor readout) is used only
+ * to detect UTM/UPS coverage.
  *
  * No external Leaflet plugin is required — uses only `react-leaflet`
  * `useMap()` and core `L.LayerGroup` / `L.Polyline` / `L.Marker` primitives.
@@ -124,9 +126,13 @@ export default function MgrsGraticule({
           opacity: 0.7,
           interactive: false,
         };
-        // MGRS lines are drawn by walking a UTM grid aligned to mgrsStep.
-        // Approximate at this zoom: snap centroid lat to grid using mgrsForward,
-        // then walk East/North a small number of steps in approximate degrees.
+        // Approximate MGRS-spaced grid: mgrsStep is converted to degrees at
+        // the viewport's centre latitude and lines are anchored to FIXED
+        // ground origins (floor(min/step)*step — the same scheme the degree
+        // graticule uses) so they are georeferenced and stable across pans.
+        // These are NOT true UTM/MGRS cell boundaries: the vendored `mgrs`
+        // package offers no clean lat/lon→UTM inverse, so spacing is
+        // degree-quantized rather than zone-projected.
         const cosLat = Math.cos(((minLat + maxLat) / 2) * Math.PI / 180) || 1;
         const stepDegLat = mgrsStep / 111_320;
         const stepDegLon = mgrsStep / (111_320 * cosLat);
@@ -134,27 +140,28 @@ export default function MgrsGraticule({
         const latRange = Math.min((maxLat - minLat) / stepDegLat, cap);
         const lonRange = Math.min((maxLon - minLon) / stepDegLon, cap);
         if (latRange > 0 && lonRange > 0) {
-          // Anchor on rounded MGRS cell of the SW corner.
           const accuracy = mgrsStep >= 100_000 ? 0
             : mgrsStep >= 10_000 ? 1
             : mgrsStep >= 1_000 ? 2
             : mgrsStep >= 100 ? 3
             : 4;
           try {
+            // Probe only — bail outside UTM/UPS coverage (mgrsForward throws).
             mgrsForward([minLon, minLat], accuracy);
           } catch {
-            // outside UTM/UPS — bail on MGRS overlay
             return;
           }
-          for (let i = 0; i <= latRange; i++) {
-            const lat = minLat + i * stepDegLat;
+          const latOrigin = Math.floor(minLat / stepDegLat) * stepDegLat;
+          const lonOrigin = Math.floor(minLon / stepDegLon) * stepDegLon;
+          for (let i = 0; i <= latRange + 1; i++) {
+            const lat = latOrigin + i * stepDegLat;
             L.polyline(
               [[lat, minLon], [lat, maxLon]],
               accentStyle,
             ).addTo(group);
           }
-          for (let j = 0; j <= lonRange; j++) {
-            const lon = minLon + j * stepDegLon;
+          for (let j = 0; j <= lonRange + 1; j++) {
+            const lon = lonOrigin + j * stepDegLon;
             L.polyline(
               [[minLat, lon], [maxLat, lon]],
               accentStyle,

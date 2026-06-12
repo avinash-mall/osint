@@ -1,7 +1,7 @@
 # `backend/sar_cfar.py` — CA-CFAR Ship Detector
 
 **Path:** [backend/sar_cfar.py](../../backend/sar_cfar.py)
-**Lines:** ~258
+**Lines:** ~275
 **Depends on:** `numpy`, `rasterio`
 
 ## Purpose
@@ -14,7 +14,7 @@ Constant False Alarm Rate ship detection on Sentinel-1 GRD. Cell-Averaging CFAR 
 - **CPU-only** — runs in the worker process without GPU. A 50000×50000 GRD chip processes in seconds.
 - **dB scale** — works on log-magnitude backscatter (-30 to 0 dB clipped), not linear amplitude.
 - **Connected components → bboxes** — contiguous suprathreshold pixels merged. Minimum 4 pixels suppresses single-pixel noise.
-- **Guard-excluded clutter statistics** — both the clutter mean (`mu_clutter`) AND variance are estimated over the background window *minus* the guard band (proportional subtraction of the guard window's first and second moments). The Z-score `(x − mu_clutter) / sigma_clutter` therefore uses a consistent population; estimating σ over the guard-*inclusive* window (the earlier bug) let a bright target's own energy leak into its clutter σ, depressing the Z-score exactly where detections live. See [decisions/completed-deferred-items-2026-06-09.md](../decisions/completed-deferred-items-2026-06-09.md).
+- **Guard-excluded clutter statistics** — both the clutter mean (`mu_clutter`) AND variance are estimated over the background window *minus* the guard band (proportional subtraction of the guard window's first and second moments). The Z-score `(x − mu_clutter) / sigma_clutter` therefore uses a consistent population; estimating σ over the guard-*inclusive* window (the earlier bug) let a bright target's own energy leak into its clutter σ, depressing the Z-score exactly where detections live. See [decisions/completed-deferred-items-2026-06-09.md](../decisions/completed-deferred-items-2026-06-09.md). The VH cross-pol consistency gate uses the same guard-excluded μ/σ derivation as VV — its guard-inclusive statistics had the identical flaw and depressed `z_vh` on the target. See [decisions/audit-fixes-backend-core-2026-06-11.md](../decisions/audit-fixes-backend-core-2026-06-11.md).
 
 ## Key symbols
 
@@ -33,3 +33,5 @@ Constant False Alarm Rate ship detection on Sentinel-1 GRD. Cell-Averaging CFAR 
 - [inference/sar-bands.md](../inference/sar-bands.md)
 - [scripts/eval-runners.md](../scripts/eval-runners.md) — `eval_sar_cfar.py`
 - [benchmarks/sar-cfar-evaluation.md](../benchmarks/sar-cfar-evaluation.md)
+- [decisions/audit-fixes-backend-core-2026-06-11.md](../decisions/audit-fixes-backend-core-2026-06-11.md) — VH guard-excluded statistics
+- Tests: [backend/tests/test_sar_cfar.py](../../backend/tests/test_sar_cfar.py)

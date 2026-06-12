@@ -1,7 +1,7 @@
 # Link Graph Workspace — `GraphExplorer.tsx`
 
 **Path:** [frontend/src/components/GraphExplorer.tsx](../../frontend/src/components/GraphExplorer.tsx)
-**Lines:** ~1600 (TSX). Companion: [frontend/src/components/graph/TimeScrubber.tsx](../../frontend/src/components/graph/TimeScrubber.tsx) (~120).
+**Lines:** ~1700 (TSX). Companion: [frontend/src/components/graph/TimeScrubber.tsx](../../frontend/src/components/graph/TimeScrubber.tsx) (~120).
 **Status:** Phases 1–5 of the [Link Graph redesign](../architecture/link-graph-redesign.md) shipped — all three modes (Investigation, Evidence, Ontology) are functional, each backed by a live endpoint.
 
 ## Purpose
@@ -13,7 +13,7 @@ Three-mode force-directed view of the Neo4j entity graph for defence analysts. I
 | Mode | Status | Backed by |
 |---|---|---|
 | **Investigation** (default) | Phase 1 | [`GET /api/graph/investigation`](../backend-routers/graph-router.md), [`POST /api/graph/path`](../backend-routers/graph-router.md), [`GET /api/graph/site-composition/{base_id}`](../backend-routers/graph-router.md) |
-| **Evidence** | Phase 2 | `EvidenceColumnDAG` ([frontend/src/components/graph/EvidenceColumnDAG.tsx](../../frontend/src/components/graph/EvidenceColumnDAG.tsx)) fed by `/api/graph/evidence/{node_id}`. Right-click "Evidence chain" on any node in Investigation triggers it. Contradict button on Detection/OntologyCandidate leaves POSTs `/api/graph/contradict`. |
+| **Evidence** | Phase 2 | `EvidenceColumnDAG` ([frontend/src/components/graph/EvidenceColumnDAG.tsx](../../frontend/src/components/graph/EvidenceColumnDAG.tsx)) fed by `/api/graph/evidence/{node_id}`. Right-click "Evidence chain" on any node in Investigation triggers it. Contradict button on Detection/OntologyCandidate leaves POSTs `/api/graph/contradict` with the **focus node** as `actor_id` (never the leaf itself — that would MERGE a Detection self-loop), renders a success/failure status line, and on success the parent re-fetches the evidence chain so the new `CONTRADICTED_BY` edge is visible. |
 | **Ontology** | Phase 3 | `OntologyOrbit` ([frontend/src/components/graph/OntologyOrbit.tsx](../../frontend/src/components/graph/OntologyOrbit.tsx)) fed by `/api/graph/ontology`. Renders the branch/object tree + UnknownLabel orbits + their LABEL_OF supports. Clicking an UnknownLabel opens an inline triage popover (assign-to-existing or create-new), calling the same `assignUnknownLabel` API used by [OntologyAdmin](ontology-admin-ui.md). The OntologyAdmin list view stays as the bulk-edit surface. |
 
 Sub-tabs share selection state (current node, time range, class lens) — see [decisions/why-three-graph-modes.md](../decisions/why-three-graph-modes.md).
@@ -55,9 +55,11 @@ Three modes are the minimum that cover the six analyst workflows the redesign ta
 
 Investigation mode is intentionally bounded: cap the default payload, expose drill-in via per-node expansion, and rely on the time + class lenses to scope further. Force-graph-2d degrades past ~150 useful nodes; the server-side `/investigation` endpoint enforces this so the client doesn't have to.
 
+Because the feed is bounded while metrics/GNN are whole-graph, `selectNodeById` (Top-central + GNN suggestion clicks) falls back to `POST /api/graph/neighborhood` on a feed miss, merges the result into the feed (deduped by node id and `source|target|predicate`), and selects the node; failures show a 3 s "not in current view" notice. `fetchData`/`fetchMetrics` carry sequence refs so overlapping requests from rapid timeRange/classLens/mode changes can't let a loser overwrite the winner. See [decisions/audit-fixes-fmv-graph-2026-06-12.md](../decisions/audit-fixes-fmv-graph-2026-06-12.md).
+
 ## Phase 5 additions (deferred-items roll-up)
 
-- **Canvas cluster collapse** — same-class neighbour groups of ≥12 collapse into a virtual `:Cluster` node with a count badge. Clicking expands. Reduces visual noise when NEAR materialisation pushes density up. See [GraphExplorer.tsx](../../frontend/src/components/GraphExplorer.tsx) `graphData` useMemo.
+- **Canvas cluster collapse** — same-class neighbour groups of ≥12 collapse into a virtual `:Cluster` node with a count badge. Clicking (or right-clicking — the synthetic id matches nothing server-side, so no context menu is offered) expands. Reduces visual noise when NEAR materialisation pushes density up. See [GraphExplorer.tsx](../../frontend/src/components/GraphExplorer.tsx) `graphData` useMemo.
 - **OntologyOrbit co-occurrence chips** — per-OntologyObject horizontal bars of the top-K co-classifying objects, fed by `/api/graph/ontology?include_cooccurrence=true`. Replaces the synthetic-bar placeholder.
 - **SAME_AS review sub-panel** in the AdminScreen "Operational entities" tab — side-by-side cards for pending `POSSIBLY_SAME_AS` pairs with Approve / Merge / Reject. Merge opens a modal with per-column radio resolutions; submit calls the merge-into endpoint.
 
@@ -72,4 +74,5 @@ Investigation mode is intentionally bounded: cap the default payload, expose dri
 - [decisions/why-postgis-and-neo4j-coexist.md](../decisions/why-postgis-and-neo4j-coexist.md)
 - [decisions/why-candidate-edges-persisted.md](../decisions/why-candidate-edges-persisted.md)
 - [decisions/why-three-graph-modes.md](../decisions/why-three-graph-modes.md)
+- [decisions/audit-fixes-fmv-graph-2026-06-12.md](../decisions/audit-fixes-fmv-graph-2026-06-12.md) — contradict-actor, fetch-race, cluster-menu and out-of-feed-selection fixes
 - [decisions/ux-audit-001.md](../decisions/ux-audit-001.md)

@@ -29,6 +29,9 @@ name-based mission tag (R2):
 - **J2-corrected RAAN.** A raw RAAN delta is dominated by natural nodal
   regression; we subtract the expected J2 rate (`j2_raan_rate`, Vallado §9.4) and
   only flag the residual — otherwise every LEO object looks like it maneuvered.
+  The residual itself is wrapped into [-180°, 180°): the expected drift over a
+  long TLE gap (≳40 days) exceeds a full revolution while the observed delta is
+  wrapped, so an unwrapped difference produced false maneuver alerts.
 - **Thresholds above noise, below secular drift** — clean-room constants from
   Lemmens & Krag (2014): period 0.1 min, inclination 0.05°, eccentricity 0.005,
   RAAN residual 0.5°, decay 0.01 rev/day². No ShadowBroker source copied.
@@ -58,4 +61,5 @@ name-based mission tag (R2):
 - Module: [backend/satellite-overpass.md](satellite-overpass.md) (`Tle.elements()`)
 - Decision: [decisions/why-tle-history-for-maneuvers.md](../decisions/why-tle-history-for-maneuvers.md)
 - Tests: [backend/tests/test_satellite_anomaly.py](../../backend/tests/test_satellite_anomaly.py)
+- Decision: [decisions/audit-fixes-backend-core-2026-06-11.md](../decisions/audit-fixes-backend-core-2026-06-11.md) — RAAN residual wrap
 - Runbook: [operations/satellite-overpass-runbook.md](../operations/satellite-overpass-runbook.md)

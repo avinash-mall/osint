@@ -168,7 +168,10 @@ export function detectionCategoryForFeature(feature: any): DetectionCategoryId {
 }
 
 export function confidenceValue(feature: any): number {
-  const confidence = Number(feature?.properties?.confidence);
+  // Prefer calibrated confidence when present — the MVT tile SQL COALESCEs it
+  // into the tile's confidence prop, so this keeps geojson/tile paths in step.
+  const props = feature?.properties || {};
+  const confidence = Number(props.calibrated_confidence ?? props.confidence);
   return Number.isFinite(confidence) ? confidence : 0;
 }
 

@@ -88,7 +88,9 @@ export default function SatellitesPanel({ observer, onRequestPick, pickActive, o
 
   const onTrack = useCallback(async (noradId: number, name: string) => {
     try {
-      const t = await getGroundTrack(noradId, hours <= 6 ? hours : 1.5);
+      // Ground tracks cap at 6 h: longer windows previously fell through to
+      // the service's 1.5 h default (a 24 h slider drew a 1.5 h track).
+      const t = await getGroundTrack(noradId, Math.min(hours, 6));
       onGroundTrack(t.coordinates, name);
     } catch (e: any) {
       setError(e?.response?.data?.detail ?? e?.message ?? String(e));
@@ -153,6 +155,11 @@ export default function SatellitesPanel({ observer, onRequestPick, pickActive, o
             onChange={(e) => setHours(Number(e.target.value))} className="flex-1" />
           <span className="font-mono text-[10px] text-slate-200 w-14 text-right">{hours}h</span>
         </div>
+        {hours > 6 && (
+          <div className="font-mono text-[9px] text-sentinel-muted pb-1">
+            Ground-track length caps at 6h
+          </div>
+        )}
         <div className="flex items-center gap-2 py-1">
           <span className="text-[10px] text-sentinel-muted uppercase tracking-wider w-16">Min elev</span>
           <input type="range" min={0} max={45} step={1} value={minElev}

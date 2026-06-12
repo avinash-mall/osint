@@ -1,7 +1,7 @@
 # `Shell.tsx` — Chrome (Rail + Topbar + Status Bar)
 
 **Path:** [frontend/src/components/Shell.tsx](../../frontend/src/components/Shell.tsx)
-**Lines:** ~898
+**Lines:** ~922
 **Depends on:** [frontend/src/hooks/useAuth.ts](../../frontend/src/hooks/useAuth.ts), [frontend/src/hooks/usePreferences.tsx](../../frontend/src/hooks/usePreferences.tsx), [frontend/src/components/atoms.tsx](../../frontend/src/components/atoms.tsx), `lucide-react`, `axios`
 
 ## Purpose
@@ -29,6 +29,7 @@ The persistent chrome: 64 px icon rail (expands to 224 px on hover), topbar (cur
 ## Failure modes
 
 - Missing health/upload poll response marks the shell degraded but leaves navigation usable.
+- The adaptive health poll (`useSystemStatus`) re-schedules its interval after each awaited tick; `reschedule()` checks the effect's `cancelled` flag first so a tick that resolves after unmount cannot resurrect the interval (it previously leaked a permanent poller per Shell mount).
 - If an analyst somehow has `active="admin"`, Shell falls back the title to the first visible workspace and App does not render `AdminScreen`.
 
 ## Cross-references

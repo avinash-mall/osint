@@ -10,7 +10,8 @@
  * comparison pass. The divider snaps to viewport horizontal position.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { TileLayer, useMap } from 'react-leaflet';
 
 const PANE_NAME = 'sentinel-compare';
@@ -30,21 +31,26 @@ export default function SwipeControl({
   onClose,
 }: SwipeControlProps) {
   const map = useMap();
-  const containerRef = useRef<HTMLDivElement | null>(null);
   // Horizontal divider position as fraction of map container width [0..1].
   const [frac, setFrac] = useState(0.5);
   const [dragging, setDragging] = useState(false);
 
-  // Create a dedicated pane once. zIndex above primary imagery (200) and
-  // below cartographic overlay (300) so it competes only with imagery.
+  // Create the dedicated pane SYNCHRONOUSLY during render: react-leaflet 5
+  // mounts the child <TileLayer> in the CHILD's effect, which fires before
+  // this parent's effects — creating the pane in an effect left getPane()
+  // undefined inside GridLayer._initContainer and crashed the whole React
+  // root on the first compare-pin. The guard keeps the call idempotent.
+  // zIndex above primary imagery (200) and below cartographic overlay (300)
+  // so it competes only with imagery.
+  if (!map.getPane(PANE_NAME)) {
+    const pane = map.createPane(PANE_NAME);
+    pane.style.zIndex = '250';
+    pane.style.pointerEvents = 'none';
+  }
+
+  // Clear the clip on unmount so a later reuse of the pane starts unclipped.
   useEffect(() => {
     if (!map) return;
-    let pane = map.getPane(PANE_NAME);
-    if (!pane) {
-      pane = map.createPane(PANE_NAME);
-      pane.style.zIndex = '250';
-      pane.style.pointerEvents = 'none';
-    }
     return () => {
       const p = map.getPane(PANE_NAME);
       if (p) p.style.clipPath = '';
@@ -77,23 +83,11 @@ export default function SwipeControl({
     };
   }, [dragging, map]);
 
-  // Position the divider chip absolutely over the map container.
-  useEffect(() => {
-    const mapEl = map.getContainer();
-    if (!containerRef.current) return;
-    const el = containerRef.current;
-    el.style.position = 'absolute';
-    el.style.top = '0';
-    el.style.bottom = '0';
-    el.style.left = '0';
-    el.style.right = '0';
-    el.style.pointerEvents = 'none';
-    el.style.zIndex = '450';
-    mapEl.parentElement?.appendChild(el);
-    return () => {
-      el.parentNode?.removeChild(el);
-    };
-  }, [map]);
+  // The divider chip renders OVER the map container via a React portal into
+  // the container's parent. The previous implementation re-parented the node
+  // imperatively (appendChild + removeChild), which broke React's own
+  // unmount removeChild (NotFoundError → app crash on "Exit compare").
+  const portalTarget = map.getContainer().parentElement ?? map.getContainer();
 
   return (
     <>
@@ -105,7 +99,15 @@ export default function SwipeControl({
         keepBuffer={6}
         updateWhenZooming={false}
       />
-      <div ref={containerRef}>
+      {createPortal(
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          pointerEvents: 'none',
+          zIndex: 450,
+        }}
+      >
         <div
           style={{
             position: 'absolute',
@@ -170,12 +172,15 @@ export default function SwipeControl({
         >
           Exit compare
         </button>
-      </div>
+      </div>,
+      portalTarget,
+      )}
     </>
   );
 }
 
-// Hint: a custom Leaflet pane named ``sentinel-compare`` is created on mount
-// and cleaned up on unmount. The pane's `clip-path` is updated each render.
+// Hint: a custom Leaflet pane named ``sentinel-compare`` is created during
+// render (before the child TileLayer mounts) and its `clip-path` is cleared
+// on unmount. The clip is updated whenever the divider moves.
 const _PANE_NAME = PANE_NAME;
 void _PANE_NAME;

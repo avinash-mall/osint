@@ -53,14 +53,46 @@ def _wbf_weights() -> dict[str, float]:
 _WBF_IOU_THRESHOLD = float(os.getenv("SAM3_WBF_IOU", "0.55"))
 _WBF_SKIP_BOX_THRESHOLD = float(os.getenv("SAM3_WBF_SKIP_THRESHOLD", "0.05"))
 
-try:
-    spec = importlib.util.spec_from_file_location("backend_detection_policy", BACKEND_DIR / "detection_policy.py")
-    if spec is None or spec.loader is None:
-        raise ImportError("backend detection policy unavailable")
-    backend_detection_policy = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(backend_detection_policy)
-    parent_class_for_label = backend_detection_policy.parent_class_for_label
-except Exception:
+# Candidate locations for the backend detection-policy module, tried in order:
+#   1. /app/detection_policy.py — the compose file-mount inside the container
+#      (`./backend/detection_policy.py:/app/detection_policy.py:ro`). On the dev
+#      host this same path is the 0-byte bind-mount anchor, so empty/symbol-less
+#      candidates are rejected and the next path is tried.
+#   2. ../backend/detection_policy.py — the dev-host checkout. Inside the
+#      container `parents[1]` is `/`, which has no backend tree, so this only
+#      resolves on the host.
+# See docs/decisions/removed-empty-inference-detection-policy.md.
+_POLICY_CANDIDATES = (
+    Path(__file__).resolve().parent / "detection_policy.py",
+    BACKEND_DIR / "detection_policy.py",
+)
+
+
+def _load_parent_class_for_label():
+    for candidate in _POLICY_CANDIDATES:
+        try:
+            if not candidate.is_file() or candidate.stat().st_size == 0:
+                continue
+            spec = importlib.util.spec_from_file_location("backend_detection_policy", candidate)
+            if spec is None or spec.loader is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            fn = getattr(module, "parent_class_for_label", None)
+            if callable(fn):
+                return fn
+            logger.warning("detection policy at %s lacks parent_class_for_label; trying next", candidate)
+        except Exception as exc:
+            logger.warning("could not load detection policy from %s: %s", candidate, exc)
+    return None
+
+
+_policy_fn = _load_parent_class_for_label()
+if _policy_fn is not None:
+    parent_class_for_label = _policy_fn
+else:
+    logger.warning("backend detection policy unavailable; falling back to naive label slugifier")
+
     def parent_class_for_label(label: Any) -> str:
         return str(label or "object").strip().lower().replace(" ", "_") or "object"
 

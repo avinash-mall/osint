@@ -95,7 +95,7 @@ def extract_telemetry(
 
     for extractor, label in (
         (lambda p: _extract_klv(p, duration_s), "misb-klv"),
-        (_extract_gpmd, "gpmd"),
+        (lambda p: _extract_gpmd(p, duration_s), "gpmd"),
         (lambda p: _extract_srt(sidecar_srt) if sidecar_srt else [], "srt"),
     ):
         try:
@@ -233,7 +233,7 @@ _GPMD_FOURCCS = {
 }
 
 
-def _extract_gpmd(video_path: Path) -> list[dict]:
+def _extract_gpmd(video_path: Path, duration_s: float = 0.0) -> list[dict]:
     """Find a gpmd-tagged stream and parse the raw KLV-ish payload."""
     probe = subprocess.run(
         ["ffprobe", "-v", "error", "-print_format", "json", "-show_streams", str(video_path)],
@@ -309,9 +309,13 @@ def _extract_gpmd(video_path: Path) -> list[dict]:
 
     if not samples:
         return []
-    n = len(samples)
+    # Spread samples evenly across the real clip duration (not [0,1)s, which
+    # would collapse them all into the first second of frames and the
+    # per-frame dedup would discard most) — same handling as _extract_klv.
+    n = max(1, len(samples))
+    span = duration_s if duration_s and duration_s > 0 else float(n)
     for idx, sample in enumerate(samples):
-        sample["timestamp_seconds"] = round(idx / max(n - 1, 1), 3)
+        sample["timestamp_seconds"] = round(idx / n * span, 3)
     return samples
 
 
@@ -427,20 +431,23 @@ def _footprint_wkt(telemetry: dict, lat: float, lon: float) -> str:
     except (TypeError, ValueError):
         ground_w = ground_h = 50.0
 
-    # ground_w is the East-West span (its offset is added to longitude, so it
-    # divides by metres-per-degree-lon = 111320·cos(lat)); ground_h is
-    # North-South (added to latitude → plain 111320). These were swapped.
-    half_w_deg = (ground_w / 2.0) / (111_320.0 * max(math.cos(math.radians(lat)), 1e-6))
-    half_h_deg = (ground_h / 2.0) / 111_320.0
+    # Rotate the metre offsets first (azimuth is clockwise-from-north, so
+    # camera-frame (dx=right, dy=forward) maps to ENU via the CW convention),
+    # then convert the rotated east/north metres to degrees: east divides by
+    # metres-per-degree-lon = 111320·cos(lat), north by plain 111320.
+    half_w_m = ground_w / 2.0
+    half_h_m = ground_h / 2.0
+    m_per_deg_lat = 111_320.0
+    m_per_deg_lon = 111_320.0 * max(math.cos(math.radians(lat)), 1e-6)
     cos_a = math.cos(math.radians(azimuth))
     sin_a = math.sin(math.radians(azimuth))
 
     corners = []
-    for dx, dy in ((-half_w_deg, -half_h_deg), (-half_w_deg, half_h_deg),
-                   (half_w_deg, half_h_deg), (half_w_deg, -half_h_deg)):
-        rx = dx * cos_a - dy * sin_a
-        ry = dx * sin_a + dy * cos_a
-        corners.append((lon + rx, lat + ry))
+    for dx_m, dy_m in ((-half_w_m, -half_h_m), (-half_w_m, half_h_m),
+                       (half_w_m, half_h_m), (half_w_m, -half_h_m)):
+        rx_m = dx_m * cos_a + dy_m * sin_a
+        ry_m = -dx_m * sin_a + dy_m * cos_a
+        corners.append((lon + rx_m / m_per_deg_lon, lat + ry_m / m_per_deg_lat))
     corners.append(corners[0])
     return "POLYGON((" + ", ".join(f"{x} {y}" for x, y in corners) + "))"
 

@@ -226,8 +226,15 @@ def detect_ships_cfar(
         vh = np.ascontiguousarray(vh_db, dtype=np.float32)
         if vh.shape != vv.shape:
             raise ValueError("vh_db shape must match vv_db")
-        mu_vh = _box_kernel_mean(vh, bg_window)
-        var_vh = _box_kernel_mean(vh ** 2, bg_window) - mu_vh ** 2
+        # Same proportional guard subtraction as the VV path above — the
+        # guard-inclusive statistics depressed z on the target.
+        mu_vh_bg = _box_kernel_mean(vh, bg_window)
+        mu_vh_gd = _box_kernel_mean(vh, gd_window)
+        mu_vh = (mu_vh_bg - gd_weight * mu_vh_gd) / max(1e-6, 1.0 - gd_weight)
+        e2_vh_bg = _box_kernel_mean(vh ** 2, bg_window)
+        e2_vh_gd = _box_kernel_mean(vh ** 2, gd_window)
+        e2_vh = (e2_vh_bg - gd_weight * e2_vh_gd) / max(1e-6, 1.0 - gd_weight)
+        var_vh = e2_vh - mu_vh ** 2
         sigma_vh = np.sqrt(np.maximum(0.01, var_vh))
         z_vh = (vh - mu_vh) / sigma_vh
         detection_mask &= z_vh > (threshold_sigma * 0.6)  # cross-pol weaker

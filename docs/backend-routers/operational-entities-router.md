@@ -1,7 +1,7 @@
 # Operational-Entities Router (`/api/operational-entities`, `/api/operational-entity-candidates`)
 
 **Path:** [backend/routers/operational_entities.py](../../backend/routers/operational_entities.py)
-**Lines:** ~669
+**Lines:** ~693
 **Depends on:** [backend/auth.py](../../backend/auth.py), [backend/database.py](../../backend/database.py), [backend/graph_writes.py](../../backend/graph_writes.py), [backend/platform_schema.py](../../backend/platform_schema.py)
 
 ## Purpose
@@ -35,7 +35,7 @@ The redesign needs operational entities as first-class graph entities so workflo
 |---|---|---|
 | `GET`  | `/api/operational-entities/pending-same-as` | List pending `POSSIBLY_SAME_AS` edges with both entities' headline properties + score + source. |
 | `POST` | `/api/operational-entities/pending-same-as/reject` | Body `{a_id, b_id}` — delete the pending edge. |
-| `POST` | `/api/operational-entities/{a_id}/merge-into/{b_id}` | Body `{resolutions: {column: "a"|"b"}}` for six mergeable columns. UPDATEs B + DELETEs A + removes A's Neo4j mirror; response analyst is from session. |
+| `POST` | `/api/operational-entities/{a_id}/merge-into/{b_id}` | Body `{resolutions: {column: "a"|"b"}}` for six mergeable columns. UPDATEs B, re-homes A's references in the same transaction (`operational_entity_tracks` attachments move to B with `ON CONFLICT DO NOTHING`; `unit_id` / `operates_from_base_id` soft references and `entity_candidates.approved_entity_id` are repointed to B), then DELETEs A + removes A's Neo4j mirror; response analyst is from session. |
 | `POST` | `/api/operational-entities/{id}/attach-track/{track_id}` | Phase 5.J — analyst links a detection_track for re-ID centroid aggregation; `attached_by` is from session. Idempotent. |
 | `GET`  | `/api/operational-entities/{id}/tracks` | List attached detection_tracks for an entity. |
 | `DELETE` | `/api/operational-entities/{id}/tracks/{track_id}` | Detach. |
@@ -60,3 +60,4 @@ Local Pydantic models (not in [schemas.py](../../backend/schemas.py) since they'
 - [decisions/why-analyst-username-from-session.md](../decisions/why-analyst-username-from-session.md) — session-derived analyst attribution.
 - [backend/graph-writes.md](../backend/graph-writes.md) — operational-entity helpers.
 - [backend/platform-schema-migrations.md](../backend/platform-schema-migrations.md) — `operational_entities`, `entity_candidates`, `near_builder_state` table defs.
+- [decisions/audit-fixes-api-layer-2026-06-11.md](../decisions/audit-fixes-api-layer-2026-06-11.md) — the 2026-06-11 API-layer audit batch

@@ -8,9 +8,9 @@
 
 | Task | Cadence | Purpose |
 |---|---|---|
-| `worker.poll_http_feeds` | 60 s | Pull events from registered feed sources |
-| `worker.cleanup_old_observations` | 1 h | Prune `observations` + `timeline_events` older than configured retention |
-| `worker.compact_inference_dashboard_metrics` | 5 min | Roll up the inference metrics window |
+| `worker.tick_feed_poll` | 60 s (`FEED_POLL_INTERVAL_S`) | Pull events from registered feed sources |
+| `worker.tick_collection_scheduler` | 5 min (`COLLECTION_SCHEDULER_INTERVAL_S`) | Transition collection tasks proposed→scheduled→expired |
+| `worker.cleanup_old_observations` | 1 h (`OBSERVATION_CLEANUP_INTERVAL_S`) | Prune `observations` + `timeline_events` rows older than `OBSERVATION_RETENTION_DAYS` (default 30 d) |
 | `worker.tick_colocation_builder` | 6 h (`COLOCATION_BUILDER_INTERVAL_S`) | Phase 6 — MERGE `COLOCATED_WITH` proximity edges between recent detections ([worker-legacy-monolith.md](../backend/worker-legacy-monolith.md)). Tuned by `COLOCATION_WINDOW_DAYS`, `COLOCATION_MAX_NODES`, `COLOCATION_METHOD`, `COLOCATION_KNN_K`, `COLOCATION_RADIUS_M`. |
 | `worker.tick_gnn_link_prediction` | 24 h (`GNN_LINK_PREDICTION_INTERVAL_S`) | Phase 6 — GraphSAGE link prediction → advisory `GNN_SUGGESTED_LINK` edges; no-ops until torch is installed. Tuned by `GNN_LINK_TOP_K`, `GNN_SNAPSHOT_LIMIT`. |
 

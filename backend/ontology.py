@@ -75,6 +75,11 @@ _TREE_CACHE: dict[str, Any] = {
 # the tree is rebuilt or invalidated. See decisions/why-memoize-ontology-normalize.md.
 _NORMALIZE_MEMO: dict[tuple[str, str], "NormalizedLabel"] = {}
 _NORMALIZE_MEMO_MAX = 50_000  # paranoia bound against unbounded novel input
+# Bumped (under _CACHE_LOCK) on every tree rebuild/invalidation. normalize()
+# captures it before computing and discards its memo write if it changed —
+# otherwise a result computed against the old tree could poison the new
+# generation's memo right after a rebuild.
+_TREE_GENERATION = [0]
 
 # The per-call ``SELECT version_id`` freshness probe is the secondary refresh
 # path; in-process edits already force an immediate rebuild via bump_version() ->
@@ -252,6 +257,7 @@ def _get_tree() -> dict[str, Any]:
     forcing a rebuild on every call. On startup with no cache we still
     attempt the reload so the first failing call surfaces the problem.
     """
+    global _TREE_CACHE
     cache_present = bool(_TREE_CACHE.get("branches"))
     # Throttle the DB version probe: when the cache is populated and we probed
     # within the TTL window, serve it without a round-trip. invalidate_cache()
@@ -272,20 +278,23 @@ def _get_tree() -> dict[str, Any]:
         if cache_present and (db_version is None or db_version == _TREE_CACHE.get("version_id")):
             return _TREE_CACHE
         new_cache = _build_tree()
-        # Atomic-ish swap of dict contents.
-        _TREE_CACHE.clear()
-        _TREE_CACHE.update(new_cache)
+        # Atomic reference swap: readers holding the old dict keep a complete
+        # (stale) tree instead of racing a clear()+update() window where the
+        # dict is briefly empty — normalize() must never KeyError mid-rebuild.
+        _TREE_CACHE = new_cache
         # The tree changed, so every memoized normalize() result is now stale.
         _NORMALIZE_MEMO.clear()
+        _TREE_GENERATION[0] += 1
         return _TREE_CACHE
 
 
 def _invalidate_cache() -> None:
     """Force the next call to reload the tree from the DB. Test hook."""
+    global _TREE_CACHE
     with _CACHE_LOCK:
-        _TREE_CACHE["version_id"] = None
-        _TREE_CACHE["branches"] = {}
+        _TREE_CACHE = {**_TREE_CACHE, "version_id": None, "branches": {}}
         _NORMALIZE_MEMO.clear()
+        _TREE_GENERATION[0] += 1
         _VERSION_CHECK_AT[0] = 0.0  # next _get_tree must re-probe immediately
 
 
@@ -381,10 +390,13 @@ def normalize(label: Any, layer: str = "") -> NormalizedLabel:
     cached = _NORMALIZE_MEMO.get(memo_key)
     if cached is not None:
         return cached
+    generation = _TREE_GENERATION[0]
     result = _normalize_uncached(raw, canon, layer)
-    if len(_NORMALIZE_MEMO) >= _NORMALIZE_MEMO_MAX:
-        _NORMALIZE_MEMO.clear()
-    _NORMALIZE_MEMO[memo_key] = result
+    with _CACHE_LOCK:
+        if generation == _TREE_GENERATION[0]:
+            if len(_NORMALIZE_MEMO) >= _NORMALIZE_MEMO_MAX:
+                _NORMALIZE_MEMO.clear()
+            _NORMALIZE_MEMO[memo_key] = result
     return result
 
 
@@ -602,6 +614,9 @@ def bump_version(summary: str | None = None, changes: dict | None = None, by: st
         )
         row = cur.fetchone()
         new_id = int(row["version_id"])
+        # Savepoint: a failed history statement would otherwise abort the
+        # whole transaction and silently roll back the version bump itself.
+        cur.execute("SAVEPOINT hist")
         try:
             cur.execute(
                 """
@@ -635,7 +650,9 @@ def bump_version(summary: str | None = None, changes: dict | None = None, by: st
                     by or "system",
                 ),
             )
+            cur.execute("RELEASE SAVEPOINT hist")
         except Exception as exc:  # noqa: BLE001
+            cur.execute("ROLLBACK TO SAVEPOINT hist")
             logger.warning("ontology version history write failed: %s", exc)
     invalidate_cache()
     logger.info("ontology: version bumped to %d", new_id)

@@ -117,6 +117,9 @@ function useSystemStatus() {
     // slow otherwise — without restarting the timer on every state change.
     let id: number | undefined;
     const reschedule = () => {
+      // A tick awaited across unmount would otherwise resurrect the interval
+      // after cleanup cleared it.
+      if (cancelled) return;
       if (id != null) window.clearInterval(id);
       const cadence = activeRef.current > 0 ? FAST_TICK_MS : SLOW_TICK_MS;
       id = window.setInterval(async () => {

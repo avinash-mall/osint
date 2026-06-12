@@ -1,8 +1,8 @@
 # `frontend/src/components/admin/ReferencePlatformsView.tsx` — Reference DB browser
 
 **Path:** [frontend/src/components/admin/ReferencePlatformsView.tsx](../../frontend/src/components/admin/ReferencePlatformsView.tsx)
-**Lines:** ~509
-**Depends on:** `axios`, `lucide-react`, backend `GET /api/reference-platforms*` + `GET /api/reference-chips/{id}/image`.
+**Lines:** ~667
+**Depends on:** `axios`, `lucide-react`, [useEventStream](event-stream-hook.md) (`reference-seed` topic), [apiError.ts](../../frontend/src/utils/apiError.ts), backend `GET /api/reference-platforms*` + `GET /api/reference-chips/{id}/image` + `POST /api/admin/reference/seed`.
 
 ## Purpose
 
@@ -19,7 +19,8 @@ Admin tab listing curated reference platforms with family/country filters. Click
 
 - `ReferencePlatformsView({ onCount })` — default export. Registered in [AdminScreen](workspace-admin.md).
 - `load()` — fetches `GET /api/reference-platforms?family=&country=&limit=200`.
-- `openPlatform(id)` — fetches `GET /api/reference-platforms/{id}` and renders the detail column.
+- `openPlatform(id)` — fetches `GET /api/reference-platforms/{id}` and renders the detail column. Guarded by a monotonic request token so a slow earlier response can't overwrite a later selection's detail (rapid row clicks).
+- `triggerSeed(force)` — `POST /api/admin/reference/seed`; progress arrives over WS topic `reference-seed`. `seedBusy` clears on `done` (incl. `{skipped:true}` from the worker's idempotency guard → "already seeded" notice), on `error`, or via a 10 s fallback timeout when no event arrives (worker down / pre-skipped-event worker) so the Seed button can't hang disabled forever.
 
 ## Inputs / Outputs
 

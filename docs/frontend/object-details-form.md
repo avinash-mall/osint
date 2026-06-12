@@ -1,7 +1,7 @@
 # `ObjectDetailsForm.tsx` — Shared Metadata Editor
 
 **Path:** [frontend/src/components/ObjectDetailsForm.tsx](../../frontend/src/components/ObjectDetailsForm.tsx)
-**Lines:** ~547
+**Lines:** ~558
 **Depends on:** `axios`, [frontend/src/hooks/useAuth.ts](../../frontend/src/hooks/useAuth.ts), [frontend/src/utils/objectMetadata.ts](../../frontend/src/utils/objectMetadata.ts)
 
 ## Purpose
@@ -25,7 +25,8 @@ Single component rendering the operator's editable fields for **any** detection 
 
 ## Failure modes
 
-- Save failures leave the form dirty and surface the existing inline save status.
+- Save failures leave the form dirty and surface the existing inline save status (messages pass through [`apiErrorMessage`](../../frontend/src/utils/apiError.ts) so a 422 `detail` array can't be rendered raw as a React child).
+- When a restored sessionStorage draft wins over the server row at hydrate time, the hydrate effect itself schedules the debounce save — previously the debounce only started in `set()`, so a restored draft silently never persisted unless the operator typed again.
 - Browser unload may drop best-effort keepalive requests when the payload exceeds user-agent limits; the route/method still match backend contracts when sent.
 
 ## Cross-references

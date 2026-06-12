@@ -1,11 +1,11 @@
 # Product Tour — Map workspace onboarding
 
 **Paths:**
-- [frontend/src/hooks/useProductTour.ts](../../frontend/src/hooks/useProductTour.ts) (~87 lines)
+- [frontend/src/hooks/useProductTour.ts](../../frontend/src/hooks/useProductTour.ts) (~91 lines)
 - [frontend/src/components/tour/tourSteps.ts](../../frontend/src/components/tour/tourSteps.ts) (~417 lines)
-- [frontend/src/components/tour/ProductTour.tsx](../../frontend/src/components/tour/ProductTour.tsx) (~334 lines)
+- [frontend/src/components/tour/ProductTour.tsx](../../frontend/src/components/tour/ProductTour.tsx) (~366 lines)
 
-**Lines:** ~590 total across three files
+**Lines:** ~875 total across three files
 
 **Depends on:** React 19 hooks, `lucide-react` icons (`HelpCircle`, `X`), `.confirm-overlay` / `.confirm-dialog` / `.btn` CSS classes from [index.css](../../frontend/src/index.css), CSS variables `--accent` / `--bg-1` / `--text` / `--muted`, the `data-tour="<id>"` attributes scattered across [MapStage.tsx](../../frontend/src/components/map/MapStage.tsx), [LayerPanel.tsx](../../frontend/src/components/map/LayerPanel.tsx), [SelectionPanel.tsx](../../frontend/src/components/map/SelectionPanel.tsx) and [TimeMachineBar.tsx](../../frontend/src/components/map/TimeMachineBar.tsx).
 
@@ -30,20 +30,21 @@ In-app guided onboarding for the Map workspace, aimed at defence analysts seeing
 
 ### `useProductTour.ts`
 - `LS_KEY = 'sentinel:tour-completed'` ([useProductTour.ts#L15](../../frontend/src/hooks/useProductTour.ts#L15)) — single persistence key.
-- `useProductTour(): ProductTourState` ([useProductTour.ts#L31-L86](../../frontend/src/hooks/useProductTour.ts#L31-L86)) — auto-opens the welcome modal on mount when the LS key is absent. Returns `{ running, stepIndex, welcomeOpen, start, next, prev, finish, skip, dismissWelcome, launchFromButton }`.
+- `useProductTour(): ProductTourState` ([useProductTour.ts#L33-L90](../../frontend/src/hooks/useProductTour.ts#L33-L90)) — auto-opens the welcome modal on mount when the LS key is absent. Returns `{ running, stepIndex, welcomeOpen, start, next, prev, finish, skip, dismissWelcome, launchFromButton }`. `next` clamps at `TOUR_STEPS.length - 1` — an index past the end unmounts the overlay while `running` stays true, leaving the global keydown handler swallowing arrow keys app-wide.
 - `dismissWelcome` ≠ `skip`: *dismiss* closes the modal without setting the LS flag (re-pops next session); *skip* persists the flag.
 
 ### `tourSteps.ts`
 - `TOUR_STEPS: TourStep[]` ([tourSteps.ts#L29-L417](../../frontend/src/components/tour/tourSteps.ts#L29-L417)) — 52 steps in display order, incl. `analytics-isochrone` ([tourSteps.ts#L361-L367](../../frontend/src/components/tour/tourSteps.ts#L361-L367)) and `analytics-odflows` ([tourSteps.ts#L368-L374](../../frontend/src/components/tour/tourSteps.ts#L368-L374)). Selectors are `[data-tour="..."]` matches.
-- **`onStepChange` callback** ([ProductTour.tsx](../../frontend/src/components/tour/ProductTour.tsx)) — optional prop the engine fires whenever the resolved step changes (or with `null` when the tour is not running). [GaiaMap.tsx](../../frontend/src/components/GaiaMap.tsx) implements it to open the SelectionPanel + switch to the right tab before a Details/Analytics/**Satellites**/Similar/**Provenance**/Tracks step is spotlighted, and to open the timeline panel before any `tm-*` / `event-*` step. Each `tab-<k>` step needs its own `setRightTab('<k>')` case here, or the spotlight lands on an empty pane (the `tab-satellites` case was missing). This is what lets steps that live inside a panel/tab the analyst hasn't visited still resolve cleanly: the parent satisfies prerequisite state, then the auto-skip effect retries `document.querySelector` on the next render.
+- **`onStepChange` callback** ([ProductTour.tsx](../../frontend/src/components/tour/ProductTour.tsx)) — optional prop the engine fires whenever the resolved step changes (or with `null` when the tour is not running). [GaiaMap.tsx](../../frontend/src/components/GaiaMap.tsx) implements it to open the SelectionPanel + switch to the right tab before a Details/Analytics/**Satellites**/Similar/**Provenance**/Tracks step is spotlighted, and to open the timeline panel before any `tm-*` / `event-*` step. Each `tab-<k>` step needs its own `setRightTab('<k>')` case here, or the spotlight lands on an empty pane (the `tab-satellites` case was missing). This is what lets steps that live inside a panel/tab the analyst hasn't visited still resolve cleanly: the parent satisfies prerequisite state, then the deferred existence sampler re-queries `document.querySelector` after the prep has committed (see below) before the auto-skip effect is allowed to advance.
 - `Placement` ([tourSteps.ts#L11](../../frontend/src/components/tour/tourSteps.ts#L11)) — `'top' | 'bottom' | 'left' | 'right'`, the *preferred* tooltip placement (falls back automatically if the card would clip the viewport).
 
 ### `ProductTour.tsx`
-- `pickPlacement(rect, preferred)` ([ProductTour.tsx#L34-L66](../../frontend/src/components/tour/ProductTour.tsx#L34-L66)) — tries the preferred placement, then the other three; clamps into the viewport as a last resort.
-- `computeAnchor(step, target)` ([ProductTour.tsx#L68-L81](../../frontend/src/components/tour/ProductTour.tsx#L68-L81)) — derives card position + spotlight rect from a single `getBoundingClientRect()`.
-- Auto-skip effect ([ProductTour.tsx#L101-L113](../../frontend/src/components/tour/ProductTour.tsx#L101-L113)) — when the current step's target is missing, calls `next()` or `prev()` based on the last-moved direction; bounded by `TOUR_STEPS.length` so it terminates at either end.
-- Anchor re-compute ([ProductTour.tsx#L116-L132](../../frontend/src/components/tour/ProductTour.tsx#L116-L132)) — `useLayoutEffect` listens for `resize` and `scroll` (capture-phase) so the card stays glued to the target.
-- Keyboard shortcuts ([ProductTour.tsx#L135-L154](../../frontend/src/components/tour/ProductTour.tsx#L135-L154)) — `Esc` skip, `→` next, `←` prev during the tour; `Esc` "Maybe later" in the welcome modal.
+- `pickPlacement(rect, preferred)` ([ProductTour.tsx#L39-L64](../../frontend/src/components/tour/ProductTour.tsx#L39-L64)) — tries the preferred placement, then the other three; clamps into the viewport as a last resort.
+- `computeAnchor(step, target)` ([ProductTour.tsx#L66-L79](../../frontend/src/components/tour/ProductTour.tsx#L66-L79)) — derives card position + spotlight rect from a single `getBoundingClientRect()`.
+- Deferred target-existence sampler ([ProductTour.tsx#L107-L142](../../frontend/src/components/tour/ProductTour.tsx#L107-L142)) — `targetExists` is tri-state (`null` = resolving). When the target is absent at commit time, the sampler waits a `requestAnimationFrame` + `setTimeout(0)` so the panel opened by the parent's `onStepChange` handler has rendered, then re-queries. A render-time `useMemo` previously raced the prep and silently skipped the first step of every prep-gated group (`tab-*`, `tm-*`, `event-*`, …).
+- Auto-skip effect ([ProductTour.tsx#L144-L158](../../frontend/src/components/tour/ProductTour.tsx#L144-L158)) — only once `targetExists === false` (post-prep), calls `next()` or `prev()` based on the last-moved direction; bounded by `TOUR_STEPS.length` so it terminates at either end.
+- Anchor re-compute ([ProductTour.tsx#L160-L178](../../frontend/src/components/tour/ProductTour.tsx#L160-L178)) — `useLayoutEffect` listens for `resize` and `scroll` (capture-phase) so the card stays glued to the target.
+- Keyboard shortcuts ([ProductTour.tsx#L180-L197](../../frontend/src/components/tour/ProductTour.tsx#L180-L197)) — `Esc` skip, `→` next (calls `finish()` on the last step instead of pushing `stepIndex` past the end), `←` prev during the tour; `Esc` "Maybe later" in the welcome modal.
 
 ## Inputs / Outputs
 

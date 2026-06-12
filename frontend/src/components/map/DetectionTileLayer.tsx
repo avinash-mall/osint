@@ -63,6 +63,7 @@ type Props = {
   confidenceThreshold: number;
   detectionClassFilter: string | null;
   hiddenDetectionCategories: DetectionCategoryId[];
+  hiddenDetectionLabels: string[];
   /** Select by id — fetches /api/detections/{id}/enriched (the shared
       selectDetectionById in GaiaMap) so the SelectionPanel gets the fat shape. */
   onSelectById: (id: any) => void;
@@ -75,29 +76,57 @@ export default function DetectionTileLayer({
   confidenceThreshold,
   detectionClassFilter,
   hiddenDetectionCategories,
+  hiddenDetectionLabels,
   onSelectById,
 }: Props) {
   const map = useMap();
 
   useEffect(() => {
     const hiddenSet = new Set<string>(hiddenDetectionCategories);
+    const hiddenLabelSet = new Set<string>(hiddenDetectionLabels);
 
     // Reproduce makeDetectionStyle (_helpers.ts) using only tile props, and
     // apply the same client-side filters the box layer respects. Filtered-out
     // features return { stroke:false, fill:false } so VectorGrid hides them.
     const styleForTileProps = (props: any): L.PathOptions => {
-      const rawConf = Number(props?.confidence);
+      // calibrated_confidence is the defensive fallback — the MVT SQL already
+      // COALESCEs it into `confidence`, matching the geojson-lite filter.
+      const rawConf = Number(props?.calibrated_confidence ?? props?.confidence);
       const conf = Number.isFinite(rawConf) ? rawConf : 1;
       if (conf < confidenceThreshold) return { stroke: false, fill: false };
 
-      // SOLO mode: only the leaf class matching the filter survives.
-      if (detectionClassFilter && String(props?.class) !== detectionClassFilter) {
-        return { stroke: false, fill: false };
+      // SOLO mode: only features whose own leaf class matches survive — same
+      // leaf ladder GaiaMap's filteredDetectionsGeoJSON uses (original_class /
+      // class / label), since the UI sends the displayed label (which prefers
+      // original_class) as the filter value.
+      if (detectionClassFilter) {
+        const leafClasses = [
+          props?.original_class,
+          props?.class,
+          props?.label,
+        ].filter(Boolean).map((value: any) => String(value));
+        if (!leafClasses.includes(detectionClassFilter)) {
+          return { stroke: false, fill: false };
+        }
       }
 
       // branch_id on the tile is the same value branchIdForFeature returns.
       const category = branchIdForFeature({ properties: props });
       if (hiddenSet.has(category)) return { stroke: false, fill: false };
+
+      // Hidden classes (LayerPanel eye toggles) — mirror GaiaMap's
+      // detectionClassKeys label set as far as the tile props allow.
+      if (hiddenLabelSet.size > 0) {
+        const labels = [
+          props?.class,
+          props?.parent_class,
+          props?.original_class,
+          props?.label,
+        ].filter(Boolean).map((value: any) => String(value));
+        if (labels.some((label) => hiddenLabelSet.has(label))) {
+          return { stroke: false, fill: false };
+        }
+      }
 
       const color = categoryFor(category, categories).color;
       const isHeavy = HEAVY_OUTLINE_CATEGORIES.has(category);
@@ -160,6 +189,7 @@ export default function DetectionTileLayer({
     confidenceThreshold,
     detectionClassFilter,
     hiddenDetectionCategories,
+    hiddenDetectionLabels,
     onSelectById,
   ]);
 

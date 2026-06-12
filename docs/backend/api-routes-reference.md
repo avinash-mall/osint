@@ -88,7 +88,6 @@ Link Graph redesign added the bulk of these — see [architecture/link-graph-red
 | `GET` `POST` | `/api/ontology/unknown-labels` · `/{label}/assign` | [ontology-router.md](../backend-routers/ontology-router.md) — assignment requires admin |
 | `GET` `POST` `PUT` `DELETE` | `/api/ontology/prompt-profiles[/{id}/activate]` | [ontology-router.md](../backend-routers/ontology-router.md) — profile mutations require admin |
 | `GET` | `/api/ontology/updates` | [ontology-router.md](../backend-routers/ontology-router.md) |
-| `POST` | `/api/ontology/update` | [backend/main.py](../../backend/main.py) (LLM-proposed bulk edits) |
 
 ## Analytics · Models · Training · Alerts · Feeds · AI
 

@@ -556,6 +556,16 @@ def resolve_prompts(meta: dict[str, Any] | None) -> list[str]:
     if isinstance(explicit, list):
         out = _dedupe_prompt_list(explicit)
         if out:
+            # Cap the explicit branch too — it is the production path from the
+            # worker, and without this SAM3_MAX_PROMPTS_PER_REQUEST /
+            # metadata.max_prompts only applied to the default/ontology branches.
+            limit = _prompt_limit(meta, str(meta.get("modality") or "rgb"))
+            if len(out) > limit:
+                logger.warning(
+                    "text_prompts truncated from %d to %d (max_prompts/SAM3_MAX_PROMPTS_PER_REQUEST cap)",
+                    len(out), limit,
+                )
+                out = out[:limit]
             return out
         raise ValueError("text_prompts was provided but empty; provide at least one prompt or use prompt_boxes")
 
@@ -775,6 +785,21 @@ def _ensure_profile(profile: str) -> None:
         and set(PROFILE_COMPONENTS[profile]).issubset(PROFILE_COMPONENTS[_current_profile])
     ):
         return
+    # Auto-heal swap guard: from here a real teardown+reload happens. /load
+    # refuses with 409 while requests are in flight; this path is the same
+    # teardown reached from inside a request handler, which has already
+    # _enter_request()ed (counts itself), so anything above 1 is ANOTHER
+    # in-flight request — e.g. a running FMV stream whose sam3_video this
+    # swap would null out from under it. Refuse with 503 (the worker's
+    # existing 503 handling retries) instead of tearing down a live bundle.
+    if _pool and _active_requests > 1:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"profile swap to {profile!r} deferred: "
+                f"{_active_requests - 1} other request(s) in flight; retry"
+            ),
+        )
     _load_profile(profile)
 
 
@@ -1185,6 +1210,18 @@ async def _detect_pipeline(
             overlays = {}
     t0 = mark("overlays", t0)
 
+    # SAR scene embedding: TerraMind pools patch tokens over the WHOLE chip, so
+    # the result is identical for every detection. Compute it ONCE here — in the
+    # threadpool, under the forward lock, with the device pinned inside
+    # terramind.pool_patches — instead of re-running a synchronous, unlocked GPU
+    # forward per detection on the event loop (the pre-fix behaviour).
+    sar_scene_embedding: dict[str, Any] | None = None
+    if modality == "sar" and _layer_active("terramind") and bundle.get("terramind") and layer_candidates:
+        with _track("terramind"):
+            sar_scene_embedding = await run_in_threadpool(
+                _locked, terramind.pool_patches, bundle.get("terramind"), chip2,
+            )
+
     detections = []
     embed_bboxes: list[list[float]] = []
     for source_layer, (mask, bbox_xyxy, score, label) in layer_candidates:
@@ -1208,10 +1245,7 @@ async def _detect_pipeline(
             det["confidence"] = float(min(det["confidence"], SAM3_SAR_CONF_CAP))
             det["sar_proxy"] = True
             det["review_status"] = "review_candidate"
-            if _layer_active("terramind") and bundle.get("terramind"):
-                det["terramind_embedding"] = terramind.pool_patches(bundle.get("terramind"), chip2)
-            else:
-                det["terramind_embedding"] = None
+            det["terramind_embedding"] = sar_scene_embedding
         detections.append(det)
     t0 = mark("postprocess", t0)
     # DINOv3-SAT crop embeddings: one batched encoder pass over all detections
@@ -1407,14 +1441,34 @@ async def detect(image: UploadFile = File(...), metadata: str = Form("{}")):
                 chip2 = None
             elif modality == "sar":
                 chip2 = await run_in_threadpool(sar.decode_s1grd, raw)
+                # The S1→S2 decode is a real GPU forward (TerraMind generator),
+                # but it runs BEFORE _detect_pipeline_guarded — so it must take
+                # the same forward lock the pipeline's forwards take, or it
+                # races them on serialize-forwards hosts.
+                _sar_fwd_lock = bundle.get("forward_lock") or bundle["lock"]
+                def _locked_s1_to_s2():
+                    with _sar_fwd_lock:
+                        return terramind.s1_to_s2_rgb(bundle.get("terramind"), chip2, chip2.shape[-2:])
                 with _track("terramind"):
-                    chip3 = await run_in_threadpool(terramind.s1_to_s2_rgb, bundle.get("terramind"), chip2, chip2.shape[-2:])
+                    chip3 = await run_in_threadpool(_locked_s1_to_s2)
                 chip6 = None
             else:
                 modality = "rgb"
                 chip3 = await run_in_threadpool(_decode_rgb, raw)
                 chip6 = chip2 = None
         except Exception as exc:
+            # The SAR branch above runs a GPU forward outside the guarded
+            # pipeline; a poisoned CUDA context surfacing here must trigger the
+            # same self-heal as _detect_pipeline_guarded, not be masked as a 400.
+            if sam3_runner._cuda_context_poisoned(exc):
+                logger.critical(
+                    "poisoned CUDA context in the %s decode path (%s) — process "
+                    "state is unrecoverable, exiting so docker-compose respawns "
+                    "the container",
+                    modality,
+                    exc,
+                )
+                os._exit(1)
             raise HTTPException(status_code=400, detail=f"Unable to decode {modality} chip: {exc}") from exc
         t0 = mark("decode", t0)
 
@@ -1443,21 +1497,46 @@ async def embed_endpoint(image: UploadFile = File(...)):
     Returns:
         {"model": str, "dim": 1024, "fp16_b64": str}
     """
-    # Any imagery profile carries dinov3_sat; imagery_rgb is the lightest.
-    _ensure_profile("imagery_rgb")
-    bundle = _next_bundle().get("dinov3_sat")
-    if bundle is None:
-        raise HTTPException(status_code=503, detail="dinov3_sat layer not loaded")
+    # Count this request so /load and /unload's in-flight guards see it, and
+    # so the auto-heal swap guard in _ensure_profile can refuse a teardown
+    # while this embed is running.
+    _enter_request()
     try:
-        img_bytes = await image.read()
-        pil_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"could not decode image: {e}")
-    result = await run_in_threadpool(embedding.dinov3_pool, bundle, pil_img)
-    if not result.get("fp16_b64"):
-        raise HTTPException(status_code=500, detail="embedding computation returned empty result")
-    logger.info("/embed ok dim=%s bytes=%d", result.get("dim"), len(img_bytes))
-    return result
+        # Any imagery profile carries dinov3_sat; imagery_rgb is the lightest.
+        _ensure_profile("imagery_rgb")
+        bundle = _next_bundle()
+        sat_bundle = bundle.get("dinov3_sat")
+        if sat_bundle is None:
+            raise HTTPException(status_code=503, detail="dinov3_sat layer not loaded")
+        try:
+            img_bytes = await image.read()
+            pil_img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"could not decode image: {e}")
+        # The DINOv3 forward must take the same forward lock the detect
+        # pipelines take — an unlocked embed racing a /detect(_video) forward
+        # poisons the context on serialize-forwards hosts.
+        _embed_fwd_lock = bundle.get("forward_lock") or bundle["lock"]
+        def _locked_pool():
+            with _embed_fwd_lock:
+                return embedding.dinov3_pool(sat_bundle, pil_img)
+        try:
+            result = await run_in_threadpool(_locked_pool)
+        except Exception as exc:
+            if sam3_runner._cuda_context_poisoned(exc):
+                logger.critical(
+                    "poisoned CUDA context in /embed (%s) — process state is "
+                    "unrecoverable, exiting so docker-compose respawns the container",
+                    exc,
+                )
+                os._exit(1)
+            raise
+        if not result.get("fp16_b64"):
+            raise HTTPException(status_code=500, detail="embedding computation returned empty result")
+        logger.info("/embed ok dim=%s bytes=%d", result.get("dim"), len(img_bytes))
+        return result
+    finally:
+        _leave_request()
 
 
 @app.post("/detect_raw")
@@ -1715,8 +1794,16 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
                             score_threshold=SAM3_BOX_THR,
                         )
                     )
-                except BaseException:
+                except BaseException as exc:
                     _stream_err = True
+                    if isinstance(exc, Exception) and sam3_runner._cuda_context_poisoned(exc):
+                        logger.critical(
+                            "poisoned CUDA context in the YOLOE video stream (%s) — "
+                            "process state is unrecoverable, exiting so "
+                            "docker-compose respawns the container",
+                            exc,
+                        )
+                        os._exit(1)
                     raise
                 finally:
                     _record_metric(_yoloe_slug, (time.perf_counter() - _stream_t0) * 1000, error=_stream_err)
@@ -1727,6 +1814,16 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
                     if _serialized:
                         _global_forward_lock.release()
         else:
+            # Mirror the yoloe guard above: a concurrent profile swap can leave
+            # this bundle without sam3_video between _ensure_profile() and here.
+            # Fail with an honest 503 before the NDJSON stream starts instead of
+            # an AttributeError inside the already-started generator. See
+            # docs/decisions/why-503-on-unloaded-component.md.
+            if reserved.get("sam3_video") is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"sam3_video not resident (profile={_current_profile}); retry",
+                )
             # prompts is guaranteed len == 1 (or 0 → run_video no-ops) by
             # the multi-prompt 400 check above.
             _video_prompt = prompts[0] if prompts else ""
@@ -1754,8 +1851,16 @@ async def detect_video(video: UploadFile | None = File(None), metadata: str = Fo
                             score_threshold=SAM3_TEXT_THR,
                         )
                     )
-                except BaseException:
+                except BaseException as exc:
                     _stream_err = True
+                    if isinstance(exc, Exception) and sam3_runner._cuda_context_poisoned(exc):
+                        logger.critical(
+                            "poisoned CUDA context in the SAM3 PCS video stream (%s) — "
+                            "process state is unrecoverable, exiting so "
+                            "docker-compose respawns the container",
+                            exc,
+                        )
+                        os._exit(1)
                     raise
                 finally:
                     _record_metric("sam3_video", (time.perf_counter() - _stream_t0) * 1000, error=_stream_err)

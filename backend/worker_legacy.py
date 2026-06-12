@@ -60,6 +60,11 @@ INFERENCE_SAM3_URL = os.getenv("INFERENCE_SAM3_URL", "http://inference-sam3:8001
 IMAGERY_PATH = os.getenv("IMAGERY_PATH", "/data/imagery")
 REFERENCE_ID_AUTO_THRESHOLD = float(os.getenv("REFERENCE_ID_AUTO_THRESHOLD", "0.85"))
 
+# Defined before any module-scope caller — _load_per_class_valid_fractions()
+# runs at import time and logs on malformed env JSON; a later definition made
+# that branch a NameError that prevented the worker from booting.
+logger = logging.getLogger(__name__)
+
 
 def _setdefault_gdal_env() -> None:
     """Apply tuned GDAL defaults before any rasterio.open() runs.
@@ -286,7 +291,6 @@ def _valid_fraction_threshold_for(det_class: str | None) -> float:
         str(det_class).strip().lower(),
         INFERENCE_MIN_VALID_DETECTION_FRACTION,
     )
-DETECTION_POLICY = active_detection_policy()
 INFERENCE_MAX_PENDING_CHIPS = max(
     1,
     env_int("INFERENCE_MAX_PENDING_CHIPS", INFERENCE_CHIP_CONCURRENCY * 4),
@@ -315,8 +319,6 @@ INFERENCE_CHIP_SPOOL_MAX_BYTES = max(
     env_int("INFERENCE_CHIP_SPOOL_MAX_BYTES", 4 * 1024 * 1024),
 )
 
-logger = logging.getLogger(__name__)
-
 celery_app = Celery("sentinel_worker", broker=REDIS_URL, backend=REDIS_URL)
 celery_app.conf.beat_schedule = {
     "tick-collection-scheduler": {
@@ -326,6 +328,12 @@ celery_app.conf.beat_schedule = {
     "tick-feed-poll": {
         "task": "worker.tick_feed_poll",
         "schedule": float(env_int("FEED_POLL_INTERVAL_S", 60)),
+    },
+    # Hourly retention sweep over feed-driven observations + timeline_events
+    # so the two append-only tables don't grow unbounded.
+    "cleanup-old-observations": {
+        "task": "worker.cleanup_old_observations",
+        "schedule": float(env_int("OBSERVATION_CLEANUP_INTERVAL_S", 60 * 60)),
     },
     # Phase 4.C: build :NEAR edges from Detections to Base/LaunchPoint/Facility.
     "tick-near-builder": {
@@ -378,8 +386,7 @@ from celery.signals import worker_process_init
 def _reset_db_pool_after_fork(**_kwargs):
     """Rebuild the PostGIS pool in every prefork child.
 
-    Importing this module (``DETECTION_POLICY = active_detection_policy()``
-    at module scope, plus other paths) issues a DB query in the Celery
+    Importing this module can issue a DB query in the Celery
     MainProcess, which builds ``postgis_db``'s connection pool *before* the
     prefork pool forks its workers. libpq connections are not fork-safe, so
     every child must discard the inherited pool and lazily build its own —
@@ -1191,6 +1198,44 @@ class _WeightedBoxFusionIndex:
         return list(survivors), 0
 
 
+def _rederive_geo_from_pixel_bbox(det: dict, transform, crs) -> None:
+    """Recompute ``pixel_obb`` / ``geo_polygon`` / ``geo_bbox`` from a mutated
+    ``pixel_bbox``.
+
+    WBF fusion (``_WeightedBoxFusionIndex.add``) and edge reconciliation
+    (``reconcile_edge_truncated``) rewrite ``pixel_bbox`` only; without this
+    refresh the persisted geometry keeps the pre-merge box and the DB geom
+    diverges from the fused detection. Uses the same pixel→WGS84 transform
+    as ``_apply_chip_response``.
+    """
+    bb = det.get("pixel_bbox") or []
+    if len(bb) < 4:
+        return
+    x1, y1, x2, y2 = [float(v) for v in bb[:4]]
+    pixel_obb = [x1, y1, x2, y1, x2, y2, x1, y2]
+    lons, lats = [], []
+    for px, py in zip(pixel_obb[0::2], pixel_obb[1::2]):
+        lon, lat = transform * (px, py)
+        lons.append(lon)
+        lats.append(lat)
+    if crs and crs.to_string() != "EPSG:4326":
+        from rasterio.warp import transform as rasterio_transform
+        lons, lats = rasterio_transform(crs, "EPSG:4326", lons, lats)
+    det["pixel_obb"] = pixel_obb
+    det["geo_polygon"] = [coord for point in zip(lons, lats) for coord in point]
+    det["geo_bbox"] = [min(lons), min(lats), max(lons), max(lats)]
+
+
+def _geo_stale_after_merge(det: dict) -> bool:
+    """True when a dedupe step rewrote this detection's pixel_bbox."""
+    if det.get("dedupe_method") == "edge_reconciled":
+        return True
+    try:
+        return int(det.get("wbf_member_count") or 1) > 1
+    except (TypeError, ValueError):
+        return False
+
+
 def sample_axis_indices(count: int, sample_count: int) -> list[int]:
     if count <= 0:
         return [0]
@@ -1222,9 +1267,15 @@ def plan_inference_grid(
 
     Returns the legacy ``x_indices`` / ``y_indices`` (integer logical indices
     into the regular grid) plus ``x_offsets`` / ``y_offsets`` — the actual
-    pixel offsets after block snapping. slice_and_infer reads the offsets
-    directly; legacy callers (e.g. backend/tests/test_chip_emitter.py) keep
-    multiplying ``idx * step`` and still see the same chip coverage.
+    pixel offsets after block snapping — and ``x_window_sizes`` /
+    ``y_window_sizes``, the per-chip window extents. Snapping an origin DOWN
+    moves the chip's far edge down by the same delta; with chip 1008 /
+    overlap 252 / block 512 the snapped step alternates 512 and 1024 px,
+    which exceeds the chip size and left recurring ~16 px never-analyzed
+    strips. Each window is therefore extended by its snap delta
+    (``chip_size + (raw - snapped)``, clipped to the raster edge) so every
+    chip still ends where the un-snapped chip would have — full coverage is
+    preserved while origins stay block-aligned.
     """
     step = max(1, chip_size - overlap)
 
@@ -1254,20 +1305,24 @@ def plan_inference_grid(
 
     block_x, block_y = block_size if block_size else (1, 1)
 
-    def _snap(value: int, block: int, axis_max: int) -> int:
-        if block <= 1:
-            return min(max(0, value), max(0, axis_max - 1))
-        # Snap DOWN so the chip extent never overshoots the raster bounds.
-        # Then re-clip so `origin + chip_size <= raster_size` when possible.
-        snapped = (value // block) * block
-        # Ensure we never exceed the addressable origin range. When the
-        # last chip would slide past the right/bottom edge, leave it where
-        # rasterio's clipping logic in `min(chip_size, width - x)` can
-        # still cover the residual pixels.
-        return max(0, min(snapped, axis_max - 1))
+    def _axis_layout(indices: list[int], block: int, dim: int) -> tuple[list[int], list[int]]:
+        """Per-index (origin, window_size) after block snapping.
 
-    x_offsets = [_snap(idx * step, block_x, width) for idx in x_indices]
-    y_offsets = [_snap(idx * step, block_y, height) for idx in y_indices]
+        Origins snap DOWN to the block grid; the window grows by the snap
+        delta so the chip's far edge stays at ``raw + chip_size`` (clipped
+        to the raster) — coverage is identical to the un-snapped grid.
+        """
+        offsets: list[int] = []
+        sizes: list[int] = []
+        for idx in indices:
+            raw = min(max(0, idx * step), max(0, dim - 1))
+            snapped = (raw // block) * block if block > 1 else raw
+            offsets.append(snapped)
+            sizes.append(min(chip_size + (raw - snapped), dim - snapped))
+        return offsets, sizes
+
+    x_offsets, x_window_sizes = _axis_layout(x_indices, block_x, width)
+    y_offsets, y_window_sizes = _axis_layout(y_indices, block_y, height)
 
     return {
         "step": step,
@@ -1275,6 +1330,8 @@ def plan_inference_grid(
         "y_indices": y_indices,
         "x_offsets": x_offsets,
         "y_offsets": y_offsets,
+        "x_window_sizes": x_window_sizes,
+        "y_window_sizes": y_window_sizes,
         "block_size": [int(block_x), int(block_y)],
         "source_total": source_total,
         "planned_total": max(1, len(x_indices) * len(y_indices)),
@@ -1564,12 +1621,19 @@ def _emit_chip_payload(
     valid_mask=None,
     chip: np.ndarray | None = None,
     raw_rgb_enabled: bool = False,
+    modality_hint: str | None = None,
 ):
     """Return (fileobj_or_array, metadata) for a SAM3 chip upload.
 
     Multispectral (≥6-band) and SAR (2-band VV/VH) rasters go out as GeoTIFFs;
     everything else is encoded to a uint8 RGB PNG (or, when ``raw_rgb_enabled``
     is True, a raw uint8 numpy array consumed by ``/detect_raw``).
+
+    ``modality_hint`` is the operator/pipeline modality from the ingest
+    metadata and is authoritative: a single-band GRD or a SAR raster with
+    stripped band descriptions fails the VV/VH heuristic, and without the
+    hint its chips were emitted as ``modality=rgb`` — overriding the
+    operator's explicit ``sar`` and routing them down the optical path.
 
     Phase 2: ``chip`` accepts the full-band pre-read window so we don't
     pay for a second `src.read()` here.
@@ -1591,17 +1655,24 @@ def _emit_chip_payload(
     descriptions = tuple((desc or "").strip().lower() for desc in (src.descriptions or ()))
     has_vv_vh = {"vv", "vh"}.issubset(set(descriptions))
 
-    if src.count == 2 and has_vv_vh:
+    if (src.count == 2 and has_vv_vh) or (modality_hint or "").strip().lower() == "sar":
+        indexes = [1, 2] if src.count >= 2 else [1]
+        if has_vv_vh:
+            polarizations = ["VV", "VH"]
+        else:
+            # Single-band / unlabeled SAR selected via the hint: S1 GRD
+            # convention is (VV, VH) band order.
+            polarizations = ["VV", "VH"][: len(indexes)]
         meta = {
             "modality": "sar",
             "filename": "chip.tif",
             "content_type": "image/tiff",
             "geo": geo_meta,
-            "sar_polarizations": ["VV", "VH"],
+            "sar_polarizations": polarizations,
         }
         if valid_mask_meta:
             meta["valid_mask"] = valid_mask_meta
-        return _geotiff_window_file(src, window, [1, 2], preread=chip), meta
+        return _geotiff_window_file(src, window, indexes, preread=chip), meta
 
     if src.count >= 6:
         meta = {
@@ -1682,6 +1753,10 @@ def slice_and_infer(
     because every survivor has already been persisted."""
     inference_metadata = inference_metadata or {}
     streaming = on_chip_store is not None
+    # Snapshot for the pass-level summary; the per-chip decision path calls
+    # active_detection_policy() per batch so a long pass picks up admin
+    # confidence-override changes without a worker restart.
+    detection_policy = active_detection_policy()
     with rasterio.open(cog_path) as src:
         width = src.width
         height = src.height
@@ -1778,9 +1853,9 @@ def slice_and_infer(
             "sampling_enabled": any(p["grid"]["sampled"] for p in pass_plans),
             "max_inference_chips": grid["max_chips"],
             "dedupe_method": "wbf" if isinstance(dedupe_idx, _WeightedBoxFusionIndex) else "obb_nms",
-            "threshold_profile": DETECTION_POLICY["threshold_profile"],
-            "taxonomy_version": DETECTION_POLICY["taxonomy_version"],
-            "model_version": DETECTION_POLICY["model_version"],
+            "threshold_profile": detection_policy["threshold_profile"],
+            "taxonomy_version": detection_policy["taxonomy_version"],
+            "model_version": detection_policy["model_version"],
             "candidates_by_layer": {},
             "suppressed_by_policy": 0,
             "suppressed_by_nms": 0,
@@ -1876,6 +1951,7 @@ def slice_and_infer(
             x = ctx["x"]; y = ctx["y"]
             win_width = ctx["win_width"]; win_height = ctx["win_height"]
             valid_mask = ctx.get("valid_mask")
+            batch_policy = active_detection_policy()
             debug_counts = inference_response.get("debug_counts") or {}
             for layer, count in (debug_counts.get("candidates_by_layer") or {}).items():
                 try:
@@ -1988,7 +2064,7 @@ def slice_and_infer(
                 det["calibrated_confidence"] = confidence
                 det["model_temperature"] = _t_for(model_tag)
                 det["confidence"] = confidence
-                decision = detection_decision(original_class, confidence, DETECTION_POLICY)
+                decision = detection_decision(original_class, confidence, batch_policy)
                 policy_review_status = decision["review_status"]
                 # Open-vocab policy: drop only when the operator explicitly raised
                 # GLOBAL_CONFIDENCE_FLOOR / PER_CLASS_CONFIDENCE_OVERRIDES above
@@ -2106,7 +2182,8 @@ def slice_and_infer(
         def _reader_task(
             x: int,
             y: int,
-            chip_size: int,
+            chip_w: int,
+            chip_h: int,
             pass_index: int,
         ) -> tuple | None:
             """Read + encode one chip in a reader thread; returns
@@ -2120,8 +2197,8 @@ def slice_and_infer(
             """
             src_t = _src_handles.get()
             try:
-                win_width = min(chip_size, src_t.width - x)
-                win_height = min(chip_size, src_t.height - y)
+                win_width = min(chip_w, src_t.width - x)
+                win_height = min(chip_h, src_t.height - y)
                 window = Window(x, y, win_width, win_height)
                 with _chip_stage_timer("valid_mask"):
                     valid_mask = valid_data_mask(src_t, window)
@@ -2140,6 +2217,10 @@ def slice_and_infer(
                     chip_file, chip_meta = _emit_chip_payload(
                         window, src_t, valid_mask=valid_mask, chip=chip,
                         raw_rgb_enabled=_raw_rgb_enabled,
+                        # Operator/pipeline modality is authoritative — the
+                        # band heuristic misses single-band GRDs and rasters
+                        # with stripped descriptions.
+                        modality_hint=inference_metadata.get("modality"),
                     )
                 payload_obj = json.dumps({
                     "pass_id": pass_id,
@@ -2287,17 +2368,25 @@ def slice_and_infer(
                 # Phase 2: prefer pre-snapped pixel offsets when the planner
                 # supplied them (block-aligned origins on tiled COGs).
                 # Legacy fallback recomputes `idx * step` for any plan dict
-                # that predates the offsets keys.
+                # that predates the offsets keys. Window sizes carry the
+                # snap-delta extension so block-snapped grids keep full
+                # coverage; legacy plans fall back to the uniform chip_size.
                 y_offsets_seq = grid.get("y_offsets") or [idx * step for idx in grid["y_indices"]]
                 x_offsets_seq = grid.get("x_offsets") or [idx * step for idx in grid["x_indices"]]
+                y_sizes_seq = grid.get("y_window_sizes") or [chip_size] * len(y_offsets_seq)
+                x_sizes_seq = grid.get("x_window_sizes") or [chip_size] * len(x_offsets_seq)
 
-                # Phase 3: parallel producer. Build an iterator of (x, y)
-                # tuples and drive a unified wait loop over both
-                # `read_pending` (read+encode futures) and `pending` (POST
-                # futures). The combined in-flight bound is the same
-                # `_effective_pending_limit` used by the runtime back-off,
-                # which keeps memory predictable on huge rasters.
-                chip_iter = ((y, x) for y in y_offsets_seq for x in x_offsets_seq)
+                # Phase 3: parallel producer. Build an iterator of
+                # (y, x, win_h, win_w) tuples and drive a unified wait loop
+                # over both `read_pending` (read+encode futures) and
+                # `pending` (POST futures). The combined in-flight bound is
+                # the same `_effective_pending_limit` used by the runtime
+                # back-off, which keeps memory predictable on huge rasters.
+                chip_iter = (
+                    (y, x, win_h, win_w)
+                    for y, win_h in zip(y_offsets_seq, y_sizes_seq)
+                    for x, win_w in zip(x_offsets_seq, x_sizes_seq)
+                )
                 read_pending: dict[concurrent.futures.Future, tuple[int, int]] = {}
                 exhausted = False
 
@@ -2307,12 +2396,12 @@ def slice_and_infer(
                         and len(read_pending) + len(pending) < _effective_pending_limit
                     ):
                         try:
-                            y, x = next(chip_iter)
+                            y, x, win_h, win_w = next(chip_iter)
                         except StopIteration:
                             exhausted = True
                             break
                         rf = reader_executor.submit(
-                            _reader_task, x, y, chip_size, pass_index,
+                            _reader_task, x, y, win_w, win_h, pass_index,
                         )
                         read_pending[rf] = (x, y)
 
@@ -2415,8 +2504,14 @@ def slice_and_infer(
         all_kept = reconciled
         inference_summary["edge_reconciled_pairs"] = merge_count
         inference_summary["deduped_detections"] = dedupe_idx.kept_count
+        for det in all_kept:
+            if _geo_stale_after_merge(det):
+                _rederive_geo_from_pixel_bbox(det, transform, crs)
     elif defer_streaming_store:
         final_heads = dedupe_idx.heads()
+        for det in final_heads:
+            if _geo_stale_after_merge(det):
+                _rederive_geo_from_pixel_bbox(det, transform, crs)
         if final_heads:
             on_chip_store(final_heads, completed_chip_count)
         all_kept = []
@@ -2479,33 +2574,36 @@ def run_sar_cfar_for_pass(
         # Pick VV (band 1) + optional VH (band 2) — Sentinel-1 IW GRD is
         # always (VV, VH) in that order. Other 2-band SAR formats follow
         # the same convention. Single-band rasters fall back to VV-only.
-        try:
-            vv = src.read(1).astype(np.float32)
-        except Exception as exc:
-            logger.warning("[CFAR] failed to read band 1 from %s: %s", cog_path, exc)
-            return {"detections": [], "summary": {**summary, "error": str(exc)}}
-        vh: np.ndarray | None = None
-        if src.count >= 2:
-            try:
-                vh = src.read(2).astype(np.float32)
-            except Exception as exc:
-                logger.warning("[CFAR] failed to read band 2: %s", exc)
-                vh = None
+        #
+        # Bands are read per chip window below — a full-band read is ~1.7 GB
+        # for an S1 GRD float32, which defeated the chip grid's purpose of
+        # bounding memory. The dB-vs-linear decision is global per band, made
+        # once from a downsampled overview read: if the values span > 50
+        # they're already in dB; otherwise treat as linear amplitude.
+        has_vh = src.count >= 2
 
-        # The CFAR runs on dB-scaled backscatter. Heuristic: if the input
-        # values span > 50 they're already in dB; otherwise treat as linear
-        # amplitude and convert.
-        def _to_db(arr: np.ndarray) -> np.ndarray:
-            if arr.size == 0:
-                return arr
-            span = float(arr.max() - arr.min())
-            if span > 50.0 or arr.min() < -1.0:
+        def _band_is_db(band: int) -> bool:
+            try:
+                ov = src.read(
+                    band,
+                    out_shape=(max(1, min(1024, height)), max(1, min(1024, width))),
+                ).astype(np.float32)
+            except Exception as exc:
+                logger.warning("[CFAR] overview probe failed for band %s: %s", band, exc)
+                return False
+            if ov.size == 0:
+                return True
+            span = float(ov.max() - ov.min())
+            return span > 50.0 or float(ov.min()) < -1.0
+
+        vv_is_db = _band_is_db(1)
+        vh_is_db = _band_is_db(2) if has_vh else False
+
+        def _to_db(arr: np.ndarray, is_db: bool) -> np.ndarray:
+            if arr.size == 0 or is_db:
                 return arr
             with np.errstate(divide="ignore", invalid="ignore"):
                 return 10.0 * np.log10(np.maximum(arr, 1e-6))
-        vv = _to_db(vv)
-        if vh is not None:
-            vh = _to_db(vh)
 
         # Plan a coarse chip grid so very large COGs stay bounded. CFAR is
         # cheap so the chip size can be much larger than the SAM3 inference
@@ -2528,8 +2626,18 @@ def run_sar_cfar_for_pass(
                 win_h = min(chip_size, height - y)
                 if win_w <= 2 * background_px + 1 or win_h <= 2 * background_px + 1:
                     continue  # too small for the CFAR window
-                tile_vv = vv[y : y + win_h, x : x + win_w]
-                tile_vh = vh[y : y + win_h, x : x + win_w] if vh is not None else None
+                window = Window(x, y, win_w, win_h)
+                try:
+                    tile_vv = _to_db(src.read(1, window=window).astype(np.float32), vv_is_db)
+                except Exception as exc:
+                    logger.warning("[CFAR] failed to read band 1 window x=%s y=%s: %s", x, y, exc)
+                    continue
+                tile_vh = None
+                if has_vh:
+                    try:
+                        tile_vh = _to_db(src.read(2, window=window).astype(np.float32), vh_is_db)
+                    except Exception as exc:
+                        logger.warning("[CFAR] failed to read band 2 window x=%s y=%s: %s", x, y, exc)
                 try:
                     cfar_dets = detect_ships_cfar(
                         tile_vv, tile_vh,
@@ -2638,15 +2746,27 @@ def _aoi_default_allegiance_at(cursor, lon: float, lat: float) -> str:
     ``(lon, lat)`` — first match wins by smallest area (so nested AOIs work).
     Falls back to ``"unknown"`` when no AOI matches or the column is missing
     on an old install.
+
+    Runs under a SAVEPOINT because the caller passes the live
+    store_detections batch cursor: without it, a SQL error (e.g. the missing
+    column on an old install) aborts the surrounding transaction and every
+    subsequent detection INSERT in the batch fails with
+    InFailedSqlTransaction while ingest still reports success.
     """
     try:
-        cursor.execute(
-            "SELECT default_allegiance FROM aois "
-            "WHERE geom IS NOT NULL AND ST_Intersects(geom, ST_SetSRID(ST_Point(%s, %s), 4326)) "
-            "ORDER BY ST_Area(geom) ASC LIMIT 1",
-            (lon, lat),
-        )
-        row = cursor.fetchone()
+        cursor.execute("SAVEPOINT aoi_allegiance")
+        try:
+            cursor.execute(
+                "SELECT default_allegiance FROM aois "
+                "WHERE geom IS NOT NULL AND ST_Intersects(geom, ST_SetSRID(ST_Point(%s, %s), 4326)) "
+                "ORDER BY ST_Area(geom) ASC LIMIT 1",
+                (lon, lat),
+            )
+            row = cursor.fetchone()
+            cursor.execute("RELEASE SAVEPOINT aoi_allegiance")
+        except Exception:
+            cursor.execute("ROLLBACK TO SAVEPOINT aoi_allegiance")
+            raise
     except Exception:
         return "unknown"
     if not row:
@@ -2671,6 +2791,13 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
     # going forward is `branch_id`. See backend/ontology.py::normalize().
     unknown_count = 0
     total_normalized = 0
+    # Per-batch policy fetch (not the old import-time global) so admin
+    # confidence-override changes reach the long-lived worker.
+    batch_policy = active_detection_policy()
+    # Per-batch memo for the AOI-allegiance lookup — detections in a chip
+    # batch cluster spatially, so rounding the centroid to ~11 m collapses
+    # most of the one-SELECT-per-detection cost.
+    allegiance_cache: dict[tuple[float, float], str] = {}
     with postgis_db.get_cursor(commit=True) as cursor, db.get_session() as neo_session:
         for det in detections:
             lon1, lat1, lon2, lat2 = det["geo_bbox"]
@@ -2678,7 +2805,7 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
             det_class = det.get("class", "Unknown")
             original_class = det.get("original_class") or det_class
             parent_class = det.get("parent_class") or parent_class_for_label(original_class)
-            decision = detection_decision(original_class, confidence, DETECTION_POLICY)
+            decision = detection_decision(original_class, confidence, batch_policy)
             # Defence-ontology normalization (Step 3). Falls back gracefully
             # when source_layer is missing — empty string is the documented default.
             ont = ontology_normalize(original_class, layer=det.get("source_layer", ""))
@@ -2698,9 +2825,13 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
             # that as the starting allegiance instead of the global "unknown".
             # An explicit per-detection allegiance (set upstream by the
             # operator or another worker stage) still wins.
-            allegiance = det.get("allegiance") or _aoi_default_allegiance_at(
-                cursor, (lon1 + lon2) / 2.0, (lat1 + lat2) / 2.0,
-            )
+            allegiance = det.get("allegiance")
+            if not allegiance:
+                cache_key = (round((lon1 + lon2) / 2.0, 4), round((lat1 + lat2) / 2.0, 4))
+                allegiance = allegiance_cache.get(cache_key)
+                if allegiance is None:
+                    allegiance = _aoi_default_allegiance_at(cursor, cache_key[0], cache_key[1])
+                    allegiance_cache[cache_key] = allegiance
             assessment = assess_detection_threat(det_class, confidence=confidence, allegiance=allegiance)
             ontology = {
                 **ontology,
@@ -2760,10 +2891,10 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
                     "label_quality": label_quality,
                     "review_status": det.get("review_status") or decision["review_status"],
                     "policy_review_status": det.get("policy_review_status") or decision["review_status"],
-                    "threshold_profile": det.get("threshold_profile") or DETECTION_POLICY["threshold_profile"],
+                    "threshold_profile": det.get("threshold_profile") or batch_policy["threshold_profile"],
                     "class_threshold": det.get("class_threshold") or decision["class_threshold"],
-                    "model_version": det.get("model_version") or DETECTION_POLICY["model_version"],
-                    "taxonomy_version": det.get("taxonomy_version") or DETECTION_POLICY["taxonomy_version"],
+                    "model_version": det.get("model_version") or batch_policy["model_version"],
+                    "taxonomy_version": det.get("taxonomy_version") or batch_policy["taxonomy_version"],
                     "chip_id": det.get("chip_id"),
                     "chip_window": det.get("chip_window"),
                     "chip_valid_fraction": det.get("chip_valid_fraction"),
@@ -2898,9 +3029,9 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
                     "parent_class": parent_class,
                     "confidence": confidence,
                     "review_status": det.get("review_status") or decision["review_status"],
-                    "threshold_profile": det.get("threshold_profile") or DETECTION_POLICY["threshold_profile"],
-                    "model_version": det.get("model_version") or DETECTION_POLICY["model_version"],
-                    "taxonomy_version": det.get("taxonomy_version") or DETECTION_POLICY["taxonomy_version"],
+                    "threshold_profile": det.get("threshold_profile") or batch_policy["threshold_profile"],
+                    "model_version": det.get("model_version") or batch_policy["model_version"],
+                    "taxonomy_version": det.get("taxonomy_version") or batch_policy["taxonomy_version"],
                     "threat_level": assessment["threat_level"],
                     "threat_confidence": assessment["threat_confidence"],
                     "assessment_status": assessment["assessment_status"],
@@ -2981,6 +3112,10 @@ FMV_TRACK_WINDOW_OVERLAP_SECONDS = float(os.getenv("FMV_TRACK_WINDOW_OVERLAP_SEC
 # task lands on a distinct multiplex predictor replica. The env override
 # is a hard ceiling — if /health reports a smaller pool we use that.
 FMV_INFLIGHT_REQUESTS = max(1, int(os.getenv("FMV_INFLIGHT_REQUESTS", "4")))
+# Mirror of INFERENCE_MAX_FAILED_CHIP_FRACTION for the FMV (window, prompt)
+# fan-out: a single failed task no longer discards the whole clip; the clip
+# fails only when more than this fraction of tasks failed.
+FMV_MAX_FAILED_TASK_FRACTION = max(0.0, min(1.0, env_float("FMV_MAX_FAILED_TASK_FRACTION", 0.05)))
 
 
 def _probe_source(src_path: str) -> tuple[float, float]:
@@ -3207,7 +3342,14 @@ def _drain_response_entries(resp) -> list[dict]:
     for line in resp.iter_lines(decode_unicode=True):
         if not line:
             continue
-        entries.append(json.loads(line))
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            # A truncated trailing fragment (stream cut mid-line) must not
+            # discard the window's already-parsed entries.
+            logger.warning(
+                "skipping unparseable /detect_video NDJSON line (%d chars)", len(line)
+            )
     return entries
 
 
@@ -3414,6 +3556,18 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
                 continue
             sliced.append((window_idx, int(round(start_s * source_fps)), win_path))
 
+        # Every window failing extraction means the source is corrupt or
+        # unreadable — raise so the except path below marks the clip
+        # tracking_status="failed" instead of "complete" with 0 detections.
+        failed_prep_windows = len(windows) - len(sliced)
+        if windows and not sliced:
+            raise RuntimeError(
+                f"all {len(windows)} FMV windows failed extraction for clip {clip_id} "
+                "(corrupt or unreadable video?)"
+            )
+        if failed_prep_windows:
+            _update_clip_tracking(clip_id, tracking_windows_failed=failed_prep_windows)
+
         tasks = [(win_idx, win_start_frame, win_path, prompt)
                  for (win_idx, win_start_frame, win_path) in sliced
                  for prompt in prompts]
@@ -3426,7 +3580,7 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
         shared_lock = threading.Lock()
         state = {"next_track_id": 0, "inserted": 0, "completed": 0}
 
-        def _run_one(args: tuple[int, int, Any, str]) -> int:
+        def _run_one_attempt(args: tuple[int, int, Any, str]) -> int:
             win_idx, win_start_frame, win_path, prompt = args
             if mode == "yoloe":
                 # YOLOE runs one inference per window covering all classes.
@@ -3502,10 +3656,55 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
             _update_clip_tracking(clip_id, tracking_count=running_total)
             return n
 
+        def _run_one(args: tuple[int, int, Any, str]) -> int:
+            # One retry across an inference self-heal restart, mirroring the
+            # imagery chip path (see decisions/why-retry-chips-across-
+            # inference-restart.md): the POST retry loop above only covers
+            # the request itself, not a mid-stream connection reset while
+            # draining the NDJSON response.
+            try:
+                return _run_one_attempt(args)
+            except Exception as exc:
+                if not _inference_unavailable(exc):
+                    raise
+                logger.warning(
+                    "FMV window %s prompt %r hit inference unavailability (%s); "
+                    "waiting for recovery and retrying once",
+                    args[0], args[3], exc,
+                )
+                _wait_for_inference_healthy()
+                return _run_one_attempt(args)
+
+        failed_tasks: list[tuple[int, str]] = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=inflight_cap) as pool:
-            futures = [pool.submit(_run_one, t) for t in tasks]
+            futures = {pool.submit(_run_one, t): t for t in tasks}
             for fut in concurrent.futures.as_completed(futures):
-                fut.result()  # re-raise any task exception
+                try:
+                    fut.result()
+                except Exception:
+                    win_idx, _, _, prompt = futures[fut]
+                    failed_tasks.append((win_idx, prompt))
+                    logger.exception(
+                        "FMV task failed for clip %s window %s prompt %r",
+                        clip_id, win_idx, prompt,
+                    )
+
+        # Completed windows are already committed per window — fail the clip
+        # only when the failed fraction exceeds tolerance (mirrors the imagery
+        # failed-chip gate); below it, record the partial failure and let
+        # consolidate_fmv run on what landed.
+        if failed_tasks:
+            fail_fraction = len(failed_tasks) / max(1, total_tasks)
+            _update_clip_tracking(
+                clip_id,
+                tracking_windows_failed=failed_prep_windows + len({w for w, _ in failed_tasks}),
+            )
+            if fail_fraction > FMV_MAX_FAILED_TASK_FRACTION:
+                raise RuntimeError(
+                    f"{len(failed_tasks)}/{total_tasks} FMV inference tasks failed for "
+                    f"clip {clip_id} ({fail_fraction:.1%} > "
+                    f"{FMV_MAX_FAILED_TASK_FRACTION:.0%} tolerance)"
+                )
 
         inserted = state["inserted"]
 
@@ -3554,8 +3753,9 @@ def process_fmv(clip_id: int, video_path: str, text_prompts: list[str] | None = 
         raise
     finally:
         # FMV left the GPU pool on the fmv profile; return the resting state to
-        # imagery so the COP's imagery detection keeps working. Best-effort.
-        _revert_inference_profile(session, "imagery")
+        # the helper's imagery_rgb default — the full imagery union OOMs
+        # tight-VRAM cards (see decisions/why-revert-inference-after-fmv.md).
+        _revert_inference_profile(session)
         session.close()
 
 
@@ -3993,6 +4193,10 @@ def tick_propose_entities() -> dict:
         for p in proposals:
             kind = p["entity_kind"]
             proposed_name = p["proposed_name"]
+            # SAVEPOINT per proposal: catching a SQL error without one poisons
+            # the shared transaction, silently rolling back every earlier
+            # insert while the task still reports them written.
+            cursor.execute("SAVEPOINT proposal")
             try:
                 cursor.execute(
                     "SELECT 1 FROM operational_entities WHERE name = %s AND kind = %s LIMIT 1",
@@ -4000,6 +4204,7 @@ def tick_propose_entities() -> dict:
                 )
                 if cursor.fetchone():
                     skipped += 1
+                    cursor.execute("RELEASE SAVEPOINT proposal")
                     continue
                 cursor.execute(
                     "SELECT 1 FROM entity_candidates WHERE proposed_name = %s AND entity_kind = %s AND status = 'pending' LIMIT 1",
@@ -4007,6 +4212,7 @@ def tick_propose_entities() -> dict:
                 )
                 if cursor.fetchone():
                     skipped += 1
+                    cursor.execute("RELEASE SAVEPOINT proposal")
                     continue
                 cursor.execute(
                     """
@@ -4022,7 +4228,9 @@ def tick_propose_entities() -> dict:
                     ),
                 )
                 proposed += 1
+                cursor.execute("RELEASE SAVEPOINT proposal")
             except Exception:
+                cursor.execute("ROLLBACK TO SAVEPOINT proposal")
                 logger.exception("tick_propose_entities: insert failed for %s", proposed_name)
                 skipped += 1
 
@@ -4411,7 +4619,7 @@ def project_label_of_edges(detection_ids: list[int] | None = None, batch_size: i
                 norm = ontology_module.normalize(row["class"])
             except Exception:
                 continue
-            object_id = getattr(norm, "object_id", None) if norm else None
+            object_id = getattr(norm, "ontology_object_id", None) if norm else None
             if not object_id:
                 continue
             by_object.setdefault(object_id, []).append(int(row["id"]))
@@ -5743,6 +5951,43 @@ def tick_feed_poll() -> dict:
     return {"polled": polled, "events": total_events, "due": len(due)}
 
 
+OBSERVATION_RETENTION_DAYS = max(1, env_int("OBSERVATION_RETENTION_DAYS", 30))
+
+
+@celery_app.task(name="worker.cleanup_old_observations", queue="default")
+def cleanup_old_observations() -> dict:
+    """Hourly beat task: prune ``observations`` and ``timeline_events`` rows
+    older than ``OBSERVATION_RETENTION_DAYS`` (default 30).
+
+    Both tables are append-only (feed pollers, ingest pipelines, timeline
+    recorder) and were documented as pruned hourly, but the task never
+    existed — on an always-on deployment they grow unbounded. Retention is
+    keyed on each table's event-time column (``observed_at`` /
+    ``occurred_at``) so late-ingested rows age out by when they happened.
+    """
+    with postgis_db.get_cursor(commit=True) as cur:
+        cur.execute(
+            "DELETE FROM observations WHERE observed_at < NOW() - (%s || ' days')::interval",
+            (OBSERVATION_RETENTION_DAYS,),
+        )
+        observations_deleted = cur.rowcount or 0
+        cur.execute(
+            "DELETE FROM timeline_events WHERE occurred_at < NOW() - (%s || ' days')::interval",
+            (OBSERVATION_RETENTION_DAYS,),
+        )
+        timeline_deleted = cur.rowcount or 0
+    if observations_deleted or timeline_deleted:
+        logger.info(
+            "cleanup_old_observations: pruned %d observations + %d timeline_events older than %d days",
+            observations_deleted, timeline_deleted, OBSERVATION_RETENTION_DAYS,
+        )
+    return {
+        "observations_deleted": observations_deleted,
+        "timeline_events_deleted": timeline_deleted,
+        "retention_days": OBSERVATION_RETENTION_DAYS,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Reference Embedding DB — seed from baked corpora
 # ---------------------------------------------------------------------------
@@ -5846,6 +6091,15 @@ def seed_reference_db(self, force: bool = False, only: Optional[list] = None) ->
             n_existing = int(row["count"] if isinstance(row, dict) else row[0])
         if n_existing > 0:
             logger.info("seed_reference_db: %d platforms present, force=false — no-op", n_existing)
+            # The admin UI's Seed button listens on this topic; without a
+            # terminal event the skipped path left it waiting forever.
+            publish_event("reference-seed", {
+                "type": "done",
+                "skipped": True,
+                "platforms_present": n_existing,
+                "totals": {"platforms": 0, "chips": 0},
+                "task_id": self.request.id,
+            })
             return {"status": "skipped", "platforms_present": n_existing}
 
     only_set = set(only or [])

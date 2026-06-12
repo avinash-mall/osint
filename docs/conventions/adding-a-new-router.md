@@ -50,7 +50,7 @@ For one-off endpoints, prefer adding them to [backend/main.py](../../backend/mai
 
    (Adjacent to the existing block at [#L170-L182](../../backend/main.py#L170-L182).)
 
-5. **Auth is automatic** — the session middleware at [main.py#L84](../../backend/main.py#L84) gates mutating verbs across all routers. You only need `Depends(get_current_user)` if you want the `SessionUser` object inside the handler.
+5. **Auth is automatic** — the session middleware at [main.py#L121-L142](../../backend/main.py#L121-L142) gates every `/api` verb across all routers: mutations (except login/logout) and reads (except the public allowlist — see [decisions/why-read-routes-require-session.md](../decisions/why-read-routes-require-session.md)). You only need `Depends(get_current_user)` if you want the `SessionUser` object inside the handler; a new public (pre-auth or service-to-service) read must be added to `_PUBLIC_READ_PREFIXES` explicitly.
 
 6. **Write a router doc** at `docs/backend-routers/<name>-router.md` following the template (see existing routers).
 

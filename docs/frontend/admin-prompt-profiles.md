@@ -9,6 +9,8 @@ CRUD over named prompt profiles. A profile = a bundle of `{sensor: [prompts]}` t
 
 Activating a profile swaps the active set — useful for switching modes between deployments (maritime, urban, infrastructure-watch).
 
+All CRUD error states pass through [`apiErrorMessage`](../../frontend/src/utils/apiError.ts) so FastAPI 422 `detail` arrays render as text instead of crashing React.
+
 ## Data sources
 
 - `GET /api/ontology/prompt-profiles`

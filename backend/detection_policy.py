@@ -25,7 +25,8 @@ from __future__ import annotations
 import json
 import os
 import re
-from functools import lru_cache
+import threading
+import time
 from typing import Any
 
 
@@ -204,9 +205,28 @@ def _load_db_overrides() -> tuple[dict[str, float], float | None, float | None]:
     return out, g, h
 
 
-@lru_cache(maxsize=1)
+# TTL cache instead of lru_cache: an unbounded memo froze admin overrides in
+# long-lived Celery workers for the life of the process (invalidate_policy_cache
+# only reaches the API process). Mirrors the ontology prompt-cache pattern.
+_POLICY_TTL_S = 30.0
+_POLICY_LOCK = threading.Lock()
+_POLICY_CACHE: list[Any] = [0.0, None]  # [expires_at_monotonic, policy | None]
+
+
 def active_detection_policy() -> dict[str, Any]:
     """Open-vocab policy: DB-backed overrides win, env values are the fallback."""
+    now = time.monotonic()
+    with _POLICY_LOCK:
+        if _POLICY_CACHE[1] is not None and now < _POLICY_CACHE[0]:
+            return _POLICY_CACHE[1]
+    policy = _build_detection_policy()
+    with _POLICY_LOCK:
+        _POLICY_CACHE[0] = now + _POLICY_TTL_S
+        _POLICY_CACHE[1] = policy
+    return policy
+
+
+def _build_detection_policy() -> dict[str, Any]:
     profile_name = os.getenv("DETECTION_THRESHOLD_PROFILE", "defence_precision").strip() or "defence_precision"
     global_floor = float(os.getenv("GLOBAL_CONFIDENCE_FLOOR", "0.40"))
     high_threshold = float(os.getenv("HIGH_CONFIDENCE_THRESHOLD", "0.65"))
@@ -230,7 +250,9 @@ def active_detection_policy() -> dict[str, Any]:
 def invalidate_policy_cache() -> None:
     """Drop the cached policy so the next ``active_detection_policy()`` call
     re-reads from the DB. Called by ``PUT /api/inference/confidence-overrides``."""
-    active_detection_policy.cache_clear()
+    with _POLICY_LOCK:
+        _POLICY_CACHE[0] = 0.0
+        _POLICY_CACHE[1] = None
 
 
 def threshold_for_parent(parent_class: str, policy: dict[str, Any] | None = None) -> float:

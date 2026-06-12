@@ -5,7 +5,7 @@
 
 import axios from 'axios';
 import { CheckCircle2, Flag, RefreshCw, XCircle } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ModalityBadge, Panel } from '../atoms';
 
 const API_URL = (import.meta as any).env?.VITE_API_URL || '';
@@ -30,7 +30,9 @@ export default function ReviewPanel({
 }: {
   selectedDetection: any | null;
   onReviewed?: (status: string) => void;
-  onJump?: (detectionId: number) => void;
+  /** Queue rows carry lat/lon so the parent can pan even when the detection
+      is outside the viewport GeoJSON (the queue is global). */
+  onJump?: (detectionId: number, lat?: number, lon?: number) => void;
 }) {
   const [status, setStatus] = useState<(typeof STATUSES)[number]>('pending');
   const [rows, setRows] = useState<QueueRow[]>([]);
@@ -38,18 +40,24 @@ export default function ReviewPanel({
   const [error, setError] = useState<string | null>(null);
   const [acting, setActing] = useState(false);
 
+  // Monotonic token keyed to the status tabs: a quick PENDING→ACCEPTED switch
+  // must not let the slower (stale) tab's response win the rows/header count.
+  const seqRef = useRef(0);
   const load = useCallback(async () => {
+    const seq = ++seqRef.current;
     setBusy(true);
     setError(null);
     try {
       const { data } = await axios.get(`${API_URL}/api/detections/queue`, {
         params: { status, limit: 25 },
       });
+      if (seq !== seqRef.current) return;
       setRows(data?.detections || []);
     } catch (err: any) {
+      if (seq !== seqRef.current) return;
       setError(err?.response?.data?.detail || err?.message || 'failed to load queue');
     } finally {
-      setBusy(false);
+      if (seq === seqRef.current) setBusy(false);
     }
   }, [status]);
 
@@ -184,7 +192,7 @@ export default function ReviewPanel({
                 className="review-queue-row"
                 type="button"
                 key={r.id}
-                onClick={() => onJump?.(r.id)}
+                onClick={() => onJump?.(r.id, r.lat, r.lon)}
                 style={{
                   display: 'grid',
                   gridTemplateColumns: '1fr auto auto',

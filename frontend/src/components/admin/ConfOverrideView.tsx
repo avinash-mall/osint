@@ -10,6 +10,7 @@
 import axios from 'axios';
 import { Plus, RefreshCw, Save, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
+import { apiErrorMessage } from '../../utils/apiError';
 import { Panel } from '../atoms';
 
 const API_URL = (import.meta as any).env?.VITE_API_URL || '';
@@ -73,7 +74,7 @@ export default function ConfOverrideView() {
       setEnvHighConf(data.env_high_confidence_threshold ?? null);
       setLoaded(true);
     } catch (err: any) {
-      setError(err?.response?.data?.detail || err?.message || 'failed to load');
+      setError(apiErrorMessage(err, 'failed to load'));
     } finally {
       setBusy(false);
     }
@@ -115,7 +116,7 @@ export default function ConfOverrideView() {
       setSavedAt(new Date().toISOString());
       await load();
     } catch (err: any) {
-      setError(err?.response?.data?.detail || err?.message || 'save failed');
+      setError(apiErrorMessage(err, 'save failed'));
     } finally {
       setBusy(false);
     }
@@ -265,15 +266,20 @@ export default function ConfOverrideView() {
               >
                 {r.value.toFixed(2)}
               </div>
+              {/* Env rows are rebuilt from env config on every load and are
+                  excluded from the save payload — deleting one is a silent
+                  no-op (the row reappears on reload). */}
               <button
                 type="button"
                 onClick={() => removeRow(r.id)}
-                title="Remove override"
+                disabled={r.from_env}
+                title={r.from_env ? 'Set via env — override the value instead' : 'Remove override'}
                 style={{
                   background: 'transparent',
                   border: 0,
                   color: 'var(--ink-3)',
-                  cursor: 'pointer',
+                  cursor: r.from_env ? 'not-allowed' : 'pointer',
+                  opacity: r.from_env ? 0.35 : 1,
                   padding: 4,
                 }}
               >

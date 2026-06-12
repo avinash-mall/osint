@@ -81,6 +81,19 @@ def _curvature_drop_m(distance_m: float) -> float:
     return (1 - REFRACTION_K) * (distance_m ** 2) / (2 * EARTH_RADIUS_M)
 
 
+def _chord_bulge_m(distance_m: float, total_m: float) -> float:
+    """Earth-surface bulge above the straight observer→target chord at
+    ``distance_m`` along a path of length ``total_m`` (zero at both endpoints),
+    with the same refraction correction as ``_curvature_drop_m``."""
+    if distance_m <= 0 or total_m <= 0:
+        return 0.0
+    return (1 - REFRACTION_K) * distance_m * (total_m - distance_m) / (2 * EARTH_RADIUS_M)
+
+
+def _wrap_lon(lon: float) -> float:
+    return ((lon + 180.0) % 360.0) - 180.0
+
+
 def sample_elevation(lat: float, lon: float) -> Optional[float]:
     src = _open_dem()
     if src is None:
@@ -136,16 +149,17 @@ def line_of_sight(
 
     min_clearance = math.inf
     blocking: list[dict] = []
+    dlon_total = _wrap_lon(tgt_lon - obs_lon)
     for k in range(1, samples):
         f = k / samples
         lat = obs_lat + (tgt_lat - obs_lat) * f
-        lon = obs_lon + (tgt_lon - obs_lon) * f
+        lon = _wrap_lon(obs_lon + dlon_total * f)
         ground = sample_elevation(lat, lon)
         if ground is None:
             continue
         d = total_m * f
         los_h = obs_h + (tgt_h - obs_h) * f
-        clearance = los_h - (ground + _curvature_drop_m(d))
+        clearance = los_h - (ground + _chord_bulge_m(d, total_m))
         if clearance < min_clearance:
             min_clearance = clearance
         if clearance < 0:
@@ -215,11 +229,11 @@ def viewshed(
             dlat = math.cos(az) * d / m_per_deg_lat
             dlon = math.sin(az) * d / m_per_deg_lon
             lat = observer_lat + dlat
-            lon = observer_lon + dlon
+            lon = _wrap_lon(observer_lon + dlon)
             ground = sample_elevation(lat, lon)
             if ground is None:
                 break
-            effective = ground + target_height_m + _curvature_drop_m(d)
+            effective = ground + target_height_m - _curvature_drop_m(d)
             slope = (effective - obs_h) / d
             if slope >= max_slope:
                 max_slope = slope

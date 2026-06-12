@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -145,8 +146,12 @@ def get_ontology_unknown_labels(
     where_clauses: list[str] = []
     params: list = []
     if since:
+        try:
+            since_dt = datetime.fromisoformat(since)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid since: expected an ISO 8601 datetime")
         where_clauses.append("last_seen >= %s")
-        params.append(since)
+        params.append(since_dt)
     where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
     params.append(limit)
     with postgis_db.get_cursor() as cursor:

@@ -1606,6 +1606,20 @@ def run_video_yoloe(
             try:
                 candidates = yoloe.run(yoloe_bundle, rgb, clean_prompts or None, score_threshold)
             except Exception as exc:
+                # A poisoned CUDA context never recovers in-process: swallowing
+                # it here turned the tracker into a healthy-looking zombie that
+                # emitted zero detections for every remaining frame. Self-heal
+                # like the detect pipeline does — see
+                # docs/decisions/why-exit-on-poisoned-cuda-context.md.
+                if _cuda_context_poisoned(exc):
+                    logger.critical(
+                        "poisoned CUDA context in run_video_yoloe frame %d (%s) — "
+                        "process state is unrecoverable, exiting so docker-compose "
+                        "respawns the container",
+                        frame_idx,
+                        exc,
+                    )
+                    os._exit(1)
                 logger.warning("yoloe.run failed on frame %d: %s", frame_idx, exc)
                 candidates = []
 

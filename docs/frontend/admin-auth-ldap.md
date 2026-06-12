@@ -11,6 +11,7 @@ Editable form for the singleton `auth_config` row: LDAP host, port, base DN, bin
 
 - **Test connection** → `POST /api/admin/auth/test-connection` — probes TCP/TLS without binding. Returns `{ok, error}` → UI shows a result.
 - **Test credentials** → `POST /api/admin/auth/test` with a username/password — full LDAP bind against the current config.
+- Save returns an inline `test` result; when the backend skipped the bind (`{ok:true, skipped:true}` — LDAP disabled or host empty, [backend/routers/auth.py](../../backend/routers/auth.py)) the UI shows "Saved — bind test skipped" instead of claiming a successful bind. Error messages pass through [`apiErrorMessage`](../../frontend/src/utils/apiError.ts).
 
 ## Why this lives in the UI
 

@@ -28,6 +28,10 @@ terminal-success for the progress bar, the colour, and the DONE filter. Job
 cards show status only — there is no Map/FMV cross-nav (analytics jobs return a
 GeoJSON `result`, not a `detection_id`, and training jobs carry neither).
 
+Progress bars: neither jobs API exposes percent-complete, so running jobs render
+an indeterminate striped bar (full-width `repeating-linear-gradient`) instead of
+a fabricated determinate value; queued = empty, done = full.
+
 ## Cross-references
 
 - [backend-routers/models-training-router.md](../backend-routers/models-training-router.md)

@@ -6,7 +6,7 @@
 
 ## Purpose
 
-Login, logout, current-user introspection, admin LDAP configuration. **Only** `POST /api/auth/login` and `POST /api/auth/logout` are unauthenticated mutating endpoints — see public path list at [backend/main.py#L81](../../backend/main.py#L81).
+Login, logout, current-user introspection, admin LDAP configuration. **Only** `POST /api/auth/login` and `POST /api/auth/logout` are unauthenticated mutating endpoints, and reads are gated too apart from the public allowlist (`/api/auth/*`, `/api/health`, `/api/system/deployment-mode`, `/api/ontology/default-prompts`) — see [backend/main.py#L107-L142](../../backend/main.py#L107-L142) and [decisions/why-read-routes-require-session.md](../decisions/why-read-routes-require-session.md).
 
 ## Endpoints
 

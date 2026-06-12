@@ -149,8 +149,15 @@ operations/auth-and-ldap-setup.md|operations,auth|env-bootstrap admin, Admin->Au
 operations/llm-ava-configuration.md|operations|OPENAI_API_BASE pointing at vLLM/Ollama, graceful degradation
 operations/reference-corpora-bake.md|operations,backend|assets-image bake of reference corpora; auto-seed lifespan; admin re-seed; drop-in tarballs
 operations/calibration-shipping.md|operations,backend,inference|assets-image bake of per-detector temperatures; calibration_data volume; measurement -> rebuild flow
+decisions/audit-fixes-api-layer-2026-06-11.md|decision,backend|API-layer sweep: packed-embedding similar fix, LEFT JOIN manual detections, status guards, races
+decisions/audit-fixes-backend-core-2026-06-11.md|decision,backend|core-module sweep: GPMD duration, curvature sign, RAAN wrap, branch categories, cache races
 decisions/audit-fixes-codebase-correctness-2026-06-08.md|decision,backend|whole-codebase bug sweep: FMV graph orphans, footprint cos(lat), change-detect bands, KLV timestamps, POL clustering, OBB box mode, embed device pin
+decisions/audit-fixes-fmv-graph-2026-06-12.md|decision,frontend,fmv|FMV/graph sweep: contradict actor fix, clip-switch races, refetch throttle, cluster menu
+decisions/audit-fixes-frontend-shell-admin-2026-06-12.md|decision,frontend|shell/admin sweep: tour skip race, WS 1008 stop, 422 white-screen, seed hang, draft autosave
+decisions/audit-fixes-inference-2026-06-12.md|decision,inference|forwards brought under serialize lock + poison self-heal, policy path-load, NaN SAR, prompt cap
+decisions/audit-fixes-map-workspace-2026-06-11.md|decision,frontend|map sweep: SwipeControl crash, time-machine loops, crossNav, fetch races, tile filter parity
 decisions/audit-fixes-ui-correctness-2026-06-08.md|decision,frontend|page-by-page UI audit fixes: processing status, ontology dropdown, graph edge scores, FMV keys, geotime sub, pan-on-jump
+decisions/audit-fixes-worker-2026-06-11.md|decision,celery|worker sweep: chip-grid coverage, LABEL_OF no-op, NDJSON retry, savepoints, cleanup beat task
 decisions/borders-vs-graticule-split.md|decision,frontend|LayerPanel "Tactical Grid" split into Borders (admin GeoJSON) and Graticule (coordinate grid)
 decisions/cached-forward-device-normalise.md|decision,sam3|multi-GPU _get_img_feats crash: pin image-model build device so vis_pos_enc lands on replica GPU
 decisions/completed-dead-ui-controls.md|decision,frontend|wired FMV fullscreen + export-clip (source_url); removed action-less admin "More" buttons
@@ -239,6 +246,7 @@ decisions/why-postgis-max-connections-300.md|decision,backend,deployment|raise m
 decisions/why-precision-first-inference-defaults.md|decision|bounded prompt defaults, source-layer provenance, specialist gates, nonzero policy floor
 decisions/why-preload-imagery-on-startup.md|decision,inference,deployment|inference-sam3 lifespan preloads imagery so healthcheck sees model_loaded; SAM3_SKIP_PRELOAD opts out
 decisions/why-proximity-colocation-graph.md|decision,backend|vendored city2graph proximity builders → COLOCATED_WITH edges; vendor-vs-dep air-gap tradeoff
+decisions/why-read-routes-require-session.md|decision,backend,auth|session middleware now gates GET/HEAD under /api too; explicit public-read allowlist
 decisions/why-readonly-ai-brief-and-map-control.md|decision,backend|AI brief-area is read-only; map control via sentinel:map-control event, not agent writes
 decisions/why-reject-double-review-with-409.md|decision,backend|approve/reject UPDATE guarded WHERE status='pending'; 409 with prior reviewer instead of silent overwrite
 decisions/why-release-db-connection-before-enrichment.md|decision,backend|hold pooled conn only for query, not per-row enrichment; fixed pool exhaustion 500s (geojson endpoint since removed)

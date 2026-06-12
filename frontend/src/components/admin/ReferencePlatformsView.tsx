@@ -15,9 +15,10 @@
 
 import axios from 'axios';
 import { Database, RefreshCw, Sprout } from 'lucide-react';
-import { useCallback, useEffect, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import ChipImg from '../ChipImg';
 import { useEventStream } from '../../hooks/useEventStream';
+import { apiErrorMessage } from '../../utils/apiError';
 import ViewHeader from './ViewHeader';
 
 const API_URL = (import.meta as any).env?.VITE_API_URL || '';
@@ -80,7 +81,7 @@ export default function ReferencePlatformsView({ onCount }: Props) {
       setPlatforms(r.data?.platforms ?? []);
       setTotal(r.data?.total ?? 0);
     } catch (e: any) {
-      setListErr(e?.response?.data?.detail ?? e?.message ?? String(e));
+      setListErr(apiErrorMessage(e, 'load failed'));
       setPlatforms([]);
       setTotal(0);
     } finally {
@@ -96,7 +97,12 @@ export default function ReferencePlatformsView({ onCount }: Props) {
 
   useEffect(() => { onCount(platforms.length); }, [platforms.length, onCount]);
 
+  // Monotonic token guards against out-of-order detail responses — rapid row
+  // clicks would otherwise let a slow earlier response overwrite the latest
+  // selection's detail.
+  const detailReqRef = useRef(0);
   const openPlatform = useCallback(async (id: string) => {
+    const token = ++detailReqRef.current;
     setSelectedId(id);
     setDetail(null);
     setDetailErr(null);
@@ -105,11 +111,13 @@ export default function ReferencePlatformsView({ onCount }: Props) {
       const r = await axios.get<PlatformDetail>(
         `${API_URL}/api/reference-platforms/${id}`,
       );
+      if (detailReqRef.current !== token) return;
       setDetail(r.data);
     } catch (e: any) {
-      setDetailErr(e?.response?.data?.detail ?? e?.message ?? String(e));
+      if (detailReqRef.current !== token) return;
+      setDetailErr(apiErrorMessage(e, 'detail load failed'));
     } finally {
-      setDetailBusy(false);
+      if (detailReqRef.current === token) setDetailBusy(false);
     }
   }, []);
 
@@ -123,17 +131,32 @@ export default function ReferencePlatformsView({ onCount }: Props) {
   const [seedBusy, setSeedBusy] = useState(false);
   const [seedTaskId, setSeedTaskId] = useState<string | null>(null);
   const [seedErr, setSeedErr] = useState<string | null>(null);
+  const [seedNotice, setSeedNotice] = useState<string | null>(null);
   const [seedRows, setSeedRows] = useState<SeedProgressRow[]>([]);
   const [seedDone, setSeedDone] = useState(false);
+
+  // Fallback so seedBusy can't hang forever when no WS event ever arrives
+  // (worker down, or an older worker whose idempotency guard returns without
+  // publishing). Armed on enqueue, disarmed by the first seed event.
+  const seedFallbackRef = useRef<number | null>(null);
+  const clearSeedFallback = useCallback(() => {
+    if (seedFallbackRef.current != null) {
+      window.clearTimeout(seedFallbackRef.current);
+      seedFallbackRef.current = null;
+    }
+  }, []);
+  useEffect(() => clearSeedFallback, [clearSeedFallback]);
 
   useEventStream(
     'reference-seed',
     useCallback(
       (msg: any) => {
         if (!msg || typeof msg !== 'object') return;
+        clearSeedFallback();
         if (msg.type === 'started') {
           setSeedRows([]);
           setSeedDone(false);
+          setSeedNotice(null);
         } else if (msg.type === 'dataset_progress') {
           setSeedRows((rows) => {
             const next = rows.filter((r) => r.dataset !== msg.dataset);
@@ -143,19 +166,24 @@ export default function ReferencePlatformsView({ onCount }: Props) {
         } else if (msg.type === 'done') {
           setSeedDone(true);
           setSeedBusy(false);
+          if (msg.skipped) {
+            setSeedNotice('Already seeded — use Re-seed to force a re-bake.');
+          }
           // Refresh the list so the new totals show.
           void load();
         } else if (msg.type === 'error') {
           setSeedErr(`${msg.dataset}: ${msg.detail}`);
+          setSeedBusy(false);
         }
       },
-      [load],
+      [load, clearSeedFallback],
     ),
   );
 
   const triggerSeed = useCallback(async (force: boolean) => {
     setSeedBusy(true);
     setSeedErr(null);
+    setSeedNotice(null);
     setSeedRows([]);
     setSeedDone(false);
     try {
@@ -164,11 +192,17 @@ export default function ReferencePlatformsView({ onCount }: Props) {
         { force, only: [] },
       );
       setSeedTaskId(r.data?.task_id ?? null);
+      clearSeedFallback();
+      seedFallbackRef.current = window.setTimeout(() => {
+        seedFallbackRef.current = null;
+        setSeedBusy(false);
+        setSeedNotice('No progress event from the worker after 10s — it may already be seeded or the worker may be down. Check worker logs.');
+      }, 10_000);
     } catch (e: any) {
-      setSeedErr(e?.response?.data?.detail ?? e?.message ?? String(e));
+      setSeedErr(apiErrorMessage(e, 'seed enqueue failed'));
       setSeedBusy(false);
     }
-  }, []);
+  }, [clearSeedFallback]);
 
   return (
     <>
@@ -289,7 +323,7 @@ export default function ReferencePlatformsView({ onCount }: Props) {
           </div>
         )}
 
-        {(seedBusy || seedRows.length > 0 || seedErr) && (
+        {(seedBusy || seedRows.length > 0 || seedErr || seedNotice) && (
           <div
             className="card"
             role="status"
@@ -310,6 +344,11 @@ export default function ReferencePlatformsView({ onCount }: Props) {
             {seedErr && (
               <div className="mono" style={{ fontSize: 11, color: 'var(--nato-hostile)' }}>
                 error: {seedErr}
+              </div>
+            )}
+            {seedNotice && (
+              <div className="mono" style={{ fontSize: 11, color: 'var(--ink-2)' }}>
+                {seedNotice}
               </div>
             )}
             {seedRows.length > 0 && (

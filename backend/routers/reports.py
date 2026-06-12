@@ -28,6 +28,7 @@ def _load_detection(detection_id: int) -> Optional[dict]:
     with postgis_db.get_cursor() as cur:
         cur.execute(
             "SELECT id, class, confidence, metadata, source, created_at, pass_id, "
+            "threat_level, affiliation, "
             "ST_Y(centroid) AS lat, ST_X(centroid) AS lon, "
             "ST_AsGeoJSON(geom) AS geom_json "
             "FROM detections WHERE id = %s AND deleted_at IS NULL",
@@ -156,8 +157,8 @@ def export_target_package(detection_id: int):
     kv("Branch", str(metadata.get("branch_id") or "n/a"))
     y -= 2 * mm
 
-    threat = metadata.get("threat") or "unassessed"
-    affil = metadata.get("affiliation") or "unknown"
+    threat = metadata.get("threat_level") or det.get("threat_level") or "unassessed"
+    affil = metadata.get("allegiance") or det.get("affiliation") or "unknown"
     section("Classification log")
     kv("Threat", str(threat))
     kv("Affiliation", str(affil))

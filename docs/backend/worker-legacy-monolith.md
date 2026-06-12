@@ -1,7 +1,7 @@
 # `backend/worker_legacy.py` — Monolithic Celery Tasks
 
 **Path:** [backend/worker_legacy.py](../../backend/worker_legacy.py)
-**Lines:** ~5932 (largest file in the repo)
+**Lines:** ~6193 (largest file in the repo)
 **Depends on:** Most of the rest of `backend/` plus `celery`, `requests`, `numpy`, `rasterio`, `cv2`, `ipaddress`, `socket`, env `ALLOW_REMOTE_IMAGERY_URLS`, `REMOTE_IMAGERY_ALLOWED_HOSTS`, `REMOTE_IMAGERY_MAX_BYTES`
 
 ## Purpose
@@ -21,8 +21,9 @@ See [decisions/why-worker-legacy-monolith-kept.md](../decisions/why-worker-legac
 | `worker.consolidate_fmv` | Post-inference FMV track consolidation over `fmv_detections` (`default` queue) — see [fmv-track-consolidation.md](fmv-track-consolidation.md). Also dispatches `worker.project_fmv_to_graph` per Phase 2.B. |
 | `worker.train_model` | Forward training request to `inference-sam3:/train`, persist results |
 | `worker.transcribe_audio` | (When enabled) audio → text |
-| `worker.poll_http_feeds` | Periodic feed polling (Celery beat) |
-| `worker.cleanup_old_observations` | Periodic timeline pruning |
+| `worker.tick_feed_poll` | Periodic feed polling (Celery beat) |
+| `worker.cleanup_old_observations` | Hourly retention sweep over `observations` + `timeline_events` (`OBSERVATION_RETENTION_DAYS`, default 30 d) |
+| `worker.seed_reference_db` | Bake reference platforms/chips from `/opt/reference-corpora/`; the `force=False` skip path still publishes a terminal `done` (`skipped: true`) WS event so the admin Seed button resolves |
 
 **Link Graph projectors** (Phases 2-3): mirror PostGIS rows into Neo4j identity nodes. See [conventions/adding-a-new-graph-projector.md](../conventions/adding-a-new-graph-projector.md).
 
@@ -52,7 +53,9 @@ See [decisions/why-worker-legacy-monolith-kept.md](../decisions/why-worker-legac
 ## Key shared helpers (referenced from elsewhere)
 
 - `chip_to_uint8_rgb` — multispectral chip → 1008×1008 uint8 RGB SAM3 wants.
-- `chip_plan(...)` — slice a COG into chip windows with overlap; used by imagery pipeline and [backend/tests/test_chip_emitter.py](../../backend/tests/test_chip_emitter.py).
+- `plan_inference_grid(...)` — slice a COG into chip windows with overlap. Block-snapped origins (tiled COGs) return `x_offsets`/`y_offsets` **plus `x_window_sizes`/`y_window_sizes`**: snapping an origin down extends that window by the snap delta, so the grid keeps full pixel coverage (the old snap left recurring ~16 px never-analyzed strips at chip 1008 / overlap 252 / block 512 — regression test in [tests/test_plan_inference_grid.py](../../backend/tests/test_plan_inference_grid.py)).
+- `_emit_chip_payload(..., modality_hint=...)` — encodes one chip for upload. The operator/pipeline modality from ingest metadata is authoritative: it forces the SAR GeoTIFF branch for single-band GRDs / stripped band descriptions that fail the VV/VH heuristic (those chips previously shipped as `modality=rgb` and took the optical path).
+- `_rederive_geo_from_pixel_bbox` + `_geo_stale_after_merge` — refresh `pixel_obb`/`geo_polygon`/`geo_bbox` after WBF fusion or edge reconciliation mutates `pixel_bbox`, so persisted geometry matches the merged box ([tests/test_dedupe_geo_rederive.py](../../backend/tests/test_dedupe_geo_rederive.py)).
 - [`_remote_imagery_allowed`](../../backend/worker_legacy.py#L502-L528) — validates remote imagery hosts before worker-side HTTP(S) fetch.
 - [`resolve_input_path`](../../backend/worker_legacy.py#L531-L569) — resolves staged local paths and gated remote URLs into an input path.
 - SAM3 HTTP client constants (`INFERENCE_SAM3_URL`, timeouts, `INFERENCE_RESTART_RETRY_MAX`, `INFERENCE_RESTART_WAIT_S`, `INFERENCE_MAX_FAILED_CHIP_FRACTION`).
@@ -67,7 +70,7 @@ See [decisions/why-worker-legacy-monolith-kept.md](../decisions/why-worker-legac
 
 ## Fork safety
 
-Runs DB queries at **import time** (`DETECTION_POLICY = active_detection_policy()`) → importing in the Celery MainProcess builds `postgis_db`'s connection pool before the prefork pool forks workers. A `worker_process_init` handler (`_reset_db_pool_after_fork`, just after the `celery_app` definition) calls `postgis_db.reset_after_fork()` in every child → each rebuilds its own pool. Without it the first task per child fails with `DatabaseError: error with status PGRES_TUPLES_OK and no message from the libpq`. See [decisions/reset-db-pool-after-fork.md](../decisions/reset-db-pool-after-fork.md).
+Import can issue DB queries in the Celery MainProcess → that builds `postgis_db`'s connection pool before the prefork pool forks workers. (The former import-time `DETECTION_POLICY = active_detection_policy()` global is gone — the policy is now fetched per chip-batch/store call so admin confidence-override changes reach the long-lived worker; see [decisions/audit-fixes-worker-2026-06-11.md](../decisions/audit-fixes-worker-2026-06-11.md).) A `worker_process_init` handler (`_reset_db_pool_after_fork`, just after the `celery_app` definition) calls `postgis_db.reset_after_fork()` in every child → each rebuilds its own pool. Without it the first task per child fails with `DatabaseError: error with status PGRES_TUPLES_OK and no message from the libpq`. See [decisions/reset-db-pool-after-fork.md](../decisions/reset-db-pool-after-fork.md).
 
 ## Inputs / Outputs
 

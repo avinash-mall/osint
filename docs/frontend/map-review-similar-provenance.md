@@ -14,12 +14,15 @@ Three smaller right-rail panels complementing [SelectionPanel.tsx](map-selection
 - Source: `GET /api/detections/queue` (high-priority review queue)
 - Bulk-update review status: keep / discard / flag for follow-up
 - Triggers `PATCH /api/detections/{id}/review`
+- Queue loads carry a monotonic sequence token keyed to the status tab — a quick PENDING→ACCEPTED switch can no longer let the slower (stale) tab's response win the rows/header count
+- `onJump(id, lat, lon)` passes the row's lat/lon up so [SelectionPanel](map-selection-panel.md) → GaiaMap `jumpToDetection` can pan even when the row is outside the viewport GeoJSON (the queue is global)
 
 ## SimilarPanel
 
 - Source: `GET /api/detections/{id}/similar` (embedding NN)
-- Side-by-side thumbnail grid; click pivots map focus to the similar detection
+- Side-by-side thumbnail grid; click pivots map focus to the similar detection via `onSelect(id, lat, lon)` (same global-jump path as ReviewPanel)
 - Distance shown as cosine similarity
+- Results are cleared at load start and guarded by a sequence token — switching anchors quickly can no longer show the old anchor's grid under the new anchor's header, and a late old response never wins
 
 ## ProvenancePanel
 

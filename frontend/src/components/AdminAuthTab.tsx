@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
+import { apiErrorMessage } from '../utils/apiError';
 
 const API_URL = (import.meta as any).env?.VITE_API_URL || '';
 
@@ -76,7 +77,7 @@ export default function AdminAuthTab() {
       setConfig({ ...DEFAULT_CONFIG, ...data });
       setLoaded(true);
     } catch (err: any) {
-      setError(err?.response?.data?.detail || err?.message || 'failed to load config');
+      setError(apiErrorMessage(err, 'failed to load config'));
     } finally {
       setBusy(false);
     }
@@ -100,15 +101,19 @@ export default function AdminAuthTab() {
       setSavedAt(new Date().toISOString());
       const test = data?.test;
       if (test) {
+        // The backend returns {ok:true, skipped:true} when LDAP is disabled
+        // or the host is empty (no bind was attempted) — don't claim success.
         setTestResult({
           ok: !!test.ok,
-          message: test.ok
-            ? `Service bind succeeded · ${test.rtt_ms ?? '?'}ms`
-            : test.error || 'service bind failed',
+          message: test.skipped
+            ? 'Saved — bind test skipped (LDAP disabled or no host configured)'
+            : test.ok
+              ? `Service bind succeeded · ${test.rtt_ms ?? '?'}ms`
+              : test.error || 'service bind failed',
         });
       }
     } catch (err: any) {
-      setError(err?.response?.data?.detail || err?.message || 'save failed');
+      setError(apiErrorMessage(err, 'save failed'));
     } finally {
       setBusy(false);
     }
@@ -129,7 +134,7 @@ export default function AdminAuthTab() {
     } catch (err: any) {
       setTestResult({
         ok: false,
-        message: err?.response?.data?.detail || err?.message || 'test failed',
+        message: apiErrorMessage(err, 'test failed'),
       });
     } finally {
       setBusy(false);
@@ -155,7 +160,7 @@ export default function AdminAuthTab() {
     } catch (err: any) {
       setTestResult({
         ok: false,
-        message: err?.response?.data?.detail || err?.message || 'test failed',
+        message: apiErrorMessage(err, 'test failed'),
       });
     } finally {
       setBusy(false);

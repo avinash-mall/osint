@@ -1,7 +1,7 @@
 # `useEventStream.ts` — WebSocket Subscription
 
 **Path:** [frontend/src/hooks/useEventStream.ts](../../frontend/src/hooks/useEventStream.ts)
-**Lines:** ~60
+**Lines:** ~76
 
 ## Purpose
 
@@ -10,7 +10,8 @@ Open a single WebSocket connection to `/ws`, demultiplex topics to subscribers. 
 ## Behavior
 
 - Single WS connection at app boot; topics multiplexed by name.
-- Auto-reconnect with exponential backoff on disconnect.
+- Auto-reconnect with capped exponential backoff (3 s doubling to 30 s), reset to base on a successful open.
+- Close code **1008** (backend rejected the session pre-accept — [backend/routers/ws.py](../../backend/routers/ws.py)) stops reconnecting and dispatches a `sentinel:ws-unauthorized` `CustomEvent` (`detail: { topic }`) on `window` so the auth layer can react; redialing would loop forever against the same rejection.
 - Subscribers receive `{topic, payload}` objects.
 
 ## Topics consumed

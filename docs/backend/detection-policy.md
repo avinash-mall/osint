@@ -1,7 +1,7 @@
 # `backend/detection_policy.py` — Precision Open-Vocab Filter Policy
 
 **Path:** [backend/detection_policy.py](../../backend/detection_policy.py)
-**Lines:** ~430
+**Lines:** ~452
 **Depends on:** [backend/ontology.py](../../backend/ontology.py), [backend/database.py](../../backend/database.py), env `GLOBAL_CONFIDENCE_FLOOR`, `PER_CLASS_CONFIDENCE_OVERRIDES`, `DETECTION_THRESHOLD_PROFILE`, `LABEL_VERIFIER_MARGIN_FLOOR`
 
 ## Purpose
@@ -13,7 +13,7 @@ Single policy module: should a raw `/detect` detection be emitted, what is its `
 - **Open-vocabulary, precision default** — every label first-class ([decisions/why-open-vocabulary.md](../decisions/why-open-vocabulary.md)). Default profile `defence_precision`, `GLOBAL_CONFIDENCE_FLOOR=0.40` (raised from 0.35 to cut false positives — see [decisions/why-deconflicted-detection-prompts.md](../decisions/why-deconflicted-detection-prompts.md)); operators lower the floor or use `PER_CLASS_CONFIDENCE_OVERRIDES`.
 - **Per-class floor defaults** — `DEFAULT_PER_CLASS_THRESHOLDS` ships code-level floors for the **runtime canonical `parent_class` labels** (not the benchmark's collapsed bucket names) whose measured precision is unacceptable at the global default: every object under the `Transportation_Terrain` seed branch gets `0.55`, and the ontology fallback `unknown` gets `0.50`. Merged below env + DB so operator overrides always win. See [decisions/why-transportation-floor-raised.md](../decisions/why-transportation-floor-raised.md) for the bucket → runtime-label mapping and the trap that ate the first attempt.
 - **`parent_class_for_label` = public bucket assignment** — used by imagery worker, FMV worker, UI category facets, graph type-matching queries. Falls back to the normalized label when no parent matches.
-- **Policy cached** — `active_detection_policy()` reads `PER_CLASS_CONFIDENCE_OVERRIDES` from DB once, reuses; `invalidate_policy_cache()` called by inference router on overrides PUT.
+- **Policy cached with a 30 s TTL** — `active_detection_policy()` reads `PER_CLASS_CONFIDENCE_OVERRIDES` from DB and reuses the result for `_POLICY_TTL_S` (30 s); `invalidate_policy_cache()` (called by the inference router on overrides PUT) still forces an immediate rebuild in the API process. The TTL replaced an unbounded `lru_cache(maxsize=1)` that froze admin overrides in long-lived Celery workers for the life of the process — `invalidate_policy_cache` only reaches the API process. See [decisions/audit-fixes-backend-core-2026-06-11.md](../decisions/audit-fixes-backend-core-2026-06-11.md).
 
 ## Key symbols
 
@@ -21,14 +21,14 @@ Single policy module: should a raw `/detect` detection be emitted, what is its `
 - [`normalize_label`](../../backend/detection_policy.py#L86) — wraps `ontology._canonical`.
 - [`strip_source_prefix`](../../backend/detection_policy.py#L93) — removes `"sam3:"`, `"yoloe:"`, etc.
 - [`parent_class_for_label`](../../backend/detection_policy.py#L102) — **the** public function; clusters into broad open buckets.
-- [`active_detection_policy`](../../backend/detection_policy.py#L208) — reads defaults + env + DB overrides → dict; precedence `defaults < env < DB`.
-- [`invalidate_policy_cache`](../../backend/detection_policy.py#L230).
-- [`threshold_for_parent`](../../backend/detection_policy.py#L236) — `class_thresholds[parent]` with global-floor fallback.
-- [`detection_decision`](../../backend/detection_policy.py#L244) — `{emit: bool, reasons: list[str]}` per detection.
-- [`should_emit_detection`](../../backend/detection_policy.py#L286) — boolean shortcut.
-- [`DOTA_OBB_GENERIC_CLASSES`](../../backend/detection_policy.py#L312) — the 18 deliberately-generic DOTA-OBB v1 categories, pre-normalised. Task 1.2 anchor.
-- [`label_quality_for`](../../backend/detection_policy.py#L339) — classifies a detection's display trust as `verified` / `inferred` / `generic`. See [decisions/why-generic-labels-when-unverified.md](../decisions/why-generic-labels-when-unverified.md).
-- [`display_label_for`](../../backend/detection_policy.py#L374) — returns `(display_label, label_quality)`; suppresses fabricated specific labels on unverified DOTA-OBB generics.
+- [`active_detection_policy`](../../backend/detection_policy.py#L216-L226) — TTL-cached wrapper around [`_build_detection_policy`](../../backend/detection_policy.py#L229-L247) (defaults + env + DB overrides → dict; precedence `defaults < env < DB`).
+- [`invalidate_policy_cache`](../../backend/detection_policy.py#L250-L253).
+- [`threshold_for_parent`](../../backend/detection_policy.py#L258) — `class_thresholds[parent]` with global-floor fallback.
+- [`detection_decision`](../../backend/detection_policy.py#L266) — `{emit: bool, reasons: list[str]}` per detection.
+- [`should_emit_detection`](../../backend/detection_policy.py#L308) — boolean shortcut.
+- [`DOTA_OBB_GENERIC_CLASSES`](../../backend/detection_policy.py#L334) — the 18 deliberately-generic DOTA-OBB v1 categories, pre-normalised. Task 1.2 anchor.
+- [`label_quality_for`](../../backend/detection_policy.py#L361) — classifies a detection's display trust as `verified` / `inferred` / `generic`. See [decisions/why-generic-labels-when-unverified.md](../decisions/why-generic-labels-when-unverified.md).
+- [`display_label_for`](../../backend/detection_policy.py#L396) — returns `(display_label, label_quality)`; suppresses fabricated specific labels on unverified DOTA-OBB generics.
 
 ## Inputs / Outputs
 
@@ -51,6 +51,7 @@ untouched for audit and future re-promotion.
 - DB `inference_config` overrides optional; unavailable → env defaults.
 - Invalid JSON in `PER_CLASS_CONFIDENCE_OVERRIDES` ignored.
 - Detections below active floor → marked `below_class_threshold`, skipped by worker.
+- Processes that never call `invalidate_policy_cache` (Celery workers) pick up DB override changes within 30 s via the TTL.
 
 ## Cross-references
 
@@ -63,3 +64,5 @@ untouched for audit and future re-promotion.
 - [frontend/admin-conf-overrides.md](../frontend/admin-conf-overrides.md)
 - [inference/dota-obb-specialist.md](../inference/dota-obb-specialist.md) — the 18 generic categories
 - [decisions/removed-fair1m-and-remoteclip.md](../decisions/removed-fair1m-and-remoteclip.md) — the RemoteCLIP verifier that fed `generic → verified` was removed; `semantic_margin` now always absent (labels stay `inferred`/`generic`)
+- [decisions/audit-fixes-backend-core-2026-06-11.md](../decisions/audit-fixes-backend-core-2026-06-11.md) — TTL cache replacing `lru_cache`
+- Tests: [backend/tests/test_detection_policy_thresholds.py](../../backend/tests/test_detection_policy_thresholds.py)

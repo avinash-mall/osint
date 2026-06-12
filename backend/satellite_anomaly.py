@@ -91,7 +91,7 @@ def detect_maneuver(prev: dict, cur: dict) -> Optional[dict]:
     if dt_days > 0:
         expected = j2_raan_rate(cur["inclination_deg"], cur["mean_motion_revday"]) * dt_days
         actual = (cur["raan_deg"] - prev["raan_deg"] + 180.0) % 360.0 - 180.0
-        residual = abs(actual - expected)
+        residual = abs((actual - expected + 180.0) % 360.0 - 180.0)
         if residual > MANEUVER_RAAN_RESIDUAL_DEG:
             reasons.append(f"RAAN residual {residual:.3f}° (J2-corrected)")
 

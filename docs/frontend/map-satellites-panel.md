@@ -1,7 +1,7 @@
 # `SatellitesPanel.tsx` — overpass planning UI
 
 **Path:** [frontend/src/components/map/SatellitesPanel.tsx](../../frontend/src/components/map/SatellitesPanel.tsx)
-**Lines:** ~210
+**Lines:** ~245
 **Depends on:** [services/satellites.ts](../../frontend/src/services/satellites.ts), `lucide-react`; hosted by [SelectionPanel.tsx](../../frontend/src/components/map/SelectionPanel.tsx) (the "Sat" tab) and orchestrated by [GaiaMap.tsx](../../frontend/src/components/GaiaMap.tsx).
 
 ## Purpose
@@ -28,7 +28,11 @@ SGP4 service — see [satellites-router.md](../backend-routers/satellites-router
 
 - `SatellitesPanel({ observer, onRequestPick, pickActive, onGroundTrack })`.
 - TLE import textarea → `importTle`; `PREDICT` → `predictPasses`; per-satellite
-  `TRACK` → `getGroundTrack` → `onGroundTrack`.
+  `TRACK` → `getGroundTrack` → `onGroundTrack`. The ground-track request caps
+  the window at `Math.min(hours, 6)` — passing >6 h previously fell through to
+  the service's 1.5 h default (a 24 h slider drew a 1.5 h track); an inline
+  "Ground-track length caps at 6h" note appears when the slider exceeds 6 h.
+  See [decisions/audit-fixes-map-workspace-2026-06-11.md](../decisions/audit-fixes-map-workspace-2026-06-11.md).
 - Host wiring in `GaiaMap`: `satObserver` / `satPickActive` / `satGroundTrack`
   state; `onSatPick` (MapStage) sets the observer and clears pick mode.
 

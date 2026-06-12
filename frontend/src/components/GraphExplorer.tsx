@@ -246,6 +246,9 @@ export default function GraphExplorer() {
   const [gnnSuggestions, setGnnSuggestions] = useState<any[]>([]);
   const [lensBanner, setLensBanner] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // Brief auto-clearing notice (e.g. "Top central" click on an out-of-feed node).
+  const [viewNotice, setViewNotice] = useState<string | null>(null);
+  const viewNoticeTimerRef = useRef<number | null>(null);
   // Class scope: the dropdown's options (detection class + count) and the active
   // selection. A non-empty selection fetches an unbounded, class-scoped graph in
   // place of the bounded operational feed; metrics + co-location follow it.
@@ -258,8 +261,15 @@ export default function GraphExplorer() {
   const [expandedClusters, setExpandedClusters] = useState<Set<string>>(new Set());
   const graphPaneRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<any>(null);
+  // Sequence guards: rapid timeRange/classLens/mode changes fire overlapping
+  // requests; only the latest call may commit state. Refs (not per-effect
+  // cancelled flags) because both fetchers are also invoked outside their
+  // effects (refresh button shares fetchData).
+  const dataSeqRef = useRef(0);
+  const metricsSeqRef = useRef(0);
 
   const fetchData = useCallback(async () => {
+    const seq = ++dataSeqRef.current;
     setLoadError(null);
     if (mode !== 'investigation') {
       // Evidence and Ontology modes own their own fetch/render paths
@@ -285,12 +295,14 @@ export default function GraphExplorer() {
         }),
         axios.get(`${API_URL}/api/ontology/updates`, { params: { limit: 8 } }).catch(() => ({ data: { updates: [] } })),
       ]);
+      if (seq !== dataSeqRef.current) return;
       setData({
         nodes: graphResponse.data.nodes || [],
         links: (graphResponse.data.links || []).map((link: any) => ({ ...link, source: link.source, target: link.target })),
       });
       setUpdates(updatesResponse.data.updates || []);
     } catch (err: any) {
+      if (seq !== dataSeqRef.current) return;
       console.error('Error fetching graph data:', err);
       setLoadError(err?.message || 'Failed to load graph');
     }
@@ -304,6 +316,7 @@ export default function GraphExplorer() {
   // centrality-weighted node sizing. Scoped to Investigation; candidate edges
   // included to mirror the visible topology.
   const fetchMetrics = useCallback(async () => {
+    const seq = ++metricsSeqRef.current;
     if (mode !== 'investigation') { setMetrics(null); return; }
     try {
       // Unbounded: metrics describe the whole graph, or the selected class +
@@ -312,8 +325,10 @@ export default function GraphExplorer() {
       if (selectedClass) params.det_class = selectedClass;
       if (selectedPass) params.pass_id = selectedPass;
       const resp = await axios.get(`${API_URL}/api/graph/metrics`, { params });
+      if (seq !== metricsSeqRef.current) return;
       setMetrics(resp.data);
     } catch (err) {
+      if (seq !== metricsSeqRef.current) return;
       console.error('graph metrics fetch failed', err);
       setMetrics(null);
     }
@@ -683,6 +698,17 @@ export default function GraphExplorer() {
 
   const handleNodeRightClick = useCallback((node: any, event: MouseEvent) => {
     event.preventDefault();
+    // Virtual cluster nodes have no server-side identity (synthetic id), so
+    // the Expand/Search-Around menu would blank the canvas — expand instead.
+    if (node?.__cluster && node?.__cluster_key) {
+      setExpandedClusters((cur) => {
+        const next = new Set(cur);
+        next.add(String(node.__cluster_key));
+        return next;
+      });
+      setContextMenu(null);
+      return;
+    }
     setContextMenu({ x: event.clientX, y: event.clientY, node });
     setSelectedNode(node);
   }, []);
@@ -776,16 +802,19 @@ export default function GraphExplorer() {
     }
   }, []);
 
+  // Errors propagate to the EvidenceColumnDAG button, which renders the
+  // success/failure status line. On success the evidence chain is re-fetched
+  // so the new CONTRADICTED_BY edge is visible immediately.
   const contradictDetection = useCallback(async (actorId: string, detectionPostgisId: number) => {
-    try {
-      await axios.post(`${API_URL}/api/graph/contradict`, {
-        actor_id: actorId,
-        detection_postgis_id: detectionPostgisId,
-      });
-    } catch (err) {
-      console.error('contradict failed', err);
+    await axios.post(`${API_URL}/api/graph/contradict`, {
+      actor_id: actorId,
+      detection_postgis_id: detectionPostgisId,
+    });
+    if (evidenceFocusId) {
+      const resp = await axios.get(`${API_URL}/api/graph/evidence/${encodeURIComponent(evidenceFocusId)}`);
+      setEvidencePayload(resp.data);
     }
-  }, []);
+  }, [evidenceFocusId]);
 
   const rollupSite = useCallback(async (node: any) => {
     setContextMenu(null);
@@ -861,15 +890,52 @@ export default function GraphExplorer() {
     setGnnResult(null);
   }, []);
 
-  // A: select a node by id from the metrics card (find it in the current feed).
-  const selectNodeById = useCallback((id: string) => {
+  const showViewNotice = useCallback((text: string) => {
+    if (viewNoticeTimerRef.current != null) window.clearTimeout(viewNoticeTimerRef.current);
+    setViewNotice(text);
+    viewNoticeTimerRef.current = window.setTimeout(() => {
+      viewNoticeTimerRef.current = null;
+      setViewNotice(null);
+    }, 3000);
+  }, []);
+
+  useEffect(() => () => {
+    if (viewNoticeTimerRef.current != null) window.clearTimeout(viewNoticeTimerRef.current);
+  }, []);
+
+  // A: select a node by id from the metrics card / GNN list. Metrics are
+  // whole-graph while the feed is bounded (limit 150, time-filtered), so on a
+  // miss fetch the node's neighbourhood and merge it into the feed.
+  const selectNodeById = useCallback(async (id: string) => {
     const node = data.nodes.find((n: any) => n.id === id);
     if (node) {
       setSelectedNode(node);
       setContextMenu(null);
       requestAnimationFrame(() => focusNode(node));
+      return;
     }
-  }, [data.nodes, focusNode]);
+    try {
+      const response = await axios.post(`${API_URL}/api/graph/neighborhood`, { node_id: id });
+      const fetchedNodes = response.data?.nodes || [];
+      const fetchedLinks = response.data?.links || [];
+      const target = fetchedNodes.find((n: any) => n.id === id);
+      if (!target) throw new Error('node not in neighborhood response');
+      setData((cur: any) => {
+        const seenNodes = new Set(cur.nodes.map((n: any) => n.id));
+        const linkKey = (l: any) => `${nodeId(l.source)}|${nodeId(l.target)}|${predicateOf(l)}`;
+        const seenLinks = new Set(cur.links.map(linkKey));
+        return {
+          nodes: [...cur.nodes, ...fetchedNodes.filter((n: any) => !seenNodes.has(n.id))],
+          links: [...cur.links, ...fetchedLinks.filter((l: any) => !seenLinks.has(linkKey(l)))],
+        };
+      });
+      setSelectedNode(target);
+      setContextMenu(null);
+    } catch (err) {
+      console.error('selectNodeById neighborhood fetch failed', err);
+      showViewNotice('Node is not in the current view (time/class filtered out).');
+    }
+  }, [data.nodes, focusNode, showViewNotice]);
 
   const exportSelected = useCallback(() => {
     const payload = selectedNode || graphData;
@@ -1109,6 +1175,11 @@ export default function GraphExplorer() {
             {loadError && (
               <div className="px-3 py-1.5 text-[11px] font-mono bg-sentinel-warning/20 text-sentinel-warning">
                 {loadError}
+              </div>
+            )}
+            {viewNotice && (
+              <div className="px-3 py-1.5 text-[11px] font-mono bg-sentinel-warning/20 text-sentinel-warning">
+                {viewNotice}
               </div>
             )}
             {lensBanner && (

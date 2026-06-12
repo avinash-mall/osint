@@ -1,7 +1,35 @@
 # Removed: empty `inference-sam3/detection_policy.py`
 
-**Date:** 2026-06-08 (corrected 2026-06-09)
-**Status:** adopted — with a correction (see "Correction" below)
+**Date:** 2026-06-08 (corrected 2026-06-09, 2026-06-12)
+**Status:** adopted — with corrections (see below)
+
+## Correction (2026-06-12)
+
+The "loads the **backend** module by path" claim below was wrong **in
+production**: `BACKEND_DIR = Path(__file__).resolve().parents[1] / "backend"`
+is `/backend` inside the container — a path that never exists, because `/app`
+*is* the `inference-sam3/` mount — so the container always took the
+`try/except` fallback and used the naive slugifier. The compose file-mount
+`./backend/detection_policy.py:/app/detection_policy.py:ro` was never read by
+`fusion.py` at all.
+
+`fusion.py` now tries an ordered candidate list
+([fusion.py#L65-L97](../../inference-sam3/fusion.py#L65-L97)):
+
+1. `Path(__file__).resolve().parent / "detection_policy.py"` — resolves to
+   `/app/detection_policy.py` inside the container (the compose file-mount,
+   i.e. the real backend module).
+2. `BACKEND_DIR / "detection_policy.py"` — the dev-host checkout's
+   `backend/detection_policy.py`.
+
+A candidate is accepted only if it is non-empty (`stat().st_size > 0`) and
+defines a callable `parent_class_for_label` — so on the dev host, where
+candidate 1 is the 0-byte root-owned bind-mount anchor described in the 2026-06-09
+correction, the loader skips it and falls through to the real backend module.
+Only when no candidate qualifies does the naive slugifier fallback apply (with
+a warning). Regression-tested in
+[tests/test_audit_fixes.py](../../inference-sam3/tests/test_audit_fixes.py).
+See [audit-fixes-inference-2026-06-12.md](audit-fixes-inference-2026-06-12.md).
 
 ## Correction (2026-06-09)
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import axios from 'axios';
 import { CheckCircle2, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { apiErrorMessage } from '../../utils/apiError';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
 
@@ -69,7 +70,7 @@ export default function RepeatThresholdsView() {
       setNewNotes('');
       await reload();
     } catch (err: any) {
-      setError(err?.response?.data?.detail || err?.message || 'create failed');
+      setError(apiErrorMessage(err, 'create failed'));
     } finally {
       setBusy(false);
     }

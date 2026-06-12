@@ -30,7 +30,9 @@ export interface ObjectPayload {
 }
 
 async function _send(url: string, method: string, body?: unknown): Promise<any> {
-  const init: RequestInit = { method };
+  // credentials: the rest of the app uses axios with withCredentials — bare
+  // fetch must match or cross-origin VITE_API_URL deployments lose the session.
+  const init: RequestInit = { method, credentials: 'include' };
   if (body !== undefined) {
     init.headers = { 'Content-Type': 'application/json' };
     init.body = JSON.stringify(body);
@@ -116,7 +118,9 @@ export async function listUnknownLabels(
   if (opts.limit) params.set('limit', String(opts.limit));
   if (opts.since) params.set('since', opts.since);
   const qs = params.toString();
-  const r = await fetch(`${API_URL}/api/ontology/unknown-labels${qs ? '?' + qs : ''}`);
+  const r = await fetch(`${API_URL}/api/ontology/unknown-labels${qs ? '?' + qs : ''}`, {
+    credentials: 'include',
+  });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
@@ -129,6 +133,7 @@ export async function assignUnknownLabel(
     `${API_URL}/api/ontology/unknown-labels/${encodeURIComponent(label)}/assign`,
     {
       method: 'POST',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     },

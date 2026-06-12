@@ -175,12 +175,26 @@ def run(
     height, width = image_rgb_uint8.shape[:2]
 
     if use_seg:
-        try:
-            classes = list(prompt_list)
-            model.set_classes(classes, model.get_text_pe(classes))
-        except Exception as exc:
-            print(f"[yoloe] set_classes failed: {exc}")
-            return []
+        if prompt_list:
+            try:
+                classes = list(prompt_list)
+                model.set_classes(classes, model.get_text_pe(classes))
+            except Exception as exc:
+                import sam3_runner
+                if sam3_runner._cuda_context_poisoned(exc):
+                    raise
+                print(f"[yoloe] set_classes failed: {exc}")
+                return []
+        else:
+            # pf checkpoint missing → fell back to seg with NO prompts.
+            # set_classes([], get_text_pe([])) raises (or leaves a zero-class
+            # vocab), so the fallback always emitted nothing. Run seg with its
+            # baked vocabulary instead.
+            print(
+                "[yoloe] pf checkpoint unavailable; running seg with its baked "
+                "vocabulary (no text prompts)",
+                flush=True,
+            )
 
     from inference_utils import safe_predict, cuda_cleanup
 
@@ -204,6 +218,12 @@ def run(
             name="yoloe.predict",
         )
     except Exception as exc:
+        # An unrecoverable CUDA fault must propagate so the caller's self-heal
+        # (run_video_yoloe → os._exit(1)) fires; returning [] here made every
+        # subsequent frame fail identically while looking like "no detections".
+        import sam3_runner
+        if sam3_runner._cuda_context_poisoned(exc):
+            raise
         print(f"[yoloe] inference failed: {exc}", flush=True)
         return []
 

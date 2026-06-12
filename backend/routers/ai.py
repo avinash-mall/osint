@@ -199,10 +199,19 @@ def ai_propose_actions(req: AIActionProposalRequest):
     domain = normalize_domain(req.domain, "WORKFLOW")
     title = req.payload.get("title") or f"AI proposal: {req.action_type.replace('_', ' ')}"
     rationale = f"Proposed from analyst prompt: {req.prompt[:500]}"
+    # The confidence column is NOT NULL with no default (fail-loudly intent in
+    # platform_schema). Use the proposer-supplied score when present; otherwise
+    # fall back to a default and record the source honestly in the payload.
+    try:
+        confidence = max(0.0, min(1.0, float(req.payload.get("confidence"))))
+        confidence_source = "proposer"
+    except (TypeError, ValueError):
+        confidence = 0.62
+        confidence_source = "default"
     with postgis_db.get_cursor(commit=True) as cursor:
         cursor.execute("""
             INSERT INTO ai_action_proposals (action_type, title, domain, target_id, rationale, sources, payload, confidence, risk_level, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 0.62, %s, 'pending_approval')
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending_approval')
             RETURNING id, action_type, title, domain, target_id, rationale, sources, payload, confidence, risk_level, status, created_at, updated_at
         """, (
             req.action_type,
@@ -211,7 +220,8 @@ def ai_propose_actions(req: AIActionProposalRequest):
             req.target_id,
             rationale,
             json.dumps(req.payload.get("sources", [])),
-            json.dumps({**req.payload, "prompt": req.prompt}),
+            json.dumps({**req.payload, "prompt": req.prompt, "confidence_source": confidence_source}),
+            confidence,
             req.risk_level,
         ))
         proposal = dict(cursor.fetchone())
@@ -279,7 +289,7 @@ def _resolve_target_observer(target_id) -> Optional[dict]:
                 FROM detections d
                 JOIN detection_target_candidates dtc ON dtc.detection_id = d.id
                 WHERE dtc.target_id = %s
-                  AND dtc.status IN ('accepted', 'confirmed')
+                  AND dtc.status IN ('approved', 'accepted', 'confirmed')
                   AND d.geom IS NOT NULL
                 """,
                 (str(target_id),),
@@ -296,24 +306,61 @@ def _resolve_target_observer(target_id) -> Optional[dict]:
 @router.post("/api/actions/proposals/{proposal_id}/execute")
 def execute_action_proposal(proposal_id: int):
     ensure_platform_tables()
-    with postgis_db.get_cursor() as cursor:
+    # Claim-first: atomically flip approved → executing so a concurrent (or
+    # double-clicked) execute can't run the side effects twice.
+    with postgis_db.get_cursor(commit=True) as cursor:
         cursor.execute("""
-            SELECT id, action_type, title, domain, target_id, rationale, sources, payload,
-                   confidence, risk_level, status, proposed_by, approved_by, executed_at, result, created_at, updated_at
-            FROM ai_action_proposals
-            WHERE id = %s
+            UPDATE ai_action_proposals
+            SET status = 'executing', updated_at = NOW()
+            WHERE id = %s AND status = 'approved'
+            RETURNING id, action_type, title, domain, target_id, rationale, sources, payload,
+                      confidence, risk_level, status, proposed_by, approved_by, executed_at, result, created_at, updated_at
         """, (proposal_id,))
         row = cursor.fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Proposal not found")
+        if not row:
+            cursor.execute("SELECT status FROM ai_action_proposals WHERE id = %s", (proposal_id,))
+            existing = cursor.fetchone()
+            if not existing:
+                raise HTTPException(status_code=404, detail="Proposal not found")
+            raise HTTPException(status_code=409, detail="Proposal must be approved before execution")
     proposal = dict(row)
-    if proposal["status"] != "approved":
-        raise HTTPException(status_code=409, detail="Proposal must be approved before execution")
     if proposal["risk_level"] not in {"low", "medium"}:
+        with postgis_db.get_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE ai_action_proposals SET status = 'approved', updated_at = NOW() WHERE id = %s AND status = 'executing'",
+                (proposal_id,),
+            )
         raise HTTPException(status_code=403, detail="High-risk proposals require an external allowlisted connector")
 
     payload = proposal.get("payload") or {}
     result = {"executed": True, "mode": "internal_only"}
+    try:
+        result = _run_proposal_side_effects(proposal, payload, result)
+    except Exception:
+        # Release the claim so the analyst can retry once the downstream
+        # dependency (LLM, reports, analytics) recovers.
+        with postgis_db.get_cursor(commit=True) as cursor:
+            cursor.execute(
+                "UPDATE ai_action_proposals SET status = 'approved', updated_at = NOW() WHERE id = %s AND status = 'executing'",
+                (proposal_id,),
+            )
+        raise
+
+    with postgis_db.get_cursor(commit=True) as cursor:
+        cursor.execute("""
+            UPDATE ai_action_proposals
+            SET status = 'executed', executed_at = NOW(), result = %s, updated_at = NOW()
+            WHERE id = %s AND status = 'executing'
+            RETURNING id, action_type, title, domain, target_id, rationale, sources, payload,
+                      confidence, risk_level, status, proposed_by, approved_by, executed_at, result, created_at, updated_at
+        """, (json.dumps(result, default=str), proposal_id))
+        executed = dict(cursor.fetchone())
+    record_timeline_event(executed.get("domain") or "WORKFLOW", "ai_action_executed", executed["title"], {"proposal_id": proposal_id, "result": result}, entity_id=executed.get("target_id"))
+    publish_event("ops", {"type": "ai_action_executed", "proposal": executed})
+    return {"proposal": executed, "result": result}
+
+
+def _run_proposal_side_effects(proposal: dict, payload: dict, result: dict) -> dict:
     if proposal["action_type"] == "queue_analytic":
         from routers.analytics import run_viewshed
         # Resolve the proposal's target to its real location so the viewshed runs
@@ -349,19 +396,7 @@ def execute_action_proposal(proposal_id: int):
         )
     else:
         result["message"] = f"Action type '{proposal['action_type']}' has no internal connector."
-
-    with postgis_db.get_cursor(commit=True) as cursor:
-        cursor.execute("""
-            UPDATE ai_action_proposals
-            SET status = 'executed', executed_at = NOW(), result = %s, updated_at = NOW()
-            WHERE id = %s
-            RETURNING id, action_type, title, domain, target_id, rationale, sources, payload,
-                      confidence, risk_level, status, proposed_by, approved_by, executed_at, result, created_at, updated_at
-        """, (json.dumps(result, default=str), proposal_id))
-        executed = dict(cursor.fetchone())
-    record_timeline_event(executed.get("domain") or "WORKFLOW", "ai_action_executed", executed["title"], {"proposal_id": proposal_id, "result": result}, entity_id=executed.get("target_id"))
-    publish_event("ops", {"type": "ai_action_executed", "proposal": executed})
-    return {"proposal": executed, "result": result}
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -434,10 +469,11 @@ def _detections_within(lat: float, lon: float, radius_m: float, limit: int = 200
     with postgis_db.get_cursor() as cur:
         cur.execute(
             """
-            SELECT id, object_class, confidence,
+            SELECT id, class AS object_class, confidence,
                    ST_Y(ST_Centroid(geom)) AS lat, ST_X(ST_Centroid(geom)) AS lon
             FROM detections
-            WHERE ST_DWithin(geom::geography, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s)
+            WHERE deleted_at IS NULL
+              AND ST_DWithin(geom::geography, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s)
             ORDER BY confidence DESC NULLS LAST
             LIMIT %s
             """,

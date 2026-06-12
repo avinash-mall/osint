@@ -632,6 +632,30 @@ def merge_entity_into(
         )
         b_updated = _row_to_dict(cursor.fetchone())
 
+        # Re-home everything that still points at A before it is deleted:
+        # track attachments (no FK; B may already hold some of the same
+        # tracks), soft unit/base references from other entities, and the
+        # entity_candidates audit trail.
+        cursor.execute(
+            """
+            INSERT INTO operational_entity_tracks (entity_id, track_id, attached_by, attached_at)
+            SELECT %s, track_id, attached_by, attached_at
+            FROM operational_entity_tracks WHERE entity_id = %s
+            ON CONFLICT (entity_id, track_id) DO NOTHING
+            """,
+            (b_id, a_id),
+        )
+        cursor.execute("DELETE FROM operational_entity_tracks WHERE entity_id = %s", (a_id,))
+        cursor.execute("UPDATE operational_entities SET unit_id = %s, updated_at = NOW() WHERE unit_id = %s", (b_id, a_id))
+        cursor.execute(
+            "UPDATE operational_entities SET operates_from_base_id = %s, updated_at = NOW() WHERE operates_from_base_id = %s",
+            (b_id, a_id),
+        )
+        cursor.execute(
+            "UPDATE entity_candidates SET approved_entity_id = %s, updated_at = NOW() WHERE approved_entity_id = %s",
+            (b_id, a_id),
+        )
+
         cursor.execute("DELETE FROM operational_entities WHERE id = %s RETURNING id", (a_id,))
         if cursor.fetchone() is None:
             raise HTTPException(status_code=500, detail="A row delete failed")

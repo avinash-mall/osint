@@ -331,9 +331,11 @@ export default function FmvPlayer({
   const { user } = useAuth();
 
   // FMV+ stream counters — incremented on every ws frame; the per-second
-  // delta is recomputed on a 1 s tick.
+  // delta is recomputed on a 1 s tick. The running total also lives in a ref
+  // so the tick interval can be created once and never torn down by renders.
   const [ndjsonTotal, setNdjsonTotal] = useState(0);
   const [ndjsonDelta, setNdjsonDelta] = useState(0);
+  const ndjsonTotalRef = useRef(0);
   const ndjsonLastTotalRef = useRef(0);
   const ndjsonNewTracksRef = useRef(0);
   const [ndjsonNewTracksDelta, setNdjsonNewTracksDelta] = useState(0);
@@ -349,6 +351,16 @@ export default function FmvPlayer({
   const rafRef = useRef<number | null>(null);
   const dragRef = useRef(false);
   const playPromiseRef = useRef<Promise<void> | null>(null);
+  // Mirrors of state, written every render, so late async responses (frames /
+  // detections of a previously selected clip) can be dropped instead of
+  // painting clip A's telemetry and boxes over clip B's video.
+  const selectedIdRef = useRef<number | null>(null);
+  selectedIdRef.current = selectedId;
+  const detectionsRef = useRef<Detection[]>([]);
+  detectionsRef.current = detections;
+  // Streaming-refetch throttle (≤1 full detections refetch per 1.5 s).
+  const detectionsRefetchTimerRef = useRef<number | null>(null);
+  const lastDetectionsRefetchRef = useRef(0);
 
   const { categories } = useDetectionCategories();
 
@@ -385,8 +397,10 @@ export default function FmvPlayer({
       const res = await axios.get(`${API_URL}/api/fmv/clips/${clipId}/klv`, {
         params: { limit: 10000 },
       });
+      if (selectedIdRef.current !== clipId) return;  // clip switched mid-flight
       setFrames(res.data.frames || []);
     } catch (err) {
+      if (selectedIdRef.current !== clipId) return;
       console.error('fetchFrames failed', err);
       setFrames([]);
     }
@@ -395,10 +409,40 @@ export default function FmvPlayer({
   const fetchDetections = useCallback(async (clipId: number) => {
     try {
       const res = await axios.get(`${API_URL}/api/fmv/clips/${clipId}/detections`);
+      if (selectedIdRef.current !== clipId) return;  // clip switched mid-flight
       setDetections(res.data.detections || []);
     } catch (err) {
+      if (selectedIdRef.current !== clipId) return;
       console.error('fetchDetections failed', err);
       setDetections([]);
+    }
+  }, []);
+
+  // Coalesce streaming refetches: fmv_detection / fmv_detections_progress
+  // events arrive many times per second while SAM3 tracks; refetching the
+  // unbounded detections list on each one is a storm. At most one refetch per
+  // 1.5 s, with an immediate flush for fmv_detections_complete.
+  const scheduleDetectionsRefetch = useCallback((clipId: number, immediate = false) => {
+    const run = () => {
+      detectionsRefetchTimerRef.current = null;
+      lastDetectionsRefetchRef.current = Date.now();
+      fetchDetections(clipId);
+    };
+    if (immediate) {
+      if (detectionsRefetchTimerRef.current != null) {
+        window.clearTimeout(detectionsRefetchTimerRef.current);
+      }
+      run();
+      return;
+    }
+    if (detectionsRefetchTimerRef.current != null) return;
+    const wait = Math.max(0, 1500 - (Date.now() - lastDetectionsRefetchRef.current));
+    detectionsRefetchTimerRef.current = window.setTimeout(run, wait);
+  }, [fetchDetections]);
+
+  useEffect(() => () => {
+    if (detectionsRefetchTimerRef.current != null) {
+      window.clearTimeout(detectionsRefetchTimerRef.current);
     }
   }, []);
 
@@ -472,46 +516,58 @@ export default function FmvPlayer({
       if (msg?.type === 'fmv_detection' || msg?.type === 'fmv_detections_complete') {
         setTrackingError(null);
         if (msg?.type === 'fmv_detections_complete') setTrackingProgress(null);
-        fetchDetections(selectedId);
-        setNdjsonTotal((n) => n + (msg?.type === 'fmv_detection' ? 1 : 0));
+        scheduleDetectionsRefetch(selectedId, msg?.type === 'fmv_detections_complete');
+        if (msg?.type === 'fmv_detection') {
+          ndjsonTotalRef.current += 1;
+          setNdjsonTotal(ndjsonTotalRef.current);
+        }
         if (msg?.new_track) ndjsonNewTracksRef.current += 1;
       }
       if (msg?.type === 'fmv_detections_progress') {
         setTrackingError(null);
         setTrackingProgress({ window: msg.window || 0, windows: msg.windows || 0 });
-        fetchDetections(selectedId);
+        scheduleDetectionsRefetch(selectedId);
         // count progress frames as ndjson chunks
-        setNdjsonTotal((n) => n + 1);
+        ndjsonTotalRef.current += 1;
+        setNdjsonTotal(ndjsonTotalRef.current);
       }
       if (msg?.type === 'fmv_detections_failed') {
         setTrackingError(msg.error || 'tracking failed');
         setTrackingProgress(null);
       }
     },
-    [selectedId, fetchFrames, fetchDetections],
+    [selectedId, fetchFrames, fetchDetections, scheduleDetectionsRefetch],
   );
   useEventStream(selectedId ? `fmv:${selectedId}` : 'fmv:none', onClipChannel);
 
-  // Compute per-second NDJSON delta on a 1 s tick.
+  // Compute per-second NDJSON delta on a 1 s tick. Created once and reading
+  // refs — a state dep here would tear the interval down on every streamed
+  // event, so the tick would never fire while detections flow ("+0 dets/s").
   useEffect(() => {
     const id = window.setInterval(() => {
-      const total = ndjsonTotal;
+      const total = ndjsonTotalRef.current;
       setNdjsonDelta(Math.max(0, total - ndjsonLastTotalRef.current));
       ndjsonLastTotalRef.current = total;
       setNdjsonNewTracksDelta(ndjsonNewTracksRef.current);
       ndjsonNewTracksRef.current = 0;
     }, 1000);
     return () => window.clearInterval(id);
-  }, [ndjsonTotal]);
+  }, []);
 
   // Reset counters when switching clips.
   useEffect(() => {
     setNdjsonTotal(0);
     setNdjsonDelta(0);
+    ndjsonTotalRef.current = 0;
     ndjsonLastTotalRef.current = 0;
     ndjsonNewTracksRef.current = 0;
     setNdjsonNewTracksDelta(0);
     setReidCluster({ anchorTrack: null, members: [] });
+    if (detectionsRefetchTimerRef.current != null) {
+      window.clearTimeout(detectionsRefetchTimerRef.current);
+      detectionsRefetchTimerRef.current = null;
+    }
+    lastDetectionsRefetchRef.current = 0;
   }, [selectedId]);
 
   // Re-ID cluster — fetch when the selected detection has an embedding.
@@ -536,7 +592,10 @@ export default function FmvPlayer({
             similarity: Number(r.similarity || 0),
             class: r.class || 'unknown',
           }));
-        const anchorTrack = detections.find((d) => d.id === selectedDetectionId)?.metadata?.track_id;
+        // Anchor row looked up via ref: a `detections` dep here would refire
+        // /similar (server cosine-scores up to 4000 embeddings) on every
+        // streaming refetch while the Detail tab is open.
+        const anchorTrack = detectionsRef.current.find((d) => d.id === selectedDetectionId)?.metadata?.track_id;
         setReidCluster({ anchorTrack: anchorTrack ? String(anchorTrack) : null, members });
       } catch {
         if (!cancelled) setReidCluster({ anchorTrack: null, members: [] });
@@ -545,12 +604,15 @@ export default function FmvPlayer({
     return () => {
       cancelled = true;
     };
-  }, [selectedDetectionId, detections]);
+  }, [selectedDetectionId]);
 
   // Poll while clip is transcoding so the UI flips to "ready" without
-  // requiring a WS event.
+  // requiring a WS event. failed/error/stored are terminal — never poll them
+  // (stored = HLS transcode unavailable at upload time; nothing retries it).
   useEffect(() => {
-    if (!selectedClip || selectedClip.status === 'ready') return;
+    if (!selectedClip || selectedClip.status === 'ready'
+      || selectedClip.status === 'failed' || selectedClip.status === 'error'
+      || selectedClip.status === 'stored') return;
     const id = window.setInterval(fetchClips, 3000);
     return () => window.clearInterval(id);
   }, [selectedClip, fetchClips]);
@@ -1291,7 +1353,7 @@ export default function FmvPlayer({
                   )}
                 </div>
 
-                {/* Transcoding overlay */}
+                {/* Transcoding / failure overlay */}
                 {selectedClip.status !== 'ready' && (
                   <div
                     style={{
@@ -1303,7 +1365,17 @@ export default function FmvPlayer({
                       background: 'rgba(0,0,0,0.6)',
                     }}
                   >
-                    <span className="tag accent">TRANSCODING…</span>
+                    {selectedClip.status === 'failed' || selectedClip.status === 'error' ? (
+                      <span className="tag crit" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <AlertTriangle size={11} /> PROCESSING FAILED — delete the clip and re-upload
+                      </span>
+                    ) : selectedClip.status === 'stored' ? (
+                      <span className="tag crit" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <AlertTriangle size={11} /> NO STREAM — HLS transcode was unavailable at upload; re-upload once ffmpeg is healthy
+                      </span>
+                    ) : (
+                      <span className="tag accent">TRANSCODING…</span>
+                    )}
                   </div>
                 )}
 
@@ -2284,6 +2356,7 @@ function ClipsTab({
   const accent = 'var(--accent)';
   const [pendingDelete, setPendingDelete] = useState<Clip | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   return (
     <div style={{ padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
       {/* CLIP LIBRARY */}
@@ -2291,6 +2364,11 @@ function ClipsTab({
         <div className="label-mono" style={{ marginBottom: 6 }}>
           Clip library · {clips.length}
         </div>
+        {deleteError && (
+          <div className="mono" style={{ fontSize: 11, color: 'var(--crit)', padding: '0 0 6px' }}>
+            Delete failed: {deleteError}
+          </div>
+        )}
         {clips.length === 0 && clipsError && (
           <div
             className="mono"
@@ -2330,7 +2408,8 @@ function ClipsTab({
           const selected = clip.id === selectedId;
           const statusTone =
             clip.status === 'ready' ? 'ok' :
-            clip.status === 'error' ? 'crit' : 'unknown';
+            clip.status === 'error' || clip.status === 'failed' || clip.status === 'stored'
+              ? 'crit' : 'unknown';
           return (
             <div key={clip.id} style={{ display: 'flex', alignItems: 'stretch', borderBottom: '1px solid var(--line)' }}>
               <button
@@ -2403,7 +2482,14 @@ function ClipsTab({
           onConfirm={async () => {
             if (!onDeleteClip) return;
             setDeleteBusy(true);
+            setDeleteError(null);
+            // Catch here: ConfirmDialog fires onConfirm without awaiting, so a
+            // rejected delete would otherwise vanish as an unhandled rejection
+            // while the dialog closes as if it succeeded.
             try { await onDeleteClip(pendingDelete.id); }
+            catch (err: any) {
+              setDeleteError(err?.response?.data?.detail || err?.message || 'request failed');
+            }
             finally { setDeleteBusy(false); setPendingDelete(null); }
           }}
         />

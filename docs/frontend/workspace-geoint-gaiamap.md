@@ -1,7 +1,7 @@
 # Geoint Workspace — `GaiaMap.tsx`
 
 **Path:** [frontend/src/components/GaiaMap.tsx](../../frontend/src/components/GaiaMap.tsx)
-**Lines:** ~1830
+**Lines:** ~1980
 **Depends on:** React hooks, `axios`, Leaflet/React-Leaflet components, map panels, ontology utilities, detection/imagery/analytics backend APIs
 
 ## Purpose
@@ -40,7 +40,9 @@ The Common Operating Picture: a 2D Leaflet map with all detection layers, satell
 ## Data sources
 
 - **Bulk detection feed — `GET /api/detections/geojson-lite`.** Centroid-Point features with light props (no polygon geometry, no fat metadata) — small/fast (~2.7 MB/0.6 s for 6 441 vs 57 MB/8 s for the removed fat feed). Scoped by the current map `bbox` + time window + `limit=100000` (all-at-once, no cursor pagination). Stored in `detectionsGeoJSON`; drives counts, the class filter, framing, and the marker/dot layers. Persisted BOXES come from the MVT tile layer; full per-detection detail is fetched on selection via `/enriched`. The fetch timeout is **20 s**. (The legacy fat `GET /api/detections/geojson` feed and its `VITE_DETECTION_TILES=0` build flag were removed.)
-- **Selection — `selectDetectionById(id, fallback)`.** The single entry point for ALL detection clicks (MVT polygon, icon marker, dot, live-preview box). It fetches `GET /api/detections/{id}/enriched` (the ~39-prop fat shape the SelectionPanel reads) and `setSelectedDetection(resp.data)`; on 404 (an unpersisted live preview) it falls back to the in-memory feature so a click never throws.
+- **Selection — `selectDetectionById(id, fallback)`.** The single entry point for ALL detection clicks (MVT polygon, icon marker, dot, live-preview box). It fetches `GET /api/detections/{id}/enriched` (the ~39-prop fat shape the SelectionPanel reads) and `setSelectedDetection(resp.data)`; on 404 (an unpersisted live preview) it falls back to the in-memory feature so a click never throws. It returns the feature it selected and carries a sequence guard so a slow enriched response for A cannot overwrite a quicker click on B.
+- **Out-of-order guards.** Every viewport/time fetch (`fetchDetectionFeatures`, `fetchDetectionTracks`, `fetchDetectionClasses`, `fetchImagery`, `selectDetectionById`) bumps a per-callback monotonic ref token on entry and drops the response if a newer call started — stale world-bbox responses no longer overwrite fresh results. See [decisions/audit-fixes-map-workspace-2026-06-11.md](../decisions/audit-fixes-map-workspace-2026-06-11.md).
+- **Cross-workspace / jump navigation — `jumpToDetection(id, lat?, lon?)`.** Wraps `selectDetectionById` for targets that may be OUTSIDE the viewport GeoJSON (review queue, /similar, "Open on GEOINT", ⌘K jump): fetch enriched (bbox-independent) → pan to its geometry → fall back to flying to the supplied lat/lon. The `crossNav` intent is consumed only after the fetch settles.
 - **Live streaming (`detections` WS topic).** The `useEventStream('detections', …)` handler branches on `message.type`: `detections_partial` (per chip) auto-selects the pass on its first chip and **appends** the chip's Polygon `features` to `detectionsGeoJSON` (deduped by `properties.id`) — they render via the per-feature `<Polygon>` box layer + markers, so detections render within seconds, not after the whole pass. The end-of-pass `detections_updated` re-fetches the lite feed (`fetchDetections()`), re-fetches `tile-version`, and bumps `detectionTileVersion` so persisted MVT boxes refresh. See [decisions/why-live-streaming-detections.md](../decisions/why-live-streaming-detections.md).
 - `GET /api/detections/classes?llm=true` — global Detection Classes summary; raw class keys and deterministic labels drive filtering, while `llm_advisory` can add non-authoritative operator context
 - `GET /api/imagery` — satellite passes
@@ -55,6 +57,8 @@ The Common Operating Picture: a 2D Leaflet map with all detection layers, satell
 
 The left Detection Classes list keeps `rawClass` as the hide/solo/API filter key. `displayLabel` is presentation-only; deterministic labels remain primary now that still-image YOLOE has been removed. LLM advisory text can still appear as secondary context in [LayerPanel](map-stage-and-layers.md).
 
+All client-side confidence gates (marker filter, suppression counts, `confidenceValue` in `_helpers.ts`) read `calibrated_confidence ?? confidence` so they threshold on the same value the MVT tile SQL COALESCEs into the tile's `confidence` prop. `hiddenDetectionLabels` is passed (alongside `hiddenDetectionCategories`) through MapStage into `DetectionTileLayer`, so eye-toggled classes hide their boxes too, not just their markers.
+
 The confidence slider's `confidenceThreshold` gates the sidebar as well as the map canvas. [`filteredDetectionClassStats`](../../frontend/src/components/GaiaMap.tsx#L482-L492) drops label rows whose `maxConfidence` falls below the threshold (in addition to the search filter), so a class hidden entirely from the map by confidence is also removed from the Detection Classes list; empty category/source groups then collapse via `detectionGroups`. This mirrors the canvas gate in `filteredDetectionsGeoJSON`.
 
 ## Live updates
@@ -67,11 +71,11 @@ The `ops` SSE handler also calls `fetchData()` to refresh the static-feature/tra
 
 `GaiaMap` owns the wiring that makes the otherwise-presentational [TimeMachineBar](map-time-machine.md) functional:
 
-- **Playhead → imagery**: `tmPassFracs` maps each pass to a `[0,1]` position in the window; a select-nearest effect picks the pass under `tmValue` whenever the analyst scrubs or clicks a diamond.
-- **Playback**: while `tmPlaying`, an interval steps `tmValue` through the passes oldest→newest (~1.2 s each), then stops.
+- **Playhead → imagery**: `tmPassFracs` maps each pass to a `[0,1]` position in the window; a select-nearest effect picks the pass under `tmValue` whenever the analyst scrubs or clicks a diamond. The effect reads the stops from `tmPassFracsRef` and depends on `[tmValue]` only — pass-list identity changes from background refetches must not re-snap, or the default `tmValue=1` ("now") stomps any manual older-pass selection. For the same reason `fetchImagery` reads the current selection from `selectedImageryRef` instead of closing over `selectedImagery`.
+- **Playback**: while `tmPlaying`, an interval steps `tmValue` through the passes oldest→newest (~1.2 s each), then stops (`setTmPlaying(false)` past the last stop). The stop list is snapshotted from the ref at play start; advances come ONLY from the interval tick.
 - **Event-timeline Play = live-follow**: while `timelinePlaying`, a 5 s interval re-runs `fetchDetections()` so the density strip advances in real time.
 - **Change detection**: pinning a compare pass shows a `CHANGE` button that opens [ChangeDetectionDialog](map-change-detection-dialog.md) (`changePair` state) for the active-vs-compare pair; the dialog's result is dispatched as `sentinel:overlay-geojson` and rendered by MapStage's generic overlay layer (see [map-stage-and-layers.md](map-stage-and-layers.md)).
-- **Pan-on-select**: the ⌘K-jump and cross-workspace nav call `mapStageRef.panToDetection(feat)` so a programmatically-selected detection recenters the map.
+- **Pan-on-select**: the ⌘K-jump and cross-workspace nav route through `jumpToDetection` (enriched fetch + `mapStageRef.panToDetection(feat)`) so a programmatically-selected detection recenters the map even when it is not in the viewport GeoJSON yet.
 
 ## Key symbols
 

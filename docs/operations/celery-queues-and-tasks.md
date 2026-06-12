@@ -21,8 +21,8 @@ Workers started with `-Q imagery,default` → both queues drain on the same pool
 | `worker.process_fmv` | Full FMV pipeline (HLS → KLV → /detect_video → persist raw tracks) — `imagery` queue |
 | `worker.consolidate_fmv` | Post-inference FMV track consolidation over `fmv_detections` — `default` queue, idempotent |
 | `worker.train_model` | Forward training request to inference-sam3, persist results |
-| `worker.poll_http_feeds` | Periodic feed poller (Celery beat) |
-| `worker.cleanup_old_observations` | Periodic timeline pruning (Celery beat) |
+| `worker.tick_feed_poll` | Periodic feed poller (Celery beat) |
+| `worker.cleanup_old_observations` | Periodic `observations` + `timeline_events` retention sweep (Celery beat, `OBSERVATION_RETENTION_DAYS`) |
 
 `grep -nE "@celery_app.task" backend/worker_legacy.py` for the live list.
 

@@ -17,7 +17,7 @@ CRUD over the ontology (branches, objects, prompts) + the prompt-profile system,
 | `GET` | `""` | `/api/ontology` | [ontology.py#L66](../../backend/routers/ontology.py#L66) | Branches + objects; filter by `?sensor=` |
 | `GET` | `/version` | `/api/ontology/version` | [ontology.py#L123](../../backend/routers/ontology.py#L123) | Current version cursor (clients invalidate cache) |
 | `GET` | `/default-prompts` | `/api/ontology/default-prompts` | [ontology.py#L128](../../backend/routers/ontology.py#L128) | DB-backed prompt list (inference reads this); `?sensor=` and/or `?branch=` scope it — `branch` returns that branch + its descendants for a smaller, scene-relevant vocabulary |
-| `GET` | `/unknown-labels` | `/api/ontology/unknown-labels` | [ontology.py#L135](../../backend/routers/ontology.py#L135) | LLM-emitted labels awaiting triage |
+| `GET` | `/unknown-labels` | `/api/ontology/unknown-labels` | [ontology.py#L141](../../backend/routers/ontology.py#L141) | LLM-emitted labels awaiting triage; malformed `?since=` → 400 |
 | `POST` | `/unknown-labels/{label}/assign` | | [ontology.py#L178](../../backend/routers/ontology.py#L178) | Map a label to an object or create one (admin) |
 | `POST` | `/branches` | | [ontology.py#L270](../../backend/routers/ontology.py#L270) | Create a branch (admin) |
 | `PATCH` | `/branches/{id}` | | [ontology.py#L303](../../backend/routers/ontology.py#L303) | Update branch (admin) |
@@ -50,3 +50,4 @@ CRUD over the ontology (branches, objects, prompts) + the prompt-profile system,
 - [operations/unknown-label-triage.md](../operations/unknown-label-triage.md)
 - [frontend/ontology-admin-ui.md](../frontend/ontology-admin-ui.md)
 - [decisions/why-admin-mutators-require-admin.md](../decisions/why-admin-mutators-require-admin.md)
+- [decisions/audit-fixes-api-layer-2026-06-11.md](../decisions/audit-fixes-api-layer-2026-06-11.md) — the 2026-06-11 API-layer audit batch

@@ -127,6 +127,14 @@ def create_manual_detection(
             status_code=400,
             detail="geometry must be a GeoJSON Polygon or MultiPolygon",
         )
+    # detections.geom is GEOMETRY(POLYGON, 4326): a single-part MultiPolygon is
+    # stored as its one polygon; multi-part input is rejected rather than
+    # silently dropping parts.
+    if geom.get("type") == "MultiPolygon" and len(geom.get("coordinates") or []) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="MultiPolygon must contain exactly one polygon (detections store a single Polygon)",
+        )
     threat = _normalize_threat(body.threat_level) or "medium"
     affiliation = _normalize_affiliation(body.affiliation) or "unknown"
     cls = (body.object_class or "unknown").strip().lower() or "unknown"
@@ -153,7 +161,7 @@ def create_manual_detection(
                 %s,
                 CASE WHEN %s = 'Polygon'
                      THEN ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326)
-                     ELSE ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326)
+                     ELSE ST_GeometryN(ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326), 1)
                 END,
                 ST_Centroid(ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326)),
                 %s::jsonb,

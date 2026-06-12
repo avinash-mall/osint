@@ -8,7 +8,7 @@
 
 import axios from 'axios';
 import { RefreshCw, Sparkles } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { EmbeddingBadge, ModalityBadge, Panel } from '../atoms';
 
 const API_URL = (import.meta as any).env?.VITE_API_URL || '';
@@ -28,7 +28,9 @@ export default function SimilarPanel({
   onSelect,
 }: {
   selectedDetection: any | null;
-  onSelect?: (id: number) => void;
+  /** Result rows carry lat/lon so the parent can pan even when the detection
+      is outside the viewport GeoJSON (/similar is global). */
+  onSelect?: (id: number, lat?: number, lon?: number) => void;
 }) {
   const detectionId = Number(selectedDetection?.properties?.id || 0) || null;
   const [results, setResults] = useState<SimilarRow[]>([]);
@@ -36,21 +38,28 @@ export default function SimilarPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Monotonic token: anchors can change faster than /similar resolves; a late
+  // response for the OLD anchor must not win over the new anchor's grid.
+  const seqRef = useRef(0);
   const load = useCallback(async () => {
     if (!detectionId) return;
+    const seq = ++seqRef.current;
     setBusy(true);
     setError(null);
     setReason(null);
+    setResults([]);
     try {
       const { data } = await axios.get(`${API_URL}/api/detections/${detectionId}/similar`, {
         params: { k: 12 },
       });
+      if (seq !== seqRef.current) return;
       setResults(data?.results || []);
       setReason(data?.reason || null);
     } catch (err: any) {
+      if (seq !== seqRef.current) return;
       setError(err?.response?.data?.detail || err?.message || 'failed to load');
     } finally {
-      setBusy(false);
+      if (seq === seqRef.current) setBusy(false);
     }
   }, [detectionId]);
 
@@ -114,7 +123,7 @@ export default function SimilarPanel({
               <button
                 key={r.id}
                 type="button"
-                onClick={() => onSelect?.(r.id)}
+                onClick={() => onSelect?.(r.id, r.lat, r.lon)}
                 style={{
                   display: 'flex',
                   flexDirection: 'column',

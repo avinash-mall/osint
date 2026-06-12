@@ -55,6 +55,7 @@ Before building each replica, `_load_profile` calls `_apply_gpu_memory_fraction(
 ## Endpoints
 
 - `POST /load?profile=imagery|fmv|all` — load if pool empty; 409 if a different profile already loaded.
+- **Auto-heal swaps from inside a request** (`_ensure_profile`) refuse a real teardown+reload with **503** while any *other* request is in flight (`_active_requests > 1` — the requester has already counted itself), so e.g. an imagery `/detect` can't null `sam3_video` under a running FMV stream. The worker retries 503s. See [decisions/audit-fixes-inference-2026-06-12.md](../decisions/audit-fixes-inference-2026-06-12.md).
 - `POST /unload` — re-exec the container. Returns immediately; clients poll `/health` until the next process is ready.
 - `GET /health` — current profile, replica list, active requests, model versions.
 
@@ -72,3 +73,4 @@ After the explicit `preload_models_on_startup()` step (gated by `SAM3_PRELOAD_MO
 - [backend-routers/inference-router.md](../backend-routers/inference-router.md) — operator-facing proxy
 - [frontend/admin-health-dashboard.md](../frontend/admin-health-dashboard.md)
 - [decisions/removed-yoloe-imagery.md](../decisions/removed-yoloe-imagery.md)
+- [decisions/audit-fixes-inference-2026-06-12.md](../decisions/audit-fixes-inference-2026-06-12.md) — the 503 swap guard

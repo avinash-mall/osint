@@ -35,7 +35,7 @@ export interface EvidencePayload {
 
 interface Props {
   payload: EvidencePayload;
-  onContradict?: (actorId: string, detectionPostgisId: number) => void;
+  onContradict?: (actorId: string, detectionPostgisId: number) => void | Promise<void>;
   onClose?: () => void;
 }
 
@@ -70,6 +70,7 @@ function describe(node: EvidenceNode): string {
 
 export function EvidenceColumnDAG({ payload, onContradict, onClose }: Props) {
   const [selectedLeaf, setSelectedLeaf] = useState<{ node: EvidenceNode; row?: any } | null>(null);
+  const [contradictStatus, setContradictStatus] = useState<'busy' | 'done' | string | null>(null);
 
   // Group focus + nodes by column.
   const byColumn = useMemo(() => {
@@ -160,7 +161,7 @@ export function EvidenceColumnDAG({ payload, onContradict, onClose }: Props) {
                       <button
                         type="button"
                         key={node.id}
-                        onClick={() => setSelectedLeaf({ node, row })}
+                        onClick={() => { setSelectedLeaf({ node, row }); setContradictStatus(null); }}
                         className={`w-full text-left border bg-sentinel-bg p-2 hover:border-sentinel-accent transition-colors ${isSelected ? 'border-sentinel-accent' : 'border-sentinel-line'}`}
                       >
                         <div className="flex items-center gap-2">
@@ -201,14 +202,33 @@ export function EvidenceColumnDAG({ payload, onContradict, onClose }: Props) {
                 {selectedLeaf.node.label} · {String(selectedLeaf.node.id).slice(0, 12)}
               </div>
               {(selectedLeaf.node.label === 'Detection' || selectedLeaf.node.label === 'OntologyCandidate') && onContradict && selectedLeaf.row?.id && (
-                <button
-                  type="button"
-                  className="sentinel-btn warn w-full mb-3 justify-center"
-                  onClick={() => onContradict(selectedLeaf.node.id, selectedLeaf.row.id)}
-                  title="Mark this detection as contradicting the focus"
-                >
-                  <AlertOctagon size={13} /> Contradict
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="sentinel-btn warn w-full mb-1 justify-center"
+                    disabled={contradictStatus === 'busy'}
+                    onClick={async () => {
+                      // The actor is the focus entity being contradicted *via*
+                      // this detection — never the detection leaf itself (that
+                      // would MERGE a Detection self-loop in Neo4j).
+                      setContradictStatus('busy');
+                      try {
+                        await onContradict(payload.focus.id, selectedLeaf.row.id);
+                        setContradictStatus('done');
+                      } catch (err: any) {
+                        setContradictStatus(String(err?.response?.data?.detail || err?.message || 'request failed'));
+                      }
+                    }}
+                    title="Mark this detection as contradicting the focus"
+                  >
+                    <AlertOctagon size={13} /> {contradictStatus === 'busy' ? 'Recording dissent…' : 'Contradict'}
+                  </button>
+                  {contradictStatus && contradictStatus !== 'busy' && (
+                    <div className={`text-[10px] font-mono mb-2 ${contradictStatus === 'done' ? 'text-sentinel-accent' : 'text-sentinel-warning'}`}>
+                      {contradictStatus === 'done' ? 'Contradiction recorded.' : `Contradict failed: ${contradictStatus}`}
+                    </div>
+                  )}
+                </>
               )}
               {selectedLeaf.row ? (
                 <>

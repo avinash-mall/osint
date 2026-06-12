@@ -25,6 +25,8 @@ See [architecture/data-flow-fmv.md](../architecture/data-flow-fmv.md) for the se
 
 PCS mode with no operator-supplied prompts → backend uses the bounded precision fallback `["vehicle", "person", "building"]` (or `FMV_DEFAULT_PROMPTS`), not all ontology prompts.
 
+**Failure semantics:** each (window, prompt) inference task retries once across an inference self-heal restart; the clip is marked `failed` only when every window fails extraction (corrupt video) or more than `FMV_MAX_FAILED_TASK_FRACTION` (default 5%) of tasks fail. Partial failures are recorded as `tracking_windows_failed` in the clip metadata and consolidation still runs on what landed. See [decisions/audit-fixes-worker-2026-06-11.md](../decisions/audit-fixes-worker-2026-06-11.md).
+
 ## Prompt-mode choice
 
 | Mode | Engine | Use when |

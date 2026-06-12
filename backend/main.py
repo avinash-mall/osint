@@ -106,24 +106,39 @@ app.add_middleware(
 # logout is allowed unauthenticated so a stale cookie can always be cleared.
 _PUBLIC_MUTATING_PATHS = {"/api/auth/login", "/api/auth/logout"}
 
+# Reads that must stay session-free: container healthchecks probe /api/health
+# without a cookie, the login screen fetches the deployment banner before any
+# session exists, /api/auth/* implements its own 401 semantics for the boot
+# probe, and inference-sam3 fetches default prompts service-to-service.
+_PUBLIC_READ_PREFIXES = (
+    "/api/auth/",
+    "/api/health",
+    "/api/system/deployment-mode",
+    "/api/ontology/default-prompts",
+)
+
 
 @app.middleware("http")
-async def require_session_on_mutations(request: Request, call_next):
-    """Centralized auth gate for every mutating verb.
+async def require_session_on_requests(request: Request, call_next):
+    """Centralized auth gate for every /api verb, mutating and read.
 
     Endpoints can still re-declare ``Depends(get_current_user)`` to receive the
-    parsed user — this middleware only short-circuits unauthenticated mutating
-    requests so we don't need to remember to add the dependency individually.
+    parsed user — this middleware only short-circuits unauthenticated requests
+    so we don't need to remember to add the dependency individually.
     """
     method = request.method.upper()
+    path = request.url.path
+    # OPTIONS (CORS preflight) always passes.
+    needs_session = False
     if method in {"POST", "PUT", "PATCH", "DELETE"}:
-        path = request.url.path
-        # Allow CORS preflight to pass; that's an OPTIONS request handled above.
-        if path not in _PUBLIC_MUTATING_PATHS:
-            from fastapi.responses import JSONResponse  # local import keeps cold-start light
-            user = get_optional_user(request)
-            if user is None:
-                return JSONResponse(status_code=401, content={"detail": "not authenticated"})
+        needs_session = path not in _PUBLIC_MUTATING_PATHS
+    elif method in {"GET", "HEAD"} and path.startswith("/api/"):
+        needs_session = not path.startswith(_PUBLIC_READ_PREFIXES)
+    if needs_session:
+        from fastapi.responses import JSONResponse  # local import keeps cold-start light
+        user = get_optional_user(request)
+        if user is None:
+            return JSONResponse(status_code=401, content={"detail": "not authenticated"})
     return await call_next(request)
 
 from schemas import (
@@ -149,7 +164,6 @@ from schemas import (
     OntologyCreateObject,
     OntologyObjectIn,
     OntologyObjectPatch,
-    OntologyUpdateRequest,
     PinRequest,
     PromptProfileBody,
     ReprocessRequest,
@@ -680,6 +694,15 @@ INFERENCE_SAM3_URL = os.getenv("INFERENCE_SAM3_URL", "http://inference-sam3:8001
 
 # Inference proxy + confidence-overrides + dashboard routes live in routers.inference.
 
+def parse_iso_datetime(value: str, param: str) -> datetime:
+    """Validate an ISO-8601 query param at the HTTP boundary → 400 on garbage
+    (instead of a 500 from ``fromisoformat`` or a PostgreSQL cast error)."""
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid {param}: expected an ISO 8601 datetime")
+
+
 @app.get("/api/observations")
 def list_observations(
     domain: Optional[str] = Query(None),
@@ -700,10 +723,10 @@ def list_observations(
         params.append(entity_id)
     if start:
         clauses.append("observed_at >= %s::timestamptz")
-        params.append(start)
+        params.append(parse_iso_datetime(start, "start"))
     if end:
         clauses.append("observed_at <= %s::timestamptz")
-        params.append(end)
+        params.append(parse_iso_datetime(end, "end"))
     if bbox:
         min_lon, min_lat, max_lon, max_lat = parse_bbox(bbox)
         clauses.append("geom IS NOT NULL AND ST_Intersects(geom, ST_MakeEnvelope(%s, %s, %s, %s, 4326))")
@@ -738,10 +761,10 @@ def list_timeline_events(
         params.append(normalize_domain(domain))
     if start:
         clauses.append("occurred_at >= %s::timestamptz")
-        params.append(start)
+        params.append(parse_iso_datetime(start, "start"))
     if end:
         clauses.append("occurred_at <= %s::timestamptz")
-        params.append(end)
+        params.append(parse_iso_datetime(end, "end"))
     where = "WHERE " + " AND ".join(clauses) if clauses else ""
     params.append(limit)
     with postgis_db.get_cursor() as cursor:
@@ -885,6 +908,19 @@ def ingest_feed_event(feed_id: int, req: FeedEventCreate):
         lat, lon = point_payload(payload)
     observed_at = req.observed_at or datetime.now(timezone.utc).isoformat()
 
+    # Coerce free-form payload numerics up front: a garbage value must not
+    # blow up after the feed_event commit (a post-commit 500 makes the client
+    # retry and duplicate the event) or inside the track_points INSERT.
+    def _coerce_float(value, default=None):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    confidence = _coerce_float(payload.get("confidence"), 0.7) or 0.7
+    speed = _coerce_float(payload.get("speed"))
+    heading = _coerce_float(payload.get("heading"))
+
     with postgis_db.get_cursor(commit=True) as cursor:
         cursor.execute("SELECT id, name, feed_type FROM feed_sources WHERE id = %s", (feed_id,))
         feed = cursor.fetchone()
@@ -931,8 +967,8 @@ def ingest_feed_event(feed_id: int, req: FeedEventCreate):
                 track_id,
                 lon,
                 lat,
-                payload.get("speed"),
-                payload.get("heading"),
+                speed,
+                heading,
                 json.dumps(payload),
                 observed_at,
             ))
@@ -946,7 +982,7 @@ def ingest_feed_event(feed_id: int, req: FeedEventCreate):
         entity_id=track_uid,
         latitude=lat,
         longitude=lon,
-        confidence=float(payload.get("confidence", 0.7) or 0.7),
+        confidence=confidence,
         observed_at=observed_at,
         provenance={"source": "feed_event", "feed_id": feed_id},
     )
@@ -1330,7 +1366,7 @@ def get_detections(
                ST_AsGeoJSON(d.centroid) as centroid_geojson,
                sp.name as pass_name, sp.acquisition_time, sp.file_path
         FROM detections d
-        JOIN satellite_passes sp ON d.pass_id = sp.id
+        LEFT JOIN satellite_passes sp ON d.pass_id = sp.id
         WHERE d.deleted_at IS NULL
     """
     params = []
@@ -1342,14 +1378,14 @@ def get_detections(
     
     if start_time:
         query += " AND sp.acquisition_time >= %s"
-        params.append(start_time)
+        params.append(parse_iso_datetime(start_time, "start_time"))
     if end_time:
         query += " AND sp.acquisition_time <= %s"
-        params.append(end_time)
+        params.append(parse_iso_datetime(end_time, "end_time"))
     if det_class:
-        query += " AND d.class = %s"
-        params.append(det_class)
-    
+        query += " AND (d.class = %s OR d.metadata->>'original_class' = %s)"
+        params.extend([det_class, det_class])
+
     query += " ORDER BY d.confidence DESC LIMIT %s"
     params.append(limit)
     
@@ -1383,7 +1419,7 @@ def get_detection_classes(
                    coalesce(d.metadata->>'review_status', 'review_candidate') AS review_status,
                    coalesce(d.metadata->>'allegiance', 'unknown') AS allegiance
             FROM detections d
-            JOIN satellite_passes sp ON d.pass_id = sp.id
+            LEFT JOIN satellite_passes sp ON d.pass_id = sp.id
             WHERE d.deleted_at IS NULL
     """
     params = []
@@ -1540,7 +1576,7 @@ def get_detections_geojson_lite(
         "       COALESCE(d.metadata->>'allegiance', d.affiliation, 'unknown') AS allegiance,\n"
         "       d.metadata->>'review_status'                          AS review_status\n"
         "FROM detections d\n"
-        "JOIN satellite_passes sp ON d.pass_id = sp.id\n"
+        "LEFT JOIN satellite_passes sp ON d.pass_id = sp.id\n"
         "WHERE d.deleted_at IS NULL AND d.centroid IS NOT NULL\n"
     )
     params: list = []
@@ -1550,13 +1586,15 @@ def get_detections_geojson_lite(
         params.extend([min_lon, min_lat, max_lon, max_lat])
     if start_time:
         sql += "  AND sp.acquisition_time >= %s\n"
-        params.append(start_time)
+        params.append(parse_iso_datetime(start_time, "start_time"))
     if end_time:
         sql += "  AND sp.acquisition_time <= %s\n"
-        params.append(end_time)
+        params.append(parse_iso_datetime(end_time, "end_time"))
     if det_class:
-        sql += "  AND d.class = %s\n"
-        params.append(det_class)
+        # SOLO parity: the frontend sends the displayed label, which prefers
+        # metadata.original_class over the stored class.
+        sql += "  AND (d.class = %s OR d.metadata->>'original_class' = %s)\n"
+        params.extend([det_class, det_class])
     if pass_id is not None:
         sql += "  AND d.pass_id = %s\n"
         params.append(pass_id)
@@ -1605,7 +1643,7 @@ def get_detection_enriched(detection_id: int, user: SessionUser = Depends(get_cu
                    sp.name AS pass_name, sp.acquisition_time, sp.metadata AS imagery_metadata,
                    ST_AsGeoJSON(d.geom)::jsonb AS geometry
             FROM detections d
-            JOIN satellite_passes sp ON d.pass_id = sp.id
+            LEFT JOIN satellite_passes sp ON d.pass_id = sp.id
             WHERE d.id = %s AND d.deleted_at IS NULL
             """,
             (detection_id,),
@@ -1618,9 +1656,12 @@ def get_detection_enriched(detection_id: int, user: SessionUser = Depends(get_cu
 
 @app.patch("/api/detections/{detection_id}/tag")
 def tag_detection(detection_id: int, update: DetectionTagUpdate, user: SessionUser = Depends(get_current_user)):
-    allegiance = update.allegiance.strip().lower()
-    if allegiance not in {"friendly", "hostile", "neutral", "unknown"}:
+    raw = update.allegiance.strip().lower()
+    if raw not in {"friend", "friendly", "hostile", "neutral", "unknown"}:
         raise HTTPException(status_code=400, detail="allegiance must be friendly, hostile, neutral, or unknown")
+    # Same canonical vocabulary as PUT /details (friendly → friend) so both
+    # write paths agree on metadata.allegiance / detections.affiliation.
+    allegiance = _normalize_affiliation(raw)
     with postgis_db.get_cursor(commit=True) as cursor:
         cursor.execute("SELECT class, confidence, metadata FROM detections WHERE id = %s", (detection_id,))
         existing = cursor.fetchone()
@@ -1630,10 +1671,11 @@ def tag_detection(detection_id: int, update: DetectionTagUpdate, user: SessionUs
         ontology = conservative_detection_ontology(existing["class"], confidence=existing["confidence"], allegiance=allegiance)
         cursor.execute("""
             UPDATE detections
-            SET metadata = coalesce(metadata, '{}'::jsonb) || %s::jsonb
+            SET affiliation = %s,
+                metadata = coalesce(metadata, '{}'::jsonb) || %s::jsonb
             WHERE id = %s
             RETURNING id, class, metadata
-        """, (json.dumps({
+        """, (allegiance, json.dumps({
             "allegiance": allegiance,
             "threat_level": assessment["threat_level"],
             "threat_confidence": assessment["threat_confidence"],
@@ -1770,15 +1812,33 @@ def _cosine(a: list, b: list) -> float:
     return dot / denom if denom > 0 else 0.0
 
 
+def _decode_packed_embedding(emb: dict) -> list | None:
+    """Decode the worker's packed ``{"model", "dim", "fp16_b64"}`` embedding
+    (see _parse_embedding_anchor in worker_legacy.py) to a plain float list."""
+    fp16_b64 = emb.get("fp16_b64")
+    if not fp16_b64:
+        return None
+    try:
+        import base64 as _b64
+        import numpy as _np
+        raw = _b64.b64decode(fp16_b64)
+        arr = _np.frombuffer(raw, dtype=_np.float16).astype(_np.float32)
+        return arr.tolist() if arr.size else None
+    except Exception:
+        return None
+
+
 def _detection_embedding(meta: dict | None) -> list | None:
     if not isinstance(meta, dict):
         return None
-    emb = meta.get("embedding")
-    if isinstance(emb, list) and emb:
-        return emb
-    emb = meta.get("terramind_embedding")
-    if isinstance(emb, list) and emb:
-        return emb
+    for key in ("embedding", "terramind_embedding"):
+        emb = meta.get(key)
+        if isinstance(emb, list) and emb:
+            return emb
+        if isinstance(emb, dict):
+            decoded = _decode_packed_embedding(emb)
+            if decoded:
+                return decoded
     return None
 
 
@@ -1939,7 +1999,7 @@ def _target_history_anchor(target_id: str) -> float:
         with postgis_db.get_cursor() as cursor:
             cursor.execute(
                 "SELECT count(*) AS c FROM detection_target_candidates "
-                "WHERE target_id = %s AND status IN ('accepted', 'confirmed')",
+                "WHERE target_id = %s AND status IN ('approved', 'accepted', 'confirmed')",
                 (target_id,),
             )
             row = cursor.fetchone()
@@ -1958,7 +2018,7 @@ def detection_row_for_candidate(detection_id: int) -> dict:
                    ST_X(d.centroid) AS lon, ST_Y(d.centroid) AS lat,
                    sp.acquisition_time, sp.name AS pass_name
             FROM detections d
-            JOIN satellite_passes sp ON sp.id = d.pass_id
+            LEFT JOIN satellite_passes sp ON sp.id = d.pass_id
             WHERE d.id = %s AND d.deleted_at IS NULL
         """, (detection_id,))
         row = cursor.fetchone()
@@ -2128,8 +2188,14 @@ def approve_detection_target_candidate(
             _raise_detection_candidate_404_or_409(cursor, candidate_id)
         updated = dict(row)
 
-    with db.get_session() as session:
-        result = session.run("""
+    # Best-effort graph mirror (same pattern as graph_writes.py helpers and
+    # promote_candidate_edge): the PostGIS approval above is committed and
+    # authoritative — a Neo4j outage must not 500 an already-approved review,
+    # since a retry would hit the double-review 409.
+    graph_written = False
+    try:
+        with db.get_session() as session:
+            result = session.run("""
             MATCH (t:Target)
             WHERE elementId(t) = $target_id OR t.id = $target_id
             MERGE (d:Detection {postgis_id: $det_id})
@@ -2148,17 +2214,26 @@ def approve_detection_target_candidate(
                 rel.reviewed_by = $reviewed_by,
                 rel.reviewed_at = datetime()
             RETURN t, d
-        """, {
-            "target_id": candidate["target_id"],
-            "det_id": candidate["detection_id"],
-            "det_class": candidate["class"],
-            "confidence": candidate["confidence"],
-            "lat": candidate["lat"],
-            "lon": candidate["lon"],
-            "reviewed_by": user.username,
-        })
-        if not result.single():
-            raise HTTPException(status_code=409, detail="Approved candidate target could not be found in graph")
+            """, {
+                "target_id": candidate["target_id"],
+                "det_id": candidate["detection_id"],
+                "det_class": candidate["class"],
+                "confidence": candidate["confidence"],
+                "lat": candidate["lat"],
+                "lon": candidate["lon"],
+                "reviewed_by": user.username,
+            })
+            graph_written = result.single() is not None
+        if not graph_written:
+            logger.warning(
+                "approve candidate %s: target %s not found in graph; DETECTED_AS edge not written",
+                candidate_id, candidate["target_id"],
+            )
+    except Exception:
+        logger.warning(
+            "approve candidate %s: Neo4j DETECTED_AS write failed (PostGIS approval kept)",
+            candidate_id, exc_info=True,
+        )
 
     # DETECTED_AS is now authoritative for this (target, detection) pair;
     # remove the pending CANDIDATE_DETECTED_AS so Cypher traversals don't
@@ -2168,7 +2243,7 @@ def approve_detection_target_candidate(
         target_id=candidate["target_id"],
     )
     publish_event("detections", {"type": "candidate_link_approved", "candidate": updated})
-    return {"success": True, "candidate": updated}
+    return {"success": True, "candidate": updated, "graph_written": graph_written}
 
 
 @app.post("/api/detection-target-candidates/{candidate_id}/reject")
@@ -2294,17 +2369,10 @@ def list_detection_tracks(
     limit = min(limit, 500)
     status_list = [s.strip() for s in status.split(",") if s.strip()]
 
-    start_dt = datetime.fromisoformat(start_time) if start_time else None
-    end_dt = datetime.fromisoformat(end_time) if end_time else None
+    start_dt = parse_iso_datetime(start_time, "start_time") if start_time else None
+    end_dt = parse_iso_datetime(end_time, "end_time") if end_time else None
 
-    bbox_parts = None
-    if bbox:
-        try:
-            bbox_parts = [float(x) for x in bbox.split(",")]
-            if len(bbox_parts) != 4:
-                bbox_parts = None
-        except ValueError:
-            bbox_parts = None
+    bbox_parts = list(parse_bbox(bbox)) if bbox else None
 
     sql = """
         SELECT
@@ -2461,13 +2529,25 @@ def reprocess_detection_tracks(req: ReprocessRequest):
 @app.post("/api/tracks/detections/pin")
 def pin_detection(req: PinRequest):
     detection_id = req.detection_id
-    with postgis_db.get_cursor() as cursor:
+
+    def _pin_track(cursor, track_id: int) -> dict:
+        cursor.execute("""
+            UPDATE detection_tracks SET pinned = TRUE, status = 'pinned', updated_at = NOW()
+            WHERE id = %s
+            RETURNING id, track_uid, status, pinned, primary_class, obs_count
+        """, (track_id,))
+        return dict(cursor.fetchone())
+
+    # Single transaction: the member INSERT's ON CONFLICT (detection_id)
+    # arbitrates concurrent pins, so a double-click can't leave an orphan
+    # zero-member pinned track behind.
+    with postgis_db.get_cursor(commit=True) as cursor:
         cursor.execute("""
             SELECT d.id, d.class, d.confidence, d.pass_id,
                    ST_Y(d.centroid) AS lat, ST_X(d.centroid) AS lon,
-                   sp.acquisition_time
+                   COALESCE(sp.acquisition_time, d.created_at) AS acquisition_time
             FROM detections d
-            JOIN satellite_passes sp ON sp.id = d.pass_id
+            LEFT JOIN satellite_passes sp ON sp.id = d.pass_id
             WHERE d.id = %s AND d.deleted_at IS NULL
         """, (detection_id,))
         det = cursor.fetchone()
@@ -2480,32 +2560,22 @@ def pin_detection(req: PinRequest):
             (detection_id,)
         )
         existing = cursor.fetchone()
-        existing_track_id = existing["track_id"] if existing else None
+        if existing:
+            return {"track": _pin_track(cursor, existing["track_id"]), "action": "pinned_existing"}
 
-    if existing_track_id:
-        with postgis_db.get_cursor(commit=True) as cursor:
-            cursor.execute("""
-                UPDATE detection_tracks SET pinned = TRUE, status = 'pinned', updated_at = NOW()
-                WHERE id = %s
-                RETURNING id, track_uid, status, pinned, primary_class, obs_count
-            """, (existing_track_id,))
-            updated = dict(cursor.fetchone())
-        return {"track": updated, "action": "pinned_existing"}
+        det_class = det["class"]
+        try:
+            cat = category_for_class(det_class)
+        except Exception:
+            cat = "unknown"
+        try:
+            threat = assess_detection_threat(det_class, confidence=det["confidence"]).get("threat_level", "unknown")
+        except Exception:
+            threat = "unknown"
 
-    det_class = det["class"]
-    try:
-        cat = category_for_class(det_class)
-    except Exception:
-        cat = "unknown"
-    try:
-        threat = assess_detection_threat(det_class, confidence=det["confidence"]).get("threat_level", "unknown")
-    except Exception:
-        threat = "unknown"
+        track_uid = "dt_" + uuid.uuid4().hex[:12]
+        acq_time = det["acquisition_time"]
 
-    track_uid = "dt_" + uuid.uuid4().hex[:12]
-    acq_time = det["acquisition_time"]
-
-    with postgis_db.get_cursor(commit=True) as cursor:
         cursor.execute("""
             INSERT INTO detection_tracks
               (track_uid, primary_class, category, threat_level, status, pinned, obs_count,
@@ -2526,10 +2596,23 @@ def pin_detection(req: PinRequest):
               (track_id, detection_id, pass_id, observed_at, centroid, seq_index, cost)
             VALUES (%s, %s, %s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326), 0, 0.0)
             ON CONFLICT (detection_id) DO NOTHING
+            RETURNING id
         """, (
             new_track_id, detection_id, det["pass_id"],
             acq_time, det["lon"], det["lat"],
         ))
+        if cursor.fetchone() is None:
+            # Lost the race: another request attached this detection first.
+            # Drop the track we just created and pin the winner's track.
+            cursor.execute("DELETE FROM detection_tracks WHERE id = %s", (new_track_id,))
+            cursor.execute(
+                "SELECT track_id FROM detection_track_members WHERE detection_id = %s",
+                (detection_id,)
+            )
+            winner = cursor.fetchone()
+            if not winner:
+                raise HTTPException(status_code=409, detail="Concurrent pin conflict; retry")
+            return {"track": _pin_track(cursor, winner["track_id"]), "action": "pinned_existing"}
 
     return {"track": {"track_uid": track_uid, "status": "pinned", "pinned": True,
                       "primary_class": det_class, "obs_count": 1}, "action": "created"}

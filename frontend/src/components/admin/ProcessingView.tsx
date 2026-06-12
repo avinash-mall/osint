@@ -64,7 +64,7 @@ export default function ProcessingView({ onCount }: Props) {
             stage: j.status || 'queued',
             status: j.status || 'queued',
             created_at: j.created_at,
-            pct: isDoneStatus(j.status) ? 1 : j.status === 'running' ? 0.5 : 0,
+            pct: isDoneStatus(j.status) ? 1 : 0,
             raw_source: 'analytics' as const,
           }))
         : [];
@@ -76,7 +76,7 @@ export default function ProcessingView({ onCount }: Props) {
             stage: j.status || 'queued',
             status: j.status || 'queued',
             created_at: j.created_at,
-            pct: isDoneStatus(j.status) ? 1 : j.status === 'running' ? 0.5 : 0,
+            pct: isDoneStatus(j.status) ? 1 : 0,
             raw_source: 'training' as const,
           }))
         : [];
@@ -197,8 +197,18 @@ export default function ProcessingView({ onCount }: Props) {
                   </span>
                 </div>
               </div>
+              {/* Neither jobs API exposes real percent-complete, so running
+                  jobs get an indeterminate striped bar instead of a fake
+                  determinate value. */}
               <div style={{ marginTop: 10, height: 3, background: 'var(--bg-3)' }} aria-hidden>
-                <div style={{ width: `${pct * 100}%`, height: '100%', background: color }}/>
+                {j.status === 'running' ? (
+                  <div style={{
+                    width: '100%', height: '100%',
+                    background: `repeating-linear-gradient(90deg, ${color} 0 6px, transparent 6px 12px)`,
+                  }}/>
+                ) : (
+                  <div style={{ width: `${pct * 100}%`, height: '100%', background: color }}/>
+                )}
               </div>
             </div>
           );

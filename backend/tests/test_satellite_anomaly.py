@@ -68,6 +68,18 @@ def test_raan_drift_within_j2_is_not_a_maneuver():
     assert detect_maneuver(prev, cur) is None
 
 
+def test_raan_residual_wrapped_after_long_tle_gap():
+    # 60 days of J2 drift on an ISS-like orbit is ~-300°; the wrapped
+    # ``actual`` is +60° while ``expected`` stays at -300°. Without wrapping
+    # the residual the difference is 360° → a false maneuver alert.
+    prev = _elem()
+    dt_days = 60.0
+    expected = j2_raan_rate(prev["inclination_deg"], prev["mean_motion_revday"]) * dt_days
+    new_raan = (prev["raan_deg"] + expected) % 360.0
+    cur = _elem(epoch_ts=prev["epoch_ts"] + dt_days * 86400, raan_deg=new_raan)
+    assert detect_maneuver(prev, cur) is None
+
+
 def test_inclination_maneuver_flagged():
     prev = _elem()
     cur = _elem(epoch_ts=prev["epoch_ts"] + 86400, inclination_deg=prev["inclination_deg"] + 0.4)

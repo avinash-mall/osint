@@ -12,6 +12,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
+import { TOUR_STEPS } from '../components/tour/tourSteps';
+
 const LS_KEY = 'sentinel:tour-completed';
 
 export type ProductTourState = {
@@ -50,7 +52,9 @@ export function useProductTour(): ProductTourState {
     setRunning(true);
   }, []);
 
-  const next = useCallback(() => setStepIndex((i) => i + 1), []);
+  // Clamp at the last step — an index past the end unmounts the overlay
+  // while `running` stays true (callers finish() at the boundary instead).
+  const next = useCallback(() => setStepIndex((i) => Math.min(TOUR_STEPS.length - 1, i + 1)), []);
   const prev = useCallback(() => setStepIndex((i) => Math.max(0, i - 1)), []);
 
   const finish = useCallback(() => {

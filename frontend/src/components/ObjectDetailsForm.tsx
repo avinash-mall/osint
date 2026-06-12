@@ -30,6 +30,7 @@ import axios from 'axios';
 import { Crosshair, Eye, Film, Map as MapIcon, Shield, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../hooks/useAuth';
+import { apiErrorMessage } from '../utils/apiError';
 import {
   AFFILIATIONS,
   DEFAULT_AFFILIATION,
@@ -106,6 +107,45 @@ export default function ObjectDetailsForm({
   // Stable serialisation of `initial` so a partial parent update always re-hydrates.
   const initialKey = useMemo(() => JSON.stringify(initial ?? null), [initial]);
 
+  /* ── Debounced auto-save ──────────────────────────────────────────── */
+  const dirtyRef = useRef(false);
+  const timerRef = useRef<number | null>(null);
+
+  const persistDraft = useCallback((next: ObjectDetails) => {
+    try {
+      sessionStorage.setItem(
+        draftKey(source, detectionId),
+        JSON.stringify({ ...next, _draftAt: Date.now() }),
+      );
+    } catch { /* quota */ }
+  }, [source, detectionId]);
+
+  const clearDraft = useCallback(() => {
+    try { sessionStorage.removeItem(draftKey(source, detectionId)); } catch { /* ignore */ }
+  }, [source, detectionId]);
+
+  const save = useCallback(async (snapshot: ObjectDetails) => {
+    setStatus({ kind: 'saving' });
+    try {
+      const { data } = await axios.put(endpointFor(source, detectionId), {
+        designation: snapshot.designation,
+        object_class: snapshot.object_class,
+        military_classification: snapshot.military_classification,
+        threat_level: snapshot.threat_level,
+        affiliation: snapshot.affiliation,
+        confidence_override: snapshot.confidence_override,
+        notes: snapshot.notes,
+      });
+      const updated: ObjectDetails = data?.details || {};
+      setV((cur) => ({ ...cur, ...updated }));
+      clearDraft();
+      setStatus({ kind: 'saved', at: updated.updated_at || new Date().toISOString() });
+      onSaved?.(updated);
+    } catch (err: any) {
+      setStatus({ kind: 'error', message: apiErrorMessage(err, 'save failed') });
+    }
+  }, [source, detectionId, clearDraft, onSaved]);
+
   /* ── Hydrate on mount / detection change ──────────────────────────── */
   useEffect(() => {
     let cancelled = false;
@@ -151,51 +191,19 @@ export default function ObjectDetailsForm({
         if (draftTime && draftTime > serverTime) {
           Object.assign(merged, draft);
           setStatus({ kind: 'dirty' });
+          // The restored draft is unsaved server-side — schedule the debounce
+          // save now. Waiting for the next set() call would silently never
+          // persist the edit unless the operator typed again.
+          dirtyRef.current = true;
+          if (timerRef.current != null) window.clearTimeout(timerRef.current);
+          timerRef.current = window.setTimeout(() => save(merged), AUTOSAVE_DEBOUNCE_MS);
         }
       }
       setV(merged);
     })();
     return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, detectionId, defaultClass, initialKey]);
-
-  /* ── Debounced auto-save ──────────────────────────────────────────── */
-  const dirtyRef = useRef(false);
-  const timerRef = useRef<number | null>(null);
-
-  const persistDraft = useCallback((next: ObjectDetails) => {
-    try {
-      sessionStorage.setItem(
-        draftKey(source, detectionId),
-        JSON.stringify({ ...next, _draftAt: Date.now() }),
-      );
-    } catch { /* quota */ }
-  }, [source, detectionId]);
-
-  const clearDraft = useCallback(() => {
-    try { sessionStorage.removeItem(draftKey(source, detectionId)); } catch { /* ignore */ }
-  }, [source, detectionId]);
-
-  const save = useCallback(async (snapshot: ObjectDetails) => {
-    setStatus({ kind: 'saving' });
-    try {
-      const { data } = await axios.put(endpointFor(source, detectionId), {
-        designation: snapshot.designation,
-        object_class: snapshot.object_class,
-        military_classification: snapshot.military_classification,
-        threat_level: snapshot.threat_level,
-        affiliation: snapshot.affiliation,
-        confidence_override: snapshot.confidence_override,
-        notes: snapshot.notes,
-      });
-      const updated: ObjectDetails = data?.details || {};
-      setV((cur) => ({ ...cur, ...updated }));
-      clearDraft();
-      setStatus({ kind: 'saved', at: updated.updated_at || new Date().toISOString() });
-      onSaved?.(updated);
-    } catch (err: any) {
-      setStatus({ kind: 'error', message: err?.response?.data?.detail || err?.message || 'save failed' });
-    }
-  }, [source, detectionId, clearDraft, onSaved]);
 
   const set = useCallback(<K extends keyof ObjectDetails>(key: K, value: ObjectDetails[K]) => {
     setV((cur) => {
@@ -254,7 +262,7 @@ export default function ObjectDetailsForm({
       clearDraft();
       onDeleted?.();
     } catch (err: any) {
-      setStatus({ kind: 'error', message: err?.response?.data?.detail || err?.message || 'delete failed' });
+      setStatus({ kind: 'error', message: apiErrorMessage(err, 'delete failed') });
     }
   }, [source, detectionId, canDelete, clearDraft, onDeleted]);
 

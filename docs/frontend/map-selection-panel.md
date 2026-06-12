@@ -1,7 +1,7 @@
 # Selection Panel — Right Rail
 
 **Path:** [frontend/src/components/map/SelectionPanel.tsx](../../frontend/src/components/map/SelectionPanel.tsx)
-**Lines:** ~720
+**Lines:** ~757
 **Depends on:** [ObjectDetailsForm.tsx](../../frontend/src/components/ObjectDetailsForm.tsx), [IdentificationPanel.tsx](../../frontend/src/components/map/IdentificationPanel.tsx), [services/analytics.ts](../../frontend/src/services/analytics.ts), [_helpers.ts](../../frontend/src/components/map/_helpers.ts) `displayLabel` / `labelQuality` / `detectionProvenance`, backend `/api/detections`, `/api/analytics`, and `/api/reports`
 
 ## Purpose
@@ -13,10 +13,10 @@ is detection-independent (overpass planning over any picked point).
 
 | Tab | What it shows |
 |---|---|
-| **Details** | `ObjectDetailsForm` — threat, affiliation, notes, size estimation, original/canonical labels, provenance link. Identification subsection — see [identification-panel.md](identification-panel.md) — renders between Taxonomy and the cross-nav buttons. |
+| **Details** | `ObjectDetailsForm` — threat, affiliation, notes, size estimation, original/canonical labels, provenance link. Identification subsection — see [identification-panel.md](identification-panel.md) — renders between Taxonomy and the cross-nav buttons, **remounted per detection** (`key={'ident-'+id}`) so a late candidates response can never sit under a new detection's header. The Geolocation WGS84 row formats hemispheres from the sign (`33.8600° S`, not `-33.8600° N`). The allegiance header chip tolerates both `friendly` (legacy rows) and `friend` (normalised writes). |
 | **Analytics** | Buttons for viewshed/LOS/route/change-detection from this detection's location |
 | **Sat** | Satellite overpass planning — an injected `satellitesSlot` node from GaiaMap (keeps this panel decoupled from the satellites service). Rendered by `{rightTab === 'satellites' && satellitesSlot}` in the content region. Offline SGP4, observer pick, ground track. See [map-satellites-panel.md](map-satellites-panel.md). |
-| **Similar** | k-NN list of detections with similar embeddings (`GET /api/detections/{id}/similar`) |
+| **Similar** | k-NN list of detections with similar embeddings (`GET /api/detections/{id}/similar`). Tile clicks route through the `onJumpToDetection(id, lat, lon)` prop (GaiaMap's `jumpToDetection`): /similar is global, so a result outside the viewport GeoJSON is fetched via `/enriched` and the map pans/flies to it — no silent no-op. The Review tab's queue rows use the same path. |
 | **Prov** | `ProvenancePanel` — full lineage for the selected detection (source raster/chip, model + sensor, calibrated vs raw confidence, detector ensemble, taxonomy). Reads the detection's `metadata` only, no extra API call. See [map-review-similar-provenance.md](map-review-similar-provenance.md). |
 | **Active Tracks** | Pass-stitched live tracks; Track Object force-creates a track from the selection |
 
@@ -69,7 +69,7 @@ to display-name mapping (`sam3`, `dota_obb`, `grounding_dino`, `yoloe`,
 ## Failure modes
 
 - Elevation errors are non-blocking and render `--`/unavailable state in the Geolocation section.
-- Target-package generation failures keep the user in the panel and surface the existing error path rather than navigating away.
+- Target-package generation failures keep the user in the panel and surface an inline red error chip (`exportError` state) under the Generate button — previously they only `console.warn`ed and the button silently reset.
 - A tab needs **three** things wired or it silently renders empty: (1) an entry in the tab-bar array, (2) a content block in the scroll region (`{rightTab === '<k>' && …}`), and (3) a `setRightTab` case in GaiaMap's `onStepChange` so the product tour lands on populated content. The **Sat** tab had (1) but was missing (2) and (3), so it rendered nothing for every user until both were added.
 
 ## Cross-references

@@ -105,6 +105,37 @@ def test_dict_contract_db_override_wins_over_env_and_default(monkeypatch) -> Non
     detection_policy.invalidate_policy_cache()
 
 
+def test_policy_cache_expires_without_explicit_invalidation(monkeypatch) -> None:
+    """Celery-worker scenario (2026-06-12 audit): admin overrides must reach
+    long-lived processes that never call ``invalidate_policy_cache`` — the old
+    ``lru_cache`` froze the policy at first call for the process lifetime."""
+    _reset_policy(monkeypatch)
+    policy = detection_policy.active_detection_policy()
+    assert detection_policy.threshold_for_parent("bridge", policy) == 0.55
+    monkeypatch.setattr(
+        detection_policy,
+        "_load_db_overrides",
+        lambda: ({"bridge": 0.91}, None, None),
+    )
+    detection_policy._POLICY_CACHE[0] = 0.0  # emulate the 30 s TTL elapsing
+    policy = detection_policy.active_detection_policy()
+    assert detection_policy.threshold_for_parent("bridge", policy) == 0.91
+    detection_policy.invalidate_policy_cache()
+
+
+def test_policy_cache_serves_cached_within_ttl(monkeypatch) -> None:
+    _reset_policy(monkeypatch)
+    first = detection_policy.active_detection_policy()
+    monkeypatch.setattr(
+        detection_policy,
+        "_load_db_overrides",
+        lambda: ({"bridge": 0.91}, None, None),
+    )
+    second = detection_policy.active_detection_policy()
+    assert second is first
+    detection_policy.invalidate_policy_cache()
+
+
 # ---------------------------------------------------------------------------
 # End-to-end runtime chain — these are the regression tests that would have
 # caught the original T1.5 bug, where the dict was keyed by benchmark bucket

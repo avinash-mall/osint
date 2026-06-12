@@ -49,19 +49,22 @@ const _cacheBySensor = new Map<string, OntologyTree>();
 let _versionWatcher: ReturnType<typeof setInterval> | null = null;
 let _lastVersion = -1;
 const _subscribers = new Set<() => void>();
+// Refcount of live subscribers per sensor — lets the watcher recover a sensor
+// whose initial fetch failed (subscribed but never cached).
+const _sensorRefs = new Map<string, number>();
 
 async function _fetchTree(sensor: string): Promise<OntologyTree> {
   const params = new URLSearchParams();
   if (sensor) params.set('sensor', sensor);
   const url = `${API_URL}/api/ontology${params.toString() ? '?' + params : ''}`;
-  const resp = await fetch(url);
+  const resp = await fetch(url, { credentials: 'include' });
   if (!resp.ok) throw new Error(`ontology fetch failed: ${resp.status}`);
   return resp.json();
 }
 
 async function _fetchVersion(): Promise<number> {
   try {
-    const resp = await fetch(`${API_URL}/api/ontology/version`);
+    const resp = await fetch(`${API_URL}/api/ontology/version`, { credentials: 'include' });
     if (!resp.ok) return -1;
     const data = await resp.json();
     return Number(data.version_id ?? -1);
@@ -79,19 +82,23 @@ function _startVersionWatcher() {
   _versionWatcher = setInterval(async () => {
     const v = await _fetchVersion();
     if (v === -1 || v === _lastVersion) return;
-    _lastVersion = v;
-    // Re-fetch every cached sensor (typically 1) and notify subscribers.
-    const sensors = Array.from(_cacheBySensor.keys());
+    // Re-fetch every cached sensor plus subscribed-but-uncached sensors
+    // (failed initial fetch), then notify subscribers. `_lastVersion` is
+    // committed only when every refetch succeeded — a failed refetch must
+    // retry on the next tick, not wait for the next version bump.
+    const sensors = new Set([..._cacheBySensor.keys(), ..._sensorRefs.keys()]);
+    let allOk = true;
     await Promise.all(
-      sensors.map(async (s) => {
+      Array.from(sensors).map(async (s) => {
         try {
           const t = await _fetchTree(s);
           _cacheBySensor.set(s, t);
         } catch {
-          // ignore — keep stale entry
+          allOk = false; // keep stale entry, retry next tick
         }
       }),
     );
+    if (allOk) _lastVersion = v;
     _notifySubscribers();
   }, VERSION_POLL_MS);
 }
@@ -128,8 +135,11 @@ export function useOntology(opts: { sensor?: string } = {}): UseOntologyResult {
       if (cancelled) return;
       const next = _cacheBySensor.get(sensor) ?? null;
       setTree(next);
+      // Watcher recovery after a failed initial fetch — clear the stale error.
+      if (next) setError(null);
     };
     _subscribers.add(cb);
+    _sensorRefs.set(sensor, (_sensorRefs.get(sensor) ?? 0) + 1);
 
     if (!cached) {
       setIsLoading(true);
@@ -147,8 +157,12 @@ export function useOntology(opts: { sensor?: string } = {}): UseOntologyResult {
           if (!cancelled) setError(e instanceof Error ? e : new Error(String(e)));
         })
         .finally(() => {
-          if (!cancelled) setIsLoading(false);
-          _startVersionWatcher();
+          // Arm only while still subscribed — arming after the cleanup ran
+          // would leave a permanent zero-subscriber poll.
+          if (!cancelled) {
+            setIsLoading(false);
+            _startVersionWatcher();
+          }
         });
     } else {
       setIsLoading(false);
@@ -158,6 +172,9 @@ export function useOntology(opts: { sensor?: string } = {}): UseOntologyResult {
     return () => {
       cancelled = true;
       _subscribers.delete(cb);
+      const refs = (_sensorRefs.get(sensor) ?? 1) - 1;
+      if (refs <= 0) _sensorRefs.delete(sensor);
+      else _sensorRefs.set(sensor, refs);
       // Stop polling when nothing is subscribed; the next subscriber will
       // re-arm the watcher in `_startVersionWatcher`. Prevents HMR/navigation
       // from leaking a new interval per reload.
