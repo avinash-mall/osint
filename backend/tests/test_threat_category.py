@@ -60,7 +60,6 @@ def _fake_normalize(monkeypatch, mapping: dict[str, tuple[str, str]]) -> None:
         ("storage_tank", "Industrial_Dual_Use", "storage_tank", "infrastructure"),
         ("road_bridge", "Transportation_Terrain", "road_bridge", "infrastructure"),
         ("hospital", "Urban_Tactical", "hospital", "infrastructure"),
-        ("corn_field", "Auxiliary", "corn_field", "nature"),
         # Branch-matcher fallback path: parent_class is the canonical branch label.
         ("naval thing", "Naval_Maritime", "naval_/_maritime", "maritime"),
     ],
@@ -74,8 +73,8 @@ def test_unknown_branch_falls_back_to_parent_string_sets(monkeypatch):
     _fake_normalize(
         monkeypatch,
         {
-            "vehicle": ("Battle_Damage", "vehicle"),
-            "ship": ("Battle_Damage", "ship"),
+            "vehicle": ("Unmapped_Branch", "vehicle"),
+            "ship": ("Unmapped_Branch", "ship"),
             "person": ("Other", "person"),
             "novel_widget": ("Other", "novel_widget"),
         },
@@ -93,13 +92,10 @@ def test_tracker_category_picks_up_branch_categories(monkeypatch):
             "destroyer": ("Naval_Maritime", "destroyer"),
             "cargo_plane": ("Airfield_Aviation", "cargo_plane"),
             "tank": ("Armored_Vehicles", "tank"),
-            "corn_field": ("Auxiliary", "corn_field"),
             "military_facility": ("Military_Installations", "military_facility"),
         },
     )
     assert tracker._tracker_category("destroyer") == "maritime"
     assert tracker._tracker_category("cargo_plane") == "air"
     assert tracker._tracker_category("tank") == "ground"
-    # nature is a static bucket — pinned to infrastructure for gating.
-    assert tracker._tracker_category("corn_field") == "infrastructure"
     assert tracker._tracker_category("military_facility") == "infrastructure"

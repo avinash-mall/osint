@@ -177,6 +177,7 @@ decisions/optical-inference-throughput.md|decision,inference,sam3|batch embeddin
 decisions/pgvector-adapter-on-pool.md|decision,backend|connection_factory registers pgvector adapter on every pooled connection so list/numpy/Vector inserts work
 decisions/prompt-profile-demote-via-upsert.md|decision,backend,ontology|UPSERT no longer ORs current with existing; make_current=FALSE actually demotes
 decisions/reclassify-storage-tank-and-helipad.md|decision,ontology|Storage Tank → Industrial, Helipad → Airfield; fixes mis-filed seed objects + DOTA eval mapping
+decisions/removed-battle-damage-and-aux-ontology-branches.md|decision,ontology|Battle_Damage + Auxiliary/Aux-Layers branches + objects dropped from seed+live DB (version bumped); Prithvi-tied
 decisions/removed-defence-yolo.md|decision|DEFENCE_YOLO emitted 1297 FPs / 0 TPs on DOTA val
 decisions/removed-dinov3-lvd.md|decision|DINOV3_LVD emitted NaN embeddings on drone-video crops
 decisions/removed-empty-inference-detection-policy.md|decision,inference|deleted empty 0-byte inference-sam3/detection_policy.py; fusion loads backend/detection_policy.py by path

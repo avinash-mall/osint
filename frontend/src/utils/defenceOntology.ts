@@ -100,11 +100,9 @@ export function isHighResolutionOnly(obj: DefenceObject): boolean {
 }
 
 /**
- * Sentinel prompts (e.g. `__aux_burn__`, `__aux_crop_corn__`) live in
- * the ontology so the Aux Layers branch shows up in the picker / legend, but
- * they are NOT real text prompts for SAM 3 — they're marker strings that the
- * specialist heads emit independently. Strip them before sending the prompt
- * list to the inference service.
+ * Sentinel prompts are `__double_underscore__` marker strings that a
+ * specialist head may emit independently — they are NOT real text prompts for
+ * SAM 3. Strip them before sending the prompt list to the inference service.
  */
 export function isSentinelPrompt(prompt: string): boolean {
   return prompt.startsWith('__') && prompt.endsWith('__');

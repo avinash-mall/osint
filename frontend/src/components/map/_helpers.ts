@@ -410,7 +410,6 @@ export const HEAVY_OUTLINE_CATEGORIES: ReadonlySet<DetectionCategoryId> = new Se
   'Military_Forces',
   'Air_Defense_EW',
   'Missile_Strategic',
-  'Battle_Damage',
   'Industrial_Dual_Use',
 ] as DetectionCategoryId[]);
 

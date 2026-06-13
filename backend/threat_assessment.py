@@ -132,9 +132,9 @@ def _lookup_threat_rule_uncached(
 # the object's own canonical label ("destroyer", "boeing_737", …), so matching
 # on parent strings alone misses almost every seeded object; the branch the
 # normalizer resolved is the stable categorical signal. Keys are the lowercased
-# branch ids from backend/scripts/seeds/defenceOntology.seed.json. Battle_Damage
-# is deliberately unmapped (mixes static damaged buildings with the generic
-# mobile Vehicle/Ship objects) and falls through to the parent-string sets.
+# branch ids from backend/scripts/seeds/defenceOntology.seed.json. Branches not
+# listed here (mixed or ambiguous ones) are deliberately unmapped and fall
+# through to the parent-string sets below.
 _BRANCH_CATEGORIES = {
     "airfield_aviation": "air",
     "naval_maritime": "maritime",
@@ -154,7 +154,6 @@ _BRANCH_CATEGORIES = {
     "industrial_dual_use": "infrastructure",
     "transportation_terrain": "infrastructure",
     "urban_tactical": "infrastructure",
-    "auxiliary": "nature",
 }
 
 _AIR_PARENTS         = {"aircraft", "airfield"}

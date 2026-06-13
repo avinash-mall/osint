@@ -32,8 +32,6 @@ _BRANCH_ID_TO_CANONICAL: Dict[str, str] = {
     "Industrial_Dual_Use": "industrial",
     "Transportation_Terrain": "transportation",
     "Urban_Tactical": "urban",
-    "Battle_Damage": "battle_damage",
-    "Auxiliary": "auxiliary",
 }
 
 _DOTA_ALIASES = {
