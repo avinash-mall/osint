@@ -1,7 +1,7 @@
 # Reports Router (`/api/reports/*`)
 
 **Path:** [backend/routers/reports.py](../../backend/routers/reports.py)
-**Lines:** ~150
+**Lines:** ~174
 **Depends on:** [backend/terrain.py](../../backend/terrain.py), [database.postgis_db](../../backend/database.py), `reportlab`, optional `mgrs`
 
 ## Purpose

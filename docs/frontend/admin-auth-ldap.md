@@ -1,7 +1,7 @@
 # Admin — Auth · LDAP
 
 **Path:** [frontend/src/components/AdminAuthTab.tsx](../../frontend/src/components/AdminAuthTab.tsx)
-**Lines:** ~15182 characters
+**Lines:** ~491
 
 ## Purpose
 

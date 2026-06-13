@@ -1,7 +1,7 @@
 # Admin — Confidence Overrides
 
 **Path:** [frontend/src/components/admin/ConfOverrideView.tsx](../../frontend/src/components/admin/ConfOverrideView.tsx)
-**Lines:** ~10952 characters
+**Lines:** ~326
 
 ## Purpose
 

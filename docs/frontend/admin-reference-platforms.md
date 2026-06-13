@@ -36,4 +36,4 @@ Admin tab listing curated reference platforms with family/country filters. Click
 
 - Backend router: [reference-platforms-router.md](../backend-routers/reference-platforms-router.md)
 - Schema: [reference-platform-db.md](../backend/reference-platform-db.md)
-- Plan E spec (in-repo): [docs/superpowers/plans/2026-05-27-reference-db-plan-e-frontend.md](../superpowers/plans/2026-05-27-reference-db-plan-e-frontend.md)
+- Historical reference-DB plan summary: [archive/superpowers-summary.md](../archive/superpowers-summary.md)

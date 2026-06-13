@@ -2,7 +2,7 @@
 
 **Path:** [inference-sam3/main.py](../../inference-sam3/main.py) `/detect`,
 [inference-sam3/sam3_runner.py](../../inference-sam3/sam3_runner.py) `run_text_prompts` / `run_box_prompts`
-**Lines:** ~6 added
+**Lines:** N/A (decision record for the linked change)
 **Depends on:** the single-pool profile model in [profile-pool-lifecycle.md](../inference/profile-pool-lifecycle.md)
 
 ## Decision

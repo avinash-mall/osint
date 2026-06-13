@@ -1,7 +1,7 @@
 # `backend/cascade_delete.py` — Orphan-free delete helpers
 
 **Path:** [backend/cascade_delete.py](../../backend/cascade_delete.py)
-**Lines:** ~135
+**Lines:** ~121
 **Depends on:** `logging` only (operates on a caller-supplied PostGIS cursor + optional Neo4j session)
 
 ## Purpose

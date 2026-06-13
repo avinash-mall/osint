@@ -425,10 +425,6 @@ img, svg, video, canvas { max-inline-size: 100%; }
   min-height: 28px;
 }
 .layer-panel-overlay-row:hover { background: var(--bg-2); }
-.layer-panel-overlay-row.is-disabled {
-  cursor: help;
-  color: var(--ink-3);
-}
 .layer-panel-overlay-dot {
   width: 10px;
   height: 10px;
@@ -443,20 +439,12 @@ img, svg, video, canvas { max-inline-size: 100%; }
   background: transparent;
   border: 1.5px solid var(--ink-3);
 }
-.layer-panel-overlay-dot.is-lock {
-  width: 12px;
-  height: 12px;
-  border-radius: 0;
-  color: var(--ink-3);
-  background: transparent;
-}
 .layer-panel-overlay-label {
   font-size: 12px;
   line-height: 1.2;
   color: var(--ink-1);
 }
 .layer-panel-overlay-row.is-off .layer-panel-overlay-label { color: var(--ink-2); }
-.layer-panel-overlay-row.is-disabled .layer-panel-overlay-label { color: var(--ink-3); }
 .layer-panel-overlay-metric {
   font: 500 10px/1 var(--font-mono);
   color: var(--ink-2);
@@ -753,6 +741,20 @@ img, svg, video, canvas { max-inline-size: 100%; }
   inset-inline:
     var(--map-timeline-start, clamp(3.5rem, 5cqi, 4.5rem))
     var(--map-timeline-end, clamp(3.5rem, 5cqi, 4.5rem));
+}
+
+/* Floating-chrome reflow: smooth the slide when a side panel opens/collapses or
+   the bottom dock changes height. Applied to MapStage chrome via .map-reflow.
+   See decisions/panel-reflow-token-system.md. */
+.map-reflow {
+  transition: left .18s ease, right .18s ease, bottom .18s ease;
+}
+
+/* Keep Leaflet's attribution clear of the right panel + bottom temporal dock.
+   The --reserve-* vars are inherited from MapStage's inner container. */
+.leaflet-bottom.leaflet-right {
+  margin-inline-end: var(--reserve-right, 14px);
+  margin-block-end: var(--reserve-bottom, 14px);
 }
 
 .object-details-form { container-type: inline-size; }

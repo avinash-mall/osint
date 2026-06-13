@@ -9,6 +9,8 @@
 - [frontend/src/components/map/DetectionTileLayer.tsx](../../frontend/src/components/map/DetectionTileLayer.tsx) (~197 lines; Martin MVT detection-box layer — the sole renderer for persisted boxes)
 - [frontend/src/components/map/FallbackTileLayer.tsx](../../frontend/src/components/map/FallbackTileLayer.tsx) (~134 lines; `<TileLayer>` drop-in that substitutes the upscaled parent tile on 404 — vendored ES-module port of Leaflet.TileLayer.Fallback)
 
+> **2026-06-13 UI revamp:** MapStage's floating chrome (top action bar, zoom/visual cluster, cursor/scale readouts, corner labels, Leaflet attribution) reflows against the `--reserve-left/right/bottom` bands set on its inner container, so it never overlaps the side panels (map stays full-bleed). `LayerPanel` dropped the padlocked Analytics subgroup, promoted **OBB** to the default box mode, and gained a **Filters** section (confidence floor + recent-activity window, `data-tour="filter-conf"`/`"filter-time-window"`). `OverlayRow` lost its `disabled`/lock branch. See [panel-reflow-token-system](../decisions/panel-reflow-token-system.md), [analytics-relocated-to-right-tab](../decisions/analytics-relocated-to-right-tab.md), [centralized-filter-surface](../decisions/centralized-filter-surface.md).
+
 ## Purpose
 
 `MapStage` = the `<MapContainer>` with the offline Carto Dark basemap + every overlay layer (detections, satellite passes, asset tracks, analytics polygons, sensor footprints). `LayerPanel` = the left rail toggling layer visibility, setting confidence filters, showing provenance.

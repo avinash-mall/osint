@@ -1,7 +1,7 @@
 # Analytics Tools Panel
 
 **Path:** [frontend/src/components/map/AnalyticsToolsPanel.tsx](../../frontend/src/components/map/AnalyticsToolsPanel.tsx)
-**Lines:** ~20610 characters
+**Lines:** ~630
 
 ## Purpose
 

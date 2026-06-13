@@ -1,7 +1,7 @@
 # Change Detection Dialog
 
 **Path:** [frontend/src/components/map/ChangeDetectionDialog.tsx](../../frontend/src/components/map/ChangeDetectionDialog.tsx)
-**Lines:** ~10066 characters
+**Lines:** ~317
 
 ## Purpose
 

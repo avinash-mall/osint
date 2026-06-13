@@ -1,7 +1,7 @@
 # `useAuth.ts` — Auth Context
 
 **Path:** [frontend/src/hooks/useAuth.ts](../../frontend/src/hooks/useAuth.ts)
-**Lines:** ~110
+**Lines:** ~130
 
 ## Purpose
 

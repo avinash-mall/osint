@@ -76,5 +76,4 @@ docker compose exec -T backend rm -rf /data/datasets/dota_src
 ## Cross-references
 - [reference-platform-db.md](reference-platform-db.md) — the schema this baker writes into.
 - [embed-endpoint.md](../inference/embed-endpoint.md) — the inference route consumed.
-- Plan A spec (in-repo): [docs/superpowers/plans/2026-05-26-reference-db-plan-a-pgvector-schema.md](../superpowers/plans/2026-05-26-reference-db-plan-a-pgvector-schema.md)
-- Plan B spec (in-repo): [docs/superpowers/plans/2026-05-27-reference-db-plan-b-bake-pipeline.md](../superpowers/plans/2026-05-27-reference-db-plan-b-bake-pipeline.md)
+- Historical reference-DB plan summary: [archive/superpowers-summary.md](../archive/superpowers-summary.md)

@@ -40,8 +40,6 @@ export default function TimeMachineBar({
   onTogglePlay,
   onRecenter,
   isoNow,
-  confidence,
-  onConfidenceChange,
   activePassId = null,
   comparePassId = null,
   onPassPin,
@@ -57,8 +55,6 @@ export default function TimeMachineBar({
   onTogglePlay: () => void;
   onRecenter: () => void;
   isoNow: string;
-  confidence: number; // 0..1 — hide detections below this floor
-  onConfidenceChange: (v: number) => void;
   /** ID of the imagery pass currently rendered as the primary layer. */
   activePassId?: number | null;
   /** ID of the imagery pass pinned for side-by-side comparison. */
@@ -134,34 +130,6 @@ export default function TimeMachineBar({
             </button>
           ))}
         </div>
-        <span
-          data-tour="tm-conf"
-          className="time-machine-confidence mono"
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6,
-            fontSize: 10.5,
-            color: 'var(--ink-2)',
-            flexShrink: 0,
-          }}
-          title="Hide detections below this confidence"
-        >
-          <span style={{ color: 'var(--ink-3)' }}>CONF</span>
-          <input
-            type="range"
-            min={0}
-            max={1}
-            step={0.01}
-            value={confidence}
-            onChange={(e) => onConfidenceChange(Number(e.target.value))}
-            aria-label="Detection confidence threshold"
-            style={{ width: 140, accentColor: 'var(--accent)' }}
-          />
-          <span style={{ color: 'var(--accent)', minWidth: 28, textAlign: 'right' }}>
-            {Math.round(confidence * 100)}%
-          </span>
-        </span>
         <span data-tour="tm-passes" className="mono" style={{ fontSize: 10.5, color: 'var(--accent)' }}>
           {dots.length} passes
         </span>

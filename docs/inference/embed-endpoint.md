@@ -1,7 +1,7 @@
 # `inference-sam3` — `POST /embed`
 
 **Path:** [inference-sam3/main.py](../../inference-sam3/main.py)
-**Lines:** ~55 (the route handler)
+**Lines:** ~2089
 **Depends on:** `embedding.dinov3_pool()`, the `dinov3_sat` layer in the active profile (auto-loaded via `_ensure_profile("imagery_rgb")` on first call).
 
 ## Purpose

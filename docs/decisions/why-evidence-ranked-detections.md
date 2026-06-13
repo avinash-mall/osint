@@ -12,13 +12,13 @@ Evidence ranking keeps the open-vocabulary policy intact while making confirmati
 
 - closed-set OBB and CFAR detections get source trust, but still pass physical validators;
 - SAM3/GDINO novel labels stay visible as `discovery` unless corroborated;
-- RemoteCLIP-style semantic verification can promote, but never creates detections;
+- semantic-verifier metadata can promote, but never creates detections; no active verifier emits it after RemoteCLIP removal;
 - SAR synthetic-preview labels stay conservative unless CFAR or other evidence supports them.
 
 ## Trade-offs accepted
 
 - Some true open-vocabulary targets will enter as `discovery` instead of `confirmed`.
-- The verifier adds optional latency when `SAM3_LOAD_REMOTECLIP=1`.
+- The verifier path is currently metadata-only; adding a future verifier would add optional latency.
 - Physical validators are broad sanity checks, not hard mission taxonomy rules; tune by environment before using as hard filters.
 
 ## Cross-references

@@ -100,13 +100,6 @@ export const TOUR_STEPS: TourStep[] = [
     body: 'Admins can permanently remove a scene — its detections, the graph nodes, and the on-disk file — after a confirmation. Use to clear test uploads or superseded collections; this cannot be undone.',
     placement: 'right',
   },
-  {
-    id: 'analytics-tools',
-    selector: '[data-tour="analytics-tools"]',
-    title: 'Analytics layer toggles',
-    body: 'Visibility toggles for the output of Viewshed, Line of Sight, and Routes runs — locked until you actually run the tool from the ANALYTICS tab on the right. Use these to flip analytics overlays on/off without re-running them.',
-    placement: 'right',
-  },
 
   // ─────────────────────────────────────────────────────────────────────
   // Top action bar
@@ -204,11 +197,11 @@ export const TOUR_STEPS: TourStep[] = [
     placement: 'top',
   },
   {
-    id: 'tm-conf',
-    selector: '[data-tour="tm-conf"]',
-    title: 'CONF threshold',
-    body: 'Drops detections below this confidence floor from the map. Slide right to tighten the view to high-confidence calls only; the SHOWING N/M chip updates live so you can see exactly what you are suppressing.',
-    placement: 'top',
+    id: 'filter-conf',
+    selector: '[data-tour="filter-conf"]',
+    title: 'Confidence floor',
+    body: 'Drops detections below this confidence floor from the map. Slide right to tighten the view to high-confidence calls only; the SHOWING N/M chip updates live so you can see exactly what you are suppressing. Now lives in the left-panel Filters section with the other detection filters.',
+    placement: 'right',
   },
   {
     id: 'tm-passes',
@@ -245,16 +238,16 @@ export const TOUR_STEPS: TourStep[] = [
   {
     id: 'event-timeline',
     selector: '[data-tour="event-timeline"]',
-    title: 'Event timeline',
-    body: 'A rolling histogram of detection activity over the last 60 minutes (orange = inside the current window, grey = outside). Use it to spot spikes in detection volume that might warrant a deeper look.',
+    title: 'Activity sparkline',
+    body: 'The detection-activity strip of the temporal dock — a rolling histogram over the recent-activity window (orange = inside the window, grey = outside). Play toggles live-follow (auto-refresh); the refresh icon pulls detections on demand. It sits below the imagery scrubber as one dock, not a second timeline.',
     placement: 'top',
   },
   {
-    id: 'event-windows',
-    selector: '[data-tour="event-windows"]',
-    title: '15M / 30M / 60M',
-    body: 'Sets how far back the histogram colour-codes as "in window" — 15, 30, or 60 minutes. Narrow it when you only care about very recent detections; widen for a fuller activity picture.',
-    placement: 'top',
+    id: 'filter-time-window',
+    selector: '[data-tour="filter-time-window"]',
+    title: 'Recent-activity window',
+    body: 'Sets the recent-activity window — 15, 30, or 60 minutes — which drives the detection query and the event-timeline histogram colour-coding. Narrow it when you only care about very recent detections; widen for a fuller picture. Now in the left-panel Filters section.',
+    placement: 'right',
   },
   {
     id: 'event-counter',
@@ -361,8 +354,8 @@ export const TOUR_STEPS: TourStep[] = [
   {
     id: 'tab-satellites',
     selector: '[data-tour="tab-satellites"]',
-    title: 'Satellites tab',
-    body: 'Plan collection windows offline: import TLEs (air-gap), pick an observer on the map, and predict upcoming overpasses with AOS/LOS and max elevation. Draw a satellite ground track on the map. Reach for it when scheduling the next pass over an AOI.',
+    title: 'Collection planning',
+    body: 'The satellite-icon button opens offline collection planning (gated here instead of taking a primary tab): import TLEs (air-gap), pick an observer on the map, and predict upcoming overpasses with AOS/LOS and max elevation, plus a ground-track draw. Reach for it when scheduling the next pass over an AOI.',
     placement: 'left',
   },
   {
@@ -373,10 +366,10 @@ export const TOUR_STEPS: TourStep[] = [
     placement: 'left',
   },
   {
-    id: 'tab-provenance',
-    selector: '[data-tour="tab-provenance"]',
-    title: 'Provenance tab',
-    body: 'Full lineage for the selected detection: source raster + chip, model and sensor, calibrated vs raw confidence, the detector ensemble that fused the call, and the taxonomy version. Use to audit why a detection exists before acting on it.',
+    id: 'details-provenance',
+    selector: '[data-tour="details-provenance"]',
+    title: 'Provenance / lineage',
+    body: 'Full lineage for the selected detection — source raster + chip, model and sensor, calibrated vs raw confidence, the detector ensemble that fused the call, and the taxonomy version. Now a collapsible section at the bottom of the Details tab (expand it to audit why a detection exists before acting on it).',
     placement: 'left',
   },
   {

@@ -1,5 +1,5 @@
 **Path:** [backend/routers/ontology.py#L529-L552](../../backend/routers/ontology.py#L529-L552)
-**Lines:** ~25
+**Lines:** N/A (decision record for the linked range)
 **Depends on:** `prompt_profiles` table; `PromptProfileBody.make_current`
 
 ## Purpose

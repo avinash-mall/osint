@@ -7,8 +7,8 @@
 ## Problem
 
 On a 16 GiB consumer Blackwell (RTX 5070 Ti) the `blackwell_sm120` profile loaded the
-**monolithic `imagery` profile** — SAM3 + DINOv3-SAT + Prithvi + Terramind + DOTA-OBB +
-FAIR1M-OBB + Grounding-DINO + RemoteCLIP — resident at once (~14.7 GiB). That left no headroom,
+**monolithic `imagery` profile** — SAM3 + DINOv3-SAT + TerraMind + DOTA-OBB +
+the then-optional open-vocabulary/verifier layers — resident at once (~14.7 GiB). That left no headroom,
 so SAM3's batched-text forward OOMed on **every** chunk (`CUDA out of memory, tried to allocate
 648 MiB, ~500 MiB free`). `_run_text_prompts_cached_batched` swallowed each chunk's OOM and
 returned an empty candidate list, the `/detect` endpoint returned HTTP 200 with `detections=0`,
@@ -25,17 +25,13 @@ regression) and the WBF fusion source list in [inference-sam3/fusion.py](../../i
 |---|---|---|---|---|
 | sam3 | 1832 / 1848 (99.1%) | core | core | **core — always resident** |
 | dota_obb | 16 / 1848 (0.9%) | +0.1 GiB | +50 ms | **keep** (cheap, real boxes) |
-| grounding_dino | 0 | +0.6 GiB | **+241 ms** | **drop on tight cards** (0 boxes, slowest, code-default OFF) |
-| fair1m_obb | 0 | +0.3 GiB | +60 ms | **drop on tight cards** (0 net-new vs dota_obb) |
-| remoteclip | unused (`loaded:false`) | +0.3 GiB | re-rank | **drop on tight cards** (no boxes) |
+| grounding_dino | 0 | sidecar/client now | remote call | **default off on tight cards** unless LAE-DINO sidecar is enabled |
 | dinov3_sat | 0 (re-ID embeddings only) | +1.5 GiB | +217 ms | keep (re-ID); not a detector |
-| prithvi | 0 on RGB (multispectral) | +0.8 GiB | — | **modality-specific** → MSI profile |
 | terramind | 0 on RGB (SAR) | +1.2 GiB | — | **modality-specific** → SAR profile |
 
-SAM3 does ~99% of detection work. The only proven dead weight (≈0 net-new boxes + real
-VRAM/latency) is **grounding_dino, fair1m_obb, remoteclip**. Prithvi (multispectral) and
-Terramind (SAR) are modality-specific, not dead — they must not be dropped, only kept out of
-the RGB working set.
+SAM3 does most detection work. DINOv3-SAT is enrichment, not a detector. TerraMind is
+SAR-specific and must stay out of the RGB working set. FAIR1M-OBB, RemoteCLIP, and Prithvi were
+removed later; see the removal decisions linked from [agent-entry.md](../agent-entry.md).
 
 ## Decision
 
@@ -45,7 +41,7 @@ levers chosen by measured VRAM in `GpuBuildProfile.runtime_env(vram_mib=…)`:
 1. **Loading policy (hot vs dynamic).** `vram_mib >= sam3_hot_load_min_vram_mib` (24 GiB) →
    *hot*: the profile's own preload behaviour, full `imagery` union resident. Below it →
    *dynamic*: `SAM3_RESTING_PROFILE=imagery_rgb`, one modality profile resident at a time.
-2. **Dead-weight gate.** On dynamic cards `SAM3_LOAD_GROUNDING_DINO/FAIR1M_OBB/REMOTECLIP=0`.
+2. **Optional sidecar gate.** On dynamic cards `SAM3_LOAD_GROUNDING_DINO=0` unless the operator enables the LAE-DINO sidecar.
 
 Per-modality profiles in `inference-sam3/main.py` `PROFILE_COMPONENTS` (`imagery_rgb` /
 `imagery_msi` / `imagery_sar`, all sharing `sam3_image` + `dinov3_sat`); `/detect` routes by

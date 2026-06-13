@@ -4,7 +4,7 @@
 [backend/main.py](../../backend/main.py) `delete_fmv_clip`,
 [frontend/src/components/map/LayerPanel.tsx](../../frontend/src/components/map/LayerPanel.tsx),
 [frontend/src/components/FmvPlayer.tsx](../../frontend/src/components/FmvPlayer.tsx)
-**Lines:** ~90 backend + ~80 frontend
+**Lines:** N/A (decision record spanning backend and frontend changes)
 **Depends on:** `require_admin`, `db` (Neo4j) + `postgis_db`, `ConfirmDialog`
 
 ## Decision

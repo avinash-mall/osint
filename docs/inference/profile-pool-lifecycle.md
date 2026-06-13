@@ -25,7 +25,7 @@ subset request without a reload (hot cards). See
 
 `DEVICE=cuda:0,cuda:1` (or `DEVICE=auto` on a multi-GPU host) → each loaded component replicated **once per device**. Request dispatcher round-robins across replicas for parallelism. Single GPU → single replica.
 
-Before building each replica, `_load_profile` calls `_apply_gpu_memory_fraction(device)`: when `SAM3_GPU_MEMORY_FRACTION` is set (a GPU co-tenant like a vLLM server is sharing the cards — auto-detected by `configure_host.py`), it calls `torch.cuda.set_per_process_memory_fraction` so this process can't exceed its share. An over-budget allocation then raises a catchable `OutOfMemoryError` (absorbed by `inference_utils.safe_predict`/`memory_guard`) instead of a context-poisoning `illegal memory access` against the neighbour's VRAM. No-op (0) on a dedicated card. See [decisions/optical-inference-throughput.md](../decisions/optical-inference-throughput.md) (Follow-up part 3).
+Before building each replica, `_load_profile` calls `_apply_gpu_memory_fraction(device)`: when an operator manually sets `SAM3_GPU_MEMORY_FRACTION` for a genuinely shared GPU, it calls `torch.cuda.set_per_process_memory_fraction` so this process cannot exceed its share. An over-budget allocation then raises a catchable `OutOfMemoryError` (absorbed by `inference_utils.safe_predict`/`memory_guard`) instead of a context-poisoning `illegal memory access` against the neighbour's VRAM. No-op (0/unset) on a dedicated card. `configure_host.py` no longer auto-derives this value; see [decisions/why-removed-auto-vram-cap.md](../decisions/why-removed-auto-vram-cap.md).
 
 ## State machine
 

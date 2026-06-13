@@ -1,7 +1,7 @@
 # `backend/stix_export.py` — STIX 2.1 export of the operational-entity graph
 
 **Path:** [backend/stix_export.py](../../backend/stix_export.py)
-**Lines:** ~135
+**Lines:** ~122
 **Depends on:** `uuid`, `datetime` (stdlib). Pure serialization — no DB, no network in the builder (the router supplies rows).
 
 ## Purpose

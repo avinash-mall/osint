@@ -1,7 +1,7 @@
 # `backend/routers/reference_platforms.py` — Reference Embedding DB HTTP API
 
 **Path:** [backend/routers/reference_platforms.py](../../backend/routers/reference_platforms.py)
-**Lines:** ~521
+**Lines:** ~592
 **Depends on:** `backend/reference_platform_db.py` (helpers), `backend/schemas.py` (Pydantic models), `backend/auth.py` (`get_current_user`), `backend/database.py` (pool).
 
 ## Purpose
@@ -49,4 +49,4 @@ Exposes the Reference Embedding DB to authenticated analysts. Seven routes:
 ## Cross-references
 - Schema and helpers: [reference-platform-db.md](../backend/reference-platform-db.md).
 - Auto-identify worker path (sibling): worker splice documented in [worker-legacy-monolith.md](../backend/worker-legacy-monolith.md); decision in [why-auto-identify-in-backend-not-inference.md](../decisions/why-auto-identify-in-backend-not-inference.md).
-- Plan D spec (in-repo): [docs/superpowers/plans/2026-05-27-reference-db-plan-d-backend-api.md](../superpowers/plans/2026-05-27-reference-db-plan-d-backend-api.md).
+- Historical reference-DB plan summary: [archive/superpowers-summary.md](../archive/superpowers-summary.md).

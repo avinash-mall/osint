@@ -1,7 +1,7 @@
 # Admin — Health Dashboard
 
 **Path:** [frontend/src/components/admin/HealthDashboardView.tsx](../../frontend/src/components/admin/HealthDashboardView.tsx)
-**Lines:** ~16440 characters
+**Lines:** ~454
 
 ## Purpose
 

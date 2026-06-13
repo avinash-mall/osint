@@ -1,7 +1,7 @@
 # `backend/detection_helpers.py` — Object-Details Helpers
 
 **Path:** [backend/detection_helpers.py](../../backend/detection_helpers.py)
-**Lines:** ~111
+**Lines:** ~124
 **Depends on:** [backend/database.py](../../backend/database.py)
 
 ## Purpose

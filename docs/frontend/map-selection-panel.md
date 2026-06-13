@@ -4,10 +4,19 @@
 **Lines:** ~757
 **Depends on:** [ObjectDetailsForm.tsx](../../frontend/src/components/ObjectDetailsForm.tsx), [IdentificationPanel.tsx](../../frontend/src/components/map/IdentificationPanel.tsx), [services/analytics.ts](../../frontend/src/services/analytics.ts), [_helpers.ts](../../frontend/src/components/map/_helpers.ts) `displayLabel` / `labelQuality` / `detectionProvenance`, backend `/api/detections`, `/api/analytics`, and `/api/reports`
 
+> **2026-06-13 UI revamp:** the right rail is now **four** primary tabs —
+> Details / Analytics / Similar / Active Tracks. Provenance is a collapsed
+> `<details>` disclosure at the bottom of the Details tab
+> (`data-tour="details-provenance"`); Satellites/collection-planning is gated to
+> a satellite-icon button in the panel header (`data-tour="tab-satellites"`).
+> `'provenance'` was removed from `SelectionRightTab`. See
+> [selection-panel-tab-consolidation](../decisions/selection-panel-tab-consolidation.md).
+
 ## Purpose
 
-Six-tab right rail. Most tabs key off the selected detection; the **Sat** tab
-is detection-independent (overpass planning over any picked point).
+Four-tab right rail (+ a gated Satellites view). Most tabs key off the selected
+detection; the **Satellites** view is detection-independent (overpass planning
+over any picked point).
 
 ## Tabs
 
@@ -40,7 +49,7 @@ fabricated specific defence label. `labelQuality(props)` drives an inline
 | `label_quality` | Chip | Tooltip |
 |---|---|---|
 | `generic`  | `sentinel-tag warn` (`data-testid="label-quality-chip"`) | "Detector emitted a generic class; no specific ontology match without a verifier." |
-| `verified` | `sentinel-tag ok`   (`data-testid="label-quality-chip"`) | "Confirmed by RemoteCLIP verifier (semantic_margin meets the configured floor)." |
+| `verified` | `sentinel-tag ok`   (`data-testid="label-quality-chip"`) | "Confirmed by a semantic verifier (semantic_margin meets the configured floor). No active verifier emits this after RemoteCLIP removal." |
 | `inferred` | — | (default; no chip) |
 
 See [decisions/why-generic-labels-when-unverified.md](../decisions/why-generic-labels-when-unverified.md)

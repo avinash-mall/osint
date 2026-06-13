@@ -36,9 +36,9 @@ categories" traces directly to this: the analyst sees a high-confidence
 - **DOTA-OBB**'s 18 categories are deliberately generic (the v1 spec). The
   head is not a fine-grained classifier; promoting `plane → Fighter Aircraft`
   has no model evidence behind it.
-- **RemoteCLIP** (already integrated, optional) can score `crop ↔ candidate
-  label` pairs and produce a `semantic_margin`. When that margin clears a
-  configured floor the specific ontology label has measured support.
+- A semantic verifier can score crop/candidate-label pairs and produce a
+  `semantic_margin`. RemoteCLIP previously filled this role and was removed; the
+  margin contract remains for a future verifier.
 
 ## Decision
 
@@ -91,9 +91,9 @@ pins, none of which had model evidence for the specific class.
 After: those same detections render as `"Aircraft (generic)"` /
 `"Vehicle (generic)"` / `"Naval (generic)"` with a `[GENERIC]` chip. The
 analyst can immediately see that the row is a generic shape match, not a
-verified identification. When T1.6 enables RemoteCLIP at scale, the chip
-flips to `[VERIFIED]` for the rows that survive the semantic_margin floor —
-and only those rows get the specific defence label.
+verified identification. If a future verifier feeds `semantic_margin`, the chip
+flips to `[VERIFIED]` for the rows that survive the margin floor — and only
+those rows get the specific defence label.
 
 ## Cross-references
 

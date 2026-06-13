@@ -51,14 +51,15 @@ loaded every model at once and OOMed on every SAM3 forward — see
   `inference-sam3/main.py` `PROFILE_COMPONENTS`, routed by `_profile_for_modality`). No preload
   (`SAM3_PRELOAD_MODELS=0`). All four modalities stay available — nothing is permanently lost.
 
-On dynamic cards the proven dead-weight detectors are also gated off (≈0 net-new boxes, real
-VRAM+latency): `SAM3_LOAD_GROUNDING_DINO=0`, `SAM3_LOAD_FAIR1M_OBB=0`, `SAM3_LOAD_REMOTECLIP=0`.
-`SAM3_LOAD_DINOV3_SAT/TERRAMIND` stay enabled — the per-modality split keeps
-TerraMind out of the RGB working set instead of dropping it.
+On dynamic cards the optional LAE-DINO client layer is gated off by default
+(`SAM3_LOAD_GROUNDING_DINO=0`) unless the operator explicitly brings up the
+sidecar and enables it. `SAM3_LOAD_DINOV3_SAT`, `SAM3_LOAD_TERRAMIND`,
+`SAM3_LOAD_DOTA_OBB`, and `SAM3_LOAD_MVRSD` stay available; the per-modality
+split keeps TerraMind out of the RGB working set instead of dropping it.
 
-New flags written to `.env`: `SAM3_LOAD_POLICY`, `SAM3_RESTING_PROFILE`, `SAM3_LOAD_FAIR1M_OBB`,
-`SAM3_LOAD_REMOTECLIP`. The docker-compose `inference-sam3` `environment:` block must pass each
-through for it to reach the container.
+New flags written to `.env`: `SAM3_LOAD_POLICY`, `SAM3_RESTING_PROFILE`, and
+`SAM3_LOAD_GROUNDING_DINO`. The docker-compose `inference-sam3` `environment:`
+block must pass each through for it to reach the container.
 
 ## Throughput knobs (VRAM- and GPU-count-derived)
 

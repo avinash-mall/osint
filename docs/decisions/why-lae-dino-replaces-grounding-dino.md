@@ -26,7 +26,7 @@ offline/open hard rules.
 registers a custom `LAEDINO(DINO)` model plus the paper's DVC (Dynamic
 Vocabulary Construction) and VisGT modules, and is driven by mmengine/mmcv. Its
 transformers pin (4.42.3) is irreconcilable with the main service, which needs
-transformers ≥4.56 for SAM 3, TerraMind, Prithvi and YOLO26. You cannot host
+transformers >=4.56 for SAM 3, TerraMind, DINOv3-SAT, and YOLO26. You cannot host
 both in one Python process. A separate container with its own dependency closure
 is the only clean boundary. As a bonus, it frees VRAM in the inference-sam3
 process (the client does no GPU work).

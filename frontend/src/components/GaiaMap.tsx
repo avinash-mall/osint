@@ -223,7 +223,7 @@ export default function GaiaMap({
   const [satObserver, setSatObserver] = useState<{ lat: number; lon: number } | null>(null);
   const [satPickActive, setSatPickActive] = useState(false);
   const [satGroundTrack, setSatGroundTrack] = useState<[number, number][] | null>(null);
-  const [rightTab, setRightTab] = useState<'details' | 'analytics' | 'satellites' | 'similar' | 'tracks' | 'provenance'>('details');
+  const [rightTab, setRightTab] = useState<'details' | 'analytics' | 'satellites' | 'similar' | 'tracks'>('details');
   const [overlaysOpen, setOverlaysOpen] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   // Modern shell: each side panel can be collapsed to a 36 px floating handle so
@@ -251,6 +251,24 @@ export default function GaiaMap({
     });
     observer.observe(node);
     return () => observer.disconnect();
+  }, []);
+
+  // Measure the bottom temporal dock (open timeline OR collapsed pill) so the
+  // bottom-corner chrome (cursor / scale / zoom cluster) clears it. The dock
+  // sits at bottom:14 and its height changes (scrubber, suppression chips,
+  // restored-hidden banner), so a ResizeObserver keeps --reserve-bottom honest.
+  // See decisions/panel-reflow-token-system.md.
+  const [bottomReserve, setBottomReserve] = useState(56);
+  const bottomDockObsRef = useRef<ResizeObserver | null>(null);
+  const setBottomDockNode = useCallback((node: HTMLElement | null) => {
+    bottomDockObsRef.current?.disconnect();
+    bottomDockObsRef.current = null;
+    if (!node) return;
+    const apply = () => setBottomReserve(Math.round(node.getBoundingClientRect().height) + 28);
+    apply();
+    const ro = new ResizeObserver(apply);
+    ro.observe(node);
+    bottomDockObsRef.current = ro;
   }, []);
 
   const selectedImageryData = imagery.find((img) => img.id === selectedImagery);
@@ -1295,6 +1313,19 @@ export default function GaiaMap({
 
   const tour = useProductTour();
 
+  // Single source for the panel-reflow reserve bands: the horizontal space each
+  // side panel (or its 36px collapsed rail = 4rem incl. gutters) consumes from
+  // the workspace edge. Mirrored into BOTH the bottom timeline's inset and
+  // MapStage's floating chrome so panels never overlap the chrome and the map
+  // stays full-bleed. `cqi` resolves against `.map-workspace` on the consuming
+  // descendants. See decisions/panel-reflow-token-system.md.
+  const reserveLeftCss = leftOpen
+    ? 'calc(min(20rem, calc(100cqi - 1.75rem)) + 1.75rem)'
+    : '4rem';
+  const reserveRightCss = rightOpen
+    ? 'calc(min(21.25rem, calc(100cqi - 1.75rem)) + 1.75rem)'
+    : '4rem';
+
   return (
     <div ref={workspaceRef} className="map-workspace" style={{ position: 'relative', height: '100%', width: '100%', background: 'var(--bg-0)', overflow: 'hidden' }}>
       {/* Full-bleed map column (rendered below, sandwiched between the floating
@@ -1319,14 +1350,10 @@ export default function GaiaMap({
         visibleDetectionCount={visibleDetectionCount}
         tracksCount={data.tracks.length}
         staticCount={data.static.length}
-        analyticsCounts={{
-          viewshed: analyticsResults.viewshed?.result?.features?.length ?? 0,
-          viewshedAvailable: !!analyticsResults.viewshed,
-          los: analyticsResults.los?.result?.features?.length ?? 0,
-          losAvailable: !!analyticsResults.los,
-          routes: analyticsResults.routes?.result?.features?.length ?? 0,
-          routesAvailable: !!analyticsResults.routes,
-        }}
+        confidenceThreshold={confidenceThreshold}
+        setConfidenceThreshold={setConfidenceThreshold}
+        timelineWindowMinutes={timelineWindowMinutes}
+        setRecentWindow={setRecentWindow}
         detectionGroups={detectionGroups}
         detectionGroupMode={detectionGroupMode}
         setDetectionGroupMode={setDetectionGroupMode}
@@ -1444,6 +1471,9 @@ export default function GaiaMap({
         }
         onClearCompare={() => setCompareImageryId(null)}
         onLaunchTour={tour.launchFromButton}
+        reserveLeftCss={reserveLeftCss}
+        reserveRightCss={reserveRightCss}
+        bottomReserve={bottomReserve}
       />
 
       {/* Floating event-timeline panel, anchored to the bottom and inset
@@ -1451,14 +1481,11 @@ export default function GaiaMap({
           always uses the maximum free width. */}
       {timelineOpen ? (
         <div
+          ref={setBottomDockNode}
           className="map-timeline"
           style={{
-            ['--map-timeline-start' as any]: leftOpen
-              ? 'calc(min(20rem, calc(100cqi - 1.75rem)) + 1.75rem)'
-              : '4rem',
-            ['--map-timeline-end' as any]: rightOpen
-              ? 'calc(min(21.25rem, calc(100cqi - 1.75rem)) + 1.75rem)'
-              : '4rem',
+            ['--map-timeline-start' as any]: reserveLeftCss,
+            ['--map-timeline-end' as any]: reserveRightCss,
             position: 'absolute',
             bottom: 14,
             zIndex: 500,
@@ -1499,8 +1526,6 @@ export default function GaiaMap({
                 onTogglePlay={() => setTmPlaying((p) => !p)}
                 onRecenter={() => setTmValue(1)}
                 isoNow={new Date().toISOString()}
-                confidence={confidenceThreshold}
-                onConfidenceChange={setConfidenceThreshold}
                 activePassId={selectedImagery ?? null}
                 comparePassId={compareImageryId}
                 onPassPin={(id) => setCompareImageryId(id === compareImageryId ? null : id)}
@@ -1703,42 +1728,38 @@ export default function GaiaMap({
             );
           })()}
 
-          <div data-tour="event-timeline">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+          {/* Activity sparkline — the detection-density histogram, reframed as a
+              subordinate strip of the single temporal dock (NOT a second
+              timeline). It spans the last-N-minutes window, a different axis from
+              the imagery scrubber above (which spans 24h/7d/30d), so the two are
+              stacked-but-distinct, with one slim header instead of two widgets.
+              See decisions/unified-temporal-control.md. */}
+          <div data-tour="event-timeline" style={{ marginTop: 2 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
             <button
               type="button"
-              className="btn icon sm"
+              className="btn icon xs"
               onClick={() => setTimelinePlaying((value) => !value)}
-              title={timelinePlaying ? 'Pause timeline' : 'Play timeline'}
+              title={timelinePlaying ? 'Pause live follow' : 'Live follow — auto-refresh detections'}
             >
-              {timelinePlaying ? <Pause size={12} /> : <Play size={12} />}
+              {timelinePlaying ? <Pause size={11} /> : <Play size={11} />}
             </button>
             <button
               type="button"
-              className="btn icon sm"
+              className="btn icon xs"
               onClick={fetchDetections}
-              title="Refresh detections"
+              title="Refresh detections now"
             >
-              <RefreshCw size={12} />
+              <RefreshCw size={11} />
             </button>
-            <span className="label-mono">Event timeline · last {timelineWindowMinutes}m</span>
-            <div data-tour="event-windows" className="seg" style={{ marginLeft: 8 }}>
-              {[15, 30, 60].map((minutes) => (
-                <button
-                  key={minutes}
-                  type="button"
-                  className={timelineWindowMinutes === minutes ? 'on' : ''}
-                  onClick={() => setRecentWindow(minutes)}
-                >
-                  {minutes}M
-                </button>
-              ))}
-            </div>
+            <span className="label-mono" style={{ fontSize: 9.5, color: 'var(--ink-3)', letterSpacing: '.06em' }}>
+              ACTIVITY · LAST {timelineWindowMinutes}M
+            </span>
             <div style={{ flex: 1 }} />
-            <span className="mono" style={{ fontSize: 10, color: 'var(--ink-2)' }}>
+            <span className="mono" style={{ fontSize: 9.5, color: 'var(--ink-3)' }}>
               {new Date(timeRange.start).toLocaleTimeString()} / {new Date(timeRange.end).toLocaleTimeString()}
             </span>
-            <span data-tour="event-counter" className="mono" style={{ fontSize: 10, color: 'var(--ink-3)' }}>
+            <span data-tour="event-counter" className="mono" style={{ fontSize: 9.5, color: 'var(--ink-2)' }}>
               · {visibleDetectionCount} in window
             </span>
           </div>
@@ -1783,6 +1804,7 @@ export default function GaiaMap({
         </div>
       ) : (
         <button
+          ref={setBottomDockNode}
           type="button"
           onClick={() => setTimelineOpen(true)}
           title="Show event timeline"
@@ -1909,16 +1931,19 @@ export default function GaiaMap({
             || stepId.startsWith('tab-')
             || stepId.startsWith('analytics-')
             || stepId.startsWith('tracks-')
+            || stepId === 'details-provenance'
           ) {
             setRightOpen(true);
           }
           // Switch the active tab so the spotlight lands on visible content.
-          if (stepId === 'tab-details' || stepId === 'selection-header-chip') setRightTab('details');
+          // Provenance is now a disclosure inside the Details tab, not its own tab.
+          if (stepId === 'tab-details' || stepId === 'selection-header-chip' || stepId === 'details-provenance') setRightTab('details');
           if (stepId === 'tab-analytics' || stepId.startsWith('analytics-')) setRightTab('analytics');
           if (stepId === 'tab-satellites') setRightTab('satellites');
           if (stepId === 'tab-similar') setRightTab('similar');
-          if (stepId === 'tab-provenance') setRightTab('provenance');
           if (stepId === 'tab-tracks' || stepId.startsWith('tracks-')) setRightTab('tracks');
+          // Centralized Filters (confidence + window) live in the left panel.
+          if (stepId.startsWith('filter-')) setLeftOpen(true);
           // Time-machine + event-timeline steps need the bottom panel open.
           if (
             stepId.startsWith('tm-')

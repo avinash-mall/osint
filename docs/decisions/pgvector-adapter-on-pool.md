@@ -2,7 +2,7 @@
 
 ## Context
 
-The Reference Embedding DB (Plan A, landed in commits up to `500aca9`) stores 1024-D Prithvi-EO-2.0 embeddings as PostGIS `vector(1024)` columns on `reference_platforms`, `reference_chips`, and `platform_identification_candidates`. Plans B/C/D add multiple writers — the offline bake pipeline, the nightly centroid refresh task, the inference-time identification scorer — all of which INSERT vectors using bare Python lists, numpy arrays, or `pgvector.Vector` objects.
+The Reference Embedding DB (Plan A, landed in commits up to `500aca9`) stores DINOv3-SAT overhead embeddings as PostGIS `vector(1024)` columns (plus a reserved 512-d ground-view slot) on `reference_platforms`, `reference_chips`, and `platform_identification_candidates`. Plans B/C/D add multiple writers — the offline bake pipeline, the nightly centroid refresh task, the inference-time identification scorer — all of which INSERT vectors using bare Python lists, numpy arrays, or `pgvector.Vector` objects.
 
 psycopg2 has no built-in adapter for the `vector` SQL type. `pgvector.psycopg2.register_vector(conn)` patches the connection's type-adapter map so Python iterables become `vector` literals on INSERT and `vector` results come back as numpy arrays on SELECT. Without it, every INSERT fails with `psycopg2.ProgrammingError: can't adapt type 'list'`.
 
@@ -28,4 +28,4 @@ Only the PostGIS `ThreadedConnectionPool` is wrapped. The lone `psycopg2.connect
 
 - [backend/database-connections.md](../backend/database-connections.md)
 - [decisions/reset-db-pool-after-fork.md](reset-db-pool-after-fork.md)
-- [superpowers/plans/2026-05-27-reference-db-plan-b-bake-pipeline.md](../superpowers/plans/2026-05-27-reference-db-plan-b-bake-pipeline.md)
+- [archive/superpowers-summary.md](../archive/superpowers-summary.md)

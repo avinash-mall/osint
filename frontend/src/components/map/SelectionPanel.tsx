@@ -24,7 +24,6 @@ import {
   CircleHelp,
   Cpu,
   Crosshair,
-  Database,
   FileDown,
   GitBranch,
   Navigation,
@@ -66,7 +65,7 @@ import type { ActiveLayerMap } from './LayerPanel';
 
 const API_URL = (import.meta as any).env?.VITE_API_URL || '';
 
-export type SelectionRightTab = 'details' | 'analytics' | 'satellites' | 'similar' | 'tracks' | 'provenance';
+export type SelectionRightTab = 'details' | 'analytics' | 'satellites' | 'similar' | 'tracks';
 export type SelectionEditTab = 'edit' | 'review';
 
 export type SelectionPanelActions = {
@@ -246,7 +245,6 @@ export default function SelectionPanel(props: Props) {
     rightTab === 'satellites'? { Icon: Satellite,   label: 'Satellites',    tag: 'OVERPASS'  } :
     rightTab === 'similar'   ? { Icon: Crosshair,   label: 'Similar',       tag: 'NEAREST'   } :
     rightTab === 'tracks'    ? { Icon: Navigation,  label: 'Active Tracks', tag: 'TRACKS'    } :
-    rightTab === 'provenance'? { Icon: Database,    label: 'Provenance',    tag: 'LINEAGE'   } :
                                { Icon: Crosshair,   label: selectedDetection ? `DET-${selectedDetection.properties?.id}` : 'Selection', tag: 'DETAIL' };
   const HeaderIcon = rightHeader.Icon;
   const allegianceLabel = String(selectedDetection?.properties?.allegiance || '').toLowerCase();
@@ -288,6 +286,19 @@ export default function SelectionPanel(props: Props) {
         ) : (
           <span data-tour="selection-header-chip" className="sentinel-tag acc ml-auto">{rightHeader.tag}</span>
         )}
+        {/* Collection planning (satellite overpasses) — gated to a secondary
+            header affordance instead of a primary tab. Toggles in/out of the
+            satellites view. data-tour anchor preserved for the product tour. */}
+        <button
+          type="button"
+          data-tour="tab-satellites"
+          onClick={() => setRightTab(rightTab === 'satellites' ? 'details' : 'satellites')}
+          className={`sentinel-icon-btn h-6 w-6 ${rightTab === 'satellites' ? 'text-sentinel-accent' : ''}`}
+          title="Collection planning — satellite overpasses"
+          aria-pressed={rightTab === 'satellites'}
+        >
+          <Satellite className="h-3.5 w-3.5" />
+        </button>
         <button type="button" data-tour="selection-collapse" onClick={onClose} className="sentinel-icon-btn h-6 w-6" title="Collapse panel">
           <ChevronRight className="h-3.5 w-3.5" />
         </button>
@@ -297,9 +308,7 @@ export default function SelectionPanel(props: Props) {
         {([
           ['details', 'Details'],
           ['analytics', 'Analytics'],
-          ['satellites', 'Sat'],
           ['similar', 'Similar'],
-          ['provenance', 'Prov'],
           ['tracks', 'Active Tracks'],
         ] as const).map(([k, label]) => {
           const isActive = rightTab === k;
@@ -671,6 +680,14 @@ export default function SelectionPanel(props: Props) {
                   {actionStatus || 'Detection action ready.'}
                 </div>
               </div>
+              {/* Provenance / lineage — folded in from the former Prov tab as a
+                  collapsed-by-default disclosure (read-only audit info). */}
+              <details data-tour="details-provenance" className="border-t border-sentinel-line">
+                <summary className="cursor-pointer select-none px-3 py-2 font-mono text-[10.5px] uppercase tracking-[.08em] text-sentinel-muted hover:text-slate-200">
+                  Provenance / lineage
+                </summary>
+                <ProvenancePanel selectedDetection={selectedDetection} />
+              </details>
             </>
           );
         })() : (
@@ -711,10 +728,6 @@ export default function SelectionPanel(props: Props) {
           ) : (
             <div className="border-b border-sentinel-line p-3 text-xs text-sentinel-muted">Select a detection polygon to inspect similar objects.</div>
           )
-        )}
-
-        {rightTab === 'provenance' && (
-          <ProvenancePanel selectedDetection={selectedDetection} />
         )}
 
         {rightTab === 'tracks' && (

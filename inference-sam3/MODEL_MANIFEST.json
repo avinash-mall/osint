@@ -1,6 +1,6 @@
 {
   "service": "inference-sam3",
-  "note": "SHA256 of LFS binaries (sam3.pt, sam3.1_multiplex.pt) is recorded during the offline packaging step that runs `huggingface-cli download` with HF_TOKEN. Until then, integrity is anchored on the HF revision SHA below.",
+  "note": "SHA256 of LFS binaries (sam3.pt, sam3.1_multiplex.pt) is recorded during the offline packaging step that runs `huggingface-cli download` with HF_TOKEN. Until then, integrity is anchored on the HF revision SHA below. Removed heads stay out of this manifest: Prithvi, RemoteCLIP, FAIR1M-OBB detector, and generic IDEA Grounding-DINO. The grounding_dino runtime layer calls the separate inference-lae sidecar.",
   "sources": {
     "facebookresearch/sam3": {
       "url": "https://github.com/facebookresearch/sam3",
@@ -37,30 +37,6 @@
         {"path": "sam3.safetensors", "lfs": true, "sha256": null}
       ]
     },
-    "IDEA-Research/grounding-dino-tiny": {
-      "role": "open_vocab_text_to_box_detector",
-      "gated": false,
-      "license": "Apache-2.0",
-      "note": "Generic open-vocabulary detector that runs alongside SAM 3 / DOTA-OBB / YOLOv8m_defence. Loaded via transformers AutoModelForZeroShotObjectDetection from the HF cache. Switch to grounding-dino-base for higher accuracy / larger model.",
-      "files": [
-        {"path": "model.safetensors", "lfs": true, "sha256": null},
-        {"path": "config.json", "oid": null},
-        {"path": "preprocessor_config.json", "oid": null},
-        {"path": "tokenizer.json", "oid": null}
-      ]
-    },
-    "chendelong/RemoteCLIP": {
-      "role": "remote_sensing_semantic_verifier",
-      "revision": "988de22a30b8eeb2b00a0ab85ed74e0d6e2e3f6c",
-      "gated": false,
-      "license": "Apache-2.0",
-      "note": "Optional OpenCLIP-compatible remote-sensing verifier. Scores existing candidate crops only; it never proposes detections.",
-      "files": [
-        {"path": "RemoteCLIP-ViT-B-32.pt", "lfs": true, "sha256": null},
-        {"path": "RemoteCLIP-RN50.pt", "lfs": true, "sha256": null},
-        {"path": "RemoteCLIP-ViT-L-14.pt", "lfs": true, "sha256": null}
-      ]
-    },
     "ultralytics/assets/mobileclip2_b.ts": {
       "role": "yoloe_text_encoder",
       "gated": false,
@@ -71,21 +47,12 @@
         {"path": "/models/torch/ultralytics/mobileclip2_b.ts", "lfs": false, "sha256": null}
       ]
     },
-    "fair1m/yolo11m-obb-fair1m": {
-      "role": "obb_fine_grained_aerial",
-      "gated": false,
-      "license": "Operator-baked from FAIR1M-2.0 dataset (GaoFen Challenge, CC-BY-NC-SA 4.0 attribution required)",
-      "note": "Trained checkpoint is NOT shipped with the repo. Operators bake it from the FAIR1M-2.0 dataset following docs/operations/fair1m-bake.md (Ultralytics yolo11m-obb base, 100 epochs, imgsz=1024). The runner gracefully no-ops when the file is absent (inference-sam3/fair1m_obb.py:load returns model=None). Place the resulting .pt at assets/static/inference-weights/fair1m/yolo11m-obb-fair1m.pt; the runtime resolves it from FAIR1M_OBB_WEIGHTS_DIR (default /data/inference-weights/fair1m).",
-      "files": [
-        {"path": "yolo11m-obb-fair1m.pt", "lfs": true, "sha256": null}
-      ]
-    },
     "mvrsd/mvrsd_yolo11m": {
       "role": "military_vehicle_detect_specialist",
       "gated": true,
       "license": "Operator-supplied fine-tune of Ultralytics yolo11m on the Military Vehicle Remote Sensing Dataset (MVRSD). 5 classes: SMV, LMV, AFV, CV, MCV.",
       "url": "${MVRSD_WEIGHTS_URL}",
-      "note": "Axis-aligned YOLO detect specialist for sub-meter (~0.3 m GSD) optical RGB military scenes. Default-OFF (SAM3_LOAD_MVRSD=0) and only runs when 'mvrsd' is in enabled_layers. Trained weights are hosted as a GitHub RELEASE asset; the orchestrator sets the MVRSD_WEIGHTS_URL build ARG to that asset URL. The Dockerfile.gpu bake step curls it to /models/mvrsd/mvrsd_yolo11m.pt at build time (project hard rule #8: no runtime downloads). When MVRSD_WEIGHTS_URL is empty the bake step is a no-op and mvrsd.load() honour-gates (returns model=None), so existing builds do not break. Runtime path overridable via MVRSD_WEIGHTS_PATH.",
+      "note": "Axis-aligned YOLO detect specialist for sub-meter (~0.3 m GSD) optical RGB military scenes. Default-ON in the imagery_rgb profile when SAM3_LOAD_MVRSD=1 and only skipped when enabled_layers is a non-empty list that omits mvrsd. Trained weights are hosted as a GitHub release asset; the orchestrator sets the MVRSD_WEIGHTS_URL build ARG to that asset URL. The Dockerfile.gpu bake step curls it to /models/mvrsd/mvrsd_yolo11m.pt at build time (project hard rule #8: no runtime downloads). When MVRSD_WEIGHTS_URL is empty the bake step is a no-op and mvrsd.load() honour-gates (returns model=None), so existing builds do not break. Runtime path overridable via MVRSD_WEIGHTS_PATH.",
       "files": [
         {"path": "/models/mvrsd/mvrsd_yolo11m.pt", "lfs": false, "sha256": null}
       ]

@@ -21,7 +21,7 @@ Per-service inventory: image, ports, depends-on, volumes. Read with the compose 
 | `postgis` | `postgis/postgis:18-3.6` | internal 5432 | — | spatial catalog, detections, auth, ontology |
 | `redis` | `redis:8-alpine` | internal 6379 | — | Celery broker |
 | `titiler` | `ghcr.io/developmentseed/titiler:2.0.2` | internal 8080 | — | on-the-fly COG tile server |
-| `martin` | `ghcr.io/maplibre/martin:1.9.1` | internal 3000 | postgis | PostGIS → MVT vector tiles |
+| `martin` | `ghcr.io/maplibre/martin:1.9.1` | internal 3000 | postgis, backend | PostGIS → MVT vector tiles (waits on backend health so the `detections_mvt` function exists before Martin's one-shot source scan — see [decisions/obb-render-fix.md](../decisions/obb-render-fix.md)) |
 | `assets` | `sentinel-assets:offline` | internal 80 | — | IBM Plex fonts, reference-corpora, calibration; binds `./assets/static/{basemap,terrain}` read-only for tile serving |
 | `osrm` | `ghcr.io/project-osrm/osrm-backend:v6.0.0` | internal 5000 | — | Planet driving-routes service; bind-mounts `./assets/osrm:/data:ro`, runs `osrm-routed --algorithm mld`; 503 if data absent |
 | `osrm-baker` *(profile `bake`)* | `sentinel-osrm-baker` | — | — | Runtime baker; downloads OSM PBF + runs OSRM pipeline into `./assets/osrm`; exits 0 when done |

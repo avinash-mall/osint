@@ -6,7 +6,11 @@
 
 ## Purpose
 
-Merge raw image candidates from SAM3 + DOTA-OBB + FAIR1M-OBB + Grounding-DINO + YOLOE + SAR-CFAR into one deduplicated detection list. Builds the canonical per-detection record (OBB extraction, COCO RLE encoding), then runs cross-detector fusion — Weighted Boxes Fusion by default, classic mask-aware NMS as the A/B alternative.
+Merge raw image candidates from SAM3 + DOTA-OBB + LAE-DINO (`grounding_dino`
+layer) + MVRSD + YOLOE + SAR-CFAR into one deduplicated detection list. Builds
+the canonical per-detection record (OBB extraction, COCO RLE encoding), then
+runs cross-detector fusion — Weighted Boxes Fusion by default, classic
+mask-aware NMS as the A/B alternative.
 
 ## Why this design
 

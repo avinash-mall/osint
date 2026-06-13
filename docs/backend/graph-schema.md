@@ -1,7 +1,7 @@
 # Graph Schema Bootstrap
 
 **Path:** [backend/graph_schema.py](../../backend/graph_schema.py)
-**Lines:** ~95
+**Lines:** ~117
 **Depends on:** [backend/database.py](../../backend/database.py) (`db`), `neo4j` driver
 
 ## Purpose

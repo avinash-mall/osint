@@ -361,9 +361,10 @@ LABEL_VERIFIER_MARGIN_FLOOR = float(os.getenv("LABEL_VERIFIER_MARGIN_FLOOR", "0.
 def label_quality_for(detection: dict[str, Any]) -> str:
     """Classify a detection's label confidence as verified / inferred / generic.
 
-    * ``"verified"`` — a verifier (RemoteCLIP or a future fine-grained
-      classifier) confirmed the specific label with
-      ``semantic_margin >= LABEL_VERIFIER_MARGIN_FLOOR``.
+    * ``"verified"`` — a semantic verifier (none active after RemoteCLIP
+      removal, but the metadata contract remains for future classifiers)
+      confirmed the specific label with ``semantic_margin >=
+      LABEL_VERIFIER_MARGIN_FLOOR``.
     * ``"generic"``  — the underlying ``source_layer`` is ``"dota_obb"`` and
       ``original_class`` is one of the 18 DOTA-OBB generic classes, and the
       detection is not verified. Promoting the label to a specific defence

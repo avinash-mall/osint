@@ -5,6 +5,11 @@
 - [frontend/src/components/map/SimilarPanel.tsx](../../frontend/src/components/map/SimilarPanel.tsx) — embedding-NN list
 - [frontend/src/components/map/ProvenancePanel.tsx](../../frontend/src/components/map/ProvenancePanel.tsx) — chip/detector/model lineage for a single detection
 
+> **2026-06-13 UI revamp:** `ProvenancePanel` is no longer a standalone "Prov"
+> tab — it renders inside a collapsed `<details>` disclosure at the bottom of
+> the SelectionPanel **Details** tab (`data-tour="details-provenance"`). See
+> [selection-panel-tab-consolidation](../decisions/selection-panel-tab-consolidation.md).
+
 ## Purpose
 
 Three smaller right-rail panels complementing [SelectionPanel.tsx](map-selection-panel.md).

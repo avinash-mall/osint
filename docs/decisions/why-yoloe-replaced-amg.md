@@ -18,14 +18,20 @@
 
 ## Operator-visible change
 
-`metadata.prompt_mode` on `/detect_video`:
+`metadata.prompt_mode` on direct inference `/detect_video`:
 
 | Mode | Engine | Behavior |
 |---|---|---|
 | `pcs` *(default)* | SAM 3.1 multiplex | Single-prompt-per-session text-prompted tracker |
 | `yoloe` | YOLOE-26x-seg(-pf) | Standalone tracker; empty `text_prompts` → `-pf` |
 
-The deprecated `prompt_mode=amg` is gone. Anything still sending it gets HTTP 400.
+The deprecated inference-level `prompt_mode=amg` is gone. Anything sending it
+directly to `/detect_video` gets HTTP 400.
+
+Backend upload compatibility is intentionally narrower: `POST /api/fmv/clips`
+and `POST /api/ingest/upload` still accept `model=yolo26&prompt_mode=amg` as a
+legacy UI/API alias for YOLOE prompt-free FMV. The backend maps that pair to the
+worker's `yoloe` mode and sends inference `prompt_mode=yoloe`.
 
 ## Cross-references
 

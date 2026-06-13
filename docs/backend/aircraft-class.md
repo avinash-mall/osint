@@ -1,7 +1,7 @@
 # `backend/aircraft_class.py` — ICAO type → coarse airframe class
 
 **Path:** [backend/aircraft_class.py](../../backend/aircraft_class.py)
-**Lines:** ~80
+**Lines:** ~67
 **Depends on:** nothing (stdlib only). Pure function.
 
 ## Purpose

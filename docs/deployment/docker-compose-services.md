@@ -17,7 +17,7 @@
 | `postgis` | `postgis/postgis:18-3.6` | internal 5432 | `max_connections=${POSTGIS_MAX_CONNECTIONS:-300}` (concurrent imagery+FMV pools; see [decisions/why-postgis-max-connections-300.md](../decisions/why-postgis-max-connections-300.md)) |
 | `redis` | `redis:8-alpine` | internal 6379 | Celery broker |
 | `titiler` | `ghcr.io/developmentseed/titiler:2.0.2` | internal 8080 | COG tile server |
-| `martin` | `ghcr.io/maplibre/martin:1.9.1` | internal 3000 | PostGIS → MVT |
+| `martin` | `ghcr.io/maplibre/martin:1.9.1` | internal 3000 | PostGIS → MVT; `depends_on: postgis + backend` (service_healthy) so `detections_mvt` exists before Martin's one-shot scan ([decisions/obb-render-fix.md](../decisions/obb-render-fix.md)) |
 | `assets` | `sentinel-assets:offline` | internal 80 | fonts, reference-corpora, calibration; binds `./assets/static/{basemap,terrain}` RO |
 | `llm-local-proxy` *(profile `llm-proxy`)* | `alpine/socat:1.8.0.3` | host `127.0.0.1:18001` | optional loopback-only socat forwarder |
 | `osrm-baker` *(profile `bake`)* | `sentinel-osrm-baker` | — | runtime baker; writes OSRM MLD into `./assets/osrm`; exits 0 |

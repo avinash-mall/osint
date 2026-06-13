@@ -1,7 +1,7 @@
 # `services/analytics.ts` — Analytics API Client
 
 **Path:** [frontend/src/services/analytics.ts](../../frontend/src/services/analytics.ts)
-**Lines:** ~2172 characters
+**Lines:** ~78
 
 ## Purpose
 

@@ -1,7 +1,7 @@
 # Link Graph Redesign — Defence-Analyst Reasoning Surface
 
 **Status:** Phases 1–5 shipped (28 + 13 = 41 commits ahead of origin/main at time of Phase 5 close). Every deferred item from the original roll-up is now closed; see the "Phase 5 — deferred-items roll-up" section below.
-**Plan file:** [~/.claude/plans/the-useful-framing-is-replicated-crane.md](file:///home/avinash/.claude/plans/the-useful-framing-is-replicated-crane.md) (canonical source; this doc is the in-repo mirror).
+**Plan file:** original local Claude plan `the-useful-framing-is-replicated-crane.md`; this doc is the in-repo mirror.
 **Primary surfaces:** [backend/routers/graph.py](../../backend/routers/graph.py), [frontend/src/components/GraphExplorer.tsx](../../frontend/src/components/GraphExplorer.tsx).
 
 ## Context

@@ -26,4 +26,4 @@ Single React component for rendering a reference-chip thumbnail. Wraps the `<img
 ## Cross-references
 - Consumers: [identification-panel.md](identification-panel.md), [admin-reference-platforms.md](admin-reference-platforms.md).
 - Backend route: [reference-platforms-router.md](../backend-routers/reference-platforms-router.md).
-- Plan F spec (in-repo): [docs/superpowers/plans/2026-05-27-reference-db-plan-f-websocket-sync.md](../superpowers/plans/2026-05-27-reference-db-plan-f-websocket-sync.md).
+- Historical reference-DB plan summary: [archive/superpowers-summary.md](../archive/superpowers-summary.md).

@@ -39,4 +39,4 @@ Renders top-k reference-platform candidates for a detection inside SelectionPane
 - Backend router: [reference-platforms-router.md](../backend-routers/reference-platforms-router.md)
 - Schema: [reference-platform-db.md](../backend/reference-platform-db.md)
 - Threshold policy: [why-auto-write-with-threshold.md](../decisions/why-auto-write-with-threshold.md)
-- Plan E spec (in-repo): [docs/superpowers/plans/2026-05-27-reference-db-plan-e-frontend.md](../superpowers/plans/2026-05-27-reference-db-plan-e-frontend.md)
+- Historical reference-DB plan summary: [archive/superpowers-summary.md](../archive/superpowers-summary.md)

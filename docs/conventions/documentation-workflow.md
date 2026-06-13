@@ -4,7 +4,7 @@
 
 ## Before starting any task
 
-1. **Read [docs/INDEX.txt](../INDEX.txt) first** — a 15 KB compressed index of every doc; one read gives the full tree.
+1. **Read [docs/INDEX.txt](../INDEX.txt) first** — the compressed index of the active doc tree.
 2. **Read the docs for the modules you'll touch** — grep INDEX.txt by tag (`backend`, `inference`, `fmv`, `ontology`, etc.) or by path.
 3. **Read the relevant decision docs** — changing inference → read [docs/decisions/why-sam3-as-foundation.md](../decisions/why-sam3-as-foundation.md), `why-yoloe-replaced-amg.md`, etc. Past trade-offs are load-bearing.
 4. **Read the relevant convention** — if the task fits a recipe (`adding-a-new-detection-model.md`, `-router.md`, `-celery-task.md`, `-ontology-object.md`, `-admin-tab.md`), follow it; don't re-derive the steps.
@@ -84,6 +84,9 @@ grep -rEho '\]\([^)]+\)' docs/<changed-files> | sort -u   # spot-check 5 random 
 
 # INDEX.txt is in sync with the file tree
 find docs -name '*.md' | wc -l    # should equal INDEX.txt line count + 1 (for docs/README.md)
+
+# Full automated audit
+python scripts/docs_audit.py
 ```
 
 ## Cross-references

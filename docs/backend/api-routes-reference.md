@@ -1,6 +1,6 @@
 # API Routes Reference
 
-Complete route table. Routers in [backend/routers/](../../backend/routers/) own their slices; `main.py` owns the bulk reads at the bottom.
+Grouped route table. Routers in [backend/routers/](../../backend/routers/) own their slices; `main.py` owns the bulk reads at the bottom. For the exact generated decorator list, see [api-routes-appendix.md](api-routes-appendix.md).
 
 ## Auth · Health · Realtime
 
@@ -105,5 +105,6 @@ Link Graph redesign added the bulk of these — see [architecture/link-graph-red
 
 ## Cross-references
 
+- [backend/api-routes-appendix.md](api-routes-appendix.md) — generated exact route list
 - [backend/main-app-entrypoint.md](main-app-entrypoint.md)
 - [backend/pydantic-schemas.md](pydantic-schemas.md)

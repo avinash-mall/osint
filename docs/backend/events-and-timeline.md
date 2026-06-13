@@ -1,7 +1,7 @@
 # `backend/events.py` — Redis Pubsub + Timeline
 
 **Path:** [backend/events.py](../../backend/events.py)
-**Lines:** ~153
+**Lines:** ~180
 **Depends on:** `redis`, [backend/database.py](../../backend/database.py) (`postgis_db`)
 
 ## Purpose

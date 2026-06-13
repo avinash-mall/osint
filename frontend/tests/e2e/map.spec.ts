@@ -64,9 +64,9 @@ test('imagery list exposes an admin delete control when scenes exist', async ({ 
 });
 
 test('overlay controls respond when present', async ({ page }) => {
-  // Geometry render modes + Prithvi overlays live in the Overlays section and
-  // render once the detections layer is active; interact if visible.
-  for (const id of ['geom-hbb', 'geom-obb', 'geom-mask', 'prithvi-flood', 'prithvi-burn', 'prithvi-crops']) {
+  // Geometry render modes live in the Overlays section and render once the
+  // detections layer is active; interact if visible.
+  for (const id of ['geom-hbb', 'geom-obb', 'geom-mask']) {
     await clickIfVisible(tour(page, id));
   }
   // Page still healthy after the toggles.

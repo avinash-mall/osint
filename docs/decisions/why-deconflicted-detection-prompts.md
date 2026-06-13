@@ -39,8 +39,9 @@ Independent sources converge (web research, May 2026):
   No separate hand-maintained defence-terminology layer. Objects that sent an
   identical prompt were collapsed — the models never distinguished them anyway, so
   showing "Fighter Aircraft" vs "Bomber" for an identical `"fixed-wing aircraft"`
-  detection was fabricated precision. ~272 objects → 145 (131 detection prompts +
-  14 Prithvi sentinels).
+  detection was fabricated precision. At the time this reduced ~272 objects to
+  145 entries; the Prithvi sentinel entries were later removed with the Prithvi
+  heads.
 - A generic detection now shows an honest generic label ("Facility"), never a
   fabricated specific one ("Launch Pad").
 - **`seed_ontology.py --reseed` prunes** objects absent from the JSON, so the

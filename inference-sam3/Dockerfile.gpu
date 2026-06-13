@@ -89,13 +89,12 @@ RUN mkdir -p /models/hf/hub /models/torch/ultralytics && \
     huggingface-cli download 1038lab/sam3 sam3.safetensors; \
     : "--- DINOv3-SAT (gated) ---"; \
     huggingface-cli download facebook/dinov3-vitl16-pretrain-sat493m || echo "[bake] dinov3-sat skipped"; \
-    : "--- GroundingDINO ---"; \
-    huggingface-cli download IDEA-Research/grounding-dino-tiny || echo "[bake] grounding-dino skipped"; \
+    : "--- LAE-DINO lives in the inference-lae sidecar; no generic GDINO bake here ---"; \
     : "--- DOTA-OBB (Ultralytics auto-fetch into YOLO_CONFIG_DIR) ---"; \
     cd /models/torch/ultralytics && \
     python -c "from ultralytics import YOLO; YOLO('yolo26m-obb.pt'); YOLO('yolo11n-obb.pt')" || echo "[bake] dota-obb skipped"; \
     : "--- MVRSD military-vehicle detect specialist (GitHub release asset) ---"; \
-    : "  Default-OFF gated specialist. Baked from MVRSD_WEIGHTS_URL so the"; \
+    : "  Default-ON gated specialist. Baked from MVRSD_WEIGHTS_URL so the"; \
     : "  weight is present offline at runtime (hard rule #8: no runtime"; \
     : "  downloads). Empty URL = no-op; mvrsd.load() then honour-gates."; \
     mkdir -p /models/mvrsd && \
@@ -127,8 +126,8 @@ RUN mkdir -p /models/hf/hub /models/torch/ultralytics && \
     rm -rf /root/.cache/huggingface/token /root/.huggingface
 ENV HF_TOKEN=
 
-# Fail fast if REQUIRED weights are missing. Optional heads (Prithvi
-# flood/burn, Grounding-DINO, DOTA-OBB, TerraMind) stay tolerant above.
+# Fail fast if REQUIRED weights are missing. Optional heads (DOTA-OBB,
+# TerraMind, MVRSD, YOLOE assets) stay tolerant above.
 # SAM3 needs either the gated repo or the non-gated mirror; DINOv3-SAT has
 # no fallback so its absence is a build-stop and points operators at a
 # missing/invalid HF_TOKEN before the image ever boots.

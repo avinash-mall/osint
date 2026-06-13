@@ -21,7 +21,7 @@ Sub-tabs share selection state (current node, time range, class lens) — see [d
 ## Investigation mode controls
 
 - **Class-lens chip row** — restrict the feed to one or more node labels (`Target`, `Base`, `Detection`, …). Empty = all operational labels + 1-hop expansion. Server-side filter via `class_lens=…` query params.
-- **Time scrubber** ([TimeScrubber.tsx](../../frontend/src/components/graph/TimeScrubber.tsx)) — 30-day default per the plan; presets at 1H / 24H / 7D / 30D; 24-bucket histogram fed from any `node.properties.created_at` in the current payload. Pattern is modelled after [GaiaMap](map-cop-overview.md) but lives in its own component — GaiaMap is untouched.
+- **Time scrubber** ([TimeScrubber.tsx](../../frontend/src/components/graph/TimeScrubber.tsx)) — 30-day default per the plan; presets at 1H / 24H / 7D / 30D; 24-bucket histogram fed from any `node.properties.created_at` in the current payload. Pattern is modelled after [GaiaMap](workspace-geoint-gaiamap.md) but lives in its own component — GaiaMap is untouched.
 - **Predicate chip bar** (UX-AUDIT F22) — filter edges by Neo4j relationship type.
 - **Candidates toggle** — show/hide pending `CANDIDATE_DETECTED_AS` edges. Default hidden because Phase 1.B persists them as real edges (see [decisions/why-candidate-edges-persisted.md](../decisions/why-candidate-edges-persisted.md)).
 - **Force-graph** — `react-force-graph-2d`, summarise-and-expand capped at 150 nodes (server enforces). Per-node "Expand Node" still uses `/api/graph/neighborhood`.

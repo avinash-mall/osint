@@ -4,6 +4,8 @@
 **Lines:** ~1980
 **Depends on:** React hooks, `axios`, Leaflet/React-Leaflet components, map panels, ontology utilities, detection/imagery/analytics backend APIs
 
+> **2026-06-13 UI revamp:** `.map-workspace` is full-bleed with floating panels that reflow via shared `--reserve-*` bands (computed here as `reserveLeftCss`/`reserveRightCss`, plus a measured `--reserve-bottom` from the `setBottomDockNode` ResizeObserver) fed to both the timeline inset and MapStage's chrome. The left-rail Filters (confidence + recent-activity window) are passed to `LayerPanel`; the right panel is 4 tabs and `rightTab` no longer includes `'provenance'`; `onStepChange` opens the left panel for `filter-*` steps and Details for `details-provenance`. See [panel-reflow-token-system](../decisions/panel-reflow-token-system.md), [centralized-filter-surface](../decisions/centralized-filter-surface.md), [selection-panel-tab-consolidation](../decisions/selection-panel-tab-consolidation.md), [unified-temporal-control](../decisions/unified-temporal-control.md).
+
 ## Purpose
 
 The Common Operating Picture: a 2D Leaflet map with all detection layers, satellite passes, asset tracks, analytics overlays, and the panels driving them.

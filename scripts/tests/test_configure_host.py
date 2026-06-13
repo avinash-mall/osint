@@ -175,9 +175,8 @@ def test_parse_gpu_query_extracts_total_and_used_columns():
     assert gpus[0].memory_used_mib == 41424
 
 
-def test_cotenant_usage_caps_memory_fraction_and_shrinks_batches():
-    """A co-tenant (e.g. vLLM) already holding ~40 GiB/card at configure time
-    → cap the inference pool to the free headroom and shrink the peak knobs."""
+def test_cotenant_usage_does_not_emit_memory_cap():
+    """Live memory.used is ignored; operators set SAM3_GPU_MEMORY_FRACTION manually."""
     info = HostGpuInfo(
         driver_version="595.58.03",
         gpus=tuple(
@@ -188,11 +187,9 @@ def test_cotenant_usage_caps_memory_fraction_and_shrinks_batches():
 
     values = generated_env_values(info)
 
-    # headroom = 81920 - 41424 - 4096 = 36400 → 36400/81920 = 0.44
-    assert values["SAM3_GPU_MEMORY_FRACTION"] == "0.44"
-    # datacenter baseline 64 / 16 shrinks to the frugal co-tenant values.
-    assert values["SAM3_EMBED_BATCH_SIZE"] == "16"
-    assert values["SAM3_BATCHED_TEXT_CHUNK_SIZE"] == "8"
+    assert "SAM3_GPU_MEMORY_FRACTION" not in values
+    assert values["SAM3_EMBED_BATCH_SIZE"] == "64"
+    assert values["SAM3_BATCHED_TEXT_CHUNK_SIZE"] == "16"
 
 
 def test_dedicated_card_emits_no_memory_cap():

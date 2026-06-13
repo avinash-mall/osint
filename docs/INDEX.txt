@@ -1,60 +1,17 @@
 path|tags|summary
-architecture/system-overview.md|arch|nginx:3000 sole entry; routes /api,/ws,/tiles,/maps,/basemap,/fmv to internal services
-architecture/data-flow-imagery.md|arch,imagery|COG translate -> chip -> /detect -> georef -> evidence-rank -> PostGIS persist
-architecture/data-flow-fmv.md|arch,fmv|HLS transcode -> KLV/SRT telemetry -> /detect_video NDJSON -> fmv_detections
+agent-context-map.md|conventions|Tell agents which small doc cluster to read for a task area, so they do not load
+agent-entry.md|conventions|Give coding agents one compact, current project brief instead of repeating the
 architecture/component-boundaries.md|arch|process/file boundaries: backend, worker, inference-sam3, frontend
-architecture/service-topology.md|arch,deployment|docker-compose service graph, bake-profile bakers, internal DNS, exposed ports
+architecture/data-flow-fmv.md|arch,fmv|HLS transcode -> KLV/SRT telemetry -> /detect_video NDJSON -> fmv_detections
+architecture/data-flow-imagery.md|arch,imagery|COG translate -> chip -> /detect -> georef -> evidence-rank -> PostGIS persist
 architecture/link-graph-redesign.md|arch|4-phase Link Graph redesign as analyst reasoning surface: Investigation/Evidence/Ontology modes, projectors, NEAR/SAME_AS
-backend/main-app-entrypoint.md|backend,fastapi|main.py mounts routers, lifespan migrations, session middleware, FMV prompt fallback
-backend/aircraft-class.md|backend|offline ICAO type-code -> coarse airframe class (heli/turboprop/bizjet/airliner); backend reference, no live ADS-B
-backend/api-routes-reference.md|backend,router|route table by tag: auth/graph/detections/fmv/ontology/analytics/ai
-backend/auth-and-sessions.md|backend,auth|itsdangerous signed cookies, env-bootstrap admin, optional LDAP via auth_config row
-backend/database-connections.md|backend|Neo4j + PostGIS dual stack: pool, advisory locks, docker DNS fallback
-backend/graph-metrics.md|backend|in-memory Neo4j-snapshot metrics: density/components/centrality; rustworkx fast path + pure-Python fallback
-backend/graph-proximity.md|backend|vendored city2graph proximity builders (kNN/Delaunay/Gabriel/RNG/MST/fixed-radius) over lon/lat; powers COLOCATED_WITH
-backend/graph-pyg.md|backend|city2graph PyG bridge + GraphSAGE link predictor; torch-guarded, honest 503 when torch absent
-backend/graph-schema.md|backend|Neo4j uniqueness constraints + indexes; idempotent bootstrap from FastAPI lifespan
-backend/graph-writes.md|backend|shared Neo4j MERGE/DELETE helpers: candidate edge persistence, promote, backfill, COLOCATED_WITH + GNN_SUGGESTED_LINK
-backend/od-flows.md|backend|vendored city2graph OD flow graphs from track points; weighted movement-corridor LineStrings, offline
-backend/ontology-system.md|backend,ontology|DB-canonical branches/objects/prompts, normalize() with read-through cache
-backend/tracker-satellite.md|backend,tracker|satellite-pass Hungarian tracker, V_MAX state gates, 14-day age cap, 3-miss timeout
-backend/fmv-track-consolidation.md|backend,fmv,tracker|post-inference fmv_detections consolidation: cross-window/prompt stitch + class vote
-backend/detection-evidence.md|backend|source/verifier/physics evidence ranking into confirmed/candidate/discovery tiers
-backend/detection-policy.md|backend|precision open-vocab policy: default floor, DB/env overrides, parent_class fallback
-backend/detection-helpers.md|backend|shared detection/FMV detail validators + object_details upsert
-backend/platform-schema-migrations.md|backend|idempotent CREATE TABLE IF NOT EXISTS for feed/event/observation tables
-backend/pydantic-schemas.md|backend|request/response models extracted from main.py to avoid circular imports
-backend/candidate-linking.md|backend|pure scorer: 30% spatial + 30% compat + 30% confidence + 10% history
-backend/cascade-delete.md|backend|orphan-free delete helpers: purge object_details/empty tracks/oet + Neo4j across all delete paths
-backend/change-detection-raster.md|backend,imagery|two-pass COG change: optical diff + SAR dB log-ratio preset, shared polygonizer
-backend/calibration-temperature.md|backend|single-parameter temperature scaling for SAM3/DOTA/GDINO scores
-backend/ai-llm-integration.md|backend|OpenAI-compatible client with read-only Cypher fallback for safety
-backend/events-and-timeline.md|backend|Redis pubsub + timeline_events/observations rows with domain normalize
-backend/feed-collectors.md|backend|polling HTTP collectors for JSON/GeoJSON feeds; normalized event shape
-backend/files-and-uploads.md|backend|safe filename + media-type to Celery task routing
-backend/fmv-helpers-hls.md|backend,fmv|ffmpeg stream-copy HLS transcode, ffprobe metadata
-backend/geometry-iou.md|backend|bbox parse, xyxy/cxcywh IoU, point extraction
-backend/imagery-metadata-hashing.md|backend,imagery|SHA256 + NITF IDATIM + SAR keys + native_max_zoom extraction
-backend/provider-lifecycle.md|backend|polls inference-sam3 /health for startup gating
-backend/reference-platform-baker.md|backend|reads seed + chip tree, POSTs to inference-sam3 /embed, writes reference_chips + centroids
-backend/reference-platform-db.md|backend|reference_platforms+chips+candidates pgvector schema; object_details platform_* cols
-backend/reports-and-collections.md|backend|target-package and collection-requirement persistence
-backend/routing-osrm.md|backend|OSRM HTTP client; planet-scale driving routes via sidecar service
-backend/sar-cfar-detector.md|backend,imagery|CA-CFAR ship detection on Sentinel-1 dB raster, CPU-only
-backend/satellite-anomaly.md|backend,tracker|offline maneuver/decay detection (J2-corrected) + mission classification from successive TLEs
-backend/satellite-overpass.md|backend,tracker|offline SGP4 overpass prediction from local TLEs; AOS/LOS/elevation + ground track
-backend/size-estimation-obb.md|backend|UTM-local OBB -> length/width/area/bearing with uncertainty
-backend/stix-export.md|backend|clean-room STIX 2.1 export of operational-entity graph; identity/infrastructure SDOs, offline
-backend/terrain-viewshed-los.md|backend|DEM ray-cast with k=0.13 refraction; reads GLO-30 VRT mosaic
-backend/threat-assessment.md|backend|open-vocab neutral binning into category buckets
-backend/video-metadata-klv.md|backend,fmv|MISB ST 0601 KLV + MP4 GPMD + SRT sidecar parsers
-backend/worker-legacy-monolith.md|backend,celery|4110-line worker_legacy.py: imagery/FMV tasks, chip planner, evidence persistence
-backend/worker-package-facade.md|backend,celery|worker/__init__.py namespace re-exports preserving Celery task names
+architecture/service-topology.md|arch,deployment|docker-compose service graph, bake-profile bakers, internal DNS, exposed ports
+architecture/system-overview.md|arch|nginx:3000 sole entry; routes /api,/ws,/tiles,/maps,/basemap,/fmv to internal services
+archive/superpowers-summary.md|decision|Condense the old `docs/superpowers/*` implementation plans into one indexed
+backend-routers/admin-thresholds-router.md|router|/api/admin/repeat-thresholds CRUD; per-kind active row drives tick_near_builder + tick_repeat_detector
 backend-routers/ai-router.md|router|/api/ai/* — LLM analyze/extract/link/brief-area (read-only)/propose-actions
 backend-routers/analytics-router.md|router|/api/analytics/* — change/viewshed/los/routes; honest 503 when DEM or OSRM missing
 backend-routers/aois-router.md|router|/api/aois CRUD; projects Base/LaunchPoint/Facility into Neo4j on metadata.aoi_kind
-backend-routers/operational-entities-router.md|router|/api/operational-entities CRUD + entity-candidate review; projects Vessel/Aircraft/Vehicle/Facility/Unit/Asset
-backend-routers/admin-thresholds-router.md|router|/api/admin/repeat-thresholds CRUD; per-kind active row drives tick_near_builder + tick_repeat_detector
 backend-routers/auth-router.md|router,auth|/api/auth/* + /api/admin/auth/* — login, LDAP CRUD, test-connection
 backend-routers/detections-router.md|router|/api/detections/* — filters, similar, queue, candidate-links, review
 backend-routers/fmv-router.md|router,fmv|/api/fmv/clips, klv, detections, similar
@@ -65,90 +22,81 @@ backend-routers/inference-router.md|router|/api/inference/load,unload,health,das
 backend-routers/ingest-router.md|router|/api/ingest/upload, url, ingest, uploads, jobs
 backend-routers/models-training-router.md|router|/api/models, /api/training, dataset registration, promotion
 backend-routers/ontology-router.md|router,ontology|/api/ontology branches/objects/prompts/profiles/unknown-labels/version-history
+backend-routers/operational-entities-router.md|router|/api/operational-entities CRUD + entity-candidate review; projects Vessel/Aircraft/Vehicle/Facility/Unit/Asset
 backend-routers/reference-platforms-router.md|router|6 endpoints for the Reference Embedding DB (list, detail, identify, approve/reject)
 backend-routers/reports-router.md|router|/api/reports/target-package/{id} — ReportLab PDF export for SelectionPanel
 backend-routers/satellites-router.md|router|/api/satellites/* — air-gap TLE import + SGP4 overpass passes + ground-track
 backend-routers/system-router.md|router|/api/system/deployment-mode — env-driven login banner posture
 backend-routers/websocket-router.md|router|/ws Redis-bridged push channel
-inference/service-overview.md|inference,sam3|FastAPI service: SAM3+SAM3.1+YOLOE+DINOv3+TerraMind+DOTA+GDINO
-inference/main-app-entrypoint.md|inference,sam3|/detect precision defaults, source_layer/debug_counts, RemoteCLIP verifier, /detect_video
-inference/sam3-runner-internals.md|inference,sam3|build_image_bundle, run_text_prompts, run_box_prompts pipelines
-inference/sam3-pcs-multiplex-video.md|inference,sam3,fmv|SAM3.1 multiplex one-prompt-per-session video tracker
-inference/sam3-perf-profiling.md|inference,sam3|stage_timer CUDA-sync per-stage latency accumulator
-inference/fusion-and-nms.md|inference|mask-aware fusion across SAM3/DOTA/GDINO/YOLOE detections
-inference/grounding-dino-detector.md|inference|grounding_dino layer = HTTP client for the LAE-DINO sidecar
-inference/grounding-dino-gate.md|inference|server-side gate skips GDINO on common-vocab prompts
-inference/lae-dino-sidecar.md|inference|LAE-DINO RS open-vocab detector sidecar (mmdet fork) behind grounding_dino layer
-inference/yoloe-tracker.md|inference,fmv|YOLOE-26x-seg(-pf) prompt-free + text-promptable, replaces SAM3 AMG
-inference/dota-obb-specialist.md|inference|Ultralytics YOLO26m-obb default with YOLO11n low-VRAM fallback
-inference/mvrsd-specialist.md|inference|MVRSD yolo11m detect specialist (5 military-vehicle classes); default-on in RGB profile like DOTA-OBB
-inference/dinov3-embeddings.md|inference|DINOv3 ViT-L SAT-493M re-ID embedding head
-inference/embed-endpoint.md|inference|POST /embed for standalone DINOv3-SAT vectors; used by reference DB baker
-inference/terramind-sar-synthesis.md|inference,imagery|TerraMind v1 S1->S2 synthetic optical RGB for SAR
-inference/multispectral-bands.md|inference,imagery|HLS-6 band decoder: Blue/Green/Red/Narrow-NIR/SWIR-1/SWIR-2
-inference/sar-bands.md|inference,imagery|Sentinel-1 GRD VV/VH dB clip and linear stretch
-inference/profile-pool-lifecycle.md|inference|imagery/fmv/all profiles with per-GPU replication
-inference/model-manifest.md|inference|MODEL_MANIFEST.json: HF repos, revisions, gating, file lists
-inference/python-requirements.md|inference|inference-sam3 pip dependencies after PyTorch/SAM3 install
-frontend/app-and-routing.md|frontend|App.tsx mounts five workspaces under AuthProvider
-frontend/vite-build-config.md|frontend|Vite plugins, dev basemap proxy, and vendor chunk split
-frontend/shell-and-chrome.md|frontend|icon rail 64->224 px, command palette, status bar
-frontend/auth-hook.md|frontend,auth|useAuth.ts cookie-backed session with boot /api/auth/me probe
-frontend/chip-img-component.md|frontend|shared reference-chip thumbnail with onError fallback
-frontend/event-stream-hook.md|frontend|useEventStream.ts WebSocket subscription to /ws topics
-frontend/workspace-geoint-gaiamap.md|frontend|GaiaMap.tsx common operating picture with leaflet layers
-frontend/workspace-fmv-player.md|frontend,fmv|FmvPlayer.tsx HLS + KLV-synced map + per-frame overlays
-frontend/workspace-link-graph.md|frontend|GraphExplorer.tsx force-directed Neo4j entity/link network
-frontend/workspace-admin.md|frontend|AdminScreen.tsx ten-tab consolidated operator tooling
-frontend/workspace-ingest.md|frontend|IngestConnect.tsx sensor-aware upload + feed lifecycle
-frontend/map-stage-and-layers.md|frontend|MapStage.tsx + LayerPanel.tsx category toggles and provenance
-frontend/map-satellites-panel.md|frontend|SelectionPanel "Sat" tab: offline overpass planning, observer pick, ground track
-frontend/map-selection-panel.md|frontend|SelectionPanel.tsx five-tab right rail (Details/Analytics/Sat/Similar/Tracks)
-frontend/identification-panel.md|frontend|top-k reference-DB candidates with approve/reject in Details tab
-frontend/map-review-similar-provenance.md|frontend|ReviewPanel + SimilarPanel + ProvenancePanel
-frontend/map-analytics-tools.md|frontend|AnalyticsToolsPanel.tsx viewshed/LOS/route/POL workflows
-frontend/map-time-machine.md|frontend|TimeMachineBar.tsx temporal slider for multi-pass imagery
-frontend/map-change-detection-dialog.md|frontend,imagery|ChangeDetectionDialog.tsx before/after pass selector + Optical/SAR method toggle
-frontend/product-tour.md|frontend|Custom in-repo welcome modal + 23-step tooltip walkthrough of the map workspace
-frontend/ontology-admin-ui.md|frontend,ontology|OntologyAdmin.tsx branch/object/prompt CRUD with version bumps
-frontend/object-details-form.md|frontend|ObjectDetailsForm.tsx shared metadata editor
-frontend/admin-health-dashboard.md|frontend|HealthDashboardView.tsx per-GPU KPIs, replicas, active requests
-frontend/admin-conf-overrides.md|frontend|ConfOverrideView.tsx per-class confidence override matrix
-frontend/admin-prompt-profiles.md|frontend|PromptProfilesView.tsx named profile CRUD
-frontend/admin-models-and-processing.md|frontend|ModelsView + ProcessingView training-job queue and promotion
-frontend/admin-alerts-and-versions.md|frontend|AlertsView + TaxonomyVersionView
-frontend/admin-auth-ldap.md|frontend,auth|AdminAuthTab.tsx LDAP config form with test harnesses
-frontend/admin-reference-platforms.md|frontend|admin tab to browse reference platforms with chip thumbnails
-frontend/utils-ontology-and-icons.md|frontend,ontology|branchIcons, detectionTaxonomy, iconLibrary, useOntology
-frontend/services-analytics.md|frontend|services/analytics.ts job submission types
-deployment/assets-dockerfile.md|deployment|assets nginx image: fonts/reference/calibration baked in; basemap+terrain via bind mount
-deployment/baker-dem-dockerfile.md|deployment|bakers/dem/Dockerfile: runtime baker for GLO-30 DEM into ./assets/dem
-deployment/baker-osrm-dockerfile.md|deployment|bakers/osrm/Dockerfile: runtime baker for OSRM MLD into ./assets/osrm
-deployment/baker-tiles-dockerfile.md|deployment|bakers/tiles/Dockerfile: shared runtime baker for basemap+terrain tiles
-deployment/docker-compose-services.md|deployment|service-by-service docker-compose.yml reference including bake-profile bakers
-deployment/inference-gpu-dockerfile.md|deployment,inference|GPU inference image build and offline model bake steps
-deployment/nginx-gateway-and-tile-cache.md|deployment|nginx conf: routes, 24h tile cache, HLS streaming
-deployment/offline-airgap-deployment.md|deployment|buildx prune -> bake -> build -> ship ./assets runbook, no DNS at runtime
-deployment/gpu-profile-detection.md|deployment,gpu|configure_host.py picks CUDA/PyTorch/arch-list per GPU
-deployment/environment-variables-reference.md|deployment|every variable .env.example exposes, grouped by subsystem
-deployment/dem-glo30-bake.md|deployment|operator runbook: dem-baker runtime container writes GLO-30 into ./assets/dem
-deployment/osrm-planet-bake.md|deployment|operator runbook: osrm-baker runtime container writes OSRM MLD into ./assets/osrm
-deployment/volume-mounts-and-paths.md|deployment|/data/imagery, /data/fmv, /data/datasets, ./assets/dem, ./assets/osrm bind mounts
-operations/celery-queues-and-tasks.md|operations,celery|imagery + default queues, task name table, retry policy
-operations/celery-beat-schedule.md|operations,celery|worker_beat scheduler, periodic feed polling, observation cleanup
-operations/websocket-event-channels.md|operations|topic list: ingest_progress, fmv_detections_complete, ontology_updated
-operations/imagery-ingest-pipeline.md|operations,imagery|six-step pipeline from raw raster to detections on map
-operations/fmv-ingest-pipeline.md|operations,fmv|clip upload -> HLS -> telemetry -> /detect_video -> persistence
-operations/ontology-edit-workflow.md|operations,ontology|admin UI flow, version cursor, prompt cache 30s + SIGHUP
-operations/unknown-label-triage.md|operations,ontology|LLM-emitted labels into ontology_unknown_labels, assign workflow
-operations/candidate-link-approval.md|operations|detection->target candidates, deterministic scorer, operator approve/reject
-operations/change-detection-runbook.md|operations,imagery|two-pass change detection from UI/API; optical diff + SAR dB log-ratio method
-operations/satellite-overpass-runbook.md|operations|air-gap TLE import + SGP4 overpass prediction + ground track; offline collection planning
-operations/health-monitoring.md|operations|Health Dashboard, /api/health, replica chips, alert escalation
-operations/auth-and-ldap-setup.md|operations,auth|env-bootstrap admin, Admin->Auth LDAP form, test bind workflows
-operations/llm-ava-configuration.md|operations|OPENAI_API_BASE pointing at vLLM/Ollama, graceful degradation
-operations/reference-corpora-bake.md|operations,backend|assets-image bake of reference corpora; auto-seed lifespan; admin re-seed; drop-in tarballs
-operations/calibration-shipping.md|operations,backend,inference|assets-image bake of per-detector temperatures; calibration_data volume; measurement -> rebuild flow
+backend/ai-llm-integration.md|backend|OpenAI-compatible client with read-only Cypher fallback for safety
+backend/aircraft-class.md|backend|offline ICAO type-code -> coarse airframe class (heli/turboprop/bizjet/airliner); backend reference, no live ADS-B
+backend/api-routes-appendix.md|backend|Generated compact appendix of FastAPI and WebSocket decorators found under `backend/`.
+backend/api-routes-reference.md|backend,router|route table by tag: auth/graph/detections/fmv/ontology/analytics/ai
+backend/auth-and-sessions.md|backend,auth|itsdangerous signed cookies, env-bootstrap admin, optional LDAP via auth_config row
+backend/calibration-temperature.md|backend|single-parameter temperature scaling for SAM3/DOTA/GDINO scores
+backend/candidate-linking.md|backend|pure scorer: 30% spatial + 30% compat + 30% confidence + 10% history
+backend/cascade-delete.md|backend|orphan-free delete helpers: purge object_details/empty tracks/oet + Neo4j across all delete paths
+backend/change-detection-raster.md|backend,imagery|two-pass COG change: optical diff + SAR dB log-ratio preset, shared polygonizer
+backend/database-connections.md|backend|Neo4j + PostGIS dual stack: pool, advisory locks, docker DNS fallback
+backend/detection-evidence.md|backend|source/verifier/physics evidence ranking into confirmed/candidate/discovery tiers
+backend/detection-helpers.md|backend|shared detection/FMV detail validators + object_details upsert
+backend/detection-policy.md|backend|precision open-vocab policy: default floor, DB/env overrides, parent_class fallback
+backend/events-and-timeline.md|backend|Redis pubsub + timeline_events/observations rows with domain normalize
+backend/feed-collectors.md|backend|polling HTTP collectors for JSON/GeoJSON feeds; normalized event shape
+backend/files-and-uploads.md|backend|safe filename + media-type to Celery task routing
+backend/fmv-helpers-hls.md|backend,fmv|ffmpeg stream-copy HLS transcode, ffprobe metadata
+backend/fmv-track-consolidation.md|backend,fmv|post-inference fmv_detections consolidation: cross-window/prompt stitch + class vote
+backend/geometry-iou.md|backend|bbox parse, xyxy/cxcywh IoU, point extraction
+backend/graph-metrics.md|backend|in-memory Neo4j-snapshot metrics: density/components/centrality; rustworkx fast path + pure-Python fallback
+backend/graph-proximity.md|backend|vendored city2graph proximity builders (kNN/Delaunay/Gabriel/RNG/MST/fixed-radius) over lon/lat; powers COLOCATED_WITH
+backend/graph-pyg.md|backend|city2graph PyG bridge + GraphSAGE link predictor; torch-guarded, honest 503 when torch absent
+backend/graph-schema.md|backend|Neo4j uniqueness constraints + indexes; idempotent bootstrap from FastAPI lifespan
+backend/graph-writes.md|backend|shared Neo4j MERGE/DELETE helpers: candidate edge persistence, promote, backfill, COLOCATED_WITH + GNN_SUGGESTED_LINK
+backend/imagery-metadata-hashing.md|backend,imagery|SHA256 + NITF IDATIM + SAR keys + native_max_zoom extraction
+backend/main-app-entrypoint.md|backend|main.py mounts routers, lifespan migrations, session middleware, FMV prompt fallback
+backend/od-flows.md|backend|vendored city2graph OD flow graphs from track points; weighted movement-corridor LineStrings, offline
+backend/ontology-system.md|backend,ontology|DB-canonical branches/objects/prompts, normalize() with read-through cache
+backend/platform-schema-migrations.md|backend|idempotent CREATE TABLE IF NOT EXISTS for feed/event/observation tables
+backend/provider-lifecycle.md|backend|polls inference-sam3 /health for startup gating
+backend/pydantic-schemas.md|backend|request/response models extracted from main.py to avoid circular imports
+backend/reference-platform-baker.md|backend|reads seed + chip tree, POSTs to inference-sam3 /embed, writes reference_chips + centroids
+backend/reference-platform-db.md|backend|reference_platforms+chips+candidates pgvector schema; object_details platform_* cols
+backend/reports-and-collections.md|backend|target-package and collection-requirement persistence
+backend/routing-osrm.md|backend|OSRM HTTP client; planet-scale driving routes via sidecar service
+backend/sar-cfar-detector.md|backend,imagery|CA-CFAR ship detection on Sentinel-1 dB raster, CPU-only
+backend/satellite-anomaly.md|backend|offline maneuver/decay detection (J2-corrected) + mission classification from successive TLEs
+backend/satellite-overpass.md|backend|offline SGP4 overpass prediction from local TLEs; AOS/LOS/elevation + ground track
+backend/size-estimation-obb.md|backend|UTM-local OBB -> length/width/area/bearing with uncertainty
+backend/stix-export.md|backend|clean-room STIX 2.1 export of operational-entity graph; identity/infrastructure SDOs, offline
+backend/terrain-viewshed-los.md|backend|DEM ray-cast with k=0.13 refraction; reads GLO-30 VRT mosaic
+backend/threat-assessment.md|backend|open-vocab neutral binning into category buckets
+backend/tracker-satellite.md|backend|satellite-pass Hungarian tracker, V_MAX state gates, 14-day age cap, 3-miss timeout
+backend/video-metadata-klv.md|backend,fmv|MISB ST 0601 KLV + MP4 GPMD + SRT sidecar parsers
+backend/worker-legacy-monolith.md|backend|4110-line worker_legacy.py: imagery/FMV tasks, chip planner, evidence persistence
+backend/worker-package-facade.md|backend|worker/__init__.py namespace re-exports preserving Celery task names
+benchmarks/calibration-ece.md|benchmark|expected calibration error per detector pre/post temperature scaling
+benchmarks/chip-dedupe-nms-vs-wbf-2026-06-12.md|benchmark|DOTA val 30img/216chips: cross-chip NMS vs WBF; NMS F1 0.104 > WBF 0.089, keep NMS default
+benchmarks/detection-quality-eval-2026-05-22.md|benchmark|DOTA-v1.0 box-quality snapshot: sam3+dota_obb best at 0.60 mAP; GD hurts the DOTA stack
+benchmarks/detection-quality-ontology-mode-2026-05-22.md|benchmark|DOTA-v1.0 ontology-mode (131-prompt vocab, no oracle): sam3+dota_obb 0.51 mAP; SAM3-alone collapses
+benchmarks/detection-quality-scoped-2026-05-22.md|benchmark|DOTA-v1.0 branch-scoped vocab (87 prompts): sam3+dota_obb 0.55 mAP, ~45% lower latency vs unscoped
+benchmarks/embedding-stability.md|benchmark|DINOv3-SAT augmentation re-ID top-1 100% on stills
+benchmarks/inference-layer-comparison.md|benchmark|7-layer image stack mAP/latency on DOTA-v1.0 val (30 chips)
+benchmarks/sam3-perf-phases.md|benchmark,sam3|phaseA/A3/BC profiling progression in bench/sam3_*.json
+benchmarks/sar-cfar-evaluation.md|benchmark,imagery|CA-CFAR ship detection P/R on synthetic and real GRD
+benchmarks/video-tracking-stability.md|benchmark,fmv|DINOv3-SAT SEP +0.22 vs LVD on 1440p drone video
+conventions/adding-a-new-admin-config-table.md|conventions,backend|recipe: per-scope versioned config table + CRUD router + worker helper + admin tab
+conventions/adding-a-new-admin-tab.md|conventions,frontend|AdminScreen tab registry + admin/*View.tsx pattern
+conventions/adding-a-new-celery-task.md|conventions|@celery_app.task(name=) preserved name; legacy vs package placement
+conventions/adding-a-new-detection-model.md|conventions,inference|MODEL_MANIFEST entry, runner module, /detect dispatch, profile listing
+conventions/adding-a-new-graph-projector.md|conventions,backend|recipe: identity-only MERGE helper + Celery task wrapper + on-write trigger + backfill
+conventions/adding-a-new-ontology-object.md|conventions,ontology|seed JSON path, DB-canonical edit, version bump, prompt cache
+conventions/adding-a-new-router.md|conventions,backend|mount in main.py, /api prefix, session middleware coverage
+conventions/adding-a-reference-dataset.md|conventions,backend|recipe: sub-fetcher + seed_terms_per_dataset + MANIFEST + small-subset test + assets rebuild
+conventions/coding-style.md|conventions|file size limits, no premature abstraction, no spurious comments
+conventions/documentation-workflow.md|conventions|mandatory read-before/update-after loop for every agent session
+conventions/error-handling.md|conventions|HTTP 400 vs 503, fixture fallbacks, trust internal calls
+conventions/naming-and-paths.md|conventions|module/router/component naming, /api prefix, /data volume layout
+decisions/analytics-relocated-to-right-tab.md|decision,frontend|locked Viewshed/LOS/Routes subgroup removed from left rail; analytics overlays toggle from right ANALYTICS tab
 decisions/audit-fixes-api-layer-2026-06-11.md|decision,backend|API-layer sweep: packed-embedding similar fix, LEFT JOIN manual detections, status guards, races
 decisions/audit-fixes-backend-core-2026-06-11.md|decision,backend|core-module sweep: GPMD duration, curvature sign, RAAN wrap, branch categories, cache races
 decisions/audit-fixes-codebase-correctness-2026-06-08.md|decision,backend|whole-codebase bug sweep: FMV graph orphans, footprint cos(lat), change-detect bands, KLV timestamps, POL clustering, OBB box mode, embed device pin
@@ -157,23 +105,26 @@ decisions/audit-fixes-frontend-shell-admin-2026-06-12.md|decision,frontend|shell
 decisions/audit-fixes-inference-2026-06-12.md|decision,inference|forwards brought under serialize lock + poison self-heal, policy path-load, NaN SAR, prompt cap
 decisions/audit-fixes-map-workspace-2026-06-11.md|decision,frontend|map sweep: SwipeControl crash, time-machine loops, crossNav, fetch races, tile filter parity
 decisions/audit-fixes-ui-correctness-2026-06-08.md|decision,frontend|page-by-page UI audit fixes: processing status, ontology dropdown, graph edge scores, FMV keys, geotime sub, pan-on-jump
-decisions/audit-fixes-worker-2026-06-11.md|decision,celery|worker sweep: chip-grid coverage, LABEL_OF no-op, NDJSON retry, savepoints, cleanup beat task
+decisions/audit-fixes-worker-2026-06-11.md|decision|worker sweep: chip-grid coverage, LABEL_OF no-op, NDJSON retry, savepoints, cleanup beat task
 decisions/borders-vs-graticule-split.md|decision,frontend|LayerPanel "Tactical Grid" split into Borders (admin GeoJSON) and Graticule (coordinate grid)
 decisions/cached-forward-device-normalise.md|decision,sam3|multi-GPU _get_img_feats crash: pin image-model build device so vis_pos_enc lands on replica GPU
+decisions/centralized-filter-surface.md|decision,frontend|confidence floor + recent-activity window moved from time-machine/event-strip into one left-rail Filters section
 decisions/chip-aligned-training-tiles.md|decision,backend|opt-in training tiler reuses inference plan_inference_grid (1008/252) so train/infer tile dists match
 decisions/completed-dead-ui-controls.md|decision,frontend|wired FMV fullscreen + export-clip (source_url); removed action-less admin "More" buttons
 decisions/completed-deferred-items-2026-06-09.md|decision|deferred audit batch: CFAR variance, time-machine playback, change-detection mount + overlay, AI target-resolve, bake OOM/idempotency
 decisions/completed-stubbed-graph-ui.md|decision,frontend|real co-occurrence histogram, site-rollup FMV/reports render, ProvenancePanel wired as SelectionPanel Prov tab
 decisions/disable-addmm-cuda-lt.md|decision,gpu|routes nn.Linear off cuBLAS-Lt to dodge A100/cu130 corruption bug
 decisions/fmv-default-sidetab-clips.md|decision,frontend,fmv|FMV right panel opens on Clips when no cross-nav; Tracks default hid uploaded clip
-decisions/implemented-ontology-updates-endpoint.md|decision|registers GET /api/ontology/updates to fix Link Graph bottom strip 404
 decisions/imagery-source-selection.md|decision,imagery|download_city_cog --source sentinel2|esri; 10m vs sub-meter Esri tile mosaic, kept both
+decisions/implemented-ontology-updates-endpoint.md|decision|registers GET /api/ontology/updates to fix Link Graph bottom strip 404
 decisions/live-mgrs-cursor-readout.md|decision,frontend|cursor chip MGRS string now live via mgrs.forward; was hardcoded "AUTO" placeholder
 decisions/los-obstruction-point-features.md|decision,backend,frontend|LOS endpoint emits one Point per obstruction with elev/clearance/distance for per-point tooltips
 decisions/manual-draw-modal-replaces-prompt.md|decision,frontend|in-app ManualDetectionDialog replaces window.prompt; hardened browsers block native prompts
 decisions/merged-additions-responsive-css.md|decision,frontend|additions.responsive.css folded into index.css to kill duplicate/drifting rules
 decisions/multi-scale-and-full-scene-chip-passes.md|decision,backend,imagery|small-object 2nd pass + opt-in full-scene pass; shared dedupe, scale_x/y georef
+decisions/obb-render-fix.md|decision,deployment|martin depends_on backend so detections_mvt source exists before Martin's one-shot scan; fixes 404 boxes
 decisions/optical-inference-throughput.md|decision,inference,sam3|batch embeddings, ROI-crop postprocess, multi-GPU back-off floor, non-blocking GD gate
+decisions/panel-reflow-token-system.md|decision,frontend|map chrome reflows around panels via shared --reserve-* bands; map stays full-bleed, never overlaps
 decisions/pgvector-adapter-on-pool.md|decision,backend|connection_factory registers pgvector adapter on every pooled connection so list/numpy/Vector inserts work
 decisions/prompt-profile-demote-via-upsert.md|decision,backend,ontology|UPSERT no longer ORs current with existing; make_current=FALSE actually demotes
 decisions/reclassify-storage-tank-and-helipad.md|decision,ontology|Storage Tank → Industrial, Helipad → Airfield; fixes mis-filed seed objects + DOTA eval mapping
@@ -181,13 +132,17 @@ decisions/removed-battle-damage-and-aux-ontology-branches.md|decision,ontology|B
 decisions/removed-defence-yolo.md|decision|DEFENCE_YOLO emitted 1297 FPs / 0 TPs on DOTA val
 decisions/removed-dinov3-lvd.md|decision|DINOV3_LVD emitted NaN embeddings on drone-video crops
 decisions/removed-empty-inference-detection-policy.md|decision,inference|deleted empty 0-byte inference-sam3/detection_policy.py; fusion loads backend/detection_policy.py by path
+decisions/removed-fair1m-and-remoteclip.md|decision,inference|permanently removed FAIR1M-OBB (no-op stub) + RemoteCLIP verifier; kept Grounding-DINO + FAIR1M dataset
 decisions/removed-legacy-detection-geojson-path.md|decision,backend,frontend|fat /api/detections/geojson + VITE_DETECTION_TILES flag + halos + detection_points sublayer removed; MVT is the only path
 decisions/removed-prithvi-battle-damage.md|decision,inference|Prithvi flood/burn/multitemporal + overlays endpoint + UI removed; noisy FPs, burn IoU~0; decode_hls6 kept
 decisions/removed-sam3-amg.md|decision,fmv|SAM3 AMG path removed in favor of YOLOE
 decisions/removed-yoloe-imagery.md|decision,imagery,inference|YOLOE removed from still-image inference; FMV YOLOE remains
-decisions/reset-db-pool-after-fork.md|decision,celery|worker_process_init resets PostGIS pool so prefork children don't share libpq sockets
+decisions/reset-db-pool-after-fork.md|decision|worker_process_init resets PostGIS pool so prefork children don't share libpq sockets
+decisions/selection-panel-tab-consolidation.md|decision,frontend|Selection panel 6→4 tabs; Provenance folded into Details disclosure; Satellites gated to header affordance
 decisions/temporal-swipe-comparator.md|decision,frontend|side-by-side imagery comparator via custom Leaflet pane + clip-path; no plugin dependency
-decisions/tracker-gate-physical-ceiling.md|decision,backend,tracker|gate capped at physical travel; static categories AND static class names pinned stationary; kills track streak fans
+decisions/tracker-gate-physical-ceiling.md|decision,backend|gate capped at physical travel; static categories AND static class names pinned stationary; kills track streak fans
+decisions/unified-temporal-control.md|decision,frontend|bottom dock reframed as imagery scrubber + subordinate activity sparkline; not two stacked timelines
+decisions/ux-audit-001.md|decision,frontend|25-finding UX sweep: deployment banner, rail pin, focus mode, edge predicates
 decisions/why-503-on-unloaded-component.md|decision,inference|/detect guards a missing sam3_image bundle (profile-swap race) → honest 503 instead of a NoneType 500
 decisions/why-admin-mutators-require-admin.md|decision,auth|global config/model/ontology/inference mutators require admin sessions
 decisions/why-amg-detection-classes-use-llm-labels.md|decision,frontend|superseded: YOLOE-PF imagery labels no longer promoted after image YOLOE removal
@@ -196,49 +151,46 @@ decisions/why-auto-gpu-division.md|decision,gpu,deployment|configure_host partit
 decisions/why-auto-identify-in-backend-not-inference.md|decision|reference-DB auto-identify runs in the backend worker, not inference-sam3
 decisions/why-auto-write-with-threshold.md|decision|auto-write platform_* to object_details when top-1 cosine ≥ 0.85; below threshold land as pending
 decisions/why-bake-reference-corpora-into-assets.md|decision,deployment|reference chips baked into assets image; shared volume RW assets / RO backend+worker; rsync-on-startup
-decisions/why-celery-task-from-lifespan.md|decision,backend|first place lifespan enqueues a task; reference-DB bake is too slow to seed sync without blocking /api/health
 decisions/why-basemap-overlay-composition.md|decision,frontend|imagery is bottom ground-truth; BASE/TERRAIN are reference overlays on top; opacity fades overlay
 decisions/why-basemap-z14-cap.md|decision,frontend,deployment|bake to z=14, overlay unmounts above; partial bakes degrade via parent-tile fallback
 decisions/why-batched-presence-gate-floor.md|decision,sam3,inference|batched text path postprocesses at low gate floor so SegEarth presence-ratio gate sees full distribution; emit-filter at score_threshold
 decisions/why-bbox-toggle-removed.md|decision,frontend|BBOX toggle removed; detection boxes always render, GEOM toolbar defaults to OBB
 decisions/why-branch-scoped-default.md|decision,frontend,ontology|imagery ingest UX defaults to branch-scoped prompts (~15-25 vs ~131); 15x F1 gain per LAE-80C
-decisions/why-custom-tour-engine.md|decision,frontend|Map workspace Product Tour built in-repo; no react-joyride/intro.js/shepherd dependency
-decisions/why-dem-osrm-as-sibling-baker-images.md|decision,deployment|superseded: DEM+OSRM as sibling build-time images; replaced by runtime bake profile
-decisions/why-glo30-as-default-dem.md|decision,deployment|Copernicus GLO-30 (30 m, ~150 GB) chosen for tactical worldwide viewshed/LOS
-decisions/why-gnn-link-prediction.md|decision,backend|vendored city2graph PyG bridge + GraphSAGE link predictor; torch optional, advisory GNN_SUGGESTED_LINK edges
 decisions/why-candidate-edges-persisted.md|decision,backend|persist CANDIDATE_DETECTED_AS in Neo4j on candidate creation; makes pending edges Cypher-traversable
 decisions/why-category-presence-gate.md|decision,sam3|SegEarth-OV-3-style 0.40 filter suppresses absent concepts
+decisions/why-celery-task-from-lifespan.md|decision,backend|first place lifespan enqueues a task; reference-DB bake is too slow to seed sync without blocking /api/health
 decisions/why-class-scope-replaces-node-limit.md|decision,frontend|drop fixed LIMIT 1500 on graph endpoints; class-scope dropdown fetches unbounded per-class slices + whole-graph metrics
-decisions/why-three-graph-modes.md|decision,frontend|Link Graph splits into Investigation/Evidence/Ontology sub-tabs; one workspace, shared state
-decisions/why-tle-history-for-maneuvers.md|decision,backend|separate satellite_tle_history table enables maneuver/decay detection without breaking latest-wins overpass
-decisions/why-postgis-to-neo4j-projectors.md|decision,backend|one-way PostGIS→Neo4j mirroring of identity + headline props; backfill for catchup
-decisions/why-llm-proposed-entities.md|decision,backend|operational entities are analyst-asserted; LLM/heuristic only proposes via entity_candidates queue
-decisions/why-llm-replaces-heuristic-proposer.md|decision,backend|tick_propose_entities tries LLM first, falls back to heuristic; both feed entity_candidates
-decisions/why-memoize-ontology-normalize.md|decision,ontology|result-memoize normalize() per (canon,layer); kills 24s geojson per-row regex/upsert; throttle version probe
-decisions/why-entity-embedding-aggregation.md|decision,backend|per-entity DINOv3 centroid (analyst-attached tracks) drives the embedding branch of POSSIBLY_SAME_AS
+decisions/why-custom-tour-engine.md|decision,frontend|Map workspace Product Tour built in-repo; no react-joyride/intro.js/shepherd dependency
 decisions/why-deconflicted-detection-prompts.md|decision,ontology|one object per unique prompt; label IS the prompt; collapses overloaded false-positive prompts
+decisions/why-deletable-imagery-and-clips.md|decision,backend|admin DELETE for imagery passes + FMV clips: rows + on-disk files + Neo4j nodes; frontend trash buttons
+decisions/why-dem-osrm-as-sibling-baker-images.md|decision,deployment|superseded: DEM+OSRM as sibling build-time images; replaced by runtime bake profile
 decisions/why-detection-boxes-use-polygon-map.md|decision,frontend|box layer is per-feature <Polygon> map; <GeoJSON> canvas layer silently failed to paint
 decisions/why-detection-mvt-tiles.md|decision,frontend|Martin MVT detection-box layer is the only path (flag + fat /geojson removed); lite feed markers, geom_mode parity, /enriched selection
 decisions/why-dinov3-sat-only.md|decision|DINOv3 ViT-L SAT-493M keeps re-ID quality without DINOv3_LVD NaNs
 decisions/why-dynamic-modality-loading-on-tight-vram.md|decision,gpu,inference|16GB cards: per-modality profile swap + drop dead-weight detectors; fixes all-chunk OOM zero-detections
-decisions/why-deletable-imagery-and-clips.md|decision,backend|admin DELETE for imagery passes + FMV clips: rows + on-disk files + Neo4j nodes; frontend trash buttons
 decisions/why-embeddings-not-layer-gated.md|decision,inference|DINOv3 embeddings run regardless of enabled_layers (enrichment, not a detector); fixes auto-identify flood
+decisions/why-entity-embedding-aggregation.md|decision,backend|per-entity DINOv3 centroid (analyst-attached tracks) drives the embedding branch of POSSIBLY_SAME_AS
 decisions/why-evidence-ranked-detections.md|decision|confirmed objects require source, verifier, physics, and SAR evidence signals
 decisions/why-exit-on-poisoned-cuda-context.md|decision,inference,gpu|illegal-memory-access in text-chunk loop → os._exit(1) self-heal instead of zombie serving 500s
 decisions/why-fair1m-specialist.md|decision,inference|SUPERSEDED: FAIR1M-OBB detector removed (no-op stub) — see removed-fair1m-and-remoteclip
 decisions/why-fmv-track-consolidation.md|decision,fmv|post-inference pass stitches windows/prompts; overlap_index removed; temporal-support class vote
 decisions/why-generic-labels-when-unverified.md|decision,backend,ontology|generic DOTA-OBB labels render as "(generic)" until verifier confirms; kills fabricated defence labels
+decisions/why-glo30-as-default-dem.md|decision,deployment|Copernicus GLO-30 (30 m, ~150 GB) chosen for tactical worldwide viewshed/LOS
+decisions/why-gnn-link-prediction.md|decision,backend|vendored city2graph PyG bridge + GraphSAGE link predictor; torch optional, advisory GNN_SUGGESTED_LINK edges
 decisions/why-grounding-dino-auto-gated.md|decision|forcing GDINO drops mAP via NMS suppression of DOTA detections
 decisions/why-imagery-dedup-is-hash-only.md|decision,backend,imagery|satellite_passes dedup on source_hash alone; footprint+acq_time+filename branches collapsed distinct uploads
 decisions/why-imagery-yoloe-mirrors-fmv.md|decision,imagery,inference|superseded: older image YOLOE routing experiment replaced by FMV-only YOLOE
 decisions/why-isochrone-reachability.md|decision,backend|driving-time isochrone polygon via OSRM /table matrix probes; reuses routing sidecar, offline
 decisions/why-lae-cross-chip-batching.md|decision,inference|cross-chip LAE batching evaluated + rejected; ~2x slower on serialize-forwards A100 hosts
 decisions/why-lae-dino-replaces-grounding-dino.md|decision,inference|RS-tuned LAE-DINO replaces generic Grounding-DINO; runs as inference-lae sidecar (dep conflict)
-decisions/why-mvrsd-military-vehicle-specialist.md|decision,inference|fine-grained sub-meter military-vehicle detector, default-on in RGB; tradeoff mitigated by conf floor; weights baked
 decisions/why-layerpanel-dot-toggle.md|decision,frontend|eye-toggle column removed; 10px coloured dot is the visibility signal, locked analytics subgroup
 decisions/why-link-graph-uses-graph-analytics.md|decision,frontend|Link Graph wires Phase 6 metrics card+centrality sizing, co-location lens, status-gated GNN overlay
 decisions/why-live-streaming-detections.md|decision,backend,frontend|detections render per-chip live via detections_partial features; preview-then-reconcile
 decisions/why-live-test-tier.md|decision,testing|third test tier vs real nginx:3000: catches wiring/auth/inference seams mocks can't; idle-gate + FMV opt-in
+decisions/why-llm-proposed-entities.md|decision,backend|operational entities are analyst-asserted; LLM/heuristic only proposes via entity_candidates queue
+decisions/why-llm-replaces-heuristic-proposer.md|decision,backend|tick_propose_entities tries LLM first, falls back to heuristic; both feed entity_candidates
+decisions/why-memoize-ontology-normalize.md|decision,ontology|result-memoize normalize() per (canon,layer); kills 24s geojson per-row regex/upsert; throttle version probe
+decisions/why-mvrsd-military-vehicle-specialist.md|decision,inference|fine-grained sub-meter military-vehicle detector, default-on in RGB; tradeoff mitigated by conf floor; weights baked
 decisions/why-od-flow-graphs.md|decision,backend|vendored city2graph OD flow graphs from track points; movement corridors as weighted lines, zero new dep
 decisions/why-offline-area-dossier.md|decision,backend|right-click area dossier from baked ne_countries (point-in-polygon), no Wikipedia/online
 decisions/why-offline-tle-import.md|decision,backend|TLEs imported over air-gap into PostGIS, never fetched at runtime; SGP4 maths is offline
@@ -247,6 +199,7 @@ decisions/why-osrm-replaced-networkx.md|decision,backend|planet-scale routing vi
 decisions/why-pgvector-for-reference-db.md|decision|pgvector + HNSW in PostGIS; no FAISS/hnswlib in inference-sam3
 decisions/why-postgis-and-neo4j-coexist.md|decision|PostGIS for spatial detections; Neo4j for entity/link graph
 decisions/why-postgis-max-connections-300.md|decision,backend,deployment|raise max_connections to 300 (env POSTGIS_MAX_CONNECTIONS) so concurrent imagery+FMV pools don't exhaust the default 100
+decisions/why-postgis-to-neo4j-projectors.md|decision,backend|one-way PostGIS→Neo4j mirroring of identity + headline props; backfill for catchup
 decisions/why-precision-first-inference-defaults.md|decision|bounded prompt defaults, source-layer provenance, specialist gates, nonzero policy floor
 decisions/why-preload-imagery-on-startup.md|decision,inference,deployment|inference-sam3 lifespan preloads imagery so healthcheck sees model_loaded; SAM3_SKIP_PRELOAD opts out
 decisions/why-proximity-colocation-graph.md|decision,backend|vendored city2graph proximity builders → COLOCATED_WITH edges; vendor-vs-dep air-gap tradeoff
@@ -255,7 +208,6 @@ decisions/why-readonly-ai-brief-and-map-control.md|decision,backend|AI brief-are
 decisions/why-reject-double-review-with-409.md|decision,backend|approve/reject UPDATE guarded WHERE status='pending'; 409 with prior reviewer instead of silent overwrite
 decisions/why-release-db-connection-before-enrichment.md|decision,backend|hold pooled conn only for query, not per-row enrichment; fixed pool exhaustion 500s (geojson endpoint since removed)
 decisions/why-remoteclip-default-on.md|decision,inference|SUPERSEDED: RemoteCLIP verifier removed — see removed-fair1m-and-remoteclip
-decisions/removed-fair1m-and-remoteclip.md|decision,inference|permanently removed FAIR1M-OBB (no-op stub) + RemoteCLIP verifier; kept Grounding-DINO + FAIR1M dataset
 decisions/why-removed-auto-vram-cap.md|decision,deployment|configure_host no longer auto-derives SAM3_GPU_MEMORY_FRACTION (misfired on own replicas); manual-only now
 decisions/why-retry-chips-across-inference-restart.md|decision,backend,inference|imagery worker waits for /health model_loaded + retries chips across a self-heal restart; fails loudly past 5% failed-chip tolerance
 decisions/why-revert-inference-after-fmv.md|decision,backend|process_fmv reverts the GPU pool to imagery in a best-effort 409-tolerant finally so the COP keeps detecting
@@ -271,50 +223,109 @@ decisions/why-serialize-forwards-on-a100-cu13x.md|decision,inference,gpu|SAM3_SE
 decisions/why-sm120-latest-build-line.md|decision,gpu,deployment|consumer Blackwell sm_120 pinned to latest cu132/torch-2.12 line; other archs unchanged; poison is version-independent
 decisions/why-standalone-embed-endpoint.md|decision|standalone /embed avoids /detect cost and keeps DB dep in backend
 decisions/why-stix-21-export.md|decision,backend|STIX 2.1 export mapped to GEOINT SDOs (identity/infrastructure), clean-room from OASIS spec
+decisions/why-three-graph-modes.md|decision,frontend|Link Graph splits into Investigation/Evidence/Ontology sub-tabs; one workspace, shared state
+decisions/why-tle-history-for-maneuvers.md|decision,backend|separate satellite_tle_history table enables maneuver/decay detection without breaking latest-wins overpass
 decisions/why-transportation-floor-raised.md|decision,backend,ontology|per-class floor defaults (transportation=0.55, other=0.50) lift precision on noisy buckets; operator overrides via admin matrix
 decisions/why-wbf-over-nms.md|decision,inference|cross-detector fuser default WBF; NMS suppresses winners (DOTA->GDINO mAP collapse); SAM3_FUSION_MODE=wbf|nms knob
-decisions/why-worker-legacy-monolith-kept.md|decision,celery|3500 tested lines preserved; thin facade package avoids breakage
+decisions/why-worker-legacy-monolith-kept.md|decision|3500 tested lines preserved; thin facade package avoids breakage
 decisions/why-ws-auth-now-required.md|decision|/ws now requires session cookie; PII over the socket forced the fix
 decisions/why-ws-session-heartbeat.md|decision,backend|/ws re-decodes the session cookie every 60s; closes with 1008 on TTL expiry or key rotation
 decisions/why-yoloe-fp32-and-bf16-cast.md|decision,fmv,inference|YOLOE pinned fp32 + .float() before numpy(); silent zero-detection regression on Blackwell+cu130
 decisions/why-yoloe-replaced-amg.md|decision,fmv|AMG required GDINO labeling pass; YOLOE-26x-seg(-pf) emits labels directly
-decisions/ux-audit-001.md|decision,frontend|25-finding UX sweep: deployment banner, rail pin, focus mode, edge predicates
-testing/backend-unit-tests.md|testing,backend|pytest layout, fixtures, ontology/auth/size/object_details/precision-policy coverage
-testing/inference-unit-tests.md|testing,inference|fusion/oom-recovery/prompt defaults/source-layer gates/sam3-perf/box prompts
-testing/live-e2e-playwright.md|testing,frontend|live nginx:3000 e2e: real login storageState, data-tour control walk, dispatchEvent for overlaps
-testing/playwright-frontend.md|testing,frontend|playwright.config.ts, visual testing workflow
-testing/benchmark-harness.md|testing,benchmark|compare_inference_layers + restart, fetch_eval_datasets gating
-testing/fixtures-and-test-data.md|testing|tests/fixtures + sample/ contents and how to regenerate
-benchmarks/inference-layer-comparison.md|benchmark|7-layer image stack mAP/latency on DOTA-v1.0 val (30 chips)
-benchmarks/chip-dedupe-nms-vs-wbf-2026-06-12.md|benchmark|DOTA val 30img/216chips: cross-chip NMS vs WBF; NMS F1 0.104 > WBF 0.089, keep NMS default
-benchmarks/embedding-stability.md|benchmark|DINOv3-SAT augmentation re-ID top-1 100% on stills
-benchmarks/video-tracking-stability.md|benchmark,fmv|DINOv3-SAT SEP +0.22 vs LVD on 1440p drone video
-benchmarks/sar-cfar-evaluation.md|benchmark,imagery|CA-CFAR ship detection P/R on synthetic and real GRD
-benchmarks/calibration-ece.md|benchmark|expected calibration error per detector pre/post temperature scaling
-benchmarks/detection-quality-eval-2026-05-22.md|benchmark|DOTA-v1.0 box-quality snapshot: sam3+dota_obb best at 0.60 mAP; GD hurts the DOTA stack
-benchmarks/detection-quality-ontology-mode-2026-05-22.md|benchmark|DOTA-v1.0 ontology-mode (131-prompt vocab, no oracle): sam3+dota_obb 0.51 mAP; SAM3-alone collapses
-benchmarks/detection-quality-scoped-2026-05-22.md|benchmark|DOTA-v1.0 branch-scoped vocab (87 prompts): sam3+dota_obb 0.55 mAP, ~45% lower latency vs unscoped
-benchmarks/sam3-perf-phases.md|benchmark,sam3|phaseA/A3/BC profiling progression in bench/sam3_*.json
-scripts/configure-host-gpu.md|scripts,gpu|reads nvidia-smi, writes SENTINEL GENERATED block to .env
+deployment/assets-dockerfile.md|deployment|assets nginx image: fonts/reference/calibration baked in; basemap+terrain via bind mount
+deployment/baker-dem-dockerfile.md|deployment|bakers/dem/Dockerfile: runtime baker for GLO-30 DEM into ./assets/dem
+deployment/baker-osrm-dockerfile.md|deployment|bakers/osrm/Dockerfile: runtime baker for OSRM MLD into ./assets/osrm
+deployment/baker-tiles-dockerfile.md|deployment|bakers/tiles/Dockerfile: shared runtime baker for basemap+terrain tiles
+deployment/dem-glo30-bake.md|deployment|operator runbook: dem-baker runtime container writes GLO-30 into ./assets/dem
+deployment/docker-compose-services.md|deployment|service-by-service docker-compose.yml reference including bake-profile bakers
+deployment/environment-variables-reference.md|deployment|every variable .env.example exposes, grouped by subsystem
+deployment/gpu-profile-detection.md|deployment,gpu|configure_host.py picks CUDA/PyTorch/arch-list per GPU
+deployment/inference-gpu-dockerfile.md|deployment,inference|GPU inference image build and offline model bake steps
+deployment/nginx-gateway-and-tile-cache.md|deployment|nginx conf: routes, 24h tile cache, HLS streaming
+deployment/offline-airgap-deployment.md|deployment|buildx prune -> bake -> build -> ship ./assets runbook, no DNS at runtime
+deployment/osrm-planet-bake.md|deployment|operator runbook: osrm-baker runtime container writes OSRM MLD into ./assets/osrm
+deployment/volume-mounts-and-paths.md|deployment|/data/imagery, /data/fmv, /data/datasets, ./assets/dem, ./assets/osrm bind mounts
+frontend/admin-alerts-and-versions.md|frontend|AlertsView + TaxonomyVersionView
+frontend/admin-auth-ldap.md|frontend,auth|AdminAuthTab.tsx LDAP config form with test harnesses
+frontend/admin-conf-overrides.md|frontend|ConfOverrideView.tsx per-class confidence override matrix
+frontend/admin-health-dashboard.md|frontend|HealthDashboardView.tsx per-GPU KPIs, replicas, active requests
+frontend/admin-models-and-processing.md|frontend|ModelsView + ProcessingView training-job queue and promotion
+frontend/admin-prompt-profiles.md|frontend|PromptProfilesView.tsx named profile CRUD
+frontend/admin-reference-platforms.md|frontend|admin tab to browse reference platforms with chip thumbnails
+frontend/app-and-routing.md|frontend|App.tsx mounts five workspaces under AuthProvider
+frontend/auth-hook.md|frontend,auth|useAuth.ts cookie-backed session with boot /api/auth/me probe
+frontend/chip-img-component.md|frontend|shared reference-chip thumbnail with onError fallback
+frontend/event-stream-hook.md|frontend|useEventStream.ts WebSocket subscription to /ws topics
+frontend/identification-panel.md|frontend|top-k reference-DB candidates with approve/reject in Details tab
+frontend/map-analytics-tools.md|frontend|AnalyticsToolsPanel.tsx viewshed/LOS/route/POL workflows
+frontend/map-change-detection-dialog.md|frontend,imagery|ChangeDetectionDialog.tsx before/after pass selector + Optical/SAR method toggle
+frontend/map-review-similar-provenance.md|frontend|ReviewPanel + SimilarPanel + ProvenancePanel
+frontend/map-satellites-panel.md|frontend|SelectionPanel "Sat" tab: offline overpass planning, observer pick, ground track
+frontend/map-selection-panel.md|frontend|SelectionPanel.tsx four-tab right rail (Details/Analytics/Similar/Tracks); Prov folded into Details, Sat gated
+frontend/map-stage-and-layers.md|frontend|MapStage.tsx + LayerPanel.tsx category toggles and provenance
+frontend/map-time-machine.md|frontend|TimeMachineBar.tsx temporal slider for multi-pass imagery
+frontend/object-details-form.md|frontend|ObjectDetailsForm.tsx shared metadata editor
+frontend/ontology-admin-ui.md|frontend,ontology|OntologyAdmin.tsx branch/object/prompt CRUD with version bumps
+frontend/product-tour.md|frontend|Custom in-repo welcome modal + 48-step tooltip walkthrough of the map workspace
+frontend/services-analytics.md|frontend|services/analytics.ts job submission types
+frontend/shell-and-chrome.md|frontend|icon rail 64->224 px, command palette, status bar
+frontend/utils-ontology-and-icons.md|frontend,ontology|branchIcons, detectionTaxonomy, iconLibrary, useOntology
+frontend/vite-build-config.md|frontend|Vite plugins, dev basemap proxy, and vendor chunk split
+frontend/workspace-admin.md|frontend|AdminScreen.tsx ten-tab consolidated operator tooling
+frontend/workspace-fmv-player.md|frontend,fmv|FmvPlayer.tsx HLS + KLV-synced map + per-frame overlays
+frontend/workspace-geoint-gaiamap.md|frontend|GaiaMap.tsx common operating picture with leaflet layers
+frontend/workspace-ingest.md|frontend|IngestConnect.tsx sensor-aware upload + feed lifecycle
+frontend/workspace-link-graph.md|frontend|GraphExplorer.tsx force-directed Neo4j entity/link network
+inference/dinov3-embeddings.md|inference|DINOv3 ViT-L SAT-493M re-ID embedding head
+inference/dota-obb-specialist.md|inference|Ultralytics YOLO26m-obb default with YOLO11n low-VRAM fallback
+inference/embed-endpoint.md|inference|POST /embed for standalone DINOv3-SAT vectors; used by reference DB baker
+inference/fusion-and-nms.md|inference|mask-aware fusion across SAM3/DOTA/GDINO/YOLOE detections
+inference/grounding-dino-detector.md|inference|grounding_dino layer = HTTP client for the LAE-DINO sidecar
+inference/grounding-dino-gate.md|inference|server-side gate skips GDINO on common-vocab prompts
+inference/lae-dino-sidecar.md|inference|LAE-DINO RS open-vocab detector sidecar (mmdet fork) behind grounding_dino layer
+inference/main-app-entrypoint.md|inference,sam3|/detect precision defaults, source_layer/debug_counts, RemoteCLIP verifier, /detect_video
+inference/model-manifest.md|inference|MODEL_MANIFEST.json: HF repos, revisions, gating, file lists
+inference/multispectral-bands.md|inference,imagery|HLS-6 band decoder: Blue/Green/Red/Narrow-NIR/SWIR-1/SWIR-2
+inference/mvrsd-specialist.md|inference|MVRSD yolo11m detect specialist (5 military-vehicle classes); default-on in RGB profile like DOTA-OBB
+inference/profile-pool-lifecycle.md|inference|imagery/fmv/all profiles with per-GPU replication
+inference/python-requirements.md|inference|inference-sam3 pip dependencies after PyTorch/SAM3 install
+inference/sam3-pcs-multiplex-video.md|inference,sam3,fmv|SAM3.1 multiplex one-prompt-per-session video tracker
+inference/sam3-perf-profiling.md|inference,sam3|stage_timer CUDA-sync per-stage latency accumulator
+inference/sam3-runner-internals.md|inference,sam3|build_image_bundle, run_text_prompts, run_box_prompts pipelines
+inference/sar-bands.md|inference,imagery|Sentinel-1 GRD VV/VH dB clip and linear stretch
+inference/service-overview.md|inference,sam3|FastAPI service: SAM3+SAM3.1+YOLOE+DINOv3+TerraMind+DOTA+GDINO
+inference/terramind-sar-synthesis.md|inference,imagery|TerraMind v1 S1->S2 synthetic optical RGB for SAR
+inference/yoloe-tracker.md|inference,fmv|YOLOE-26x-seg(-pf) prompt-free + text-promptable, replaces SAM3 AMG
+operations/auth-and-ldap-setup.md|operations,auth|env-bootstrap admin, Admin->Auth LDAP form, test bind workflows
+operations/calibration-shipping.md|operations,backend,inference|assets-image bake of per-detector temperatures; calibration_data volume; measurement -> rebuild flow
+operations/candidate-link-approval.md|operations|detection->target candidates, deterministic scorer, operator approve/reject
+operations/celery-beat-schedule.md|operations|worker_beat scheduler, periodic feed polling, observation cleanup
+operations/celery-queues-and-tasks.md|operations|imagery + default queues, task name table, retry policy
+operations/change-detection-runbook.md|operations,imagery|two-pass change detection from UI/API; optical diff + SAR dB log-ratio method
+operations/fmv-ingest-pipeline.md|operations,fmv|clip upload -> HLS -> telemetry -> /detect_video -> persistence
+operations/health-monitoring.md|operations|Health Dashboard, /api/health, replica chips, alert escalation
+operations/imagery-ingest-pipeline.md|operations,imagery|six-step pipeline from raw raster to detections on map
+operations/llm-ava-configuration.md|operations|OPENAI_API_BASE pointing at vLLM/Ollama, graceful degradation
+operations/ontology-edit-workflow.md|operations,ontology|admin UI flow, version cursor, prompt cache 30s + SIGHUP
+operations/reference-corpora-bake.md|operations,backend|assets-image bake of reference corpora; auto-seed lifespan; admin re-seed; drop-in tarballs
+operations/satellite-overpass-runbook.md|operations|air-gap TLE import + SGP4 overpass prediction + ground track; offline collection planning
+operations/unknown-label-triage.md|operations,ontology|LLM-emitted labels into ontology_unknown_labels, assign workflow
+operations/websocket-event-channels.md|operations|topic list: ingest_progress, fmv_detections_complete, ontology_updated
+scripts/backend-scripts-train-and-seed.md|scripts|backend/scripts: train, seed_ontology, refmv, backfill_detection_branch
+scripts/benchmark-scripts.md|scripts,benchmark|bench_fmv + benchmark_inference + benchmark_sam3_inference
 scripts/build-offline-basemap.md|scripts,deployment|Carto Dark z=0..14 pre-fetch; runs inside basemap-baker container into ./assets/static/basemap
 scripts/build-offline-terrain.md|scripts,deployment|OpenTopoMap z=0..14 terrain tiles; runs inside terrain-baker container into ./assets/static/terrain
 scripts/build-triage-set.md|scripts,benchmark|Tier-0 analyst triage benchmark from /data/imagery/processed or /api/ingest/uploads
-scripts/fetch-eval-datasets.md|scripts,benchmark|DOTA-v1.0 val slice from HF with idempotent gating + synthetic fallback
 scripts/compare-inference-layers.md|scripts,benchmark|main benchmark CLI: layer configs, repeats, restart-cmd
-scripts/eval-runners.md|scripts,benchmark|eval_candidate_links + eval_sar_cfar + measure_calibration_ece
-scripts/benchmark-scripts.md|scripts,benchmark|bench_fmv + benchmark_inference + benchmark_sam3_inference
-scripts/backend-scripts-train-and-seed.md|scripts|backend/scripts: train, seed_ontology, refmv, backfill_detection_branch
-scripts/smoke-test-live-api.md|scripts,testing|live API smoke test vs nginx:3000: 164-route catalog coverage, tagged+torn-down mutations, idle-gated inference
+scripts/configure-host-gpu.md|scripts,gpu|reads nvidia-smi, writes SENTINEL GENERATED block to .env
+scripts/docs-audit.md|scripts|Check and regenerate the agent-facing documentation maps: index sync, fixed tag
 scripts/download-city-cog.md|scripts,imagery|geocodes any city/country; --source sentinel2 (10m COG) or esri (sub-meter tile mosaic)
-conventions/coding-style.md|conventions|file size limits, no premature abstraction, no spurious comments
-conventions/documentation-workflow.md|conventions|mandatory read-before/update-after loop for every agent session
-conventions/naming-and-paths.md|conventions|module/router/component naming, /api prefix, /data volume layout
-conventions/error-handling.md|conventions|HTTP 400 vs 503, fixture fallbacks, trust internal calls
-conventions/adding-a-new-detection-model.md|conventions,inference|MODEL_MANIFEST entry, runner module, /detect dispatch, profile listing
-conventions/adding-a-new-ontology-object.md|conventions,ontology|seed JSON path, DB-canonical edit, version bump, prompt cache
-conventions/adding-a-new-celery-task.md|conventions,celery|@celery_app.task(name=) preserved name; legacy vs package placement
-conventions/adding-a-new-router.md|conventions,backend|mount in main.py, /api prefix, session middleware coverage
-conventions/adding-a-new-admin-tab.md|conventions,frontend|AdminScreen tab registry + admin/*View.tsx pattern
-conventions/adding-a-new-graph-projector.md|conventions,backend|recipe: identity-only MERGE helper + Celery task wrapper + on-write trigger + backfill
-conventions/adding-a-new-admin-config-table.md|conventions,backend|recipe: per-scope versioned config table + CRUD router + worker helper + admin tab
-conventions/adding-a-reference-dataset.md|conventions,backend|recipe: sub-fetcher + seed_terms_per_dataset + MANIFEST + small-subset test + assets rebuild
+scripts/eval-runners.md|scripts,benchmark|eval_candidate_links + eval_sar_cfar + measure_calibration_ece
+scripts/fetch-eval-datasets.md|scripts,benchmark|DOTA-v1.0 val slice from HF with idempotent gating + synthetic fallback
+scripts/smoke-test-live-api.md|scripts,testing|live API smoke test vs nginx:3000: 164-route catalog coverage, tagged+torn-down mutations, idle-gated inference
+testing/backend-unit-tests.md|testing,backend|pytest layout, fixtures, ontology/auth/size/object_details/precision-policy coverage
+testing/benchmark-harness.md|testing,benchmark|compare_inference_layers + restart, fetch_eval_datasets gating
+testing/fixtures-and-test-data.md|testing|tests/fixtures + sample/ contents and how to regenerate
+testing/inference-unit-tests.md|testing,inference|fusion/oom-recovery/prompt defaults/source-layer gates/sam3-perf/box prompts
+testing/live-e2e-playwright.md|testing,frontend|live nginx:3000 e2e: real login storageState, data-tour control walk, dispatchEvent for overlaps
+testing/playwright-frontend.md|testing,frontend|playwright.config.ts, visual testing workflow

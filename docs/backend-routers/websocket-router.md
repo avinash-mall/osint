@@ -1,7 +1,7 @@
 # WebSocket Router (`/ws`)
 
 **Path:** [backend/routers/ws.py](../../backend/routers/ws.py)
-**Lines:** ~75
+**Lines:** ~118
 **Depends on:** Redis pubsub (via `os.getenv("REDIS_URL")`), `auth.decode_session_cookie` + `auth.SESSION_COOKIE`
 
 ## Purpose

@@ -10,7 +10,7 @@ Build the GPU inference image, pre-bake model weights so the runtime service run
 
 ## Why this design
 
-Image downloads Python dependencies + optional model weights at build time; runtime containers use the populated `/models` cache. DOTA bake stages both `yolo26m-obb.pt` and `yolo11n-obb.pt`. (The RemoteCLIP verifier bake was removed — see [decisions/removed-fair1m-and-remoteclip.md](../decisions/removed-fair1m-and-remoteclip.md).)
+Image downloads Python dependencies + optional model weights at build time; runtime containers use the populated `/models` cache. DOTA bake stages both `yolo26m-obb.pt` and `yolo11n-obb.pt`; YOLOE stages the MobileCLIP2 text encoder; MVRSD can be baked from `MVRSD_WEIGHTS_URL`. The RemoteCLIP verifier, FAIR1M-OBB detector, Prithvi heads, and generic IDEA Grounding-DINO bake were removed; LAE-DINO lives in the `inference-lae` sidecar.
 
 ## Key symbols
 
@@ -24,7 +24,7 @@ Inputs: Docker build args, `HF_TOKEN`, the checked-in inference service tree. Ou
 
 ## Failure modes
 
-Optional heads log and continue when unavailable. Required SAM3 or DINOv3-SAT weights fail the build in `verify_bake.py`.
+Optional assets log and continue when unavailable. Required SAM3 or DINOv3-SAT weights fail the build in `verify_bake.py`.
 
 ## Cross-references
 

@@ -2,14 +2,17 @@
 
 ## Problem
 
-Sentinel runs four box-emitting detectors against the same chip: SAM3, DOTA-OBB, FAIR1M-OBB, and Grounding-DINO. They disagree. NMS resolves disagreement by *suppressing* the loser; when the loser had the better geometry but a slightly lower score, mAP collapses.
+Sentinel runs multiple box-emitting detectors against the same chip: SAM3,
+DOTA-OBB, LAE-DINO through the `grounding_dino` layer, MVRSD, YOLOE, and SAR
+CFAR. They disagree. NMS resolves disagreement by *suppressing* the loser; when
+the loser had the better geometry but a slightly lower score, mAP collapses.
 
 We measured this in [why-grounding-dino-auto-gated.md](why-grounding-dino-auto-gated.md): forcing GDINO alongside DOTA-OBB on DOTA-v1.0 val dropped mAP from **0.61 → 0.11**. NMS kept GDINO's lower-confidence box and discarded DOTA-OBB's correct one. The fix at the time was a *gate* (skip GDINO on common-vocab prompts). That's a workaround. The real problem is the fusion primitive.
 
 ## Research
 
-- **Weighted Boxes Fusion** ([arxiv 1910.13302](https://arxiv.org/abs/1910.13302), Solovyev et al., 2019) — instead of suppressing the lower-confidence overlap, *average* the coordinates and scores of all overlapping boxes, weighted by per-source trust. On ensemble setups WBF reliably beats NMS / Soft-NMS / NMW by 1.5–5% mAP.
-- The [ZFTurbo/Weighted-Boxes-Fusion](https://github.com/ZFTurbo/Weighted-Boxes-Fusion) reference implementation is pure Python, no GPU dependency, vendorable for air-gap (`ensemble-boxes>=1.0.9` on PyPI).
+- **Weighted Boxes Fusion** (Solovyev et al., 2019) — instead of suppressing the lower-confidence overlap, *average* the coordinates and scores of all overlapping boxes, weighted by per-source trust. On ensemble setups WBF reliably beats NMS / Soft-NMS / NMW by 1.5-5% mAP.
+- The `ensemble-boxes` implementation is pure Python, no GPU dependency, and is bundled into the image for air-gap use.
 - Our own ensemble disagreement evidence (DOTA→GDINO mAP collapse) shows the NMS primitive is the bottleneck, not the detectors.
 
 ## Decision
@@ -26,14 +29,18 @@ Adopt WBF as the default cross-detector fusion primitive. Keep NMS as an A/B kno
 |---|---|
 | `sam3` (open-vocab masks) | 0.5 |
 | `dota_obb` (closed-vocab common) | 1.0 |
-| `fair1m_obb` (closed-vocab fine-grained) | 1.0 |
-| `grounding_dino` (open-vocab text→box) | 0.3 |
+| `grounding_dino` (LAE-DINO open-vocab text-to-box) | 0.3 |
 | `yoloe` (FMV prompt-free) | 0.5 |
 | `sar_cfar` (SAR ship detector) | 0.7 |
+| `mvrsd` (military-vehicle RGB specialist) | 1.0 |
 
 Operators override via `SAM3_WBF_WEIGHTS='{"grounding_dino": 0.9}'`.
 
-The intuition: DOTA-OBB and FAIR1M-OBB are closed-vocab specialists trained on rigorously labelled benchmarks; their box geometry is the most trustworthy signal we have. SAM3 is broader but its masks are coarser. GDINO's text-derived boxes drift; weight 0.3 keeps them as a *vote*, not a *veto*.
+The intuition: DOTA-OBB and MVRSD are closed-vocab specialists trained on
+rigorously labelled benchmarks; their box geometry is the most trustworthy
+signal we have. SAM3 is broader but its masks are coarser. LAE-DINO's
+text-derived boxes can still drift; weight 0.3 keeps them as a *vote*, not a
+*veto*.
 
 ## What is NOT done
 

@@ -1,7 +1,7 @@
 # Admin — Prompt Profiles
 
 **Path:** [frontend/src/components/admin/PromptProfilesView.tsx](../../frontend/src/components/admin/PromptProfilesView.tsx)
-**Lines:** ~14396 characters
+**Lines:** ~389
 
 ## Purpose
 

@@ -20,10 +20,15 @@ YOLOE-26x-seg(-pf) does all three in one forward pass — emits `(mask, bbox, la
 
 ## Migration
 
-Anything still sending `prompt_mode=amg` to `/detect_video` gets HTTP 400 from inference-sam3. Use `prompt_mode=yoloe` instead:
+Anything still sending `prompt_mode=amg` directly to `/detect_video` gets HTTP 400 from inference-sam3. Use `prompt_mode=yoloe` instead:
 
 - Empty `text_prompts` → YOLOE-26x-seg-pf (prompt-free)
 - Non-empty `text_prompts` → YOLOE-26x-seg (text-promptable)
+
+The backend upload API keeps a compatibility alias for older clients:
+`model=yolo26 + prompt_mode=amg` is accepted for FMV uploads and mapped to the
+worker's `yoloe` mode before inference is called. `model=sam3 + prompt_mode=amg`
+still returns HTTP 400.
 
 ## Cross-references
 

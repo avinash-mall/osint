@@ -12,7 +12,7 @@ Superseded by [removed-yoloe-imagery.md](removed-yoloe-imagery.md). This documen
 
 The imagery upload form (IngestConnect → `POST /api/ingest/upload`) now accepts the same `model` + `prompt_mode` form fields as the FMV upload form, with the same semantics:
 
-- `model=sam3 + prompt_mode=pcs` (default) — today's multi-layer fusion pipeline (SAM3 + DOTA-OBB + Grounding-DINO + Prithvi + DINOv3-SAT etc.), unchanged.
+- `model=sam3 + prompt_mode=pcs` (default) — the then-current multi-layer fusion pipeline (SAM3 + DOTA-OBB + Grounding-DINO + DINOv3-SAT etc.), unchanged.
 - `model=yolo26 + prompt_mode=amg` — YOLOE-PF only, per chip. SAM3 and the other specialists are skipped.
 - `model=yolo26 + prompt_mode=pcs` — YOLOE-SEG with the analyst-supplied `text_prompts` (falling back to `FMV_FALLBACK_PROMPTS = ["vehicle","person","building"]` if the picker is empty).
 - `model=sam3 + prompt_mode=amg` — rejected `HTTP 400` (mirror of the FMV constraint at [backend/main.py:1032-1036](../../backend/main.py#L1032-L1036)).
@@ -29,7 +29,7 @@ Plumbing layers:
 Two pressures:
 
 1. **Analyst parity** — FMV uploads already had a model/mode dropdown; imagery uploads silently hardwired SAM3. Analysts who wanted a fast prompt-free YOLOE pass on a still ortho (or YOLOE-SEG with a tight class list against a satellite chip) had to hand-craft `enabled_layers` JSON via curl. A first-class UI selector removes that gap.
-2. **One mental model** — the cost of exposing two different model-selection idioms (FMV's `model+prompt_mode`, imagery's `enabled_layers`) was both UX confusion and a latent code path (`enabled_layers=["yoloe_*"]`) that *appeared* wired but didn't actually run YOLOE for stills — `_detect_pipeline` had no YOLOE call at all before this change. Investigation revealed `enabled_layers` was an additive filter only (it gated DOTA / GDINO / Prithvi etc., but SAM3 always ran). The exclusive-YOLOE branch added here makes the semantics match the FMV path.
+2. **One mental model** — the cost of exposing two different model-selection idioms (FMV's `model+prompt_mode`, imagery's `enabled_layers`) was both UX confusion and a latent code path (`enabled_layers=["yoloe_*"]`) that *appeared* wired but didn't actually run YOLOE for stills — `_detect_pipeline` had no YOLOE call at all before this change. Investigation revealed `enabled_layers` was an additive filter only (it gated DOTA / GDINO and other specialists, but SAM3 always ran). The exclusive-YOLOE branch added here made the semantics match the FMV path during the now-superseded experiment.
 
 ## Considered alternatives
 

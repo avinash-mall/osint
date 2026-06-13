@@ -30,6 +30,8 @@ SAM3-allocated count. See [decisions/why-auto-gpu-division.md](../decisions/why-
 ## What it never writes
 
 - `HF_TOKEN`, `SESSION_SECRET`, `ADMIN_PASSWORD` — operator concerns.
+- `SAM3_GPU_MEMORY_FRACTION` — manual shared-GPU escape hatch; the old
+  live-memory auto cap was removed.
 - Anything outside the `SENTINEL GENERATED GPU CONFIG` block — the rest of `.env` is preserved exactly.
 
 ## When to re-run

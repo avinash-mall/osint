@@ -1,7 +1,7 @@
 # AOI Router (`/api/aois`)
 
 **Path:** [backend/routers/aois.py](../../backend/routers/aois.py)
-**Lines:** ~230
+**Lines:** ~268
 **Depends on:** [backend/database.py](../../backend/database.py), [backend/graph_writes.py](../../backend/graph_writes.py), [backend/platform_schema.py](../../backend/platform_schema.py)
 
 ## Purpose

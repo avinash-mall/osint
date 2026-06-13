@@ -183,6 +183,15 @@ export type Props = {
 
   /* product tour (top-toolbar button) */
   onLaunchTour?: () => void;
+
+  /* panel-reflow reserves — floating chrome positions against these so it never
+     overlaps the side panels or the bottom temporal dock. left/right are CSS
+     length strings (container-query aware, mirrored from the timeline inset);
+     bottomReserve is the measured bottom-dock height + gutters, in px. See
+     decisions/panel-reflow-token-system.md. */
+  reserveLeftCss: string;
+  reserveRightCss: string;
+  bottomReserve: number;
 };
 
 const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
@@ -234,6 +243,9 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
     compareImagery,
     onClearCompare,
     onLaunchTour,
+    reserveLeftCss,
+    reserveRightCss,
+    bottomReserve,
   } = props;
 
   const mapInstance = useRef<L.Map | null>(null);
@@ -362,7 +374,19 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
       className={`relative flex min-h-0 min-w-0 flex-col bg-sentinel-bg${focusMode ? ' map-focus-on' : ''}`}
       style={{ position: 'absolute', inset: 0 }}
     >
-      <div className={`relative min-h-0 flex-1 map-vmode-${visualMode}`}>
+      <div
+        className={`relative min-h-0 flex-1 map-vmode-${visualMode}`}
+        style={{
+          // Reserve bands so floating chrome never overlaps the side panels or
+          // the bottom temporal dock. `cqi` resolves against `.map-workspace`
+          // (this div is a descendant of that container). The left/right strings
+          // are mirrored from the timeline's own inset; bottomReserve is the
+          // measured dock height + gutters. See decisions/panel-reflow-token-system.md.
+          ['--reserve-left' as any]: reserveLeftCss,
+          ['--reserve-right' as any]: reserveRightCss,
+          ['--reserve-bottom' as any]: `${bottomReserve}px`,
+        }}
+      >
         <MapContainer
           center={[25.0, 55.0]}
           zoom={6}
@@ -1033,14 +1057,14 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
             </div>
           )}
           <div className="sentinel-grid" />
-          <div className="map-focus-collapsible map-focus-left absolute left-2 top-2 font-mono text-[10px] tracking-wider text-sentinel-muted">WGS84 / MERCATOR / LIVE COP</div>
-          <div className="map-focus-collapsible map-focus-right absolute right-2 top-2 font-mono text-[10px] tracking-wider text-sentinel-muted">AOR / CURRENT VIEW</div>
-          <div className="absolute left-1/2 top-14 -translate-x-1/2 border border-sentinel-line-2 bg-sentinel-panel px-3 py-1 font-mono text-[11px]">
+          <div className="map-focus-collapsible map-focus-left map-reflow absolute top-2 font-mono text-[10px] tracking-wider text-sentinel-muted" style={{ left: 'var(--reserve-left)' }}>WGS84 / MERCATOR / LIVE COP</div>
+          <div className="map-focus-collapsible map-focus-right map-reflow absolute top-2 font-mono text-[10px] tracking-wider text-sentinel-muted" style={{ right: 'var(--reserve-right)' }}>AOR / CURRENT VIEW</div>
+          <div className="map-reflow absolute top-14 z-[500] border border-sentinel-line-2 bg-sentinel-panel px-3 py-1 font-mono text-[11px]" style={{ left: 'var(--reserve-left)', right: 'var(--reserve-right)', width: 'fit-content', marginInline: 'auto' }}>
             <span className="text-sentinel-accent">{visibleDetectionCount}</span>
             <span className="text-sentinel-muted"> / {detectionsGeoJSON.features?.length || 0} detections / last {timelineWindowMinutes}m</span>
             {visibleDetectionCount > 0 && <span className="text-sentinel-muted"> / hover labels</span>}
           </div>
-          <div className="map-focus-collapsible map-focus-left absolute left-3 bottom-4 border border-sentinel-line-2 bg-sentinel-panel px-3 py-2 font-mono text-[11px]">
+          <div className="map-focus-collapsible map-focus-left map-reflow absolute border border-sentinel-line-2 bg-sentinel-panel px-3 py-2 font-mono text-[11px]" style={{ left: 'var(--reserve-left)', bottom: 'var(--reserve-bottom)' }}>
             <div className="sentinel-label">cursor</div>
             <div>LAT {cursor.lat.toFixed(3).padStart(8, ' ')} deg</div>
             <div>LON {cursor.lon.toFixed(3).padStart(8, ' ')} deg</div>
@@ -1053,7 +1077,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
               </span>
             </div>
           </div>
-          <div className="map-focus-collapsible map-focus-right absolute right-3 bottom-4 border border-sentinel-line-2 bg-sentinel-panel px-3 py-2 font-mono text-[11px]">
+          <div className="map-focus-collapsible map-focus-right map-reflow absolute border border-sentinel-line-2 bg-sentinel-panel px-3 py-2 font-mono text-[11px]" style={{ right: 'var(--reserve-right)', bottom: 'var(--reserve-bottom)' }}>
             <div className="sentinel-label">scale</div>
             <div className="flex items-center gap-2">
               <span className="h-px w-20 bg-slate-200" />
@@ -1061,19 +1085,16 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
             </div>
           </div>
           {/* F14 — 32×32 px controls, wired to the live map, keyboard hints
-              in tooltips. F12 — the focus toggle lives in this cluster.
-              Anchored at the viewport's bottom-right edge, overlapping the
-              SelectionPanel's rightmost strip (cluster width 32 px >
-              panel right-margin 14 px). z-[600] keeps it above the panel
-              (z 500). Position is static — when the panel collapses to a
-              36 px rail the cluster covers the rail's left ~22 px while
-              the remaining ~14 px on the right stays clickable for
-              re-expand. */}
+              in tooltips. F12 — the focus toggle lives in this cluster. The
+              cluster reflows against the right panel + bottom dock via the
+              --reserve-* bands (see decisions/panel-reflow-token-system.md), so
+              it sits just left of the SelectionPanel and above the temporal
+              dock — never overlapping either. z-[600] keeps it above panels. */}
           <div
-            className="absolute z-[600] flex flex-col border border-sentinel-line-2 bg-sentinel-panel"
+            className="map-reflow absolute z-[600] flex flex-col border border-sentinel-line-2 bg-sentinel-panel"
             style={{
-              bottom: 14,
-              right: 4,
+              bottom: 'var(--reserve-bottom)',
+              right: 'var(--reserve-right)',
             }}
           >
             <button
@@ -1126,7 +1147,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
           {/* Top-center action bar — Draw / Range ring / Product Tour. Layer-
               display state (GEOM box mode, tracks visibility) lives in the
               LayerPanel Overlays section, not here. */}
-          <div className="absolute left-1/2 top-3 z-[500] -translate-x-1/2 pointer-events-auto flex flex-row items-center gap-2">
+          <div className="map-reflow absolute top-3 z-[500] pointer-events-auto flex flex-row items-center justify-center gap-2" style={{ left: 'var(--reserve-left)', right: 'var(--reserve-right)' }}>
             <button
               type="button"
               data-tour="draw-object"
@@ -1175,7 +1196,7 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
           </div>
 
           {drawMode && (
-            <div className="absolute left-1/2 top-16 z-[500] -translate-x-1/2 pointer-events-none border border-sentinel-accent bg-sentinel-panel/80 px-3 py-1.5 font-mono text-[10.5px] uppercase tracking-widest text-sentinel-accent">
+            <div className="map-reflow absolute top-16 z-[500] pointer-events-none border border-sentinel-accent bg-sentinel-panel/80 px-3 py-1.5 font-mono text-[10.5px] uppercase tracking-widest text-sentinel-accent" style={{ left: 'var(--reserve-left)', right: 'var(--reserve-right)', width: 'fit-content', marginInline: 'auto' }}>
               Drag on the map to box an object, then label it
             </div>
           )}

@@ -5,7 +5,8 @@
 ## Where to start
 
 - **Workflow every agent must follow** (read-before / update-after): [conventions/documentation-workflow.md](conventions/documentation-workflow.md).
-- **Single-screen overview** of every doc: [INDEX.txt](INDEX.txt) (pipe-delimited, ~15 KB, sorted by path).
+- **Compressed overview** of active docs: [INDEX.txt](INDEX.txt) (pipe-delimited, sorted by path).
+- **Agent session entry:** [agent-entry.md](agent-entry.md) and [agent-context-map.md](agent-context-map.md).
 - **Architectural identity:** [architecture/system-overview.md](architecture/system-overview.md).
 - **API surface:** [backend/api-routes-reference.md](backend/api-routes-reference.md).
 - **Inference service entry:** [inference/service-overview.md](inference/service-overview.md).

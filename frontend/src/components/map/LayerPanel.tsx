@@ -24,7 +24,6 @@ import {
   Eye,
   EyeOff,
   Layers,
-  Lock,
   RefreshCw,
   Satellite,
   Search,
@@ -96,11 +95,14 @@ type Props = {
   visibleDetectionCount: number;
   tracksCount: number;
   staticCount: number;
-  analyticsCounts: {
-    viewshed: number; viewshedAvailable: boolean;
-    los: number;     losAvailable: boolean;
-    routes: number;  routesAvailable: boolean;
-  };
+
+  /* Filters (centralized) — confidence floor + recent-activity window, hoisted
+     out of the time-machine bar and the event-timeline strip so every detection
+     filter lives in one place. State still owned by GaiaMap. */
+  confidenceThreshold: number;
+  setConfidenceThreshold: (v: number) => void;
+  timelineWindowMinutes: number;
+  setRecentWindow: (minutes: number) => void;
 
   /* Detection classes section */
   detectionGroups: DetectionGroup[];
@@ -132,44 +134,35 @@ type Props = {
 /**
  * One overlay row. The full row is the click target; the 10 px coloured dot
  * (filled = on, hollow = off) is the visibility *signal*, not the
- * affordance. Disabled analytics tools show a lock instead — see
- * docs/decisions/why-layerpanel-dot-toggle.md.
+ * affordance — see docs/decisions/why-layerpanel-dot-toggle.md.
  */
 function OverlayRow({
   label,
   metric,
   colorVar,
   active,
-  disabled = false,
   onToggle,
 }: {
   label: string;
   metric: number | string;
   colorVar: string;
   active: boolean;
-  disabled?: boolean;
   onToggle: () => void;
 }) {
   return (
     <button
       type="button"
-      disabled={disabled}
       onClick={onToggle}
-      className={`layer-panel-overlay-row ${active && !disabled ? 'is-on' : 'is-off'} ${disabled ? 'is-disabled' : ''}`}
-      title={disabled ? 'Run the tool first to enable this layer' : ''}
-      aria-pressed={!disabled && active}
+      className={`layer-panel-overlay-row ${active ? 'is-on' : 'is-off'}`}
+      aria-pressed={active}
     >
-      {disabled ? (
-        <Lock className="layer-panel-overlay-dot is-lock" aria-hidden />
-      ) : (
-        <span
-          className={`layer-panel-overlay-dot ${active ? 'is-on' : 'is-off'}`}
-          style={{ ['--dot-color' as string]: colorVar }}
-          aria-hidden
-        />
-      )}
+      <span
+        className={`layer-panel-overlay-dot ${active ? 'is-on' : 'is-off'}`}
+        style={{ ['--dot-color' as string]: colorVar }}
+        aria-hidden
+      />
       <span className="layer-panel-overlay-label">{label}</span>
-      {!disabled && <span className="layer-panel-overlay-metric">{metric}</span>}
+      <span className="layer-panel-overlay-metric">{metric}</span>
     </button>
   );
 }
@@ -192,7 +185,10 @@ export default function LayerPanel({
   visibleDetectionCount,
   tracksCount,
   staticCount,
-  analyticsCounts,
+  confidenceThreshold,
+  setConfidenceThreshold,
+  timelineWindowMinutes,
+  setRecentWindow,
   detectionGroups,
   detectionGroupMode,
   setDetectionGroupMode,
@@ -225,11 +221,6 @@ export default function LayerPanel({
     { key: 'static',     label: 'Static Features',   metric: staticCount,           colorVar: 'var(--color-sentinel-crit)'   },
     { key: 'borders',    label: 'Borders',           metric: 'ADMIN',               colorVar: 'var(--color-sentinel-muted)'  },
     { key: 'graticule',  label: 'Graticule',         metric: 'MGRS',                colorVar: 'var(--color-sentinel-info)'   },
-  ] as const;
-  const analyticsToolRows = [
-    { key: 'viewshed', label: 'Viewshed',      metric: analyticsCounts.viewshed, colorVar: 'var(--color-sentinel-accent)', available: analyticsCounts.viewshedAvailable },
-    { key: 'los',      label: 'Line of Sight', metric: analyticsCounts.los,      colorVar: 'var(--color-sentinel-accent)', available: analyticsCounts.losAvailable },
-    { key: 'routes',   label: 'Routes',        metric: analyticsCounts.routes,   colorVar: 'var(--color-sentinel-accent)', available: analyticsCounts.routesAvailable },
   ] as const;
 
   const toggleLayer = (key: keyof ActiveLayerMap) =>
@@ -361,17 +352,17 @@ export default function LayerPanel({
                 />
               ))}
             </div>
-            <div className="layer-panel-subhead">Box mode</div>
+            <div className="layer-panel-subhead">Detection box</div>
             <div className="flex items-center gap-1 px-3 py-2 font-mono text-[10px] uppercase tracking-widest">
-              {(['hbb', 'obb', 'mask'] as const).map((k) => (
+              {(['obb', 'hbb', 'mask'] as const).map((k) => (
                 <button
                   key={k}
                   type="button"
                   data-tour={`geom-${k}`}
                   onClick={() => setBboxMode(k)}
                   title={
-                    k === 'hbb' ? 'Axis-aligned bounding box'
-                    : k === 'obb' ? 'Oriented bounding box (from SAM3 metadata)'
+                    k === 'obb' ? 'Oriented bounding box — default'
+                    : k === 'hbb' ? 'Axis-aligned bounding box'
                     : 'Mask polygon (raw geometry)'
                   }
                   className={`px-3 py-1 rounded-full transition ${
@@ -382,22 +373,41 @@ export default function LayerPanel({
                 </button>
               ))}
             </div>
-            <div data-tour="analytics-tools">
-              <div className="layer-panel-subhead">Analytics tools</div>
-              {analyticsToolRows.map((layer) => (
-                <OverlayRow
-                  key={layer.key}
-                  label={layer.label}
-                  metric={layer.metric}
-                  colorVar={layer.colorVar}
-                  active={activeLayers[layer.key as keyof ActiveLayerMap]}
-                  disabled={!layer.available}
-                  onToggle={() => toggleLayer(layer.key as keyof ActiveLayerMap)}
-                />
-              ))}
-            </div>
           </>
         )}
+
+        {/* Filters — centralized confidence floor + recent-activity window
+            (relocated from the time-machine bar and the event-timeline strip so
+            every detection filter lives in one place). */}
+        <div data-tour="filters" className="border-b border-sentinel-line px-3 py-2">
+          <div className="pb-1"><span className="sentinel-label">Filters</span></div>
+          <div data-tour="filter-conf" className="flex items-center gap-2 py-1 font-mono text-[10px] uppercase tracking-widest">
+            <span className="w-12" style={{ color: 'var(--ink-3)' }}>Conf</span>
+            <input
+              type="range" min={0} max={1} step={0.01}
+              value={confidenceThreshold}
+              onChange={(e) => setConfidenceThreshold(Number(e.target.value))}
+              className="flex-1"
+              title="Hide detections below this confidence floor"
+            />
+            <span className="w-9 text-right tabular-nums text-sentinel-accent">{Math.round(confidenceThreshold * 100)}%</span>
+          </div>
+          <div data-tour="filter-time-window" className="flex items-center gap-2 py-1 font-mono text-[10px] uppercase tracking-widest">
+            <span className="w-12" style={{ color: 'var(--ink-3)' }}>Window</span>
+            <div className="seg">
+              {[15, 30, 60].map((minutes) => (
+                <button
+                  key={minutes}
+                  type="button"
+                  className={timelineWindowMinutes === minutes ? 'on' : ''}
+                  onClick={() => setRecentWindow(minutes)}
+                >
+                  {minutes}m
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
 
         {/* Detection Classes section header */}
         <div data-tour="detection-classes" className="border-b border-sentinel-line bg-sentinel-panel-2 px-3 py-2">
