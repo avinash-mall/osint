@@ -70,6 +70,13 @@ Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 |---|---|---|
 | `INFERENCE_SPEED_PROFILE` | `fast_review` | Worker presets for chip count / overlap |
 | `INFERENCE_CHIP_SIZE` / `INFERENCE_CHIP_OVERLAP` | `1008` / `252` | SAM3 chip geometry (25% overlap) |
+| `INFERENCE_SMALL_OBJECT_CHIP_SIZE` | `0` | When `>0` and `!= INFERENCE_CHIP_SIZE`, runs a second finer chip pass (e.g. `504`) giving small targets more pixels-per-object. `0` = off. Shares the main dedupe index |
+| `INFERENCE_SMALL_OBJECT_OVERLAP` | `128` | Overlap for the small-object second pass |
+| `INFERENCE_SMALL_OBJECT_MAX_CHIPS` | `256` | Chip cap for the small-object second pass (defaults to the profile's `max_chips`) |
+| `INFERENCE_FULL_SCENE_PASS` | `0` | When `1`, appends ONE extra pass over the whole image read decimated (COG overviews) to catch objects larger than a chip (runways, piers). Shares the dedupe index; adds exactly 1 window to progress. `0` = off |
+| `DEDUPE_METHOD` | `nms` | Cross-chip dedupe in overlap zones: `nms` (keep best box) or `wbf` (weighted box fusion). NMS is default — see `docs/benchmarks/chip-dedupe-nms-vs-wbf-2026-06-12.md` |
+| `WBF_IOU_THRESHOLD` | `0.55` | IoU cluster threshold for the WBF fuser (only when `DEDUPE_METHOD=wbf`) |
+| `WBF_EXPECTED_MODELS` | `2` | Expected detector count for WBF score weighting (only when `DEDUPE_METHOD=wbf`) |
 | `MAX_INFERENCE_CHIPS` | `256` | Worker cap (0 = full coverage) |
 | `INFERENCE_CHIP_CONCURRENCY` | `1` | Concurrent chip POSTs to SAM3 |
 | `INFERENCE_MAX_PENDING_CHIPS` | `32` | Encoded chip queue depth (in-flight ceiling) |
@@ -121,7 +128,6 @@ Tuning for the city2graph-inherited beat builders. See [operations/celery-beat-s
 | `SAM3_PRESENCE_RATIO_FLOOR` | `1.8` | Minimum `max_score / mean_score` ratio for a prompt to pass the SegEarth-OV3 distribution gate. Higher = stricter (kills more diffuse responses). `0.0` disables the ratio gate even in mode `both` |
 | `SAM3_PRESENCE_RATIO_EPS` | `0.05` | Floor for the denominator when computing the presence ratio; prevents division-by-zero when SAM3 emits near-zero mean scores |
 | `SAM3_GATE_SCORE_FLOOR` | `0.05` | Score floor the batched text path postprocesses at so the presence gate sees the full score distribution (not just above-`score_threshold` survivors). `0.0` = exact single-prompt parity; raise if profiling shows the extra masks cost too much. See [why-batched-presence-gate-floor.md](../decisions/why-batched-presence-gate-floor.md) |
-| `SAM3_PRITHVI_OVERLAY_THRESHOLD` | `0.30` | Mask × Prithvi-overlay IoU for label append |
 | `SAM3_SAR_CONF_CAP` | `0.85` | Hard cap on SAR confidence |
 | `SAM3_OBB_OPENING_KERNEL_PCT` | `0.01` | Morphological opening kernel before `minAreaRect` |
 | `SAM3_OBB_MIN_AREA_PX` | `4` | Minimum contour area before HBB fallback |
@@ -137,13 +143,16 @@ Tuning for the city2graph-inherited beat builders. See [operations/celery-beat-s
 | `SAM3_LOAD_DINOV3_SAT` | `1` | DINOv3-SAT-L re-ID embeddings |
 | `SAM3_EMBED_BATCH_SIZE` | `32` | Crops per DINOv3 forward in the batched embedding path — **VRAM-tiered, auto-set by `configure_host.py`** (shrunk to 16 when a GPU co-tenant is detected) |
 | `SAM3_GPU_MEMORY_FRACTION` | `0` | Per-process VRAM ceiling (fraction of each GPU's total) — **manual only; `configure_host.py` no longer auto-sets it** (the auto-detection misfired and throttled dedicated cards — see [why-removed-auto-vram-cap](../decisions/why-removed-auto-vram-cap.md)). `0`/unset = no cap. Set by hand on a genuine shared-GPU host so an over-budget alloc OOMs cleanly instead of illegal-accessing the neighbour |
-| `SAM3_LOAD_PRITHVI` | `0` | Prithvi flood/burn |
 | `SAM3_LOAD_TERRAMIND` | `1` | TerraMind S1→S2 |
 | `SAM3_LOAD_DOTA_OBB` | `1` | DOTA-OBB specialist |
 | `SAM3_LOAD_GROUNDING_DINO` | `0` | `grounding_dino` open-vocab layer — now backed by the **LAE-DINO** sidecar (auto-gated + explicitly enabled per request). Enabling it needs the `inference-lae` service (`docker compose --profile lae up`). See [why-lae-dino-replaces-grounding-dino.md](../decisions/why-lae-dino-replaces-grounding-dino.md) |
 | `GROUNDING_DINO_THRESHOLD` / `GROUNDING_DINO_TEXT_THRESHOLD` | `0.30` / `0.25` | LAE-DINO box / text score floors forwarded to the sidecar |
 | `LAE_VISIBLE_DEVICES` | (generated) | GPU(s) for the LAE sidecar — auto-set by `configure_host.py` (dedicated card at ≥3 free, else shares SAM3's last card). See [why-auto-gpu-division.md](../decisions/why-auto-gpu-division.md) |
 | `SAM3_LOAD_YOLOE` | `1` | YOLOE-26x FMV tracker |
+| `SAM3_LOAD_MVRSD` | `1` | MVRSD military-vehicle specialist (fine-tuned `yolo11m` detect, 5 classes, sub-meter optical RGB). Default-on, tied to `SAM3_LOAD_OPTIONAL_MODELS` like DOTA-OBB; loads with the `imagery_rgb` profile and runs on every RGB `/detect` via the default-True `_layer_active` filter. Off only if `SAM3_LOAD_OPTIONAL_MODELS=0` or this is `0`; per-request opt-out by omitting `mvrsd` from a non-empty `enabled_layers`. See [why-mvrsd-military-vehicle-specialist.md](../decisions/why-mvrsd-military-vehicle-specialist.md) |
+| `MVRSD_CONF` | `0.25` | MVRSD confidence floor |
+| `MVRSD_WEIGHTS_URL` | (empty) | **Build ARG.** GitHub release-asset URL for the MVRSD weight; baked to `/models/mvrsd/mvrsd_yolo11m.pt` at build time (hard rule #8). Empty = bake skipped + runner honour-gates. Set by the orchestrator after upload |
+| `MVRSD_WEIGHTS_PATH` | `/models/mvrsd/mvrsd_yolo11m.pt` | Runtime override for the in-container MVRSD weight path |
 | `DOTA_OBB_MODEL_ID` | `yolo26m-obb.pt` | Default OBB checkpoint; `yolo11n-obb.pt` for low-VRAM fallback |
 | `EVIDENCE_MAX_ASPECT_RATIO` | `35` | Backend physical validator aspect-ratio ceiling |
 | `EVIDENCE_MIN_MASK_COMPACTNESS` / `EVIDENCE_MIN_VALID_FRACTION` | `0.015` / `0.20` | Backend evidence validator floors |

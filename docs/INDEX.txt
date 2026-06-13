@@ -70,7 +70,7 @@ backend-routers/reports-router.md|router|/api/reports/target-package/{id} — Re
 backend-routers/satellites-router.md|router|/api/satellites/* — air-gap TLE import + SGP4 overpass passes + ground-track
 backend-routers/system-router.md|router|/api/system/deployment-mode — env-driven login banner posture
 backend-routers/websocket-router.md|router|/ws Redis-bridged push channel
-inference/service-overview.md|inference,sam3|FastAPI service: SAM3+SAM3.1+YOLOE+DINOv3+Prithvi+TerraMind+DOTA+GDINO+RemoteCLIP
+inference/service-overview.md|inference,sam3|FastAPI service: SAM3+SAM3.1+YOLOE+DINOv3+TerraMind+DOTA+GDINO
 inference/main-app-entrypoint.md|inference,sam3|/detect precision defaults, source_layer/debug_counts, RemoteCLIP verifier, /detect_video
 inference/sam3-runner-internals.md|inference,sam3|build_image_bundle, run_text_prompts, run_box_prompts pipelines
 inference/sam3-pcs-multiplex-video.md|inference,sam3,fmv|SAM3.1 multiplex one-prompt-per-session video tracker
@@ -81,9 +81,9 @@ inference/grounding-dino-gate.md|inference|server-side gate skips GDINO on commo
 inference/lae-dino-sidecar.md|inference|LAE-DINO RS open-vocab detector sidecar (mmdet fork) behind grounding_dino layer
 inference/yoloe-tracker.md|inference,fmv|YOLOE-26x-seg(-pf) prompt-free + text-promptable, replaces SAM3 AMG
 inference/dota-obb-specialist.md|inference|Ultralytics YOLO26m-obb default with YOLO11n low-VRAM fallback
+inference/mvrsd-specialist.md|inference|MVRSD yolo11m detect specialist (5 military-vehicle classes); default-on in RGB profile like DOTA-OBB
 inference/dinov3-embeddings.md|inference|DINOv3 ViT-L SAT-493M re-ID embedding head
 inference/embed-endpoint.md|inference|POST /embed for standalone DINOv3-SAT vectors; used by reference DB baker
-inference/prithvi-multispectral.md|inference,imagery|Prithvi-EO-2.0 flood/burn/multi-temporal-crop heads
 inference/terramind-sar-synthesis.md|inference,imagery|TerraMind v1 S1->S2 synthetic optical RGB for SAR
 inference/multispectral-bands.md|inference,imagery|HLS-6 band decoder: Blue/Green/Red/Narrow-NIR/SWIR-1/SWIR-2
 inference/sar-bands.md|inference,imagery|Sentinel-1 GRD VV/VH dB clip and linear stretch
@@ -160,6 +160,7 @@ decisions/audit-fixes-ui-correctness-2026-06-08.md|decision,frontend|page-by-pag
 decisions/audit-fixes-worker-2026-06-11.md|decision,celery|worker sweep: chip-grid coverage, LABEL_OF no-op, NDJSON retry, savepoints, cleanup beat task
 decisions/borders-vs-graticule-split.md|decision,frontend|LayerPanel "Tactical Grid" split into Borders (admin GeoJSON) and Graticule (coordinate grid)
 decisions/cached-forward-device-normalise.md|decision,sam3|multi-GPU _get_img_feats crash: pin image-model build device so vis_pos_enc lands on replica GPU
+decisions/chip-aligned-training-tiles.md|decision,backend|opt-in training tiler reuses inference plan_inference_grid (1008/252) so train/infer tile dists match
 decisions/completed-dead-ui-controls.md|decision,frontend|wired FMV fullscreen + export-clip (source_url); removed action-less admin "More" buttons
 decisions/completed-deferred-items-2026-06-09.md|decision|deferred audit batch: CFAR variance, time-machine playback, change-detection mount + overlay, AI target-resolve, bake OOM/idempotency
 decisions/completed-stubbed-graph-ui.md|decision,frontend|real co-occurrence histogram, site-rollup FMV/reports render, ProvenancePanel wired as SelectionPanel Prov tab
@@ -171,6 +172,7 @@ decisions/live-mgrs-cursor-readout.md|decision,frontend|cursor chip MGRS string 
 decisions/los-obstruction-point-features.md|decision,backend,frontend|LOS endpoint emits one Point per obstruction with elev/clearance/distance for per-point tooltips
 decisions/manual-draw-modal-replaces-prompt.md|decision,frontend|in-app ManualDetectionDialog replaces window.prompt; hardened browsers block native prompts
 decisions/merged-additions-responsive-css.md|decision,frontend|additions.responsive.css folded into index.css to kill duplicate/drifting rules
+decisions/multi-scale-and-full-scene-chip-passes.md|decision,backend,imagery|small-object 2nd pass + opt-in full-scene pass; shared dedupe, scale_x/y georef
 decisions/optical-inference-throughput.md|decision,inference,sam3|batch embeddings, ROI-crop postprocess, multi-GPU back-off floor, non-blocking GD gate
 decisions/pgvector-adapter-on-pool.md|decision,backend|connection_factory registers pgvector adapter on every pooled connection so list/numpy/Vector inserts work
 decisions/prompt-profile-demote-via-upsert.md|decision,backend,ontology|UPSERT no longer ORs current with existing; make_current=FALSE actually demotes
@@ -179,6 +181,7 @@ decisions/removed-defence-yolo.md|decision|DEFENCE_YOLO emitted 1297 FPs / 0 TPs
 decisions/removed-dinov3-lvd.md|decision|DINOV3_LVD emitted NaN embeddings on drone-video crops
 decisions/removed-empty-inference-detection-policy.md|decision,inference|deleted empty 0-byte inference-sam3/detection_policy.py; fusion loads backend/detection_policy.py by path
 decisions/removed-legacy-detection-geojson-path.md|decision,backend,frontend|fat /api/detections/geojson + VITE_DETECTION_TILES flag + halos + detection_points sublayer removed; MVT is the only path
+decisions/removed-prithvi-battle-damage.md|decision,inference|Prithvi flood/burn/multitemporal + overlays endpoint + UI removed; noisy FPs, burn IoU~0; decode_hls6 kept
 decisions/removed-sam3-amg.md|decision,fmv|SAM3 AMG path removed in favor of YOLOE
 decisions/removed-yoloe-imagery.md|decision,imagery,inference|YOLOE removed from still-image inference; FMV YOLOE remains
 decisions/reset-db-pool-after-fork.md|decision,celery|worker_process_init resets PostGIS pool so prefork children don't share libpq sockets
@@ -199,7 +202,6 @@ decisions/why-batched-presence-gate-floor.md|decision,sam3,inference|batched tex
 decisions/why-bbox-toggle-removed.md|decision,frontend|BBOX toggle removed; detection boxes always render, GEOM toolbar defaults to OBB
 decisions/why-branch-scoped-default.md|decision,frontend,ontology|imagery ingest UX defaults to branch-scoped prompts (~15-25 vs ~131); 15x F1 gain per LAE-80C
 decisions/why-custom-tour-engine.md|decision,frontend|Map workspace Product Tour built in-repo; no react-joyride/intro.js/shepherd dependency
-decisions/why-geom-prithvi-in-layerpanel.md|decision,frontend|GEOM box-mode + Prithvi overlay toggles moved from top toolbar into LayerPanel Overlays section
 decisions/why-dem-osrm-as-sibling-baker-images.md|decision,deployment|superseded: DEM+OSRM as sibling build-time images; replaced by runtime bake profile
 decisions/why-glo30-as-default-dem.md|decision,deployment|Copernicus GLO-30 (30 m, ~150 GB) chosen for tactical worldwide viewshed/LOS
 decisions/why-gnn-link-prediction.md|decision,backend|vendored city2graph PyG bridge + GraphSAGE link predictor; torch optional, advisory GNN_SUGGESTED_LINK edges
@@ -231,6 +233,7 @@ decisions/why-imagery-yoloe-mirrors-fmv.md|decision,imagery,inference|superseded
 decisions/why-isochrone-reachability.md|decision,backend|driving-time isochrone polygon via OSRM /table matrix probes; reuses routing sidecar, offline
 decisions/why-lae-cross-chip-batching.md|decision,inference|cross-chip LAE batching evaluated + rejected; ~2x slower on serialize-forwards A100 hosts
 decisions/why-lae-dino-replaces-grounding-dino.md|decision,inference|RS-tuned LAE-DINO replaces generic Grounding-DINO; runs as inference-lae sidecar (dep conflict)
+decisions/why-mvrsd-military-vehicle-specialist.md|decision,inference|fine-grained sub-meter military-vehicle detector, default-on in RGB; tradeoff mitigated by conf floor; weights baked
 decisions/why-layerpanel-dot-toggle.md|decision,frontend|eye-toggle column removed; 10px coloured dot is the visibility signal, locked analytics subgroup
 decisions/why-link-graph-uses-graph-analytics.md|decision,frontend|Link Graph wires Phase 6 metrics card+centrality sizing, co-location lens, status-gated GNN overlay
 decisions/why-live-streaming-detections.md|decision,backend,frontend|detections render per-chip live via detections_partial features; preview-then-reconcile
@@ -282,6 +285,7 @@ testing/playwright-frontend.md|testing,frontend|playwright.config.ts, visual tes
 testing/benchmark-harness.md|testing,benchmark|compare_inference_layers + restart, fetch_eval_datasets gating
 testing/fixtures-and-test-data.md|testing|tests/fixtures + sample/ contents and how to regenerate
 benchmarks/inference-layer-comparison.md|benchmark|7-layer image stack mAP/latency on DOTA-v1.0 val (30 chips)
+benchmarks/chip-dedupe-nms-vs-wbf-2026-06-12.md|benchmark|DOTA val 30img/216chips: cross-chip NMS vs WBF; NMS F1 0.104 > WBF 0.089, keep NMS default
 benchmarks/embedding-stability.md|benchmark|DINOv3-SAT augmentation re-ID top-1 100% on stills
 benchmarks/video-tracking-stability.md|benchmark,fmv|DINOv3-SAT SEP +0.22 vs LVD on 1440p drone video
 benchmarks/sar-cfar-evaluation.md|benchmark,imagery|CA-CFAR ship detection P/R on synthetic and real GRD
@@ -294,7 +298,7 @@ scripts/configure-host-gpu.md|scripts,gpu|reads nvidia-smi, writes SENTINEL GENE
 scripts/build-offline-basemap.md|scripts,deployment|Carto Dark z=0..14 pre-fetch; runs inside basemap-baker container into ./assets/static/basemap
 scripts/build-offline-terrain.md|scripts,deployment|OpenTopoMap z=0..14 terrain tiles; runs inside terrain-baker container into ./assets/static/terrain
 scripts/build-triage-set.md|scripts,benchmark|Tier-0 analyst triage benchmark from /data/imagery/processed or /api/ingest/uploads
-scripts/fetch-eval-datasets.md|scripts,benchmark|DOTA-v1.0 + Sen1Floods11 from HF with idempotent gating
+scripts/fetch-eval-datasets.md|scripts,benchmark|DOTA-v1.0 val slice from HF with idempotent gating + synthetic fallback
 scripts/compare-inference-layers.md|scripts,benchmark|main benchmark CLI: layer configs, repeats, restart-cmd
 scripts/eval-runners.md|scripts,benchmark|eval_candidate_links + eval_sar_cfar + measure_calibration_ece
 scripts/benchmark-scripts.md|scripts,benchmark|bench_fmv + benchmark_inference + benchmark_sam3_inference

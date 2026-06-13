@@ -63,7 +63,7 @@ Link Graph redesign added the bulk of these — see [architecture/link-graph-red
 | `GET` | `/api/ingest/uploads` · `/jobs/{task_id}` | [ingest-router.md](../backend-routers/ingest-router.md) |
 | `POST` `GET` `DELETE` | `/api/fmv/clips` (+ `/{id}` · `/klv` · `/detections`) | upload/reads/delete in [backend/main.py](../../backend/main.py); `DELETE` admin, drops detections+frames+files+Neo4j |
 | `GET` `PUT` `DELETE` | `/api/fmv/detections/{id}/*` | [fmv-router.md](../backend-routers/fmv-router.md) |
-| `GET` | `/api/detections` · `/geojson-lite` · `/classes` · `/queue` · `/prithvi-overlays` | [backend/main.py](../../backend/main.py) (`/classes` returns deterministic labels plus optional LLM advisory metadata) |
+| `GET` | `/api/detections` · `/geojson-lite` · `/classes` · `/queue` | [backend/main.py](../../backend/main.py) (`/classes` returns deterministic labels plus optional LLM advisory metadata) |
 | `GET` `PUT` | `/api/detections/{id}/details` | [detections-router.md](../backend-routers/detections-router.md) |
 | `POST` | `/api/detections/manual` · `/resolve` | [detections-router.md](../backend-routers/detections-router.md) and [backend/main.py](../../backend/main.py) |
 | `DELETE` | `/api/detections/{id}` | [detections-router.md](../backend-routers/detections-router.md) |

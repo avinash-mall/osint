@@ -11,7 +11,7 @@ The main quality + latency benchmark. Sweeps a defined set of layer configuratio
 ```bash
 python scripts/compare_inference_layers.py \
   --url http://172.18.0.2:8001 \
-  --slice all                                       # or dota, hls_burn, sen1floods, sar, embedding
+  --slice all                                       # or dota, sar, embedding, triage
   --max-chips 30 --repeats 3 \
   --output docs/benchmarks/inference-layer-comparison.md \
   --json-output docs/benchmarks/inference-layer-comparison.json \
@@ -30,7 +30,7 @@ python scripts/compare_inference_layers.py \
 
 ## Slices
 
-`--slice` accepts `dota`, `hls_burn`, `sen1floods`, `sar`, `embedding`, `triage`, or `all`. The `triage` slice is the operator-facing production benchmark; the others run on the academic eval datasets fetched by [`scripts/fetch_eval_datasets.py`](fetch-eval-datasets.md).
+`--slice` accepts `dota`, `sar`, `embedding`, `triage`, or `all`. The `triage` slice is the operator-facing production benchmark; the others run on the academic eval datasets fetched by [`scripts/fetch_eval_datasets.py`](fetch-eval-datasets.md).
 
 ## Oracle prompts vs `--ontology-mode`
 

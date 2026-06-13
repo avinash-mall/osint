@@ -79,6 +79,16 @@
       "files": [
         {"path": "yolo11m-obb-fair1m.pt", "lfs": true, "sha256": null}
       ]
+    },
+    "mvrsd/mvrsd_yolo11m": {
+      "role": "military_vehicle_detect_specialist",
+      "gated": true,
+      "license": "Operator-supplied fine-tune of Ultralytics yolo11m on the Military Vehicle Remote Sensing Dataset (MVRSD). 5 classes: SMV, LMV, AFV, CV, MCV.",
+      "url": "${MVRSD_WEIGHTS_URL}",
+      "note": "Axis-aligned YOLO detect specialist for sub-meter (~0.3 m GSD) optical RGB military scenes. Default-OFF (SAM3_LOAD_MVRSD=0) and only runs when 'mvrsd' is in enabled_layers. Trained weights are hosted as a GitHub RELEASE asset; the orchestrator sets the MVRSD_WEIGHTS_URL build ARG to that asset URL. The Dockerfile.gpu bake step curls it to /models/mvrsd/mvrsd_yolo11m.pt at build time (project hard rule #8: no runtime downloads). When MVRSD_WEIGHTS_URL is empty the bake step is a no-op and mvrsd.load() honour-gates (returns model=None), so existing builds do not break. Runtime path overridable via MVRSD_WEIGHTS_PATH.",
+      "files": [
+        {"path": "/models/mvrsd/mvrsd_yolo11m.pt", "lfs": false, "sha256": null}
+      ]
     }
   }
 }

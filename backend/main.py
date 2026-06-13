@@ -1931,61 +1931,6 @@ def get_similar_fmv_detections(detection_id: int, k: int = Query(12, ge=1, le=50
 # --- Taxonomy version history ----------------------------------------------
 
 
-# --- Prithvi overlays -------------------------------------------------------
-
-
-PRITHVI_KINDS = {"flood", "burn", "burn_scar", "crops", "crop"}
-
-
-@app.get("/api/detections/prithvi-overlays")
-def get_prithvi_overlays(
-    kind: str = Query(..., description="flood | burn | crops"),
-    bbox: Optional[str] = None,
-    limit: int = Query(500, ge=1, le=5000),
-    user: SessionUser = Depends(get_current_user),
-):
-    """GeoJSON FeatureCollection of detections tagged with the requested
-    Prithvi label. Source: ``metadata.prithvi_labels`` (a list of label keys
-    emitted by the imagery worker)."""
-    norm = kind.strip().lower()
-    if norm not in PRITHVI_KINDS:
-        raise HTTPException(status_code=400, detail=f"kind must be one of {sorted(PRITHVI_KINDS)}")
-    label_filter = "burn" if norm in {"burn", "burn_scar"} else ("crop" if norm in {"crop", "crops"} else "flood")
-    params: list = [label_filter]
-    where = "metadata->'prithvi_labels' ? %s AND d.deleted_at IS NULL"
-    if bbox:
-        min_lon, min_lat, max_lon, max_lat = parse_bbox(bbox)
-        where += " AND ST_Intersects(d.geom, ST_MakeEnvelope(%s, %s, %s, %s, 4326))"
-        params.extend([min_lon, min_lat, max_lon, max_lat])
-    params.append(limit)
-    with postgis_db.get_cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT d.id, d.class, d.metadata,
-                   ST_AsGeoJSON(d.geom)::jsonb AS geometry
-            FROM detections d
-            WHERE {where}
-            ORDER BY d.created_at DESC
-            LIMIT %s
-            """,
-            params,
-        )
-        rows = [dict(r) for r in cur.fetchall()]
-    features = [
-        {
-            "type": "Feature",
-            "geometry": r["geometry"],
-            "properties": {
-                "id": r["id"],
-                "class": r["class"],
-                "prithvi_labels": (r.get("metadata") or {}).get("prithvi_labels", []),
-                "kind": norm,
-            },
-        }
-        for r in rows
-    ]
-    return {"type": "FeatureCollection", "kind": norm, "count": len(features), "features": features}
-
 def _target_history_anchor(target_id: str) -> float:
     """Phase 4.14 (history_anchor term).
 

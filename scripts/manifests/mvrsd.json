@@ -1,0 +1,32 @@
+{
+  "source_dataset": "mvrsd",
+  "default_license_spdx": "research-only",
+  "access": "drop-in",
+  "notes": "MVRSD — Military Vehicle Remote Sensing Dataset. 3,000 Google-Earth chips (640x640, 0.3 m GSD) across 40+ military scenarios in Asia / North America / Europe; 32,626 labelled instances in 5 vehicle classes, plus 3 large unlabelled test rasters. The full imagery is account-locked (Baidu Cloud / SciDB) and CANNOT be fetched programmatically — supply it offline via the drop-in tree below. Only the official repo's demo.zip (12 images) and the community YOLO label port (full label set) are openly downloadable.",
+  "source_urls": [
+    "https://github.com/baidongls/MVRSD",
+    "https://www.scidb.cn/en/detail?dataSetId=2731ac4153464495b4dfd3caa8a9b0a0",
+    "https://pan.baidu.com/s/1KoZEPCM4mcR42LX_JEGsYw?pwd=MVRS",
+    "https://github.com/SkyTurk0/military-vehicle-detection"
+  ],
+  "attribution": "MVRSD (Google Earth imagery; baidongls/MVRSD). YOLO label port: Yusuf Ahmet Soylemez (MIT) — SkyTurk0/military-vehicle-detection.",
+  "license_notes": "MVRSD imagery is derived from Google Earth and distributed for research only — verify redistribution rights with the dataset authors before baking into a shipped artifact. The community YOLO *label* port is MIT-licensed; the underlying imagery is NOT.",
+  "classes": ["SMV", "LMV", "AFV", "CV", "MCV"],
+  "class_descriptions": {
+    "SMV": "small military vehicle",
+    "LMV": "large military vehicle",
+    "AFV": "armoured fighting vehicle",
+    "CV": "civilian vehicle",
+    "MCV": "military construction vehicle"
+  },
+  "annotation_format": "YOLO bbox (normalised cx,cy,w,h) per image; original is Pascal-VOC XML. Class index order follows MVRSD classes.txt: SMV=0, LMV=1, AFV=2, CV=3, MCV=4. The community repo data.yaml `names` list is in a different order and is INCONSISTENT with its own label indices — do not use it.",
+  "dropin": {
+    "expected_layout": "reference-corpora-input/mvrsd/images/{train,val}/<stem>.jpg  +  reference-corpora-input/mvrsd/labels/{train,val}/<stem>.txt (YOLO) or .../xml/<stem>.xml (VOC)",
+    "operator_steps": [
+      "Acquire the full MVRSD archive from SciDB or Baidu Cloud (requires an account).",
+      "Extract so that images live under reference-corpora-input/mvrsd/images/{train,val}/ and labels under reference-corpora-input/mvrsd/labels/{train,val}/.",
+      "Run `docker compose build assets` (or the fetcher with --only mvrsd) to crop per-class reference chips.",
+      "For YOLO *training* (not the reference DB), stage with backend/scripts/stage_mvrsd.py instead — see docs."
+    ]
+  }
+}

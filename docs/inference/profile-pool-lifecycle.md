@@ -14,8 +14,8 @@ subset request without a reload (hot cards). See
 
 | Profile | Components | Used by | VRAM (FP16) |
 |---|---|---|---|
-| `imagery_rgb` | `sam3_image`, `dinov3_sat`, `dota_obb`, `grounding_dino` (auto-gated) | RGB imagery ingest | ~5 GB (rgb-only set) |
-| `imagery_msi` | `sam3_image`, `dinov3_sat`, `prithvi` | Multispectral ingest | ~6 GB |
+| `imagery_rgb` | `sam3_image`, `dinov3_sat`, `dota_obb`, `grounding_dino` (auto-gated), `mvrsd` (default-on, when `SAM3_LOAD_MVRSD=1`) | RGB imagery ingest | ~5 GB (rgb-only set) |
+| `imagery_msi` | `sam3_image`, `dinov3_sat` | Multispectral ingest (SAM3 on RGB preview) | ~5 GB |
 | `imagery_sar` | `sam3_image`, `dinov3_sat`, `terramind`, `dota_obb` | SAR ingest | ~7 GB |
 | `imagery` | Union of the three above | Hot cards / `/load?profile=imagery` | ~23 GB with every component |
 | `fmv` | `sam3_image`, `sam3_video` (multiplex), `dota_obb`, `yoloe` | FMV ingest | ~9 GB measured (16 GiB card) |

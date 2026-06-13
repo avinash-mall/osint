@@ -162,9 +162,9 @@ export default function IngestConnect() {
 
   const customPrompts = useMemo(() => parseCustomPrompts(customObjects), [customObjects]);
   // Cherry-picked prompts from the tree + the operator's custom textarea.
-  // Sentinel "__prithvi_*__" / aux markers are dropped here — they live in
-  // the JSON only to surface specialist-model outputs (Prithvi burn / flood
-  // / crop) in the legend, not to be sent as text prompts to SAM 3.
+  // Specialist sentinel prompts ("__*__" aux markers) are dropped here — they
+  // live in the JSON only to surface specialist-model outputs in the legend,
+  // not to be sent as text prompts to SAM 3.
   const selectedPrompts = useMemo(() => {
     const seen = new Set<string>();
     const prompts = [

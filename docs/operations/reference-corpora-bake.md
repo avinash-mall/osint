@@ -18,6 +18,7 @@ The Reference Embedding DB needs chip imagery for every platform it can identify
 | **DIOR** | `_fetch_dropin_only("dior")` | registration portal | research-only | drop-in only |
 | **HRSC2016** | `_fetch_dropin_only("hrsc2016")` | research download | research-only | drop-in only |
 | **ShipRSImageNet** | `_fetch_dropin_only("shiprsimagenet")` | registration | research-only | drop-in only |
+| **MVRSD** | `_fetch_mvrsd` | Baidu Cloud / SciDB (account-locked) | research-only (Google Earth) | drop-in only; crops YOLO/VOC bboxes into per-class chips |
 | **Wikimedia** | `_fetch_from_manifest("wikimedia")` | curated JSON of public URLs | CC-BY-SA-4.0 (per-item) | seed entries present |
 | **NARA** | `_fetch_from_manifest("nara")` | catalog URLs | PD-USGov | manifest skeleton (empty) |
 | **NASA** | `_fetch_from_manifest("nasa")` | EO archive URLs | PD-USGov | manifest skeleton (empty) |

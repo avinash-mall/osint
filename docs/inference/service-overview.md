@@ -15,10 +15,10 @@ Single FastAPI service bundling every model the platform uses:
 | SAM 3.1 (video) | `facebook/sam3.1` (gated) | [sam3_runner.py](../../inference-sam3/sam3_runner.py) |
 | YOLOE-26x-seg(-pf) FMV tracker | Open AGPL-3.0 weights | [yoloe.py](../../inference-sam3/yoloe.py) |
 | DINOv3-SAT-L | `facebook/dinov3-vitl16-pretrain-sat493m` (gated) | [embedding.py](../../inference-sam3/embedding.py) |
-| Prithvi-EO-2.0 (flood/burn) | `ibm-nasa-geospatial/Prithvi-EO-V2-300M` | [prithvi_heads.py](../../inference-sam3/prithvi_heads.py) |
 | TerraMind v1 (S1→S2) | IBM TerraMind | [terramind.py](../../inference-sam3/terramind.py) |
 | DOTA-OBB | Ultralytics `yolo26m-obb.pt` (`yolo11n-obb.pt` fallback) | [dota_obb.py](../../inference-sam3/dota_obb.py) |
 | Grounding-DINO (auto-gated, novel vocab) | `IDEA-Research/grounding-dino-*` | [grounding_dino.py](../../inference-sam3/grounding_dino.py) |
+| MVRSD military-vehicle (default-on, RGB profile) | `yolo11m` fine-tuned on MVRSD (GitHub release asset) | [mvrsd.py](../../inference-sam3/mvrsd.py) |
 
 Runtime memory pool holds one **profile** at a time, swappable via `/load?profile=`. Profiles
 are `fmv`, the per-modality imagery profiles `imagery_rgb` / `imagery_msi` / `imagery_sar`, the
@@ -48,7 +48,7 @@ Full per-modality request contract: [main-app-entrypoint.md](main-app-entrypoint
 | Components | Steady-state VRAM |
 |---|---|
 | SAM 3 + SAM 3.1 video + DINOv3-SAT-L + DOTA-OBB + GDINO + YOLOE (FMV/all profile) | ~12 GB |
-| + Prithvi + TerraMind | ~22 GB (24 GB+ card required) |
+| + TerraMind | ~16 GB (24 GB+ card recommended) |
 
 Per-component flags: [main-app-entrypoint.md](main-app-entrypoint.md) and the env table in [deployment/environment-variables-reference.md](../deployment/environment-variables-reference.md).
 

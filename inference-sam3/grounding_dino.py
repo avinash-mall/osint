@@ -9,7 +9,7 @@ natural-image IDEA-Research weights it replaces.
 
 Why a remote call instead of in-process: LAE-DINO ships as a forked mmdetection
 (mmcv/mmengine + custom `LAEDINO(DINO)` registry) whose torch/transformers pins
-conflict with the SAM 3 / TerraMind / Prithvi stack in this service. It runs in
+conflict with the SAM 3 / TerraMind stack in this service. It runs in
 the separate `inference-lae` container; this client POSTs chips to it and maps
 the returned boxes back into the SAM3-shaped `(mask, bbox_xyxy, score, label)`
 tuple so detections still merge into `fusion.mask_aware_nms` alongside DOTA-OBB

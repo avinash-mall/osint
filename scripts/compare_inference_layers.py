@@ -50,13 +50,10 @@ if str(_SCRIPTS_DIR) not in sys.path:
 import requests  # noqa: E402
 
 from eval_datasets.dota import iter_dota  # noqa: E402
-from eval_datasets.hls_burn import iter_hls_burn  # noqa: E402
 from eval_datasets.sar_synth import iter_sar_synth  # noqa: E402
-from eval_datasets.sen1floods import iter_sen1floods  # noqa: E402
 from eval_datasets.triage import iter_triage  # noqa: E402
 from eval_metrics.box_metrics import compute_box_metrics  # noqa: E402
 from eval_metrics.label_normalizer import normalize  # noqa: E402
-from eval_metrics.mask_metrics import chip_level_iou, POSITIVE_LABELS  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -87,20 +84,6 @@ LAYER_CONFIGS: list[dict] = [
     {
         "config_name": "sam3+dota_obb+grounding_dino",
         "enabled_layers": ["sam3", "dota_obb", "grounding_dino"],
-    },
-]
-
-# ---------------------------------------------------------------------------
-# Layer configurations (segmenter scope, Task 6)
-# ---------------------------------------------------------------------------
-SEGMENTER_CONFIGS: list[dict] = [
-    {
-        "config_name": "sam3_only",
-        "enabled_layers": ["sam3"],
-    },
-    {
-        "config_name": "sam3+prithvi",
-        "enabled_layers": ["sam3", "prithvi"],
     },
 ]
 
@@ -198,71 +181,6 @@ def _synthetic_response(enabled_layers: list[str], ground_truth: list[dict]) -> 
         },
         "enabled_layers_unavailable": [],
         "_elapsed_ms": round(rng.uniform(130, 270), 1),
-    }
-
-
-def _synthetic_segmenter_response(
-    enabled_layers: list[str],
-    ground_truth: dict,
-) -> dict:
-    """Return a plausible fake /detect response for --dry-run mode (segmenter slices).
-
-    For slices that drive PRITHVI heads (hls_burn, sen1floods), the response
-    includes ``prithvi_labels`` in each detection.  When only ``sam3`` is enabled,
-    detections have no ``prithvi_labels`` (PRITHVI is not loaded).
-
-    Parameters
-    ----------
-    enabled_layers:
-        Active layers for this config.
-    ground_truth:
-        Dict like ``{"burn_scar": bool}`` or ``{"flood": bool}``.
-
-    Returns
-    -------
-    Fake /detect response dict with ``detections``, ``timings_ms``, and ``_elapsed_ms``.
-    """
-    rng = random.Random(99 + len(enabled_layers))
-    has_prithvi = "prithvi" in enabled_layers
-
-    detections: list[dict] = []
-
-    if has_prithvi:
-        # Simulate PRITHVI labels — with ~70% accuracy relative to GT
-        prithvi_labels: dict[str, str] = {}
-        for task, gt_positive in ground_truth.items():
-            positive_label = POSITIVE_LABELS.get(task, "positive")
-            negative_label = f"no_{task}"
-            # 70% chance of correct prediction
-            if rng.random() < 0.7:
-                pred_label = positive_label if gt_positive else negative_label
-            else:
-                pred_label = negative_label if gt_positive else positive_label
-            prithvi_labels[task] = pred_label
-
-        detections.append({
-            "label": "region",
-            "confidence": round(rng.uniform(0.6, 0.95), 3),
-            "bbox": {"x": 0, "y": 0, "w": 64, "h": 64},
-            "prithvi_labels": prithvi_labels,
-        })
-    else:
-        # sam3-only: basic detection, no prithvi_labels
-        detections.append({
-            "label": "region",
-            "confidence": round(rng.uniform(0.5, 0.85), 3),
-            "bbox": {"x": 0, "y": 0, "w": 64, "h": 64},
-        })
-
-    return {
-        "detections": detections,
-        "timings_ms": {
-            "sam3_inference": round(rng.uniform(80, 150), 1),
-            "specialists": round(rng.uniform(40, 120) if has_prithvi else 0.0, 1),
-            "total": round(rng.uniform(120, 300), 1),
-        },
-        "enabled_layers_unavailable": [],
-        "_elapsed_ms": round(rng.uniform(130, 320), 1),
     }
 
 
@@ -448,190 +366,6 @@ def _evaluate_chip(
         "metrics": metrics,
         "timings": timings,
         "unavailable": unavailable_count > 0,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Segmenter chip evaluation (PRITHVI heads)
-# ---------------------------------------------------------------------------
-
-def _evaluate_segmenter_chip(
-    url: str,
-    chip_bytes: bytes,
-    ground_truth: dict,
-    enabled_layers: list[str],
-    repeats: int,
-    dry_run: bool,
-) -> dict | None:
-    """Run N repeats for a segmenter chip. Returns chip result dict or None on failure.
-
-    Parameters
-    ----------
-    url:
-        Inference service URL.
-    chip_bytes:
-        Raw bytes of a 6-channel multispectral chip.
-    ground_truth:
-        Dict like ``{"burn_scar": bool}`` or ``{"flood": bool}``.
-    enabled_layers:
-        Active layers for this config (e.g. ``["sam3", "prithvi"]``).
-    repeats:
-        Number of inference repeats for latency averaging.
-    dry_run:
-        If True, use synthetic response instead of hitting the service.
-
-    Returns
-    -------
-    dict with keys:
-        ``"timings"`` — list of timing dicts.
-        ``"pred_positive_per_task"`` — dict of task → bool.
-        ``"gt_positive_per_task"``   — dict of task → bool.
-        ``"unavailable"``            — bool.
-    """
-    timings: list[dict] = []
-    last_payload: dict | None = None
-    unavailable_count = 0
-
-    for attempt in range(repeats):
-        try:
-            if dry_run:
-                payload = _synthetic_segmenter_response(enabled_layers, ground_truth)
-            else:
-                payload = _post_detect(
-                    url, chip_bytes, [], enabled_layers, modality="multispectral"
-                )
-        except requests.exceptions.RequestException as exc:
-            log.warning("HTTP error on segmenter repeat %d: %s", attempt + 1, exc)
-            return None
-
-        if payload.get("enabled_layers_unavailable"):
-            unavailable_count += 1
-
-        timings_ms = payload.get("timings_ms", {})
-        timings.append({
-            "elapsed_ms": payload.get("_elapsed_ms", 0.0),
-            "sam3_ms": timings_ms.get("sam3_inference", 0.0),
-            "specialists_ms": timings_ms.get("specialists", 0.0),
-            "total_ms": timings_ms.get("total", payload.get("_elapsed_ms", 0.0)),
-        })
-        last_payload = payload
-
-    if last_payload is None:
-        return None
-
-    # Extract prithvi_labels from all detections
-    detections = last_payload.get("detections", [])
-    pred_positive_per_task: dict[str, bool] = {}
-
-    for task in ground_truth:
-        positive_label = POSITIVE_LABELS.get(task)
-        pred_positive = False
-        if positive_label is not None:
-            for det in detections:
-                if det.get("prithvi_labels", {}).get(task) == positive_label:
-                    pred_positive = True
-                    break
-        pred_positive_per_task[task] = pred_positive
-
-    gt_positive_per_task: dict[str, bool] = {
-        task: bool(gt_val) for task, gt_val in ground_truth.items()
-    }
-
-    return {
-        "timings": timings,
-        "pred_positive_per_task": pred_positive_per_task,
-        "gt_positive_per_task": gt_positive_per_task,
-        "unavailable": unavailable_count > 0,
-    }
-
-
-def _aggregate_segmenter_results(
-    chip_results: list[dict],
-    tasks: list[str],
-    baseline_latency_ms: float | None = None,
-) -> dict:
-    """Aggregate segmenter chip results into per-task IoU and latency stats.
-
-    Parameters
-    ----------
-    chip_results:
-        List of dicts returned by ``_evaluate_segmenter_chip``.
-    tasks:
-        Task names to aggregate (e.g. ``["burn_scar"]``).
-    baseline_latency_ms:
-        Median latency of the sam3_only config, for delta calculation.
-
-    Returns
-    -------
-    dict with keys:
-        ``"chips_evaluated"``    : int
-        ``"per_task_iou"``       : dict task → chip_level_iou result dict
-        ``"mean_iou"``           : float
-        ``"latency_ms"``         : dict
-        ``"layers_unavailable_count"`` : int
-    """
-    if not chip_results:
-        return {
-            "chips_evaluated": 0,
-            "per_task_iou": {t: {"iou": 0.0, "tp": 0, "fp": 0, "fn": 0, "tn": 0, "n_chips": 0} for t in tasks},
-            "mean_iou": 0.0,
-            "latency_ms": {
-                "median_total": 0.0,
-                "p95_total": 0.0,
-                "median_sam3": 0.0,
-                "median_specialists": 0.0,
-            },
-            "layers_unavailable_count": 0,
-        }
-
-    # --- Latency ---
-    all_elapsed: list[float] = []
-    all_sam3: list[float] = []
-    all_specialists: list[float] = []
-
-    for cr in chip_results:
-        for t in cr["timings"]:
-            all_elapsed.append(t["elapsed_ms"])
-            all_sam3.append(t["sam3_ms"])
-            all_specialists.append(t["specialists_ms"])
-
-    def _p95(values: list[float]) -> float:
-        if not values:
-            return 0.0
-        values_sorted = sorted(values)
-        idx = max(0, math.ceil(0.95 * len(values_sorted)) - 1)
-        return values_sorted[idx]
-
-    # --- Per-task chip-level IoU ---
-    per_task_iou: dict[str, dict] = {}
-    iou_values: list[float] = []
-
-    for task in tasks:
-        chips_for_task = [
-            {
-                "pred_positive": cr["pred_positive_per_task"].get(task, False),
-                "gt_positive": cr["gt_positive_per_task"].get(task, False),
-            }
-            for cr in chip_results
-        ]
-        iou_result = chip_level_iou(chips_for_task)
-        per_task_iou[task] = iou_result
-        iou_values.append(iou_result["iou"])
-
-    mean_iou = statistics.mean(iou_values) if iou_values else 0.0
-    unavailable_count = sum(1 for cr in chip_results if cr.get("unavailable", False))
-
-    return {
-        "chips_evaluated": len(chip_results),
-        "per_task_iou": per_task_iou,
-        "mean_iou": round(mean_iou, 4),
-        "latency_ms": {
-            "median_total": round(statistics.median(all_elapsed), 1),
-            "p95_total": round(_p95(all_elapsed), 1),
-            "median_sam3": round(statistics.median(all_sam3) if all_sam3 else 0.0, 1),
-            "median_specialists": round(statistics.median(all_specialists) if all_specialists else 0.0, 1),
-        },
-        "layers_unavailable_count": unavailable_count,
     }
 
 
@@ -876,10 +610,6 @@ def _iter_slice(
     if slice_name in ("dota", "embedding"):
         # embedding slice uses DOTA chips for RGB layers
         yield from iter_dota(labels_path=layers_path, max_chips=max_chips)
-    elif slice_name == "hls_burn":
-        yield from iter_hls_burn(labels_path=layers_path, max_chips=max_chips)
-    elif slice_name == "sen1floods":
-        yield from iter_sen1floods(labels_path=layers_path, max_chips=max_chips)
     elif slice_name == "sar":
         yield from iter_sar_synth(labels_path=layers_path, max_chips=max_chips)
     elif slice_name == "triage":
@@ -895,7 +625,7 @@ def _iter_slice(
     else:
         raise ValueError(
             f"Unknown slice: {slice_name!r}. "
-            "Choices: dota, hls_burn, sen1floods, sar, embedding, triage, all"
+            "Choices: dota, sar, embedding, triage, all"
         )
 
 
@@ -918,9 +648,6 @@ def _build_markdown(
     n_chips: int,
     gpu: str,
     generated_at: str,
-    segmenter_results: list[dict] | None = None,
-    segmenter_slice: str | None = None,
-    n_segmenter_chips: int = 0,
     embedding_results: list[dict] | None = None,
     n_embedding_chips: int = 0,
 ) -> str:
@@ -1002,85 +729,6 @@ def _build_markdown(
             lines.append("")
 
     # ------------------------------------------------------------------
-    # Semantic Segmenters section (only when a segmenter slice was run)
-    # ------------------------------------------------------------------
-    if segmenter_results is not None:
-        lines.append("## Semantic Segmenters (PRITHVI Heads)")
-        lines.append("")
-
-        dataset_label = {
-            "hls_burn": "HLS Burn Scars",
-            "sen1floods": "Sen1Floods11",
-        }.get(segmenter_slice or "", segmenter_slice or "unknown")
-
-        lines.append(f"Dataset: {dataset_label} ({n_segmenter_chips} chips)")
-        lines.append("")
-        lines.append(
-            "Chip-level IoU: chip is predicted positive if any detection has the PRITHVI "
-            "positive label for the task; IoU = TP/(TP+FP+FN) over chips."
-        )
-        lines.append("")
-
-        # Determine baseline latency for delta column
-        seg_baseline = next(
-            (r for r in segmenter_results if r["config_name"] == "sam3_only"), None
-        )
-        seg_baseline_lat = (
-            seg_baseline["latency_ms"]["median_total"] if seg_baseline else 0.0
-        )
-
-        seg_headers = [
-            "Config", "Task", "Chip-level IoU",
-            "Pred Positive %", "GT Positive %", "Δ ms vs SAM3",
-        ]
-        lines.append("| " + " | ".join(seg_headers) + " |")
-        lines.append("|" + "|".join(["---"] * len(seg_headers)) + "|")
-
-        for result in segmenter_results:
-            cfg = result["config_name"]
-            median_ms = result["latency_ms"]["median_total"]
-
-            if cfg == "sam3_only":
-                delta_ms_str = "—"
-            else:
-                delta_ms_str = _delta(median_ms, seg_baseline_lat, fmt="+.1f")
-
-            per_task_iou = result.get("per_task_iou", {})
-            if not per_task_iou:
-                # No tasks (e.g. sam3_only with no prithvi)
-                lines.append(
-                    f"| {cfg} | — | — | — | — | {delta_ms_str} |"
-                )
-                continue
-
-            for task_name in sorted(per_task_iou.keys()):
-                iou_info = per_task_iou[task_name]
-                iou_val = iou_info.get("iou", 0.0)
-                n_chips_task = iou_info.get("n_chips", 0)
-                tp = iou_info.get("tp", 0)
-                fp = iou_info.get("fp", 0)
-                fn = iou_info.get("fn", 0)
-                tn = iou_info.get("tn", 0)
-
-                pred_pos_pct = (
-                    f"{100.0 * (tp + fp) / n_chips_task:.0f}%"
-                    if n_chips_task > 0
-                    else "N/A"
-                )
-                gt_pos_pct = (
-                    f"{100.0 * (tp + fn) / n_chips_task:.0f}%"
-                    if n_chips_task > 0
-                    else "N/A"
-                )
-
-                lines.append(
-                    f"| {cfg} | {task_name} | {_fmt(iou_val)} "
-                    f"| {pred_pos_pct} | {gt_pos_pct} | {delta_ms_str} |"
-                )
-
-        lines.append("")
-
-    # ------------------------------------------------------------------
     # Embedding Models section (only when embedding slice was run)
     # ------------------------------------------------------------------
     if embedding_results is not None:
@@ -1128,9 +776,9 @@ def _build_markdown(
         lines.append("")
 
     # ------------------------------------------------------------------
-    # Cumulative Pipeline section (only when all three slice types were run)
+    # Cumulative Pipeline section (only when box + embedding slices were run)
     # ------------------------------------------------------------------
-    if all_results and segmenter_results is not None and embedding_results is not None:
+    if all_results and embedding_results is not None:
         lines.append("## Cumulative Pipeline")
         lines.append("")
         lines.append(
@@ -1172,18 +820,6 @@ def _build_markdown(
         dota_ms_cp     = _med(all_results, "sam3+dota_obb")
         full_box_ms_cp = _med(all_results, "sam3+dota_obb+grounding_dino")
 
-        # Segmenter (PRITHVI) latency delta vs its own baseline
-        prithvi_result_cp = next(
-            (r for r in segmenter_results if r.get("config_name") == "sam3+prithvi"), None
-        )
-        prithvi_delta_cp = 0.0
-        if prithvi_result_cp is not None:
-            seg_base_cp = next(
-                (r for r in segmenter_results if r.get("config_name") == "sam3_only"), None
-            )
-            seg_base_ms_cp = seg_base_cp["latency_ms"]["median_total"] if seg_base_cp else 0.0
-            prithvi_delta_cp = prithvi_result_cp["latency_ms"]["median_total"] - seg_base_ms_cp
-
         # Embedding latency deltas vs embedding baseline
         def _emb_delta_cp(name):
             r = next((x for x in embedding_results if x.get("config_name") == name), None)
@@ -1192,7 +828,7 @@ def _build_markdown(
         dinov3_sat_delta_cp = _emb_delta_cp("sam3+dinov3_sat")
         terramind_delta_cp  = _emb_delta_cp("sam3+terramind")
 
-        # Detection counts (box layers only; embedding/segmenter don't change det count)
+        # Detection counts (box layers only; embedding doesn't change det count)
         det_sam3_cp = _det_count(all_results, "sam3_only")
         det_dota_cp = _det_count(all_results, "sam3+dota_obb")
         det_full_cp = _det_count(all_results, "sam3+dota_obb+grounding_dino")
@@ -1206,19 +842,15 @@ def _build_markdown(
              full_box_ms_cp - sam3_ms_cp, det_full_cp, det_full_cp - det_dota_cp),
         ]
 
-        cum_p  = full_box_ms_cp - sam3_ms_cp + prithvi_delta_cp
-        cum_ds = cum_p  + dinov3_sat_delta_cp
+        cum_ds = full_box_ms_cp - sam3_ms_cp + dinov3_sat_delta_cp
         cum_tm = cum_ds + terramind_delta_cp
 
         cum_pipeline_rows += [
-            ("+ PRITHVI",
-             full_box_ms_cp + prithvi_delta_cp,
-             prithvi_delta_cp, cum_p, det_full_cp, 0),
             ("+ DINOV3_SAT",
-             full_box_ms_cp + prithvi_delta_cp + dinov3_sat_delta_cp,
+             full_box_ms_cp + dinov3_sat_delta_cp,
              dinov3_sat_delta_cp, cum_ds, det_full_cp, 0),
             ("+ TERRAMIND (SAR)",
-             full_box_ms_cp + prithvi_delta_cp + dinov3_sat_delta_cp + terramind_delta_cp,
+             full_box_ms_cp + dinov3_sat_delta_cp + terramind_delta_cp,
              terramind_delta_cp, cum_tm, det_full_cp, 0),
         ]
 
@@ -1272,15 +904,6 @@ def _build_markdown(
             return "?"
         return f"{rs['latency_ms']['median_total'] - bl['latency_ms']['median_total']:+.0f} ms"
 
-    def _seg_lat_delta_rec():
-        if segmenter_results is None:
-            return "?"
-        bl = next((r for r in segmenter_results if r["config_name"] == "sam3_only"), None)
-        pr = next((r for r in segmenter_results if r["config_name"] == "sam3+prithvi"), None)
-        if bl is None or pr is None:
-            return "?"
-        return f"{pr['latency_ms']['median_total'] - bl['latency_ms']['median_total']:+.0f} ms"
-
     def _emb_lat_rec(name):
         if embedding_results is None:
             return "?"
@@ -1295,7 +918,6 @@ def _build_markdown(
     dota_r_rec = next((r for r in all_results if r.get("config_name") == "sam3+dota_obb"), None)
     dino_map_rec       = _box_map_delta_rec("sam3+dota_obb+grounding_dino") or "+N.NN mAP"
     dino_lat_rec       = _box_lat_delta_rec("sam3+dota_obb+grounding_dino")
-    prithvi_lat_rec    = _seg_lat_delta_rec()
     dinov3_sat_lat_rec = _emb_lat_rec("sam3+dinov3_sat")
     terramind_lat_rec  = _emb_lat_rec("sam3+terramind")
 
@@ -1304,8 +926,6 @@ def _build_markdown(
          "Adds aerial vehicle/plane classes not in SAM3 vocab"),
         ("GROUNDING_DINO", "\u2705 Keep (auto-gated)",  dino_map_rec,              dino_lat_rec,
          "Open-vocab recall; auto-gated when all prompts are in SAM3+DOTA common vocab"),
-        ("PRITHVI",        "\u2705 Keep",               "\u2014 (segmentation)",  prithvi_lat_rec,
-         "Only specialist for multispectral flood/burn; no alternative"),
         ("DINOV3_SAT",     "\u2705 Keep for tracking",  "\u2014 (embedding)",     dinov3_sat_lat_rec,
          "Embedding for cross-image object re-ID; see video_tracking_stability.md"),
         ("TERRAMIND",      "\u26a0\ufe0f SAR-only",     "\u2014 (embedding)",     terramind_lat_rec,
@@ -1326,7 +946,6 @@ def _build_markdown(
 # Main driver
 # ---------------------------------------------------------------------------
 
-_SEGMENTER_SLICES = frozenset({"hls_burn", "sen1floods"})
 _EMBEDDING_SLICES = frozenset({"embedding"})
 _SAR_SLICES = frozenset({"sar"})
 
@@ -1375,8 +994,8 @@ def _fetch_ontology_prompts(ontology_url: str, branch: str | None = None) -> lis
 
     ``branch`` is None (full vocabulary) or a comma-separated list of branch
     ids — the union of those branches' scoped subsets is returned, modelling a
-    scene-relevant vocabulary. Prithvi sentinel prompts (``__prithvi_*``) are
-    dropped — they drive segmenter heads, not the box detectors this measures.
+    scene-relevant vocabulary. Sentinel prompts (``__``-prefixed) are dropped —
+    they drive specialist heads, not the box detectors this measures.
     """
     branches: list[str | None] = (
         [b.strip() for b in branch.split(",") if b.strip()] if branch else [None]
@@ -1416,7 +1035,6 @@ def run(args: argparse.Namespace) -> int:
         restart_cmd = None  # never restart in dry-run mode
 
     is_all_slice = slice_name == "all"
-    is_segmenter_slice = slice_name in _SEGMENTER_SLICES
     is_embedding_slice = slice_name in _EMBEDDING_SLICES
     is_sar_slice = slice_name in _SAR_SLICES
 
@@ -1442,10 +1060,10 @@ def run(args: argparse.Namespace) -> int:
              slice_name, max_chips, repeats, dry_run)
 
     # ------------------------------------------------------------------
-    # --slice all: run dota, hls_burn, and embedding sub-slices
+    # --slice all: run dota + embedding sub-slices
     # ------------------------------------------------------------------
     if is_all_slice:
-        log.info("Running --slice all: dota + hls_burn + embedding")
+        log.info("Running --slice all: dota + embedding")
 
         # ---- dota (box detectors) ----
         log.info("Loading chips from slice 'dota' ...")
@@ -1486,42 +1104,6 @@ def run(args: argparse.Namespace) -> int:
             log.info("  chips=%d  mAP=%.4f  ms=%.1f", agg_sl["chips_evaluated"],
                      agg_sl["metrics"]["map_50"], agg_sl["latency_ms"]["median_total"])
 
-        # ---- hls_burn (segmenter) ----
-        log.info("Loading chips from slice 'hls_burn' ...")
-        seg_chips_sl: list[tuple[bytes, str, list[str], Any]] = list(
-            _iter_slice("hls_burn", max_chips, layers_path)
-        )
-        log.info("Loaded %d hls_burn chip(s).", len(seg_chips_sl))
-
-        sample_gt_sl = seg_chips_sl[0][3] if seg_chips_sl else {}
-        tasks_sl = list(sample_gt_sl.keys())
-        segmenter_results_sl: list[dict] = []
-        n_seg_chips_sl = 0
-        # Always restart between slices (box→segmenter switches modality + payload size).
-        _restart_service(restart_cmd, url, restart_wait)
-        for cfg_idx, cfg in enumerate(SEGMENTER_CONFIGS):
-            if cfg_idx > 0:
-                _restart_service(restart_cmd, url, restart_wait)
-            config_name = cfg["config_name"]
-            enabled_layers = cfg["enabled_layers"]
-            log.info("Evaluating segmenter config: %s  layers=%s", config_name, enabled_layers)
-            chip_results_seg_sl: list[dict] = []
-            for chip_bytes_sl, modality_sl, prompts_sl, gt_sl in seg_chips_sl:
-                result_sl = _evaluate_segmenter_chip(
-                    url=url, chip_bytes=chip_bytes_sl, ground_truth=gt_sl,
-                    enabled_layers=enabled_layers, repeats=repeats, dry_run=dry_run,
-                )
-                if result_sl is not None:
-                    chip_results_seg_sl.append(result_sl)
-            agg_seg_sl = _aggregate_segmenter_results(chip_results_seg_sl, tasks_sl)
-            agg_seg_sl["config_name"] = config_name
-            agg_seg_sl["enabled_layers"] = enabled_layers
-            segmenter_results_sl.append(agg_seg_sl)
-            n_seg_chips_sl = max(n_seg_chips_sl, agg_seg_sl["chips_evaluated"])
-            log.info("  chips=%d  mean_iou=%.4f  ms=%.1f",
-                     agg_seg_sl["chips_evaluated"], agg_seg_sl["mean_iou"],
-                     agg_seg_sl["latency_ms"]["median_total"])
-
         # ---- embedding ----
         log.info("Loading chips from slice 'embedding' ...")
         emb_chips_sl: list[tuple[bytes, str, list[str], Any]] = list(
@@ -1532,8 +1114,8 @@ def run(args: argparse.Namespace) -> int:
         embedding_results_sl: list[dict] = []
         n_emb_chips_sl = 0
         baseline_emb_ms_sl: float | None = None
-        # Always restart before the embedding slice (segmenter just ran lots of
-        # multispectral PRITHVI inference — GPU is fragmented again).
+        # Always restart before the embedding slice (the box slice left the GPU
+        # fragmented).
         _restart_service(restart_cmd, url, restart_wait)
         for cfg_idx, cfg in enumerate(EMBEDDING_CONFIGS):
             if cfg_idx > 0:
@@ -1565,7 +1147,7 @@ def run(args: argparse.Namespace) -> int:
                     "Config %s evaluated 0 chips — likely GPU OOM with %d "
                     "embedding model(s) active. Consider testing each "
                     "embedding layer in isolation, or freeing one of the "
-                    "image-only layers (DOTA_OBB / GROUNDING_DINO / PRITHVI) "
+                    "image-only layers (DOTA_OBB / GROUNDING_DINO) "
                     "for this config.",
                     config_name, len([l for l in enabled_layers if l != "sam3"]),
                 )
@@ -1625,7 +1207,6 @@ def run(args: argparse.Namespace) -> int:
                         "max_chips": max_chips,
                         "repeats": repeats,
                         "results": all_results_sl,
-                        "segmenter_results": segmenter_results_sl,
                         "embedding_results": embedding_results_sl,
                         "sar_results": sar_results_sl,
                         "sar_chips_loaded": len(sar_chips_sl),
@@ -1646,9 +1227,6 @@ def run(args: argparse.Namespace) -> int:
             n_chips=n_chips_sl_actual,
             gpu=gpu,
             generated_at=generated_at,
-            segmenter_results=segmenter_results_sl,
-            segmenter_slice="hls_burn",
-            n_segmenter_chips=n_seg_chips_sl,
             embedding_results=embedding_results_sl,
             n_embedding_chips=n_emb_chips_sl,
         )
@@ -1722,8 +1300,6 @@ def run(args: argparse.Namespace) -> int:
     # Evaluate each layer configuration
     # ------------------------------------------------------------------
     all_results: list[dict] = []
-    segmenter_results: list[dict] | None = None
-    n_segmenter_chips = 0
     embedding_results: list[dict] | None = None
     n_embedding_chips = 0
 
@@ -1769,46 +1345,6 @@ def run(args: argparse.Namespace) -> int:
                 agg_emb["median_total_ms"],
                 agg_emb["median_embedding_ms"],
                 agg_emb["embed_coverage_fraction"],
-            )
-
-    elif is_segmenter_slice:
-        # Determine which tasks appear in the ground truth
-        sample_gt = chips[0][3] if chips else {}
-        tasks = list(sample_gt.keys())
-        segmenter_results = []
-
-        for cfg in SEGMENTER_CONFIGS:
-            config_name = cfg["config_name"]
-            enabled_layers = cfg["enabled_layers"]
-            log.info("Evaluating segmenter config: %s  layers=%s", config_name, enabled_layers)
-
-            chip_results: list[dict] = []
-
-            for chip_idx, (chip_bytes, modality, prompts, ground_truth) in enumerate(chips):
-                result = _evaluate_segmenter_chip(
-                    url=url,
-                    chip_bytes=chip_bytes,
-                    ground_truth=ground_truth,
-                    enabled_layers=enabled_layers,
-                    repeats=repeats,
-                    dry_run=dry_run,
-                )
-                if result is None:
-                    log.warning("Chip %d/%d skipped (evaluation failed).", chip_idx + 1, len(chips))
-                    continue
-                chip_results.append(result)
-
-            agg = _aggregate_segmenter_results(chip_results, tasks)
-            agg["config_name"] = config_name
-            agg["enabled_layers"] = enabled_layers
-            segmenter_results.append(agg)
-            n_segmenter_chips = max(n_segmenter_chips, agg["chips_evaluated"])
-
-            log.info(
-                "  chips_evaluated=%d  mean_iou=%.4f  median_ms=%.1f",
-                agg["chips_evaluated"],
-                agg["mean_iou"],
-                agg["latency_ms"]["median_total"],
             )
 
     else:
@@ -1862,7 +1398,6 @@ def run(args: argparse.Namespace) -> int:
                     "max_chips": max_chips,
                     "repeats": repeats,
                     "results": all_results,
-                    "segmenter_results": segmenter_results,
                     "embedding_results": embedding_results,
                 },
                 indent=2,
@@ -1883,9 +1418,6 @@ def run(args: argparse.Namespace) -> int:
         n_chips=n_chips_actual,
         gpu=gpu,
         generated_at=generated_at,
-        segmenter_results=segmenter_results,
-        segmenter_slice=slice_name if is_segmenter_slice else None,
-        n_segmenter_chips=n_segmenter_chips,
         embedding_results=embedding_results,
         n_embedding_chips=n_embedding_chips,
     )
@@ -1912,16 +1444,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--slice",
-        choices=["dota", "hls_burn", "sen1floods", "sar", "embedding", "triage", "all"],
+        choices=["dota", "sar", "embedding", "triage", "all"],
         default="dota",
         help=(
             "Dataset slice to evaluate (default: dota). "
-            "Choices: dota (box detectors), hls_burn / sen1floods (PRITHVI segmenter heads), "
+            "Choices: dota (box detectors), "
             "sar (synthetic 2-band SAR for TERRAMIND latency only), "
             "embedding (DINOV3_SAT / TERRAMIND embedding latency), "
             "triage (analyst-curated production-image benchmark; see "
             "scripts/build_triage_set.py), "
-            "all (runs dota + hls_burn + embedding and combines into one full report)."
+            "all (runs dota + embedding and combines into one full report)."
         ),
     )
     parser.add_argument(

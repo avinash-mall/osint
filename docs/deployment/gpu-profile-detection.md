@@ -53,8 +53,8 @@ loaded every model at once and OOMed on every SAM3 forward — see
 
 On dynamic cards the proven dead-weight detectors are also gated off (≈0 net-new boxes, real
 VRAM+latency): `SAM3_LOAD_GROUNDING_DINO=0`, `SAM3_LOAD_FAIR1M_OBB=0`, `SAM3_LOAD_REMOTECLIP=0`.
-`SAM3_LOAD_DINOV3_SAT/PRITHVI/TERRAMIND` stay enabled — the per-modality split keeps
-Prithvi/Terramind out of the RGB working set instead of dropping them.
+`SAM3_LOAD_DINOV3_SAT/TERRAMIND` stay enabled — the per-modality split keeps
+TerraMind out of the RGB working set instead of dropping it.
 
 New flags written to `.env`: `SAM3_LOAD_POLICY`, `SAM3_RESTING_PROFILE`, `SAM3_LOAD_FAIR1M_OBB`,
 `SAM3_LOAD_REMOTECLIP`. The docker-compose `inference-sam3` `environment:` block must pass each

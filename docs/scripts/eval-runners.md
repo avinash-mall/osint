@@ -37,8 +37,8 @@ python scripts/measure_calibration_ece.py \
 
 ## Eval helpers
 
-- [scripts/eval_datasets/](../../scripts/eval_datasets/) — slice-specific loaders (`dota.py`, `hls_burn.py`, `sentinel1.py`, `sar_synth.py`, `sen1floods11.py`)
-- [scripts/eval_metrics/](../../scripts/eval_metrics/) — box AP/AR/F1 (`box_metrics.py`), mask IoU (`mask_metrics.py`), label normalization (`label_normalizer.py`)
+- [scripts/eval_datasets/](../../scripts/eval_datasets/) — slice-specific loaders (`dota.py`, `sentinel1.py`, `sar_synth.py`, `triage.py`)
+- [scripts/eval_metrics/](../../scripts/eval_metrics/) — box AP/AR/F1 (`box_metrics.py`), label normalization (`label_normalizer.py`)
 - [scripts/_eval_runner.py](../../scripts/_eval_runner.py) — curated wrapper around `compare_inference_layers.py`
 
 ## Cross-references

@@ -18,7 +18,7 @@ routing keys without re-decorating.
 
 Public re-exports below cover every symbol older code imported from the
 flat ``worker`` module (``celery_app``, ``process_fmv``,
-``process_satellite_imagery``, ``run_prithvi_multitemporal``, etc.).
+``process_satellite_imagery``, etc.).
 """
 
 from __future__ import annotations
@@ -42,7 +42,6 @@ from worker_legacy import (  # noqa: F401  — explicit names for IDE completion
     tick_near_builder,
     tick_propose_entities,
     tick_repeat_detector,
-    run_prithvi_multitemporal,
     transcribe_audio,
     train_model,
 )

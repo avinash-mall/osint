@@ -53,7 +53,6 @@ def setup_function():
         "sam3_image": object(),
         "sam3_video": None,
         "dinov3_sat": None,
-        "prithvi": None,
         "terramind": None,
         "dota_obb": {"model": object()},
         "grounding_dino": {"model": object()},

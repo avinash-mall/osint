@@ -80,27 +80,6 @@ export const TOUR_STEPS: TourStep[] = [
     placement: 'right',
   },
   {
-    id: 'prithvi-flood',
-    selector: '[data-tour="prithvi-flood"]',
-    title: 'Prithvi flood overlay',
-    body: 'Toggles the Prithvi-EO-2.0 flood head over the current imagery — colours water-inundated pixels distinct from normal surface water. Use during humanitarian assistance / disaster relief tasks to triage affected areas.',
-    placement: 'right',
-  },
-  {
-    id: 'prithvi-burn',
-    selector: '[data-tour="prithvi-burn"]',
-    title: 'Prithvi burn overlay',
-    body: 'Burned-area segmentation from Prithvi-EO-2.0 — highlights fire-damaged ground. Useful for damage assessment after wildfires or strike events.',
-    placement: 'right',
-  },
-  {
-    id: 'prithvi-crops',
-    selector: '[data-tour="prithvi-crops"]',
-    title: 'Prithvi crops overlay',
-    body: 'Multi-temporal crop classification from Prithvi-EO-2.0. Use to identify cultivated land vs bare ground vs structures when assessing rural areas for force-laydown context.',
-    placement: 'right',
-  },
-  {
     id: 'detection-classes',
     selector: '[data-tour="detection-classes"]',
     title: 'Detection classes',

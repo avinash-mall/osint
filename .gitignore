@@ -147,3 +147,6 @@ backend/celerybeat-schedule
 # docker recreates this host-side mount point (root-owned, 0-byte) on every
 # inference-sam3 start. It is NOT source; the real module is backend/detection_policy.py.
 inference-sam3/detection_policy.py
+
+# Per-chip /detect response cache from scripts/eval_chip_dedupe.py (runtime artifact)
+bench/chip_dedupe_cache/

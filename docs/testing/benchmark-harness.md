@@ -4,7 +4,7 @@
 
 | Script | Purpose | Doc |
 |---|---|---|
-| [scripts/fetch_real_datasets.py](../../scripts/fetch_real_datasets.py) | Download DOTA-v1.0 val + Sen1Floods11 S2 slices from HF | [scripts/fetch-eval-datasets.md](../scripts/fetch-eval-datasets.md) |
+| [scripts/fetch_real_datasets.py](../../scripts/fetch_real_datasets.py) | Download the DOTA-v1.0 val slice from HF | [scripts/fetch-eval-datasets.md](../scripts/fetch-eval-datasets.md) |
 | [scripts/fetch_eval_datasets.py](../../scripts/fetch_eval_datasets.py) | Idempotent dataset prep with synthetic-fixture mode | [scripts/fetch-eval-datasets.md](../scripts/fetch-eval-datasets.md) |
 | [scripts/compare_inference_layers.py](../../scripts/compare_inference_layers.py) | Main 7-layer comparison harness | [scripts/compare-inference-layers.md](../scripts/compare-inference-layers.md) |
 | [scripts/embedding_stability.py](../../scripts/embedding_stability.py) | Augmentation-based re-ID on stills | [scripts/benchmark-scripts.md](../scripts/benchmark-scripts.md) |
@@ -20,8 +20,6 @@
 | Slice | Source | Size | What it measures |
 |---|---|---|---|
 | `dota` | `Last-Bullet/DOTAv1.0` val (HF) | 30 chips, 1619 GT boxes | Box quality (mAP@0.5, per-class P/R/F1) |
-| `hls_burn` | `KozaMateusz/sen1floods11` S2Hand → HLS 6-band | 10 chips | Prithvi segmenter latency + chip-level positivity |
-| `sen1floods` | Same source, flood masks | 10 chips | Prithvi flood-head latency |
 | `sar` | Synthetic 2-band dB-range TIFFs | 10 chips | TerraMind latency overhead |
 | `embedding` | DOTA chips, embedding latency only | 30 chips | DINOv3-SAT and TerraMind total/embed times |
 

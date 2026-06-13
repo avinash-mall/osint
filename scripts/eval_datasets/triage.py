@@ -55,8 +55,8 @@ def iter_triage(
         is RGB-optical only; pass ``rgb_only=False`` to evaluate every chip.
     max_chips:
         If set, stop after yielding this many chips. Matches the cap semantics
-        on ``iter_dota`` / ``iter_hls_burn`` / ``iter_sen1floods`` /
-        ``iter_sar_synth`` so the comparison driver's dispatch stays uniform.
+        on ``iter_dota`` / ``iter_sar_synth`` so the comparison driver's
+        dispatch stays uniform.
 
     Yields
     ------

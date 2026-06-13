@@ -80,7 +80,6 @@ CATALOG = [
     ('GET', '/api/detections/classes'),
     ('GET', '/api/detections/geojson-lite'),
     ('POST', '/api/detections/manual'),
-    ('GET', '/api/detections/prithvi-overlays'),
     ('GET', '/api/detections/queue'),
     ('POST', '/api/detections/resolve'),
     ('GET', '/api/detections/tile-version'),
@@ -381,7 +380,6 @@ PARAM_GETS = {
 # Param-free GETs that nonetheless require query args
 QUERY_GETS = {
     '/api/analytics/elevation': {"lat": 25.078, "lon": 55.179},
-    '/api/detections/prithvi-overlays': {"kind": "flood"},
 }
 
 

@@ -27,6 +27,7 @@ _DEFAULT_WBF_WEIGHTS: dict[str, float] = {
     "grounding_dino": 0.3,
     "yoloe":          0.5,
     "sar_cfar":       0.7,
+    "mvrsd":          1.0,
 }
 
 
@@ -194,16 +195,6 @@ def decode_rle(rle: dict[str, Any]) -> np.ndarray:
     if isinstance(counts, str):
         payload["counts"] = base64.b64decode(counts)
     return coco_mask.decode(payload).astype(bool)
-
-
-def overlay_labels(mask_bool, overlays, *, threshold) -> list[str]:
-    labels: list[str] = []
-    mask = np.asarray(mask_bool, dtype=bool)
-    if "water" in overlays and _iou(mask, overlays["water"]) >= threshold:
-        labels.append("water")
-    if "burn_scar" in overlays and _iou(mask, overlays["burn_scar"]) >= threshold:
-        labels.append("burn_scar")
-    return labels
 
 
 def mask_aware_nms(
@@ -488,14 +479,6 @@ def _touches_edge(mask_bool: np.ndarray) -> bool:
         return False
     h, w = mask_bool.shape[-2:]
     return bool(mask_bool[0, :].any() or mask_bool[h - 1, :].any() or mask_bool[:, 0].any() or mask_bool[:, w - 1].any())
-
-
-def _iou(a_bool, b_bool) -> float:
-    a = np.asarray(a_bool, dtype=bool)
-    b = np.asarray(b_bool, dtype=bool)
-    inter = np.logical_and(a, b).sum()
-    union = np.logical_or(a, b).sum()
-    return float(inter) / float(union) if union else 0.0
 
 
 def _rle_for_coco_ops(rle: dict[str, Any]) -> dict[str, Any]:

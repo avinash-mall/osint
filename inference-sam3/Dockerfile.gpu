@@ -72,6 +72,13 @@ RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt \
 # Every command tolerates failure so the build still succeeds when a single
 # optional head is unreachable. The runbook lists which ones are required.
 ARG HF_TOKEN
+# MVRSD military-vehicle specialist weight (GitHub release asset). Empty by
+# default; the orchestrator sets it to the uploaded release URL. When empty the
+# bake step below is a no-op and the runner honour-gates at load (model=None).
+# For a private repo the URL is the GitHub API asset endpoint and GITHUB_TOKEN
+# (passed as a build arg, like HF_TOKEN) authenticates the octet-stream fetch.
+ARG MVRSD_WEIGHTS_URL=""
+ARG GITHUB_TOKEN=""
 ENV HF_TOKEN=${HF_TOKEN} \
     YOLO_CONFIG_DIR=/models/torch/ultralytics
 RUN mkdir -p /models/hf/hub /models/torch/ultralytics && \
@@ -82,22 +89,26 @@ RUN mkdir -p /models/hf/hub /models/torch/ultralytics && \
     huggingface-cli download 1038lab/sam3 sam3.safetensors; \
     : "--- DINOv3-SAT (gated) ---"; \
     huggingface-cli download facebook/dinov3-vitl16-pretrain-sat493m || echo "[bake] dinov3-sat skipped"; \
-    : "--- Prithvi backbones + task heads ---"; \
-    : "  The Sen1Floods11 head loads backbone via terratorch key"; \
-    : "  prithvi_eo_v2_300_tl  →  ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL"; \
-    : "  The BurnScars head loads backbone via key"; \
-    : "  prithvi_eo_v2_300     →  ibm-nasa-geospatial/Prithvi-EO-2.0-300M"; \
-    : "  Both must be cached or the heads fail offline at startup."; \
-    huggingface-cli download ibm-nasa-geospatial/Prithvi-EO-2.0-300M    || echo "[bake] prithvi 300M backbone skipped"; \
-    huggingface-cli download ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL || echo "[bake] prithvi 300M-TL backbone skipped"; \
-    huggingface-cli download ibm-nasa-geospatial/Prithvi-EO-2.0-600M-TL || echo "[bake] prithvi 600M-TL backbone skipped"; \
-    huggingface-cli download ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL-Sen1Floods11 || echo "[bake] prithvi flood skipped"; \
-    huggingface-cli download ibm-nasa-geospatial/Prithvi-EO-2.0-300M-BurnScars || echo "[bake] prithvi burn skipped"; \
     : "--- GroundingDINO ---"; \
     huggingface-cli download IDEA-Research/grounding-dino-tiny || echo "[bake] grounding-dino skipped"; \
     : "--- DOTA-OBB (Ultralytics auto-fetch into YOLO_CONFIG_DIR) ---"; \
     cd /models/torch/ultralytics && \
     python -c "from ultralytics import YOLO; YOLO('yolo26m-obb.pt'); YOLO('yolo11n-obb.pt')" || echo "[bake] dota-obb skipped"; \
+    : "--- MVRSD military-vehicle detect specialist (GitHub release asset) ---"; \
+    : "  Default-OFF gated specialist. Baked from MVRSD_WEIGHTS_URL so the"; \
+    : "  weight is present offline at runtime (hard rule #8: no runtime"; \
+    : "  downloads). Empty URL = no-op; mvrsd.load() then honour-gates."; \
+    mkdir -p /models/mvrsd && \
+    if [ -n "$MVRSD_WEIGHTS_URL" ]; then \
+        curl -fsSL \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/octet-stream" \
+            "$MVRSD_WEIGHTS_URL" -o /models/mvrsd/mvrsd_yolo11m.pt \
+            && echo "[bake] mvrsd weight fetched ($(stat -c%s /models/mvrsd/mvrsd_yolo11m.pt 2>/dev/null || echo 0) bytes)" \
+            || echo "[bake] mvrsd weight download failed"; \
+    else \
+        echo "[bake] MVRSD_WEIGHTS_URL empty — mvrsd weight skipped"; \
+    fi; \
     : "--- YOLOE text encoder: MobileCLIP2-B TorchScript (Ultralytics asset) ---"; \
     : "  Pulled by ultralytics' build_text_model() the first time YOLOE is given"; \
     : "  text prompts. attempt_download_asset() writes to CWD by default, which"; \

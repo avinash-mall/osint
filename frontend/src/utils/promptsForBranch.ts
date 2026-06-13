@@ -3,8 +3,8 @@
  *
  * Walks an ontology branch (and, by default, its descendant sub-branches)
  * and returns the unique SAM 3 prompts the operator should send when
- * scoping an ingest to that mission branch. Sentinel markers
- * (`__prithvi_*__`) are filtered out — they exist for legend purposes and
+ * scoping an ingest to that mission branch. Specialist sentinel markers
+ * (`__*__`) are filtered out — they exist for legend purposes and
  * are not real text prompts.
  *
  * Pure function — no React, no fetches. Lives outside the component so the

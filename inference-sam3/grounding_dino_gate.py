@@ -36,7 +36,7 @@ _DOTA_CLASSES = {
 }
 
 # Generic geographic / ground-cover terms that SAM3 handles well
-# (relevant to PRITHVI/multispectral pipelines).
+# (relevant to multispectral pipelines).
 _GEO_TERMS = {
     "water", "vegetation", "field", "land", "ground",
     "forest", "tree", "river", "lake", "sea", "ocean",

@@ -1,0 +1,847 @@
+{
+  "parameters": {
+    "endpoint": "http://localhost:8001/detect",
+    "chip_size": 1008,
+    "overlap": 252,
+    "max_chips": 64,
+    "iou_match": 0.5,
+    "wbf_iou": 0.55,
+    "wbf_expected_models": 2,
+    "num_images": 30
+  },
+  "sample": {
+    "images_evaluated": 30,
+    "total_chips": 216,
+    "multichip_images": 22,
+    "total_gt_boxes": 1619,
+    "raw_detections": 17445,
+    "nms_kept": 10849,
+    "wbf_kept": 13446,
+    "nms_edge_merges": 1816
+  },
+  "gt_counts": {
+    "baseball-diamond": 20,
+    "basketball-court": 6,
+    "ground-track-field": 4,
+    "harbor": 93,
+    "helicopter": 9,
+    "large-vehicle": 255,
+    "plane": 160,
+    "roundabout": 5,
+    "ship": 178,
+    "small-vehicle": 630,
+    "soccer-ball-field": 8,
+    "swimming-pool": 206,
+    "tennis-court": 45
+  },
+  "nms": {
+    "per_class": {
+      "baseball-diamond": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 20,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "baseball_diamond": {
+        "tp": 0,
+        "fp": 6,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "basketball-court": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 6,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "basketball_court": {
+        "tp": 0,
+        "fp": 5,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "bridge": {
+        "tp": 0,
+        "fp": 43,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "building": {
+        "tp": 0,
+        "fp": 2041,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "ground-track-field": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 4,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "ground_track_field": {
+        "tp": 0,
+        "fp": 3,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "harbor": {
+        "tp": 66,
+        "fp": 12,
+        "fn": 27,
+        "precision": 0.8462,
+        "recall": 0.7097,
+        "f1": 0.7719
+      },
+      "helicopter": {
+        "tp": 9,
+        "fp": 2,
+        "fn": 0,
+        "precision": 0.8182,
+        "recall": 1.0,
+        "f1": 0.9
+      },
+      "large-vehicle": {
+        "tp": 103,
+        "fp": 1809,
+        "fn": 152,
+        "precision": 0.0539,
+        "recall": 0.4039,
+        "f1": 0.0951
+      },
+      "large_vehicle": {
+        "tp": 0,
+        "fp": 148,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "plane": {
+        "tp": 153,
+        "fp": 251,
+        "fn": 7,
+        "precision": 0.3787,
+        "recall": 0.9563,
+        "f1": 0.5426
+      },
+      "road": {
+        "tp": 0,
+        "fp": 1590,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "roundabout": {
+        "tp": 3,
+        "fp": 2,
+        "fn": 2,
+        "precision": 0.6,
+        "recall": 0.6,
+        "f1": 0.6
+      },
+      "ship": {
+        "tp": 147,
+        "fp": 288,
+        "fn": 31,
+        "precision": 0.3379,
+        "recall": 0.8258,
+        "f1": 0.4796
+      },
+      "shipping_container": {
+        "tp": 0,
+        "fp": 53,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "small-vehicle": {
+        "tp": 169,
+        "fp": 3468,
+        "fn": 461,
+        "precision": 0.0465,
+        "recall": 0.2683,
+        "f1": 0.0792
+      },
+      "small_vehicle": {
+        "tp": 0,
+        "fp": 393,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "soccer-ball-field": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 8,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "soccer_ball_field": {
+        "tp": 0,
+        "fp": 11,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "storage_tank": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "swimming-pool": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 206,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "swimming_pool": {
+        "tp": 0,
+        "fp": 27,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "tennis-court": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 45,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "tennis_court": {
+        "tp": 0,
+        "fp": 46,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "__overall__": {
+        "tp": 650,
+        "fp": 10199,
+        "fn": 969,
+        "precision": 0.0599,
+        "recall": 0.4015,
+        "f1": 0.1043
+      }
+    },
+    "ap": {
+      "large-vehicle": 0.0919,
+      "small-vehicle": 0.1226,
+      "ship": 0.7105,
+      "plane": 0.8744,
+      "harbor": 0.6258,
+      "roundabout": 0.5,
+      "helicopter": 1.0
+    },
+    "mAP@0.50": 0.5607
+  },
+  "wbf": {
+    "per_class": {
+      "baseball-diamond": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 20,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "baseball_diamond": {
+        "tp": 0,
+        "fp": 6,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "basketball-court": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 6,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "basketball_court": {
+        "tp": 0,
+        "fp": 5,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "bridge": {
+        "tp": 0,
+        "fp": 54,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "building": {
+        "tp": 0,
+        "fp": 2719,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "ground-track-field": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 4,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "ground_track_field": {
+        "tp": 0,
+        "fp": 3,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "harbor": {
+        "tp": 66,
+        "fp": 14,
+        "fn": 27,
+        "precision": 0.825,
+        "recall": 0.7097,
+        "f1": 0.763
+      },
+      "helicopter": {
+        "tp": 9,
+        "fp": 2,
+        "fn": 0,
+        "precision": 0.8182,
+        "recall": 1.0,
+        "f1": 0.9
+      },
+      "large-vehicle": {
+        "tp": 105,
+        "fp": 1877,
+        "fn": 150,
+        "precision": 0.053,
+        "recall": 0.4118,
+        "f1": 0.0939
+      },
+      "large_vehicle": {
+        "tp": 0,
+        "fp": 167,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "plane": {
+        "tp": 158,
+        "fp": 306,
+        "fn": 2,
+        "precision": 0.3405,
+        "recall": 0.9875,
+        "f1": 0.5064
+      },
+      "road": {
+        "tp": 0,
+        "fp": 2970,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "roundabout": {
+        "tp": 3,
+        "fp": 2,
+        "fn": 2,
+        "precision": 0.6,
+        "recall": 0.6,
+        "f1": 0.6
+      },
+      "ship": {
+        "tp": 155,
+        "fp": 333,
+        "fn": 23,
+        "precision": 0.3176,
+        "recall": 0.8708,
+        "f1": 0.4655
+      },
+      "shipping_container": {
+        "tp": 0,
+        "fp": 57,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "small-vehicle": {
+        "tp": 178,
+        "fp": 3763,
+        "fn": 452,
+        "precision": 0.0452,
+        "recall": 0.2825,
+        "f1": 0.0779
+      },
+      "small_vehicle": {
+        "tp": 0,
+        "fp": 404,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "soccer-ball-field": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 8,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "soccer_ball_field": {
+        "tp": 0,
+        "fp": 15,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "storage_tank": {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "swimming-pool": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 206,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "swimming_pool": {
+        "tp": 0,
+        "fp": 27,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "tennis-court": {
+        "tp": 0,
+        "fp": 0,
+        "fn": 45,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "tennis_court": {
+        "tp": 0,
+        "fp": 47,
+        "fn": 0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      },
+      "__overall__": {
+        "tp": 674,
+        "fp": 12772,
+        "fn": 945,
+        "precision": 0.0501,
+        "recall": 0.4163,
+        "f1": 0.0895
+      }
+    },
+    "ap": {
+      "large-vehicle": 0.089,
+      "small-vehicle": 0.1206,
+      "ship": 0.7351,
+      "plane": 0.8791,
+      "harbor": 0.6162,
+      "roundabout": 0.5,
+      "helicopter": 1.0
+    },
+    "mAP@0.50": 0.5629
+  },
+  "qualitative_count_diffs": [
+    {
+      "image": "chips/P0003.png",
+      "size": [
+        1147,
+        1023
+      ],
+      "chips": 4,
+      "raw": 334,
+      "nms_kept": 216,
+      "wbf_kept": 274,
+      "edge_merges_nms": 42
+    },
+    {
+      "image": "chips/P0004.png",
+      "size": [
+        824,
+        1464
+      ],
+      "chips": 2,
+      "raw": 212,
+      "nms_kept": 162,
+      "wbf_kept": 181,
+      "edge_merges_nms": 11
+    },
+    {
+      "image": "chips/P0007.png",
+      "size": [
+        1490,
+        2137
+      ],
+      "chips": 6,
+      "raw": 638,
+      "nms_kept": 384,
+      "wbf_kept": 500,
+      "edge_merges_nms": 81
+    },
+    {
+      "image": "chips/P0019.png",
+      "size": [
+        6573,
+        3727
+      ],
+      "chips": 45,
+      "raw": 2653,
+      "nms_kept": 1703,
+      "wbf_kept": 1976,
+      "edge_merges_nms": 142
+    },
+    {
+      "image": "chips/P0027.png",
+      "size": [
+        2346,
+        1774
+      ],
+      "chips": 9,
+      "raw": 700,
+      "nms_kept": 473,
+      "wbf_kept": 529,
+      "edge_merges_nms": 25
+    },
+    {
+      "image": "chips/P0047.png",
+      "size": [
+        1126,
+        2167
+      ],
+      "chips": 6,
+      "raw": 457,
+      "nms_kept": 263,
+      "wbf_kept": 346,
+      "edge_merges_nms": 56
+    },
+    {
+      "image": "chips/P0053.png",
+      "size": [
+        1409,
+        1421
+      ],
+      "chips": 4,
+      "raw": 639,
+      "nms_kept": 416,
+      "wbf_kept": 528,
+      "edge_merges_nms": 96
+    },
+    {
+      "image": "chips/P0056.png",
+      "size": [
+        977,
+        909
+      ],
+      "chips": 1,
+      "raw": 132,
+      "nms_kept": 115,
+      "wbf_kept": 126,
+      "edge_merges_nms": 1
+    },
+    {
+      "image": "chips/P0060.png",
+      "size": [
+        3499,
+        2253
+      ],
+      "chips": 15,
+      "raw": 1143,
+      "nms_kept": 714,
+      "wbf_kept": 872,
+      "edge_merges_nms": 131
+    },
+    {
+      "image": "chips/P0075.png",
+      "size": [
+        451,
+        839
+      ],
+      "chips": 1,
+      "raw": 51,
+      "nms_kept": 38,
+      "wbf_kept": 43,
+      "edge_merges_nms": 0
+    },
+    {
+      "image": "chips/P0079.png",
+      "size": [
+        719,
+        635
+      ],
+      "chips": 1,
+      "raw": 93,
+      "nms_kept": 81,
+      "wbf_kept": 84,
+      "edge_merges_nms": 1
+    },
+    {
+      "image": "chips/P0081.png",
+      "size": [
+        693,
+        890
+      ],
+      "chips": 1,
+      "raw": 49,
+      "nms_kept": 39,
+      "wbf_kept": 41,
+      "edge_merges_nms": 0
+    },
+    {
+      "image": "chips/P0086.png",
+      "size": [
+        1157,
+        1483
+      ],
+      "chips": 4,
+      "raw": 393,
+      "nms_kept": 209,
+      "wbf_kept": 255,
+      "edge_merges_nms": 34
+    },
+    {
+      "image": "chips/P0104.png",
+      "size": [
+        925,
+        1187
+      ],
+      "chips": 2,
+      "raw": 231,
+      "nms_kept": 164,
+      "wbf_kept": 200,
+      "edge_merges_nms": 21
+    },
+    {
+      "image": "chips/P0110.png",
+      "size": [
+        2564,
+        2070
+      ],
+      "chips": 12,
+      "raw": 1035,
+      "nms_kept": 626,
+      "wbf_kept": 796,
+      "edge_merges_nms": 107
+    },
+    {
+      "image": "chips/P0117.png",
+      "size": [
+        1369,
+        1162
+      ],
+      "chips": 4,
+      "raw": 505,
+      "nms_kept": 279,
+      "wbf_kept": 359,
+      "edge_merges_nms": 40
+    },
+    {
+      "image": "chips/P0123.png",
+      "size": [
+        843,
+        1035
+      ],
+      "chips": 2,
+      "raw": 256,
+      "nms_kept": 201,
+      "wbf_kept": 238,
+      "edge_merges_nms": 28
+    },
+    {
+      "image": "chips/P0128.png",
+      "size": [
+        1657,
+        2018
+      ],
+      "chips": 6,
+      "raw": 596,
+      "nms_kept": 413,
+      "wbf_kept": 488,
+      "edge_merges_nms": 56
+    },
+    {
+      "image": "chips/P0130.png",
+      "size": [
+        728,
+        860
+      ],
+      "chips": 1,
+      "raw": 204,
+      "nms_kept": 193,
+      "wbf_kept": 196,
+      "edge_merges_nms": 0
+    },
+    {
+      "image": "chips/P0131.png",
+      "size": [
+        1536,
+        1280
+      ],
+      "chips": 4,
+      "raw": 371,
+      "nms_kept": 280,
+      "wbf_kept": 319,
+      "edge_merges_nms": 25
+    },
+    {
+      "image": "chips/P0146.png",
+      "size": [
+        2691,
+        1884
+      ],
+      "chips": 12,
+      "raw": 1034,
+      "nms_kept": 593,
+      "wbf_kept": 749,
+      "edge_merges_nms": 109
+    },
+    {
+      "image": "chips/P0150.png",
+      "size": [
+        722,
+        612
+      ],
+      "chips": 1,
+      "raw": 41,
+      "nms_kept": 29,
+      "wbf_kept": 30,
+      "edge_merges_nms": 0
+    },
+    {
+      "image": "chips/P0161.png",
+      "size": [
+        2604,
+        2714
+      ],
+      "chips": 16,
+      "raw": 1984,
+      "nms_kept": 1229,
+      "wbf_kept": 1539,
+      "edge_merges_nms": 224
+    },
+    {
+      "image": "chips/P0168.png",
+      "size": [
+        2304,
+        1792
+      ],
+      "chips": 9,
+      "raw": 1017,
+      "nms_kept": 586,
+      "wbf_kept": 759,
+      "edge_merges_nms": 128
+    },
+    {
+      "image": "chips/P0170.png",
+      "size": [
+        1966,
+        1081
+      ],
+      "chips": 6,
+      "raw": 292,
+      "nms_kept": 137,
+      "wbf_kept": 209,
+      "edge_merges_nms": 62
+    },
+    {
+      "image": "chips/P0173.png",
+      "size": [
+        959,
+        804
+      ],
+      "chips": 1,
+      "raw": 69,
+      "nms_kept": 51,
+      "wbf_kept": 67,
+      "edge_merges_nms": 15
+    },
+    {
+      "image": "chips/P0175.png",
+      "size": [
+        941,
+        1062
+      ],
+      "chips": 2,
+      "raw": 103,
+      "nms_kept": 56,
+      "wbf_kept": 76,
+      "edge_merges_nms": 14
+    },
+    {
+      "image": "chips/P0179.png",
+      "size": [
+        4774,
+        4542
+      ],
+      "chips": 36,
+      "raw": 2029,
+      "nms_kept": 1036,
+      "wbf_kept": 1496,
+      "edge_merges_nms": 360
+    },
+    {
+      "image": "chips/P0186.png",
+      "size": [
+        1251,
+        533
+      ],
+      "chips": 2,
+      "raw": 32,
+      "nms_kept": 13,
+      "wbf_kept": 20,
+      "edge_merges_nms": 7
+    }
+  ]
+}

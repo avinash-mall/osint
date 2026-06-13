@@ -73,7 +73,6 @@ const REPLICA_CHIPS: { slug: string; label: string }[] = [
   { slug: 'sam3_image', label: 'sam3-img' },
   { slug: 'sam3_video', label: 'sam3-vid' },
   { slug: 'dinov3_sat', label: 'dinov3' },
-  { slug: 'prithvi', label: 'prithvi' },
   { slug: 'terramind', label: 'terramind' },
   { slug: 'dota_obb', label: 'dota-obb' },
   { slug: 'grounding_dino', label: 'gnd-dino' },

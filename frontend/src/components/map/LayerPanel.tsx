@@ -91,11 +91,6 @@ type Props = {
   bboxMode: 'hbb' | 'obb' | 'mask';
   setBboxMode: (m: 'hbb' | 'obb' | 'mask') => void;
 
-  /* Prithvi overlay toggles (flood / burn / crops) — relocated from the
-     MapStage top-center toolbar. */
-  prithviOverlays: Record<string, boolean>;
-  setPrithviOverlays: (updater: any) => void;
-
   /* Counts for overlay rows */
   imagery: any[];
   visibleDetectionCount: number;
@@ -193,8 +188,6 @@ export default function LayerPanel({
   setActiveLayers,
   bboxMode,
   setBboxMode,
-  prithviOverlays,
-  setPrithviOverlays,
   imagery,
   visibleDetectionCount,
   tracksCount,
@@ -389,20 +382,6 @@ export default function LayerPanel({
                 </button>
               ))}
             </div>
-            <div className="layer-panel-subhead">Prithvi overlays</div>
-            {(['flood', 'burn', 'crops'] as const).map((k) => (
-              <div key={k} data-tour={`prithvi-${k}`}>
-                <OverlayRow
-                  label={k.charAt(0).toUpperCase() + k.slice(1)}
-                  metric={prithviOverlays[k] ? 'ON' : 'OFF'}
-                  colorVar="var(--color-sentinel-accent)"
-                  active={!!prithviOverlays[k]}
-                  onToggle={() =>
-                    setPrithviOverlays((cur: Record<string, boolean>) => ({ ...cur, [k]: !cur[k] }))
-                  }
-                />
-              </div>
-            ))}
             <div data-tour="analytics-tools">
               <div className="layer-panel-subhead">Analytics tools</div>
               {analyticsToolRows.map((layer) => (

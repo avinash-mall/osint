@@ -39,7 +39,6 @@ echo "[run_video_profile] applying video profile to $ENV_FILE ..."
 sed -i \
     -e 's/^SAM3_LOAD_OPTIONAL_MODELS=.*/SAM3_LOAD_OPTIONAL_MODELS=0/' \
     -e 's/^SAM3_LOAD_DINOV3_SAT=.*/SAM3_LOAD_DINOV3_SAT=1/' \
-    -e 's/^SAM3_LOAD_PRITHVI=.*/SAM3_LOAD_PRITHVI=0/' \
     -e 's/^SAM3_LOAD_TERRAMIND=.*/SAM3_LOAD_TERRAMIND=0/' \
     "$ENV_FILE"
 # DOTA_OBB / GROUNDING_DINO use compose default 1; force them off via .env entry.

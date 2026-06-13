@@ -159,9 +159,6 @@ export default function ProvenancePanel({ selectedDetection }: { selectedDetecti
         <Kv label="Review status" value={meta.review_status || p.review_status || 'review_candidate'} mono />
         <Kv label="Assessment" value={meta.assessment_status || p.assessment_status || 'unconfirmed'} mono />
         <Kv label="Evidence" value={(meta.evidence || p.evidence || []).join(' · ') || '—'} />
-        {Array.isArray(meta.prithvi_labels) && meta.prithvi_labels.length > 0 && (
-          <Kv label="Prithvi labels" value={meta.prithvi_labels.join(', ')} mono />
-        )}
       </Panel>
     </div>
   );

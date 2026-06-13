@@ -12,7 +12,7 @@ Raw raster (GeoTIFF, NITF, Sentinel L2A, HLS-6, S1 GRD) → displayable detectio
 
 1. **COG translate** — `gdal_translate -of COG` rewrites input to Cloud-Optimised GeoTIFF on shared `/data/imagery/processed/`. `titiler` needs COG for windowed reads.
 2. **Catalog** — pass footprint as `MULTIPOLYGON` in PostGIS (`satellite_passes`); mirrored as `SatellitePass` node in Neo4j.
-3. **Chipping** — slice into overlapping `INFERENCE_CHIP_SIZE`×`INFERENCE_CHIP_SIZE` chips (default 1008×1008, 25% overlap). RGB chips PNG; multispectral/SAR stay GeoTIFF to preserve band radiometry. See `chip_to_uint8_rgb` in [backend/worker_legacy.py](../../backend/worker_legacy.py).
+3. **Chipping** — slice into overlapping `INFERENCE_CHIP_SIZE`×`INFERENCE_CHIP_SIZE` chips (default 1008×1008, 25% overlap). RGB chips PNG; multispectral/SAR stay GeoTIFF to preserve band radiometry. See `chip_to_uint8_rgb` in [backend/worker_legacy.py](../../backend/worker_legacy.py). Two optional extra passes share the **same dedupe index** as the main grid (NMS/WBF suppresses cross-scale duplicates): a **small-object pass** at a finer `INFERENCE_SMALL_OBJECT_CHIP_SIZE` (more pixels-per-object on small targets) and a single opt-in **full-scene pass** (`INFERENCE_FULL_SCENE_PASS=1`) over the whole image read decimated from COG overviews (catches objects larger than one chip — runways, piers). See [decisions/multi-scale-and-full-scene-chip-passes.md](../decisions/multi-scale-and-full-scene-chip-passes.md).
 4. **Inference dispatch** — `INFERENCE_CHIP_CONCURRENCY` chips POSTed to `inference-sam3:8001/detect` in parallel via thread pool. Each request: `metadata.modality`, sensor-resolved `text_prompts` (from `/api/ontology/default-prompts`), `enabled_layers` (e.g. `sam3, dota_obb, dinov3_sat`).
 5. **Georeference** — pixel-space bboxes/OBBs warped to WGS84 via source CRS from COG. Mask RLE kept pixel-space; OBB coords emitted as `yolo_obb_normalized_xyxyxyxy` (see schema).
 6. **Evidence rank** — backend scores source agreement, optional RemoteCLIP verifier margin, physical sanity checks, SAR proxy status → `evidence_score` / `evidence_tier`.
@@ -23,7 +23,7 @@ Raw raster (GeoTIFF, NITF, Sentinel L2A, HLS-6, S1 GRD) → displayable detectio
 | Sensor selection in UI | `metadata.modality` | Pipeline inside inference |
 |---|---|---|
 | Optical (RGB) | `rgb` | SAM3 text/box prompts → DOTA-OBB → optional GDINO → DINOv3-SAT embed |
-| Multispectral / Hyperspectral | `multispectral` | Prithvi flood + burn → SAM3 on RGB preview → optional 3-timestep crop classifier |
+| Multispectral / Hyperspectral | `multispectral` | SAM3 on RGB preview (HLS-6 → 3/2/1 stretch) → DINOv3-SAT embed |
 | SAR | `sar` | CFAR primary; optional TerraMind S1→S2 → SAM3 synthetic preview, evidence-capped + review-only unless corroborated |
 | FMV | n/a → [data-flow-fmv.md](data-flow-fmv.md) | — |
 
@@ -32,6 +32,8 @@ Raw raster (GeoTIFF, NITF, Sentinel L2A, HLS-6, S1 GRD) → displayable detectio
 | Variable | Default | Effect |
 |---|---|---|
 | `INFERENCE_CHIP_SIZE` / `INFERENCE_CHIP_OVERLAP` | 1008 / 252 | SAM3 chip geometry |
+| `INFERENCE_SMALL_OBJECT_CHIP_SIZE` | 0 (off) | Finer second-pass chip size for small targets |
+| `INFERENCE_FULL_SCENE_PASS` | 0 (off) | One extra whole-image decimated pass for large objects |
 | `MAX_INFERENCE_CHIPS` | 256 | Worker cap (0 = full coverage) |
 | `INFERENCE_CHIP_CONCURRENCY` | 1 | Parallel POSTs per pass |
 | `INFERENCE_MAX_PENDING_CHIPS` | 32 | Bounded encoded-chip queue (in-flight ceiling) |

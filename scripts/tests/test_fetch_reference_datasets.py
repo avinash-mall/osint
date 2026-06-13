@@ -161,6 +161,69 @@ def test_dropin_adapter_handles_per_class_layout(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# MVRSD bbox-cropping drop-in adapter
+# ---------------------------------------------------------------------------
+
+
+def test_mvrsd_skips_when_dir_absent(tmp_path: Path):
+    from fetch_reference_datasets import _fetch_mvrsd
+
+    out = tmp_path / "out"
+    dropin = tmp_path / "drops"  # never created
+    r = _fetch_mvrsd(out, dropin)
+    assert r.status == "skipped"
+    assert "no drop-in tree" in r.detail
+
+
+def test_mvrsd_crops_per_class_chips_from_yolo(tmp_path: Path):
+    from PIL import Image
+
+    from fetch_reference_datasets import _fetch_mvrsd
+
+    dropin = tmp_path / "drops"
+    img_dir = dropin / "mvrsd" / "images" / "train"
+    lbl_dir = dropin / "mvrsd" / "labels" / "train"
+    img_dir.mkdir(parents=True)
+    lbl_dir.mkdir(parents=True)
+    Image.new("RGB", (640, 640), (120, 120, 120)).save(img_dir / "AUAU010005.jpg")
+    # class index 3 == CV (largest area), index 2 == AFV (smaller).
+    (lbl_dir / "AUAU010005.txt").write_text(
+        "3 0.5 0.5 0.3 0.3\n2 0.2 0.2 0.05 0.05\n"
+    )
+
+    out = tmp_path / "out"
+    r = _fetch_mvrsd(out, dropin)
+    assert r.status == "ok", r.detail
+    assert r.chips_written == 1
+    # Largest box wins → CV.
+    assert (out / "mvrsd" / "CV" / "AUAU010005__CV.png").is_file()
+    manifest = json.loads((out / "mvrsd" / "MANIFEST.json").read_text())
+    assert manifest["chips"][0]["class_name"] == "CV"
+    assert manifest["chips"][0]["license_spdx"] == "research-only"
+
+
+def test_mvrsd_is_idempotent(tmp_path: Path):
+    from PIL import Image
+
+    from fetch_reference_datasets import _fetch_mvrsd
+
+    dropin = tmp_path / "drops"
+    img_dir = dropin / "mvrsd" / "images" / "val"
+    lbl_dir = dropin / "mvrsd" / "labels" / "val"
+    img_dir.mkdir(parents=True)
+    lbl_dir.mkdir(parents=True)
+    Image.new("RGB", (640, 640), (10, 10, 10)).save(img_dir / "AUAU010079.jpg")
+    (lbl_dir / "AUAU010079.txt").write_text("1 0.5 0.5 0.2 0.2\n")
+
+    out = tmp_path / "out"
+    r1 = _fetch_mvrsd(out, dropin)
+    assert r1.status == "ok"
+    r2 = _fetch_mvrsd(out, dropin)
+    assert r2.status == "ok"
+    assert "cached" in r2.detail
+
+
+# ---------------------------------------------------------------------------
 # Top-level run() with no adapters succeeding
 # ---------------------------------------------------------------------------
 

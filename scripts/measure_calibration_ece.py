@@ -231,15 +231,9 @@ def _iter_eval_slice(slice_name: str, max_chips: int):
     if slice_name == "dota":
         from scripts.eval_datasets.dota import iter_dota
         return iter_dota()
-    if slice_name == "hls_burn":
-        from scripts.eval_datasets.hls_burn import iter_hls_burn
-        return iter_hls_burn()
     if slice_name in {"sar", "sar_synth"}:
         from scripts.eval_datasets.sar_synth import iter_sar_synth
         return iter_sar_synth()
-    if slice_name == "sen1floods":
-        from scripts.eval_datasets.sen1floods import iter_sen1floods
-        return iter_sen1floods()
     raise SystemExit(f"unknown slice: {slice_name}")
 
 
@@ -280,7 +274,7 @@ def main() -> int:
     parser.add_argument("--inference-url", default="http://localhost:8001",
                         help="Base URL of the inference-sam3 service.")
     parser.add_argument("--slice", default="dota",
-                        choices=("dota", "hls_burn", "sar", "sen1floods"),
+                        choices=("dota", "sar"),
                         help="Eval dataset slice.")
     parser.add_argument("--max-chips", type=int, default=60)
     parser.add_argument("--bins", type=int, default=15)

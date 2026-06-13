@@ -505,28 +505,6 @@ def fetch_dota_val(*, synthetic_fixtures: bool = False) -> None:
     )
 
 
-def fetch_hls_burn(max_chips: int = MAX_CHIPS, *, synthetic_fixtures: bool = False) -> None:
-    """Verify HLS data, generating fixtures only with explicit opt-in."""
-    if synthetic_fixtures:
-        from eval_datasets.hls_burn import _ensure_dataset, _DEFAULT_DATASET_DIR
-        _ensure_dataset(_DEFAULT_DATASET_DIR)
-        return
-    from eval_datasets.hls_burn import _DEFAULT_DATASET_DIR
-    if not (_DEFAULT_DATASET_DIR / "labels.json").exists():
-        raise RuntimeError("HLS Burn Scars data missing; fetch real data or use --synthetic-fixtures for tests.")
-
-
-def fetch_sen1floods(max_chips: int = MAX_CHIPS, *, synthetic_fixtures: bool = False) -> None:
-    """Verify Sen1Floods data, generating fixtures only with explicit opt-in."""
-    if synthetic_fixtures:
-        from eval_datasets.sen1floods import _ensure_dataset, _DEFAULT_DATASET_DIR
-        _ensure_dataset(_DEFAULT_DATASET_DIR)
-        return
-    from eval_datasets.sen1floods import _DEFAULT_DATASET_DIR
-    if not (_DEFAULT_DATASET_DIR / "labels.json").exists():
-        raise RuntimeError("Sen1Floods data missing; fetch real data or use --synthetic-fixtures for tests.")
-
-
 def main() -> None:
     """Entry point: run all fetchers."""
     parser = argparse.ArgumentParser(
@@ -548,8 +526,6 @@ def main() -> None:
 
     print("[fetch_eval_datasets] Starting dataset preparation …")
     fetch_dota(max_chips=args.max_chips, synthetic_fixtures=args.synthetic_fixtures)
-    fetch_hls_burn(max_chips=args.max_chips, synthetic_fixtures=args.synthetic_fixtures)
-    fetch_sen1floods(max_chips=args.max_chips, synthetic_fixtures=args.synthetic_fixtures)
     print("[fetch_eval_datasets] Done.")
 
 

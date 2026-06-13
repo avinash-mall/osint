@@ -115,14 +115,11 @@ class GpuBuildProfile:
 
     # --- Optional satellite-intelligence models ---
     # Master switch; individual flags below are only honoured when this is True.
-    # Disabling saves ~3.5 GiB VRAM and ~290 ms/chip (sum of all three heads).
+    # Disabling saves VRAM and per-chip latency (sum of the optional heads).
     sam3_load_optional_models: bool = True
     # DINOv3-SAT: satellite-tuned visual embeddings for detection re-ID.
     # +1.5 GiB VRAM, +217 ms/chip. Off on Turing to preserve headroom.
     sam3_load_dinov3_sat: bool = True
-    # Prithvi EO-2.0: flood + burn semantic segmentation heads.
-    # +0.8 GiB VRAM, +20 ms/chip (multispectral imagery only).
-    sam3_load_prithvi: bool = True
     # Terramind: SAR-to-RGB synthesis backbone for SAR imagery.
     # +1.2 GiB VRAM, ~0 ms overhead on RGB (SAR-only pipeline).
     sam3_load_terramind: bool = True
@@ -225,7 +222,6 @@ class GpuBuildProfile:
             # Optional satellite models
             "SAM3_LOAD_OPTIONAL_MODELS": "1" if self.sam3_load_optional_models else "0",
             "SAM3_LOAD_DINOV3_SAT": "1" if self.sam3_load_dinov3_sat else "0",
-            "SAM3_LOAD_PRITHVI": "1" if self.sam3_load_prithvi else "0",
             "SAM3_LOAD_TERRAMIND": "1" if self.sam3_load_terramind else "0",
             # Specialist detectors.
             "SAM3_LOAD_DOTA_OBB": "1" if self.sam3_load_dota_obb else "0",
@@ -327,7 +323,6 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         # in .env once VRAM budget is measured on the specific workload.
         sam3_load_optional_models=False,
         sam3_load_dinov3_sat=False,
-        sam3_load_prithvi=False,
         sam3_load_terramind=False,
         sam3_load_dota_obb=True,
         sam3_load_grounding_dino=True,
@@ -366,11 +361,10 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         use_multiplex=True,
         sam3_load_optional_models=True,
         sam3_load_dinov3_sat=True,
-        sam3_load_prithvi=True,
         # Terramind (~6 GiB SAR→optical synthesis) is OFF by default on
         # consumer Ampere because this profile covers 8-12 GiB cards
         # (RTX 3050 8 GiB, RTX 3060 12 GiB, RTX 3070 8 GiB, RTX 3080
-        # 10/12 GiB, RTX A2000 6/12 GiB). SAM3 base + DINOv3-SAT + Prithvi
+        # 10/12 GiB, RTX A2000 6/12 GiB). SAM3 base + DINOv3-SAT
         # + heads + Terramind overruns the budget on /detect calls. Same
         # rationale as blackwell_sm120. Operators on 24 GiB consumer
         # Ampere (RTX 3090/3090 Ti, RTX A4500 20 GiB) can override
@@ -440,7 +434,6 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         use_multiplex=True,
         sam3_load_optional_models=True,
         sam3_load_dinov3_sat=True,
-        sam3_load_prithvi=True,
         sam3_load_terramind=True,
         sam3_load_dota_obb=True,
         sam3_load_grounding_dino=True,
@@ -494,7 +487,6 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         use_multiplex=True,
         sam3_load_optional_models=True,
         sam3_load_dinov3_sat=True,
-        sam3_load_prithvi=True,
         # Terramind (~6 GiB) is OFF by default on Ada: this profile covers
         # 8-12 GiB consumer cards (RTX 4060 8 GiB, RTX 4060 Ti 8/16 GiB,
         # RTX 4070 12 GiB) where the full satellite-model stack OOMs. The
@@ -550,7 +542,6 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         use_multiplex=True,
         sam3_load_optional_models=True,
         sam3_load_dinov3_sat=True,
-        sam3_load_prithvi=True,
         sam3_load_terramind=True,
         sam3_load_dota_obb=True,
         sam3_load_grounding_dino=True,
@@ -602,7 +593,6 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         use_multiplex=True,
         sam3_load_optional_models=True,
         sam3_load_dinov3_sat=True,
-        sam3_load_prithvi=True,
         sam3_load_terramind=True,
         sam3_load_dota_obb=True,
         sam3_load_grounding_dino=True,
@@ -666,7 +656,7 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         # Loading on 16 GiB consumer Blackwell (RTX 5070 Ti, 5080) is the
         # *dynamic* policy: the runtime VRAM gate (< sam3_hot_load_min_vram_mib)
         # makes inference-sam3 load one modality profile at a time
-        # (imagery_rgb / imagery_msi / imagery_sar), so Terramind, Prithvi and
+        # (imagery_rgb / imagery_msi / imagery_sar), so Terramind and
         # DINOv3-SAT only go resident for the modality that needs them — no
         # single profile exhausts the 16 GiB budget (the 2026-05-12 OOM was the
         # monolithic profile loading every model at once). Terramind is
@@ -681,7 +671,6 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         use_multiplex=True,
         sam3_load_optional_models=True,
         sam3_load_dinov3_sat=True,
-        sam3_load_prithvi=True,
         sam3_load_terramind=True,
         sam3_load_dota_obb=True,
         sam3_load_grounding_dino=True,

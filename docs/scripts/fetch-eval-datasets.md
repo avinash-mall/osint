@@ -8,8 +8,8 @@
 
 Idempotent fetchers for the evaluation datasets used by [testing/benchmark-harness.md](../testing/benchmark-harness.md):
 
-- **`fetch_real_datasets.py`** — downloads real DOTA-v1.0 val + Sen1Floods11 S2Hand slices from HuggingFace. Requires `HF_TOKEN`.
-- **`fetch_eval_datasets.py`** — wrapper ensuring every slice (DOTA, HLS-burn, sen1floods, SAR, embedding-only) has either real or synthetic fixtures available. `--synthetic-fixtures` for deterministic test-only fixtures.
+- **`fetch_real_datasets.py`** — downloads the real DOTA-v1.0 val slice from HuggingFace. Requires `HF_TOKEN`.
+- **`fetch_eval_datasets.py`** — ensures the DOTA slice has either a real or a synthetic fixture available. `--synthetic-fixtures` for deterministic test-only fixtures.
 
 ## Why two scripts
 
@@ -30,8 +30,6 @@ python scripts/fetch_eval_datasets.py --synthetic-fixtures
 ## Output
 
 - `scripts/eval_datasets/dota/` (DOTA val chips)
-- `scripts/eval_datasets/sen1floods11/` (S2Hand RGB chips)
-- `scripts/eval_datasets/hls_burn/` (6-band HLS chips)
 - `scripts/eval_datasets/sar_synth/` (synthetic 2-band TIFFs)
 - `scripts/eval_datasets/labels.json` (manifest)
 

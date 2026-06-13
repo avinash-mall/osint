@@ -8,7 +8,7 @@
 
 **Review surface** for satellite-imagery detections. Reading is in [backend/main.py](../../backend/main.py); this router owns detail edits, manual detections, deletion, the per-detection workflow.
 
-Bulk read endpoints (`GET /api/detections`, `/api/detections/geojson-lite`, `/api/detections/classes`, `/api/detections/{id}/similar`, `/api/detections/queue`, `/api/detections/resolve`, `/api/detections/prithvi-overlays`, `/api/detections/{id}/candidate-links`, `/api/detection-target-candidates/{id}/approve`, `/api/detections/{id}/tag`, `/api/detections/{id}/review`) live in [backend/main.py](../../backend/main.py). `/api/detections/classes?llm=true` may return non-authoritative `llm_advisory`; raw `class` and deterministic labels remain the filter/audit keys.
+Bulk read endpoints (`GET /api/detections`, `/api/detections/geojson-lite`, `/api/detections/classes`, `/api/detections/{id}/similar`, `/api/detections/queue`, `/api/detections/resolve`, `/api/detections/{id}/candidate-links`, `/api/detection-target-candidates/{id}/approve`, `/api/detections/{id}/tag`, `/api/detections/{id}/review`) live in [backend/main.py](../../backend/main.py). `/api/detections/classes?llm=true` may return non-authoritative `llm_advisory`; raw `class` and deterministic labels remain the filter/audit keys.
 
 ## Endpoints in this router
 

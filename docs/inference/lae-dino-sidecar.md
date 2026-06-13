@@ -15,7 +15,7 @@ with the SAM 3 stack — see [decisions/why-lae-dino-replaces-grounding-dino.md]
 
 ## Why this design
 
-A forked-mmdet model can't co-reside with SAM 3 / TerraMind / Prithvi in one
+A forked-mmdet model can't co-reside with SAM 3 / TerraMind in one
 interpreter (transformers 4.42 vs ≥4.56). A sidecar with its own dependency
 closure is the only clean boundary. The image pins **torch 2.1.0 + cu121** with
 a prebuilt mmcv 2.1.0 wheel — the newest combo mmcv ships wheels for and the

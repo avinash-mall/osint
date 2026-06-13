@@ -158,6 +158,14 @@ INFERENCE_SMALL_OBJECT_OVERLAP = env_int("INFERENCE_SMALL_OBJECT_OVERLAP", 128)
 INFERENCE_SMALL_OBJECT_MAX_CHIPS = env_int(
     "INFERENCE_SMALL_OBJECT_MAX_CHIPS", _INFERENCE_PROFILE_DEFAULTS["max_chips"] or 0
 )
+# Optional coarse full-scene pass: when enabled, slice_and_infer runs ONE extra
+# inference over the WHOLE image downsampled to ~chip_size (read from COG
+# overviews). This catches objects larger than a single chip (runways, piers,
+# large facilities) that the sliding-window grid only ever sees fragmented.
+# Shares the dedupe index with the grid passes, so a large object detected both
+# whole (full-scene) and fragmented (main pass) is fused/suppressed. Default OFF
+# so the standard grid behaviour is unchanged.
+INFERENCE_FULL_SCENE_PASS = env_bool("INFERENCE_FULL_SCENE_PASS", False)
 def _default_reader_pool_size() -> int:
     """Default for the Phase 3 reader thread pool.
 
@@ -672,11 +680,19 @@ def chip_to_uint8_rgb(chip: np.ndarray) -> np.ndarray:
     return np.moveaxis(chip_rgb, 0, -1)
 
 
-def valid_data_mask(src: rasterio.io.DatasetReader, window: Window) -> np.ndarray | None:
+def valid_data_mask(
+    src: rasterio.io.DatasetReader,
+    window: Window,
+    out_shape: tuple[int, int] | None = None,
+) -> np.ndarray | None:
     """Return a boolean valid-data mask for a raster window, or None when the
-    dataset does not expose no-data/alpha masking information."""
+    dataset does not expose no-data/alpha masking information.
+
+    ``out_shape`` (h, w) decimates the mask so it lines up with a downsampled
+    chip read (used by the full-scene pass). Normal callers omit it and get a
+    native-resolution mask."""
     try:
-        mask = src.dataset_mask(window=window)
+        mask = src.dataset_mask(window=window, out_shape=out_shape) if out_shape else src.dataset_mask(window=window)
     except Exception:
         return None
     if mask is None:
@@ -1829,6 +1845,44 @@ def slice_and_infer(
                 "grid": g,
                 "step": g["step"],
                 "planned_total": g["planned_total"],
+                "full_scene": False,
+            })
+
+        # Optional coarse full-scene pass. plan_inference_grid cannot express a
+        # single whole-image window, so this pass is planned by hand: it reads
+        # the full (0,0,width,height) extent decimated to ~chip_size (preserving
+        # aspect, capped so neither side exceeds chip_size) and runs exactly one
+        # inference. It contributes exactly 1 window to total_windows so the
+        # progress bar stays monotonic. The grid reuses `main_plan["grid"]` for
+        # summary fields, so the full-scene plan carries a None grid and is
+        # skipped by every grid-dependent code path via its `full_scene` flag.
+        if INFERENCE_FULL_SCENE_PASS:
+            fs_chip = pass_plans[0]["chip_size"]
+            longest = max(1, max(width, height))
+            fs_decimation = max(1.0, longest / float(fs_chip))
+            fs_w = max(1, int(round(width / fs_decimation)))
+            fs_h = max(1, int(round(height / fs_decimation)))
+            # The grid here is synthetic — a 1-window stand-in so the closures
+            # that read grid["source_total"]/["sampled"]/["max_chips"]/["step"]
+            # keep working when this pass is current. It deliberately omits the
+            # sliding-window offset keys; the loop branches on `full_scene`
+            # before any grid iteration, so those are never read.
+            pass_plans.append({
+                "chip_size": fs_chip,
+                "overlap": 0,
+                "max_chips": 1,
+                "grid": {
+                    "source_total": 1,
+                    "sampled": False,
+                    "max_chips": 1,
+                    "step": fs_chip,
+                    "planned_total": 1,
+                },
+                "step": fs_chip,
+                "planned_total": 1,
+                "full_scene": True,
+                "fs_out_w": fs_w,
+                "fs_out_h": fs_h,
             })
         total_windows = sum(p["planned_total"] for p in pass_plans)
         processed_windows = 0
@@ -1840,17 +1894,21 @@ def slice_and_infer(
         main_plan = pass_plans[0]
         grid = main_plan["grid"]
         step = main_plan["step"]
-        coverage_fraction = round(total_windows / max(1, sum(p["grid"]["source_total"] for p in pass_plans)), 4)
+        # The full-scene plan carries only a synthetic 1-window grid; exclude it
+        # from the grid-derived coverage/source-total aggregates so they reflect
+        # the real sliding-window passes.
+        _grid_plans = [p for p in pass_plans if not p["full_scene"]]
+        coverage_fraction = round(total_windows / max(1, sum(p["grid"]["source_total"] for p in _grid_plans)), 4)
         inference_summary = {
             "chip_size": chip_size,
             "overlap": overlap,
             "step": step,
             "planned_chips": total_windows,
-            "source_total_chips": sum(p["grid"]["source_total"] for p in pass_plans),
+            "source_total_chips": sum(p["grid"]["source_total"] for p in _grid_plans),
             "processed_chips": 0,
             "inference_speed_profile": INFERENCE_SPEED_PROFILE,
             "coverage_fraction": coverage_fraction,
-            "sampling_enabled": any(p["grid"]["sampled"] for p in pass_plans),
+            "sampling_enabled": any(p["grid"]["sampled"] for p in _grid_plans),
             "max_inference_chips": grid["max_chips"],
             "dedupe_method": "wbf" if isinstance(dedupe_idx, _WeightedBoxFusionIndex) else "obb_nms",
             "threshold_profile": detection_policy["threshold_profile"],
@@ -1869,6 +1927,7 @@ def slice_and_infer(
                     "planned_chips": p["planned_total"],
                     "source_total_chips": p["grid"]["source_total"],
                     "sampling_enabled": p["grid"]["sampled"],
+                    "full_scene": p["full_scene"],
                 }
                 for p in pass_plans
             ],
@@ -1950,6 +2009,10 @@ def slice_and_infer(
             either streaming-store or accumulating these."""
             x = ctx["x"]; y = ctx["y"]
             win_width = ctx["win_width"]; win_height = ctx["win_height"]
+            # scale_x/scale_y = source-px per chip-px. 1.0 for normal chips
+            # (chip-px == source-window-px); >1 only for the decimated full-scene
+            # pass, where chip-px coords must be scaled up before the affine.
+            scale_x = ctx.get("scale_x", 1.0); scale_y = ctx.get("scale_y", 1.0)
             valid_mask = ctx.get("valid_mask")
             batch_policy = active_detection_policy()
             debug_counts = inference_response.get("debug_counts") or {}
@@ -2014,10 +2077,12 @@ def slice_and_infer(
                     continue
                 local_x1, local_y1, local_x2, local_y2 = local_box
 
-                abs_px_x1 = clamp_float(x + local_x1, 0, width)
-                abs_px_y1 = clamp_float(y + local_y1, 0, height)
-                abs_px_x2 = clamp_float(x + local_x2, 0, width)
-                abs_px_y2 = clamp_float(y + local_y2, 0, height)
+                # local_* and the obb coords below are CHIP-pixel; scale_* maps
+                # them to source-pixel (identity for normal passes).
+                abs_px_x1 = clamp_float(x + local_x1 * scale_x, 0, width)
+                abs_px_y1 = clamp_float(y + local_y1 * scale_y, 0, height)
+                abs_px_x2 = clamp_float(x + local_x2 * scale_x, 0, width)
+                abs_px_y2 = clamp_float(y + local_y2 * scale_y, 0, height)
                 if abs_px_x2 <= abs_px_x1 or abs_px_y2 <= abs_px_y1:
                     continue
 
@@ -2025,9 +2090,9 @@ def slice_and_infer(
                 if det.get("obb") and len(det["obb"]) == 8:
                     for index, value in enumerate(det["obb"]):
                         if index % 2 == 0:
-                            pixel_obb.append(clamp_float(x + float(value) * win_width, 0, width))
+                            pixel_obb.append(clamp_float(x + float(value) * win_width * scale_x, 0, width))
                         else:
-                            pixel_obb.append(clamp_float(y + float(value) * win_height, 0, height))
+                            pixel_obb.append(clamp_float(y + float(value) * win_height * scale_y, 0, height))
                 else:
                     pixel_obb = [
                         abs_px_x1, abs_px_y1,
@@ -2185,6 +2250,7 @@ def slice_and_infer(
             chip_w: int,
             chip_h: int,
             pass_index: int,
+            out_shape: tuple[int, int] | None = None,
         ) -> tuple | None:
             """Read + encode one chip in a reader thread; returns
             (chip_file, chip_meta_payload, ctx) or None to skip.
@@ -2194,14 +2260,33 @@ def slice_and_infer(
             returned (not closed) so the next task on the same thread
             reuses it. GDAL multi-threaded decoding is enabled via the
             env block set at module load.
+
+            ``out_shape`` is set only for the full-scene pass: the source
+            window (here the whole extent) is read DECIMATED into an
+            ``(out_h, out_w)`` array via rasterio's COG overviews. The chip
+            image is then smaller than its source window, so the returned
+            ctx carries ``scale_x``/``scale_y`` = source-px / chip-px that the
+            georef path multiplies in. Normal chips pass ``out_shape=None`` and
+            get scale 1.0 — their georef is byte-for-byte unchanged.
             """
             src_t = _src_handles.get()
             try:
                 win_width = min(chip_w, src_t.width - x)
                 win_height = min(chip_h, src_t.height - y)
                 window = Window(x, y, win_width, win_height)
+                if out_shape is not None:
+                    out_h, out_w = out_shape
+                    scale_x = win_width / float(out_w)
+                    scale_y = win_height / float(out_h)
+                    read_out_shape = (src_t.count, out_h, out_w)
+                else:
+                    out_h, out_w = win_height, win_width
+                    scale_x = scale_y = 1.0
+                    read_out_shape = None
                 with _chip_stage_timer("valid_mask"):
-                    valid_mask = valid_data_mask(src_t, window)
+                    valid_mask = valid_data_mask(
+                        src_t, window, out_shape=(out_h, out_w) if out_shape else None
+                    )
                 valid_fraction = (
                     float(np.count_nonzero(valid_mask)) / max(1, valid_mask.size)
                     if valid_mask is not None
@@ -2210,7 +2295,7 @@ def slice_and_infer(
                 if valid_fraction < INFERENCE_MIN_VALID_CHIP_FRACTION:
                     return None
                 with _chip_stage_timer("read_probe"):
-                    chip = src_t.read(window=window)
+                    chip = src_t.read(window=window, out_shape=read_out_shape)
                 if np.all(chip == 0) or (src_t.nodata is not None and np.all(chip == src_t.nodata)):
                     return None
                 with _chip_stage_timer("encode"):
@@ -2231,7 +2316,11 @@ def slice_and_infer(
                 })
                 ctx = {
                     "x": x, "y": y,
-                    "win_width": win_width, "win_height": win_height,
+                    # win_width/win_height here are the CHIP image dims (decimated
+                    # for the full-scene pass), matching the valid_mask the clip
+                    # path indexes; scale_x/scale_y carry it back to source px.
+                    "win_width": out_w, "win_height": out_h,
+                    "scale_x": scale_x, "scale_y": scale_y,
                     "valid_mask": valid_mask,
                     "valid_fraction": round(valid_fraction, 4),
                     "scale_pass": pass_index,
@@ -2359,34 +2448,47 @@ def slice_and_infer(
                             "multi_scale": inference_summary["multi_scale"],
                         },
                     )
+                elif pass_index > 0 and plan["full_scene"]:
+                    logger.info(
+                        "[WORKER] Starting full-scene pass %s: whole image %sx%s decimated to %sx%s",
+                        pass_index, width, height, plan["fs_out_w"], plan["fs_out_h"],
+                    )
                 elif pass_index > 0:
                     logger.info(
                         "[WORKER] Starting small-object pass %s: chip_size=%s overlap=%s planned_chips=%s",
                         pass_index, chip_size, plan["overlap"], plan["planned_total"],
                     )
 
-                # Phase 2: prefer pre-snapped pixel offsets when the planner
-                # supplied them (block-aligned origins on tiled COGs).
-                # Legacy fallback recomputes `idx * step` for any plan dict
-                # that predates the offsets keys. Window sizes carry the
-                # snap-delta extension so block-snapped grids keep full
-                # coverage; legacy plans fall back to the uniform chip_size.
-                y_offsets_seq = grid.get("y_offsets") or [idx * step for idx in grid["y_indices"]]
-                x_offsets_seq = grid.get("x_offsets") or [idx * step for idx in grid["x_indices"]]
-                y_sizes_seq = grid.get("y_window_sizes") or [chip_size] * len(y_offsets_seq)
-                x_sizes_seq = grid.get("x_window_sizes") or [chip_size] * len(x_offsets_seq)
+                # Full-scene pass: a single (0,0,width,height) window read
+                # decimated to (fs_out_h, fs_out_w). Threaded through the same
+                # producer loop as one chip carrying an `out_shape`; everything
+                # downstream (dedupe, store, drain) is shared with the grid
+                # passes. Grid passes yield `out_shape=None` (1:1 read).
+                if plan["full_scene"]:
+                    chip_iter = iter([(0, 0, height, width, (plan["fs_out_h"], plan["fs_out_w"]))])
+                else:
+                    # Phase 2: prefer pre-snapped pixel offsets when the planner
+                    # supplied them (block-aligned origins on tiled COGs).
+                    # Legacy fallback recomputes `idx * step` for any plan dict
+                    # that predates the offsets keys. Window sizes carry the
+                    # snap-delta extension so block-snapped grids keep full
+                    # coverage; legacy plans fall back to the uniform chip_size.
+                    y_offsets_seq = grid.get("y_offsets") or [idx * step for idx in grid["y_indices"]]
+                    x_offsets_seq = grid.get("x_offsets") or [idx * step for idx in grid["x_indices"]]
+                    y_sizes_seq = grid.get("y_window_sizes") or [chip_size] * len(y_offsets_seq)
+                    x_sizes_seq = grid.get("x_window_sizes") or [chip_size] * len(x_offsets_seq)
 
-                # Phase 3: parallel producer. Build an iterator of
-                # (y, x, win_h, win_w) tuples and drive a unified wait loop
-                # over both `read_pending` (read+encode futures) and
-                # `pending` (POST futures). The combined in-flight bound is
-                # the same `_effective_pending_limit` used by the runtime
-                # back-off, which keeps memory predictable on huge rasters.
-                chip_iter = (
-                    (y, x, win_h, win_w)
-                    for y, win_h in zip(y_offsets_seq, y_sizes_seq)
-                    for x, win_w in zip(x_offsets_seq, x_sizes_seq)
-                )
+                    # Phase 3: parallel producer. Build an iterator of
+                    # (y, x, win_h, win_w, out_shape) tuples and drive a unified
+                    # wait loop over both `read_pending` (read+encode futures)
+                    # and `pending` (POST futures). The combined in-flight bound
+                    # is the same `_effective_pending_limit` used by the runtime
+                    # back-off, which keeps memory predictable on huge rasters.
+                    chip_iter = (
+                        (y, x, win_h, win_w, None)
+                        for y, win_h in zip(y_offsets_seq, y_sizes_seq)
+                        for x, win_w in zip(x_offsets_seq, x_sizes_seq)
+                    )
                 read_pending: dict[concurrent.futures.Future, tuple[int, int]] = {}
                 exhausted = False
 
@@ -2396,12 +2498,12 @@ def slice_and_infer(
                         and len(read_pending) + len(pending) < _effective_pending_limit
                     ):
                         try:
-                            y, x, win_h, win_w = next(chip_iter)
+                            y, x, win_h, win_w, out_shape = next(chip_iter)
                         except StopIteration:
                             exhausted = True
                             break
                         rf = reader_executor.submit(
-                            _reader_task, x, y, win_w, win_h, pass_index,
+                            _reader_task, x, y, win_w, win_h, pass_index, out_shape,
                         )
                         read_pending[rf] = (x, y)
 
@@ -2938,7 +3040,6 @@ def store_detections(detections: list, pass_id: int, ontology_by_class: dict[str
                     "obb_area_px": det.get("obb_area_px"),
                     "edge_truncated": det.get("edge_truncated"),
                     "embedding": det.get("embedding"),
-                    "prithvi_labels": det.get("prithvi_labels"),
                     "sar_proxy": det.get("sar_proxy"),
                     "terramind_embedding": det.get("terramind_embedding"),
                     "modality": det.get("modality"),
@@ -5519,12 +5620,6 @@ def process_satellite_imagery(
         publish_event("imagery", {"type": "ingest_succeeded", "stage": "ready", "progress": 100, **payload})
         publish_event("ops", {"type": "imagery_ready", "stage": "ready", "progress": 100, **payload})
 
-        if (sensor_type or "").lower() in {"multispectral", "hyperspectral"}:
-            try:
-                run_prithvi_multitemporal.delay(pass_id)
-            except Exception as exc:
-                logger.warning("[WORKER] Failed to queue prithvi multitemporal for pass %s: %s", pass_id, exc)
-
         return payload
     except Exception as e:
         logger.exception("[WORKER] Imagery ingest failed: %s", e)
@@ -5546,134 +5641,8 @@ def process_satellite_imagery(
 
 
 # ============================================================================
-# Prithvi multi-temporal consistency — runs after a multispectral pass lands.
-# Looks for prior overlapping passes within
-# PRITHVI_MULTI_TEMPORAL_WINDOW_DAYS and tags each Prithvi-labeled detection
-# in the current pass with a per-label `pass_count` indicating how often the
-# same label appears within
-# PRITHVI_MULTI_TEMPORAL_MATCH_RADIUS_M of the same point in priors.
-# ============================================================================
-
-
-PRITHVI_MULTI_TEMPORAL_WINDOW_DAYS = env_int("PRITHVI_MULTI_TEMPORAL_WINDOW_DAYS", 30)
-PRITHVI_MULTI_TEMPORAL_MIN_PRIORS = env_int("PRITHVI_MULTI_TEMPORAL_MIN_PRIORS", 2)
-PRITHVI_MULTI_TEMPORAL_MATCH_RADIUS_M = env_float("PRITHVI_MULTI_TEMPORAL_MATCH_RADIUS_M", 200.0)
-
-
-@celery_app.task(name="worker.run_prithvi_multitemporal", queue="imagery")
-def run_prithvi_multitemporal(pass_id: int) -> dict:
-    with postgis_db.get_cursor() as cur:
-        cur.execute(
-            """
-            SELECT id, acquisition_time, sensor_type
-            FROM satellite_passes
-            WHERE id = %s AND footprint IS NOT NULL
-            """,
-            (pass_id,),
-        )
-        row = cur.fetchone()
-    if not row:
-        return {"status": "skipped", "reason": "pass_not_found", "pass_id": pass_id}
-
-    with postgis_db.get_cursor() as cur:
-        cur.execute(
-            """
-            SELECT id, acquisition_time
-            FROM satellite_passes
-            WHERE id <> %s
-              AND footprint IS NOT NULL
-              AND ST_Intersects(footprint, (SELECT footprint FROM satellite_passes WHERE id = %s))
-              AND acquisition_time >= NOW() - (%s || ' days')::interval
-            ORDER BY acquisition_time DESC
-            LIMIT 5
-            """,
-            (pass_id, pass_id, PRITHVI_MULTI_TEMPORAL_WINDOW_DAYS),
-        )
-        priors = [dict(r) for r in cur.fetchall()]
-
-    if len(priors) < PRITHVI_MULTI_TEMPORAL_MIN_PRIORS:
-        return {"status": "skipped", "reason": "insufficient_history", "found": len(priors), "pass_id": pass_id}
-
-    prior_ids = [int(p["id"]) for p in priors]
-
-    with postgis_db.get_cursor() as cur:
-        cur.execute(
-            """
-            SELECT id, ST_X(centroid) AS lon, ST_Y(centroid) AS lat, metadata
-            FROM detections
-            WHERE pass_id = %s
-              AND deleted_at IS NULL
-              AND metadata ? 'prithvi_labels'
-            """,
-            (pass_id,),
-        )
-        detections = [dict(r) for r in cur.fetchall()]
-
-    if not detections:
-        return {"status": "skipped", "reason": "no_prithvi_detections", "pass_id": pass_id}
-
-    updated = 0
-    for det in detections:
-        metadata = det.get("metadata") or {}
-        labels = metadata.get("prithvi_labels") or []
-        if not isinstance(labels, list) or not labels:
-            continue
-        consistency: dict[str, dict] = {}
-        with postgis_db.get_cursor() as cur:
-            for label in labels:
-                if not isinstance(label, str):
-                    continue
-                cur.execute(
-                    """
-                    SELECT COUNT(DISTINCT pass_id) AS pass_count
-                    FROM detections
-                    WHERE pass_id = ANY(%s)
-                      AND deleted_at IS NULL
-                      AND metadata->'prithvi_labels' ? %s
-                      AND ST_DWithin(
-                        centroid::geography,
-                        ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography,
-                        %s
-                      )
-                    """,
-                    (prior_ids, label, det["lon"], det["lat"], PRITHVI_MULTI_TEMPORAL_MATCH_RADIUS_M),
-                )
-                pc = int((cur.fetchone() or {}).get("pass_count") or 0)
-                consistency[label] = {"pass_count": pc, "consistent": pc >= 1}
-        if not consistency:
-            continue
-        with postgis_db.get_cursor(commit=True) as cur:
-            cur.execute(
-                """
-                UPDATE detections
-                SET metadata = coalesce(metadata, '{}'::jsonb) || %s::jsonb
-                WHERE id = %s
-                """,
-                (
-                    json.dumps({
-                        "prithvi_temporal_consistency": consistency,
-                        "prithvi_temporal_priors": prior_ids,
-                    }),
-                    det["id"],
-                ),
-            )
-            updated += 1
-
-    record_timeline_event(
-        "GEOINT",
-        "prithvi_multitemporal_complete",
-        f"Prithvi multi-temporal pass {pass_id}: tagged {updated} detections across {len(priors) + 1} passes",
-        {"pass_id": pass_id, "prior_pass_ids": prior_ids, "updated": updated},
-    )
-    publish_event("imagery", {
-        "type": "prithvi_multitemporal_complete",
-        "pass_id": pass_id,
-        "prior_pass_ids": prior_ids,
-        "updated": updated,
-    })
-    return {"status": "ok", "pass_id": pass_id, "prior_pass_ids": prior_ids, "updated": updated}
-
-
+# Audio transcription — runs faster-whisper on a worker host. Opt-in via
+# WHISPER_ENABLED=1; on hosts without faster-whisper installed the task marks
 # ============================================================================
 # Audio transcription — runs faster-whisper on a worker host. Opt-in via
 # WHISPER_ENABLED=1; on hosts without faster-whisper installed the task marks
@@ -5778,6 +5747,21 @@ def train_model(job_id: int) -> dict:
         "--epochs", str(int(job.get("epochs") or 1)),
         "--out", str(Path(os.getenv("MODEL_OUT_DIR", "/data/models")) / f"job-{job_id}"),
     ]
+    # Opt-in chip-aligned tiling: cut training tiles with the same planner
+    # inference uses so train/inference pixel distributions match. Off unless
+    # the job was queued with metrics.tile truthy — default behaviour unchanged.
+    job_metrics = job.get("metrics") or {}
+    if isinstance(job_metrics, str):
+        try:
+            job_metrics = json.loads(job_metrics)
+        except (ValueError, TypeError):
+            job_metrics = {}
+    if job_metrics.get("tile"):
+        cmd.append("--tile")
+        if job_metrics.get("chip_size"):
+            cmd += ["--chip-size", str(int(job_metrics["chip_size"]))]
+        if job_metrics.get("overlap"):
+            cmd += ["--overlap", str(int(job_metrics["overlap"]))]
     with postgis_db.get_cursor(commit=True) as cur:
         cur.execute("UPDATE training_jobs SET status='running' WHERE id=%s", (job_id,))
     try:

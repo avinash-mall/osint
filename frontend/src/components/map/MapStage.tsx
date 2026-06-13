@@ -142,10 +142,6 @@ export type Props = {
   setSelectedDetectionTrack: (track: DetectionTrack | null) => void;
   trackColor: (category: string) => string;
 
-  /* prithvi overlays */
-  prithviOverlays: Record<string, boolean>;
-  prithviGeojson: Record<string, any>;
-
   /* analytics overlays */
   analyticsResults: Record<string, AnalyticsResponse | null | undefined>;
   pendingPick: AnalyticsPick | null;
@@ -214,8 +210,6 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
     selectedDetectionTrack,
     setSelectedDetectionTrack,
     trackColor,
-    prithviOverlays,
-    prithviGeojson,
     analyticsResults,
     pendingPick,
     setLastMapClick,
@@ -499,31 +493,6 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
               attribution="&copy; OpenStreetMap &copy; OpenTopoMap (CC-BY-SA)"
             />
           )}
-
-          {/* Prithvi overlays — hatched fills coloured per kind */}
-          {(['flood', 'burn', 'crops'] as const).map((kind) => {
-            if (!prithviOverlays[kind]) return null;
-            const dataKind = prithviGeojson[kind];
-            if (!dataKind || !dataKind.features || dataKind.features.length === 0) return null;
-            const color =
-              kind === 'flood' ? '#4ea1ff'
-              : kind === 'burn' ? '#c46a30'
-              : '#3dd68c';
-            return (
-              <GeoJSON
-                key={`prithvi-${kind}`}
-                data={dataKind as any}
-                style={() => ({
-                  color,
-                  weight: 1.2,
-                  opacity: 0.85,
-                  fillColor: color,
-                  fillOpacity: 0.22,
-                  dashArray: '4 3',
-                })}
-              />
-            );
-          })}
 
           {activeLayers.graticule && <MgrsGraticule />}
 
@@ -1155,8 +1124,8 @@ const MapStage = forwardRef<MapHandle, Props>(function MapStage(props, ref) {
           </div>
 
           {/* Top-center action bar — Draw / Range ring / Product Tour. Layer-
-              display state (GEOM box mode, Prithvi overlays, tracks visibility)
-              lives in the LayerPanel Overlays section, not here. */}
+              display state (GEOM box mode, tracks visibility) lives in the
+              LayerPanel Overlays section, not here. */}
           <div className="absolute left-1/2 top-3 z-[500] -translate-x-1/2 pointer-events-auto flex flex-row items-center gap-2">
             <button
               type="button"

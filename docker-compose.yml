@@ -213,6 +213,11 @@ services:
         TORCH_CUDA_ARCH_LIST: ${SAM3_TORCH_CUDA_ARCH_LIST:?Run python scripts/configure_host.py first}
         SAM3_INSTALL_FAST_DEPS: ${SAM3_INSTALL_FAST_DEPS:-1}
         HF_TOKEN: ${HF_TOKEN:-}
+        # MVRSD military-vehicle specialist weight (GitHub release asset, v1).
+        # Defaults to the private-repo API asset endpoint; GITHUB_TOKEN
+        # authenticates the fetch. Override/empty to skip the bake (no-op).
+        MVRSD_WEIGHTS_URL: ${MVRSD_WEIGHTS_URL:-https://api.github.com/repos/avinash-mall/osint/releases/assets/446271599}
+        GITHUB_TOKEN: ${GITHUB_TOKEN:-}
     image: sentinel-inference-sam3:gpu
     # GPU selection is driven by SAM3_VISIBLE_DEVICES below (NVIDIA_VISIBLE_DEVICES
     # in the container), not a `gpus:` device request — a `--gpus all` request
@@ -299,7 +304,6 @@ services:
       SAM3_BATCHED_TEXT: ${SAM3_BATCHED_TEXT:-1}
       SAM3_BATCHED_TEXT_CHUNK_SIZE: ${SAM3_BATCHED_TEXT_CHUNK_SIZE:-8}
       DINOV3_SAT_MODEL_ID: ${DINOV3_SAT_MODEL_ID:-facebook/dinov3-vitl16-pretrain-sat493m}
-      PRITHVI_BACKBONE_ID: ${PRITHVI_BACKBONE_ID:-ibm-nasa-geospatial/Prithvi-EO-2.0-600M-TL}
       TERRAMIND_MODEL_ID: ${TERRAMIND_MODEL_ID:-terramind_v1_large}
       SAM3_TEXT_THRESHOLD: ${SAM3_TEXT_THRESHOLD:-0.30}
       SAM3_BOX_THRESHOLD: ${SAM3_BOX_THRESHOLD:-0.25}
@@ -333,7 +337,6 @@ services:
       # Phase 4: detector selection — "gd" (Grounding-DINO-first, fast) or
       # "grid" (dense 16×16 AMG, vocab-free, slow).
       SAM3_AMG_DETECTOR: ${SAM3_AMG_DETECTOR:-gd}
-      SAM3_PRITHVI_OVERLAY_THRESHOLD: ${SAM3_PRITHVI_OVERLAY_THRESHOLD:-0.30}
       SAM3_SAR_CONF_CAP: ${SAM3_SAR_CONF_CAP:-0.85}
       SAM3_OBB_OPENING_KERNEL_PCT: ${SAM3_OBB_OPENING_KERNEL_PCT:-0.01}
       SAM3_OBB_MIN_AREA_PX: ${SAM3_OBB_MIN_AREA_PX:-4}
@@ -350,13 +353,17 @@ services:
       SAM3_LOAD_OPTIONAL_MODELS: ${SAM3_LOAD_OPTIONAL_MODELS:-1}
       SAM3_LOAD_DINOV3_SAT: ${SAM3_LOAD_DINOV3_SAT:-1}
       # DINOV3_LVD removed: NaN on real video crops + 2.5x slower than SAT.
-      SAM3_LOAD_PRITHVI:    ${SAM3_LOAD_PRITHVI:-1}
       SAM3_LOAD_TERRAMIND:  ${SAM3_LOAD_TERRAMIND:-1}
       # Specialist detectors (run alongside SAM 3 on every chip).
       # DEFENCE_YOLO removed — produced 1297 false positives across DOTA val
       # with zero true positives (see docs/inference_layer_comparison.md).
       SAM3_LOAD_DOTA_OBB:        ${SAM3_LOAD_DOTA_OBB:-1}
       SAM3_LOAD_GROUNDING_DINO:  ${SAM3_LOAD_GROUNDING_DINO:-1}
+      # MVRSD military-vehicle specialist. Default-OFF: enable only for
+      # sub-meter military RGB scenes; only runs when "mvrsd" is in
+      # enabled_layers. See docs/inference/mvrsd-specialist.md.
+      SAM3_LOAD_MVRSD:           ${SAM3_LOAD_MVRSD:-1}
+      MVRSD_CONF:                ${MVRSD_CONF:-0.25}
       # Loading policy: "dynamic" (tight VRAM) rests on the light per-modality
       # RGB profile and loads one modality profile at a time; "hot" rests on
       # the full imagery union. SAM3_RESTING_PROFILE is the startup profile.
@@ -381,7 +388,7 @@ services:
       SAM3_WEIGHTS_SOURCE:  ${SAM3_WEIGHTS_SOURCE:-official}
       SAM3_MIRROR_REPO_ID:  ${SAM3_MIRROR_REPO_ID:-1038lab/sam3}
       SAM3_MIRROR_FILENAME: ${SAM3_MIRROR_FILENAME:-sam3.safetensors}
-      MODEL_VERSION: ${SAM3_MODEL_VERSION:-sam3-image+sam3.1-video+dinov3-sat-l+prithvi+terramind+dota-obb+grounding-dino}
+      MODEL_VERSION: ${SAM3_MODEL_VERSION:-sam3-image+sam3.1-video+dinov3-sat-l+terramind+dota-obb+grounding-dino}
       HF_HOME: /models/hf
       HUGGINGFACE_HUB_CACHE: /models/hf/hub
       TORCH_HOME: /models/torch
@@ -424,7 +431,7 @@ services:
   # LAE-DINO open-vocabulary remote-sensing detector. Backs the `grounding_dino`
   # layer in inference-sam3 (which calls it over HTTP). Kept in its own service
   # because LAE-DINO is a forked mmdetection (mmcv/mmengine) whose deps conflict
-  # with the SAM 3 / TerraMind / Prithvi stack. Opt-in via the `lae` profile so
+  # with the SAM 3 / TerraMind stack. Opt-in via the `lae` profile so
   # the heavy mmcv build only runs when the layer is enabled
   # (SAM3_LOAD_GROUNDING_DINO=1). See docs/inference/lae-dino-sidecar.md.
   inference-lae:

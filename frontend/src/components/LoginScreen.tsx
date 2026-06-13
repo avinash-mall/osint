@@ -109,7 +109,7 @@ export default function LoginScreen() {
                 maxInlineSize: '32.5rem',
               }}
             >
-              SAM 3, DINOv3, Prithvi and TerraMind fused on a single map. Sign in to your operator
+              SAM 3, DINOv3 and TerraMind fused on a single map. Sign in to your operator
               profile to resume your last AOI.
             </p>
 

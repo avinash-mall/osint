@@ -33,7 +33,7 @@ import fusion
 import grounding_dino
 import grounding_dino_gate
 import multispectral
-import prithvi_heads
+import mvrsd
 import sam3_runner
 import sar
 import terramind
@@ -144,11 +144,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Sentinel SAM3 Inference", lifespan=lifespan)
 logger = logging.getLogger("inference-sam3")
 
-MODEL_VERSION = os.getenv("MODEL_VERSION", "sam3-image+sam3.1-video+dinov3-sat-l+prithvi+terramind")
+MODEL_VERSION = os.getenv("MODEL_VERSION", "sam3-image+sam3.1-video+dinov3-sat-l+terramind")
 GPU_MODEL = os.getenv("GPU_MODEL", "unknown")
 SAM3_TEXT_THR = float(os.getenv("SAM3_TEXT_THRESHOLD", "0.50"))
 SAM3_BOX_THR = float(os.getenv("SAM3_BOX_THRESHOLD", "0.25"))
-SAM3_PRITHVI_OVERLAY_THR = float(os.getenv("SAM3_PRITHVI_OVERLAY_THRESHOLD", "0.30"))
 SAM3_SAR_CONF_CAP = float(os.getenv("SAM3_SAR_CONF_CAP", "0.85"))
 # SAR detections are produced through a TerraMind S1→S2 synthetic-optical
 # proxy and must remain visibly below optical-native confidence. See
@@ -194,11 +193,6 @@ SAM3_LOAD_DINOV3_SAT = _flag("SAM3_LOAD_DINOV3_SAT", _DEFAULT)
 # DINOV3_LVD removed: produces NaN embeddings on small drone-video crops and
 # is 2.5× slower than DINOV3_SAT with no measured quality advantage. See
 # docs/video_tracking_stability.md.
-# Phase 8.37: Prithvi default-OFF. The burn-scar head measured chip-level
-# IoU = 0.0000 on HLS Burn Scars test set (see docs/inference_layer_comparison.md)
-# while still costing ~20 ms per chip. Operators with a known-good multispectral
-# AOI can re-enable with SAM3_LOAD_PRITHVI=1.
-SAM3_LOAD_PRITHVI    = _flag("SAM3_LOAD_PRITHVI",    "0")
 SAM3_LOAD_TERRAMIND  = _flag("SAM3_LOAD_TERRAMIND",  _DEFAULT)
 
 # Specialist detectors that complement SAM 3 zero-shot prompts.
@@ -215,6 +209,14 @@ SAM3_LOAD_GROUNDING_DINO  = _flag("SAM3_LOAD_GROUNDING_DINO",  "0")
 # FMV tracker. Bundles both -pf (prompt-free) and -seg (text-prompted)
 # checkpoints; intentionally not loaded by the imagery profile.
 SAM3_LOAD_YOLOE           = _flag("SAM3_LOAD_YOLOE",           _DEFAULT)
+# MVRSD military-vehicle specialist: fine-tuned yolo11m detect on the Military
+# Vehicle Remote Sensing Dataset (5 classes, sub-meter ~0.3 m optical RGB).
+# Default-ON: loads with the imagery_rgb profile and runs on every RGB /detect
+# like the other specialists (DOTA-OBB, Grounding-DINO), gated only by the
+# normal _layer_active() filter and the confidence policy floor. Operators can
+# disable it per-request via enabled_layers or globally via SAM3_LOAD_MVRSD=0.
+# See docs/decisions/why-mvrsd-military-vehicle-specialist.md.
+SAM3_LOAD_MVRSD           = _flag("SAM3_LOAD_MVRSD",           _DEFAULT)
 
 # Profile -> component set. "fmv" keeps VRAM small for video tracking;
 # "imagery" loads the full geospatial stack for satellite detection.
@@ -229,7 +231,7 @@ PROFILE_COMPONENTS: dict[str, tuple[str, ...]] = {
     # Grounding-DINO is no longer part of the FMV bundle: AMG was its only
     # FMV consumer (SAM 3 can't emit labels without text prompts, and we
     # removed AMG-via-GD). GD stays in the imagery profile for /detect.
-    # DINOv3-SAT / Prithvi / Terramind stay out (satellite-imagery specific).
+    # DINOv3-SAT / Terramind stay out (satellite-imagery specific).
     "fmv": tuple(c for c in (
         "sam3_image",
         "sam3_video",
@@ -238,8 +240,8 @@ PROFILE_COMPONENTS: dict[str, tuple[str, ...]] = {
     ) if c),
     # Per-modality imagery profiles. On tight-VRAM cards (dynamic loading
     # policy, SAM3_LOAD_POLICY=dynamic) only ONE of these is resident at a
-    # time, so the modality-specific heavies (prithvi for multispectral,
-    # terramind for SAR) never share VRAM with each other or with the RGB
+    # time, so the modality-specific heavies (terramind for SAR) never
+    # share VRAM with each other or with the RGB
     # detectors. `_profile_for_modality` routes /detect by request modality;
     # `_ensure_profile`'s "all"-superset short-circuit keeps hot cards (that
     # preload "all") reload-free. sam3_image + dinov3_sat are common to all
@@ -249,11 +251,11 @@ PROFILE_COMPONENTS: dict[str, tuple[str, ...]] = {
         "dinov3_sat" if SAM3_LOAD_DINOV3_SAT else None,
         "dota_obb" if SAM3_LOAD_DOTA_OBB else None,
         "grounding_dino" if SAM3_LOAD_GROUNDING_DINO else None,
+        "mvrsd" if SAM3_LOAD_MVRSD else None,
     ) if c),
     "imagery_msi": tuple(c for c in (
         "sam3_image",
         "dinov3_sat" if SAM3_LOAD_DINOV3_SAT else None,
-        "prithvi" if SAM3_LOAD_PRITHVI else None,
     ) if c),
     "imagery_sar": tuple(c for c in (
         "sam3_image",
@@ -330,8 +332,8 @@ BOOT_TS = time.time()
 psutil.cpu_percent(interval=None)
 
 _HEALTH_COMPONENT_SLUGS = (
-    "sam3_image", "sam3_video", "dinov3_sat", "prithvi", "terramind",
-    "dota_obb", "grounding_dino", "yoloe_pf", "yoloe_seg",
+    "sam3_image", "sam3_video", "dinov3_sat", "terramind",
+    "dota_obb", "grounding_dino", "yoloe_pf", "yoloe_seg", "mvrsd",
 )
 _METRIC_WINDOW = int(os.getenv("SAM3_METRIC_WINDOW", "200"))
 _metrics_lock = threading.Lock()
@@ -644,8 +646,6 @@ def _build_component(name: str, device: str) -> Any:
         return sam3_runner.build_video(device)
     if name == "dinov3_sat":
         return embedding.load_sat(device)
-    if name == "prithvi":
-        return prithvi_heads.load_all(device)
     if name == "terramind":
         return terramind.load(device)
     if name == "dota_obb":
@@ -654,6 +654,8 @@ def _build_component(name: str, device: str) -> Any:
         return grounding_dino.load(device)
     if name == "yoloe":
         return yoloe.load(device)
+    if name == "mvrsd":
+        return mvrsd.load(device)
     raise ValueError(f"unknown component: {name}")
 
 
@@ -673,11 +675,11 @@ def _empty_bundle(device: str) -> dict[str, Any]:
         "sam3_image": None,
         "sam3_video": None,
         "dinov3_sat": None,
-        "prithvi": None,
         "terramind": None,
         "dota_obb": None,
         "grounding_dino": None,
         "yoloe": None,
+        "mvrsd": None,
     }
 
 
@@ -807,7 +809,7 @@ def _profile_for_modality(modality: str) -> str:
     """Map a /detect request modality to its per-modality imagery profile.
 
     On dynamic-loading cards this keeps only the requested modality's models
-    resident (RGB detectors vs Prithvi vs Terramind never co-resident). On hot
+    resident (RGB detectors vs Terramind never co-resident). On hot
     cards the "imagery"/"all" superset short-circuit in `_ensure_profile`
     serves these without a reload."""
     m = (modality or "rgb").lower()
@@ -926,6 +928,7 @@ def _system_stats() -> dict[str, Any]:
 def _version_snapshot(bundle: dict[str, Any] | None = None) -> dict[str, Any]:
     versions = dict(sam3_runner.versions())
     versions["dota_obb"] = dota_obb.model_versions((bundle or {}).get("dota_obb"))
+    versions["mvrsd"] = mvrsd.model_versions((bundle or {}).get("mvrsd"))
     return versions
 
 
@@ -957,11 +960,11 @@ def health() -> dict[str, Any]:
         },
         "load_flags": {
             "dinov3_sat": SAM3_LOAD_DINOV3_SAT,
-            "prithvi": SAM3_LOAD_PRITHVI,
             "terramind": SAM3_LOAD_TERRAMIND,
             "dota_obb": SAM3_LOAD_DOTA_OBB,
             "grounding_dino": SAM3_LOAD_GROUNDING_DINO,
             "yoloe": SAM3_LOAD_YOLOE,
+            "mvrsd": SAM3_LOAD_MVRSD,
         },
         "uptime_s": round(time.time() - BOOT_TS, 1),
         "system": _system_stats(),
@@ -1095,10 +1098,10 @@ async def _detect_pipeline(
 
     Everything downstream of the chip-bytes → numpy conversion lives here:
     SAM3 image + box/text prompts, DOTA-OBB, Grounding-DINO (auto-gated),
-    Prithvi multispectral overlays, DINOv3-SAT embeddings, mask-aware NMS,
+    DINOv3-SAT embeddings, mask-aware NMS,
     timings rollup, and response construction. ``chip3`` is the RGB array
     SAM3 consumes; ``chip6`` / ``chip2`` are the optional MSI/SAR raw
-    arrays carried through to Prithvi and TerraMind respectively.
+    arrays; ``chip2`` is carried through to TerraMind.
     """
     def mark(name: str, since: float) -> float:
         now = time.perf_counter()
@@ -1171,6 +1174,21 @@ async def _detect_pipeline(
     else:
         candidates_by_layer.setdefault("dota_obb", 0)
 
+    # MVRSD military-vehicle specialist. Default-ON: runs on every RGB /detect
+    # when the checkpoint is loaded, gated by the normal _layer_active() filter
+    # (default-True; honours an explicit enabled_layers include/exclude) — same
+    # as DOTA-OBB above. Its HBB detections feed the same WBF/NMS fusion +
+    # confidence-policy floor as every other layer.
+    if bundle.get("mvrsd") and _layer_active("mvrsd"):
+        with _track("mvrsd"):
+            mvrsd_candidates = await run_in_threadpool(
+                _locked, mvrsd.run, bundle["mvrsd"], chip3, mvrsd.MVRSD_CONF,
+            )
+        layer_candidates.extend(_tag_candidates("mvrsd", mvrsd_candidates))
+        candidates_by_layer["mvrsd"] = len(mvrsd_candidates)
+    else:
+        candidates_by_layer.setdefault("mvrsd", 0)
+
     gd_force = bool(meta.get("force_grounding_dino", False))
     gd_explicit = "grounding_dino" in _enabled
     gd_should_run, gd_gated_reason = grounding_dino_gate.should_run_grounding_dino(
@@ -1201,15 +1219,6 @@ async def _detect_pipeline(
     candidates_by_layer.setdefault("grounding_dino", 0)
     t0 = mark("specialists", t0)
 
-    overlays: dict[str, np.ndarray] = {}
-    if modality == "multispectral":
-        if _layer_active("prithvi"):
-            with _track("prithvi"):
-                overlays = await run_in_threadpool(_locked, prithvi_heads.run_all, bundle.get("prithvi"), chip6, (height, width))
-        else:
-            overlays = {}
-    t0 = mark("overlays", t0)
-
     # SAR scene embedding: TerraMind pools patch tokens over the WHOLE chip, so
     # the result is identical for every detection. Compute it ONCE here — in the
     # threadpool, under the forward lock, with the device pinned inside
@@ -1239,8 +1248,6 @@ async def _detect_pipeline(
             det["geo"] = {**meta["geo"], "obb_map_crs": None, "obb_map_geojson": None}
         det["embedding"] = {"model": "disabled", "dim": 0, "fp16_b64": ""}
         embed_bboxes.append(bbox_xyxy)
-        if modality == "multispectral":
-            det["prithvi_labels"] = fusion.overlay_labels(mask, overlays, threshold=SAM3_PRITHVI_OVERLAY_THR)
         if modality == "sar":
             det["confidence"] = float(min(det["confidence"], SAM3_SAR_CONF_CAP))
             det["sar_proxy"] = True
@@ -1916,7 +1923,6 @@ def _leave_request() -> None:
 
 
 def _bundle_components(bundle: dict[str, Any]) -> dict[str, Any]:
-    prithvi_bundle = bundle.get("prithvi") or {}
     yoloe_bundle = bundle.get("yoloe") or {}
     def _model_loaded(b):
         return bool(b) and b.get("model") is not None
@@ -1924,11 +1930,10 @@ def _bundle_components(bundle: dict[str, Any]) -> dict[str, Any]:
         "sam3_image": bundle.get("sam3_image") is not None,
         "sam3_video": bundle.get("sam3_video") is not None,
         "dinov3_sat": bundle.get("dinov3_sat") is not None,
-        "prithvi": bool(prithvi_bundle),
-        "prithvi_heads": list(prithvi_bundle.get("loaded_heads") or []),
         "terramind": bundle.get("terramind") is not None,
         "dota_obb": _model_loaded(bundle.get("dota_obb")),
         "grounding_dino": _model_loaded(bundle.get("grounding_dino")),
+        "mvrsd": _model_loaded(bundle.get("mvrsd")),
         "yoloe": bool(yoloe_bundle.get("pf") or yoloe_bundle.get("seg")),
         "yoloe_pf": yoloe_bundle.get("pf") is not None,
         "yoloe_seg": yoloe_bundle.get("seg") is not None,
@@ -1998,7 +2003,7 @@ def _train_worker(job_id: str) -> None:
 
     try:
         model = YOLO(base_weights)
-        results = model.train(
+        train_kwargs = dict(
             data=job["dataset_path"],
             epochs=int(job["epochs"]),
             project=str(out_dir.parent),
@@ -2006,6 +2011,14 @@ def _train_worker(job_id: str) -> None:
             exist_ok=True,
             verbose=False,
         )
+        # Optional device pin. Ultralytics defaults to cuda:0; on a host whose
+        # cuda:0/1 are saturated by live inference replicas, pinning to a free
+        # card (e.g. "2" or "cuda:2") keeps a fine-tune from OOM-crashing the
+        # serving process. Absent → unchanged ultralytics default behaviour.
+        device = job.get("device")
+        if device not in (None, ""):
+            train_kwargs["device"] = device
+        results = model.train(**train_kwargs)
         weights_src = Path(results.save_dir) / "weights" / "best.pt"
         weights_dst = out_dir / "best.pt"
         if weights_src.exists() and weights_src != weights_dst:
@@ -2030,7 +2043,9 @@ def _train_worker(job_id: str) -> None:
 def start_training(payload: dict = None) -> dict:  # type: ignore[assignment]
     """Spawn an ultralytics YOLO fine-tune in the background.
 
-    Body: ``{"name": str, "dataset_path": str, "epochs": int, "base_weights": str?}``.
+    Body: ``{"name": str, "dataset_path": str, "epochs": int, "base_weights": str?,
+    "device": str?}``. ``device`` pins the ultralytics run to a specific GPU
+    (e.g. "2" or "cuda:2"); omit it to use ultralytics' default (cuda:0).
     Returns ``{"job_id", "status": "running"}`` immediately.
     """
     payload = payload or {}
@@ -2052,6 +2067,7 @@ def start_training(payload: dict = None) -> dict:  # type: ignore[assignment]
         "dataset_path": dataset_path,
         "epochs": epochs,
         "base_weights": payload.get("base_weights") or _TRAIN_BASE_WEIGHTS,
+        "device": (str(payload.get("device")).strip() if payload.get("device") not in (None, "") else None),
         "status": "running",
         "started_at": time.time(),
         "finished_at": None,

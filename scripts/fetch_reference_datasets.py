@@ -51,6 +51,7 @@ DEFAULT_LICENSES = {
     "dior":                "research-only",
     "hrsc2016":            "research-only",
     "shiprsimagenet":      "research-only",
+    "mvrsd":               "research-only",   # Google Earth imagery; verify redistribution
     "dvids":               "PD-USGov",
     "wikimedia":           "CC-BY-SA-4.0",
     "nara":                "PD-USGov",
@@ -425,6 +426,130 @@ def _fetch_dropin_only(dataset: str, out: Path, dropin_root: Path) -> FetchResul
 
 
 # ---------------------------------------------------------------------------
+# MVRSD — drop-in only (Baidu/SciDB account-locked), YOLO/VOC bbox source
+# ---------------------------------------------------------------------------
+
+# MVRSD class-index → name. The label indices follow MVRSD's classes.txt order
+# (NOT the community repo's data.yaml `names`, which is inconsistent with its
+# own indices). See scripts/manifests/mvrsd.json.
+_MVRSD_CLASSES = ["SMV", "LMV", "AFV", "CV", "MCV"]
+
+
+def _mvrsd_yolo_to_xyxy(line: str, img_w: int, img_h: int) -> Optional[tuple[str, tuple[int, int, int, int]]]:
+    parts = line.split()
+    if len(parts) < 5:
+        return None
+    try:
+        idx = int(float(parts[0]))
+        cx, cy, bw, bh = (float(p) for p in parts[1:5])
+    except ValueError:
+        return None
+    if idx < 0 or idx >= len(_MVRSD_CLASSES):
+        return None
+    x1 = int((cx - bw / 2.0) * img_w)
+    y1 = int((cy - bh / 2.0) * img_h)
+    x2 = int((cx + bw / 2.0) * img_w)
+    y2 = int((cy + bh / 2.0) * img_h)
+    if x2 <= x1 or y2 <= y1:
+        return None
+    return _MVRSD_CLASSES[idx], (x1, y1, x2, y2)
+
+
+def _fetch_mvrsd(out: Path, dropin_root: Path) -> FetchResult:
+    """Crop per-class reference chips from an operator-supplied MVRSD tree.
+
+    MVRSD imagery is account-locked (Baidu Cloud / SciDB), so this is a drop-in
+    adapter: it skips cleanly when no tree is present. The drop-in ships YOLO
+    bbox labels (not pre-cropped per-class chips), so — unlike the generic
+    ``_fetch_dropin_only`` — we crop the *largest* labelled bbox per image into
+    ``<out>/mvrsd/<class>/<stem>__<class>.png`` so the bake can iterate it.
+
+    Expected drop-in layout:
+        <dropin>/mvrsd/images/{train,val}/<stem>.jpg
+        <dropin>/mvrsd/labels/{train,val}/<stem>.txt   (YOLO)
+    """
+    dataset = "mvrsd"
+    src_root = dropin_root / dataset
+    img_root = src_root / "images"
+    lbl_root = src_root / "labels"
+    if not img_root.is_dir():
+        return FetchResult(dataset, "skipped", f"no drop-in tree at {img_root}")
+
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        return FetchResult(dataset, "error", f"PIL missing: {exc}")
+
+    # Content-keyed freshness (relative path + size), same pattern as drop-in.
+    sig = "|".join(
+        f"{p.relative_to(src_root).as_posix()}:{p.stat().st_size}"
+        for p in sorted(src_root.rglob("*")) if p.is_file()
+    )
+    digest = _sha8(f"mvrsd|{sig}".encode())
+    dataset_root = out / dataset
+    if _is_fresh(dataset_root, digest):
+        return FetchResult(dataset, "ok", detail=f"drop-in {src_root} unchanged — cached")
+    dataset_root.mkdir(parents=True, exist_ok=True)
+    license_spdx = DEFAULT_LICENSES.get(dataset, "research-only")
+
+    entries: list[ChipManifestEntry] = []
+    counts: dict[str, int] = {}
+    for split in ("train", "val"):
+        split_img = img_root / split
+        split_lbl = lbl_root / split
+        if not split_img.is_dir():
+            continue
+        for img_path in sorted(split_img.iterdir()):
+            if img_path.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
+                continue
+            lbl_path = split_lbl / f"{img_path.stem}.txt"
+            if not lbl_path.is_file():
+                continue
+            with Image.open(img_path) as im:
+                w, h = im.size
+            # Pick the largest-area labelled box as the chip's class assignment.
+            best: Optional[tuple[str, tuple[int, int, int, int], int]] = None
+            for raw in lbl_path.read_text().splitlines():
+                parsed = _mvrsd_yolo_to_xyxy(raw, w, h)
+                if parsed is None:
+                    continue
+                cls, (x1, y1, x2, y2) = parsed
+                area = (x2 - x1) * (y2 - y1)
+                if best is None or area > best[2]:
+                    best = (cls, (x1, y1, x2, y2), area)
+            if best is None:
+                continue
+            cls, bbox, _ = best
+            crop = _crop_largest_bbox(img_path, bbox)
+            if crop is None:
+                continue
+            class_dir = dataset_root / cls
+            class_dir.mkdir(parents=True, exist_ok=True)
+            chip_out = class_dir / f"{img_path.stem}__{cls}.png"
+            crop.save(chip_out)
+            entries.append(ChipManifestEntry(
+                chip_path=str(chip_out.relative_to(dataset_root)),
+                class_name=cls,
+                license_spdx=license_spdx,
+                attribution="MVRSD (Google Earth; baidongls/MVRSD) — operator-provided drop-in",
+                source_url="https://github.com/baidongls/MVRSD",
+                sha256=_file_sha256(chip_out),
+                extra={"bbox_xyxy": list(bbox), "split": split},
+            ))
+            counts[cls] = counts.get(cls, 0) + 1
+
+    _write_manifest(dataset_root, dataset, entries)
+    _stamp(dataset_root, digest)
+    return FetchResult(
+        dataset, "ok",
+        detail=f"drop-in {src_root} → {len(entries)} chips across {len(counts)} classes",
+        classes_written=len(counts),
+        chips_written=len(entries),
+        manifest_path=dataset_root / "MANIFEST.json",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Manifest-driven HTTP fetchers (Wikimedia, NARA, NASA, DVIDS)
 # ---------------------------------------------------------------------------
 
@@ -579,6 +704,11 @@ def run(
     for ds in ("xview", "dior", "hrsc2016", "shiprsimagenet"):
         if _gate(ds):
             results.append(_fetch_dropin_only(ds, out, dropin_root))
+
+    # MVRSD — drop-in only too, but ships YOLO/VOC bbox labels (not pre-cropped
+    # per-class chips), so it gets a dedicated bbox-cropping adapter.
+    if _gate("mvrsd"):
+        results.append(_fetch_mvrsd(out, dropin_root))
 
     # Manifest-driven (Wikimedia, NARA, NASA, DVIDS)
     for ds in ("wikimedia", "nara", "nasa", "dvids"):

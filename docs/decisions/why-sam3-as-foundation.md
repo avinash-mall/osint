@@ -7,7 +7,7 @@ The inference stack is built around **SAM 3** (image) and **SAM 3.1** (multiplex
 ## Why
 
 - **Open-vocabulary segmentation** — SAM3's native API accepts free-text prompts, produces pixel masks. Closed-vocab image specialists such as DOTA-OBB emit boxes from a fixed list; SAM3 fills the gap for anything not in those lists.
-- **Single API across modalities** — RGB, multispectral, SAR all go through SAM3: multispectral via Prithvi-derived RGB preview, SAR via TerraMind S1→S2 synthesis. Downstream record schema is identical regardless of sensor.
+- **Single API across modalities** — RGB, multispectral, SAR all go through SAM3: multispectral via an HLS-6 RGB preview, SAR via TerraMind S1→S2 synthesis. Downstream record schema is identical regardless of sensor.
 - **Mask + box + OBB in one pass** — SAM3 emits the mask; the worker derives a tight HBB + OBB via `cv2.minAreaRect` on the mask contour. No second model needed for oriented boxes (DOTA-OBB is additive, not required).
 - **Native multiplex video** — SAM 3.1's `build_sam3_multiplex_video_predictor` tracks a single text prompt per session across frames. The worker fans out one request per prompt, merges streams → multi-class FMV tracking.
 

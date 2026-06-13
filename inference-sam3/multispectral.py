@@ -8,7 +8,6 @@ import rasterio
 
 
 PRITHVI_CONSTANT_SCALE = 0.0001
-PRITHVI_SIZE = 224
 
 # HLS_SCALE_MODE controls whether decode_hls6 applies the 0.0001 reflectance
 # scale factor. Default 'auto' triggers scaling when mean > 1.0 (raw int
@@ -36,18 +35,3 @@ def hls_to_rgb_preview(arr_reflectance: np.ndarray) -> np.ndarray:
     p2, p98 = np.percentile(rgb, [2, 98], axis=(1, 2), keepdims=True)
     rgb = np.clip((rgb - p2) / np.maximum(p98 - p2, 1e-6), 0.0, 1.0)
     return (rgb * 255).astype(np.uint8).transpose(1, 2, 0)
-
-
-def resize_to_prithvi(arr_reflectance: np.ndarray) -> np.ndarray:
-    import cv2
-
-    hwc = arr_reflectance.transpose(1, 2, 0)
-    resized = cv2.resize(hwc, (PRITHVI_SIZE, PRITHVI_SIZE), interpolation=cv2.INTER_LINEAR)
-    return resized.transpose(2, 0, 1).astype(np.float32)
-
-
-def pad_to_window(arr_reflectance: np.ndarray, window_size: int = 512) -> np.ndarray:
-    h, w = arr_reflectance.shape[-2:]
-    pad_h = (window_size - (h % window_size)) % window_size
-    pad_w = (window_size - (w % window_size)) % window_size
-    return np.pad(arr_reflectance, ((0, 0), (0, pad_h), (0, pad_w)), mode="reflect")

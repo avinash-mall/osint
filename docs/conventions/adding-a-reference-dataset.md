@@ -31,6 +31,13 @@ def _fetch_mynewds(out: Path, dropin_root: Path) -> FetchResult:
     return _fetch_dropin_only("mynewds", out, dropin_root)
 ```
 
+Pattern B′ — **Drop-in only, but the source ships bbox labels** (not pre-cropped
+per-class chips): write a dedicated adapter that crops the largest labelled
+bbox per image into `<out>/<dataset>/<class>/*.png`. `_fetch_mvrsd`
+([scripts/fetch_reference_datasets.py](../../scripts/fetch_reference_datasets.py))
+is the worked example — MVRSD ships YOLO/VOC bboxes, so `_fetch_dropin_only`
+(which expects per-class subdirs or a DOTA `labels.json`) doesn't fit.
+
 Pattern C — **Manifest-driven HTTP** (curated URL list):
 
 Add `scripts/manifests/mynewds.json` with the schema documented in [reference-corpora-bake.md](../operations/reference-corpora-bake.md). The existing `_fetch_from_manifest` handles it — just register the dataset name in `run()`.

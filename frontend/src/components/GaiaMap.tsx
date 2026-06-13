@@ -176,12 +176,6 @@ export default function GaiaMap({
 
   // Map+ enhancements
   const [bboxMode, setBboxMode] = useState<'hbb' | 'obb' | 'mask'>('obb');
-  const [prithviOverlays, setPrithviOverlays] = useState<{ flood: boolean; burn: boolean; crops: boolean }>({
-    flood: false,
-    burn: false,
-    crops: false,
-  });
-  const [prithviGeojson, setPrithviGeojson] = useState<Record<string, any>>({});
   const [selectionTab, setSelectionTab] = useState<'edit' | 'review'>('edit');
   const [tmRange, setTmRange] = useState<'24h' | '7d' | '30d'>('24h');
   const [tmValue, setTmValue] = useState(1);
@@ -848,32 +842,6 @@ export default function GaiaMap({
   useEffect(() => { fetchDetectionTracks(); }, [fetchDetectionTracks]);
   useEffect(() => { fetchDetectionTileVersion(); }, [fetchDetectionTileVersion]);
 
-  // Fetch Prithvi overlay GeoJSON for any toggled kind. Each kind is loaded
-  // lazily and cached until the user toggles it off.
-  useEffect(() => {
-    let cancelled = false;
-    const wanted: Array<'flood' | 'burn' | 'crops'> = ['flood', 'burn', 'crops'].filter(
-      (k) => prithviOverlays[k as 'flood' | 'burn' | 'crops'],
-    ) as any;
-    (async () => {
-      for (const kind of wanted) {
-        if (prithviGeojson[kind]) continue;
-        try {
-          const params: any = { kind };
-          if (mapBounds) params.bbox = mapBounds;
-          const { data } = await axios.get(`${API_URL}/api/detections/prithvi-overlays`, { params });
-          if (cancelled) return;
-          setPrithviGeojson((cur) => ({ ...cur, [kind]: data }));
-        } catch (err) {
-          console.error('prithvi overlay load failed', kind, err);
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [prithviOverlays, mapBounds, prithviGeojson]);
-
   useEffect(() => {
     const fetchBasemap = async () => {
       try {
@@ -1346,8 +1314,6 @@ export default function GaiaMap({
         setActiveLayers={setActiveLayers}
         bboxMode={bboxMode}
         setBboxMode={setBboxMode}
-        prithviOverlays={prithviOverlays}
-        setPrithviOverlays={setPrithviOverlays}
         imagery={imagery}
         onDeleteImagery={user?.role === 'admin' ? handleDeleteImagery : undefined}
         visibleDetectionCount={visibleDetectionCount}
@@ -1450,8 +1416,6 @@ export default function GaiaMap({
         selectedDetectionTrack={selectedDetectionTrack}
         setSelectedDetectionTrack={setSelectedDetectionTrack}
         trackColor={trackColor}
-        prithviOverlays={prithviOverlays}
-        prithviGeojson={prithviGeojson}
         analyticsResults={analyticsResults}
         pendingPick={pendingPick}
         setLastMapClick={setLastMapClick}

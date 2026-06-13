@@ -15,7 +15,7 @@ Per-service inventory: image, ports, depends-on, volumes. Read with the compose 
 | `backend` | `sentinel-backend:latest` | internal 8080 | neo4j, postgis, redis | FastAPI + WebSocket |
 | `worker` | `sentinel-backend:latest` | — | neo4j, postgis, redis, inference-sam3 | Celery worker; queues `imagery`, `default` |
 | `worker_beat` | `sentinel-backend:latest` | — | redis | Celery beat scheduler (periodic feed polling, cleanup) |
-| `inference-sam3` | `sentinel-inference-sam3:gpu` | internal 8001 | — | GPU image; SAM3+SAM3.1+YOLOE+DINOv3+Prithvi+TerraMind+DOTA+GDINO |
+| `inference-sam3` | `sentinel-inference-sam3:gpu` | internal 8001 | — | GPU image; SAM3+SAM3.1+YOLOE+DINOv3+TerraMind+DOTA+GDINO |
 | `inference-lae` *(profile `lae`)* | `sentinel-inference-lae:gpu` | internal 8010 | — | GPU image; LAE-DINO RS open-vocab detector behind the `grounding_dino` layer ([lae-dino-sidecar.md](../inference/lae-dino-sidecar.md)) |
 | `neo4j` | `neo4j:5.26.26-community-ubi10` | internal 7687/7474 | — | APOC enabled |
 | `postgis` | `postgis/postgis:18-3.6` | internal 5432 | — | spatial catalog, detections, auth, ontology |

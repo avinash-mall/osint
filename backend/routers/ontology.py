@@ -1,8 +1,6 @@
 """Ontology router — branches, objects, prompt profiles, version history, unknown labels.
 
-Extracted from backend/main.py. Wires every ``/api/ontology*`` route plus
-the read-side ``/api/detections/prithvi-overlays`` helper that depends on
-``ontology_default_prompts``.
+Extracted from backend/main.py. Wires every ``/api/ontology*`` route.
 
 Endpoints (12):
   GET    /api/ontology                                — full tree (+ sensor filter)

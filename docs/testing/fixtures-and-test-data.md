@@ -4,12 +4,12 @@
 
 - [tests/fixtures/](../../tests/fixtures/) — top-level fixtures consumed by both backend and scripts.
 - [sample/](../../sample/) — sample MP4s (drone videos) used by `video_tracking_stability.py` and Playwright visual tests.
-- [scripts/eval_datasets/](../../scripts/eval_datasets/) — dataset loaders for DOTA, Sen1Floods11, S1-GRD, HLS-burn, SAR-synth.
+- [scripts/eval_datasets/](../../scripts/eval_datasets/) — dataset loaders for DOTA, S1-GRD, SAR-synth, triage.
 - [bench/](../../bench/) — committed benchmark output JSON (referenced by [benchmarks/](../benchmarks/) docs).
 
 ## Synthetic vs real
 
-- **`scripts/fetch_real_datasets.py`** — downloads real DOTA val + Sen1Floods11. Requires `HF_TOKEN` and outbound network.
+- **`scripts/fetch_real_datasets.py`** — downloads the real DOTA-v1.0 val slice. Requires `HF_TOKEN` and outbound network.
 - **`scripts/fetch_eval_datasets.py --synthetic-fixtures`** — deterministic synthetic fixtures for CI / smoke tests when the network is unavailable.
 
 Fetch scripts are **idempotent**, gated by a `labels.json` marker recording which datasets are real vs synthetic — re-running won't re-download.

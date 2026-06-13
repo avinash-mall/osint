@@ -39,7 +39,7 @@ Vite — it hits the nginx-served production bundle). 15 tests, ~18s.
   before load — the first-visit Product-Tour `.confirm-overlay` otherwise intercepts
   every click. The product-tour spec opens the tour explicitly instead.
 - **Graceful degradation.** Controls that only render with a selected detection
-  (selection-panel tabs) or loaded overlays (geom-*/prithvi-*) are exercised with
+  (selection-panel tabs) or loaded overlays (geom-*) are exercised with
   `clickIfVisible` and skipped-with-annotation when the live DB is sparse.
 
 ## Key symbols

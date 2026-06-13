@@ -17,7 +17,7 @@ Operator surface for the [inference-sam3](../inference/service-overview.md) serv
 | `GET` | `/api/inference/health` | [inference.py#L70](../../backend/routers/inference.py#L70) | Cached `/health` from inference (5 s TTL) |
 | `GET` | `/api/inference/confidence-overrides` | [inference.py#L94](../../backend/routers/inference.py#L94) | Per-class confidence floors |
 | `PUT` | `/api/inference/confidence-overrides` | [inference.py#L109](../../backend/routers/inference.py#L109) | Admin-only update via [`ConfidenceConfig`](../../backend/schemas.py) |
-| `GET` | `/api/inference/dashboard` | [inference.py#L229](../../backend/routers/inference.py#L229) | Aggregated KPIs for the Health Dashboard view |
+| `GET` | `/api/inference/dashboard` | [inference.py#L229](../../backend/routers/inference.py#L229) | Aggregated KPIs for the Health Dashboard view. Model rows are built from `_COMPONENT_ROWS` (single source of truth) against the live `/health` payload — one row per component: SAM3 image/video, DINOv3-SAT, TerraMind, DOTA-OBB, Grounding-DINO, YOLOE, and `mvrsd` (MVRSD military-vehicle specialist, version from `model_versions.mvrsd`, flag `mvrsd`) |
 
 ## Why this design
 

@@ -2,10 +2,10 @@
 
 **Paths:**
 - [frontend/src/hooks/useProductTour.ts](../../frontend/src/hooks/useProductTour.ts) (~91 lines)
-- [frontend/src/components/tour/tourSteps.ts](../../frontend/src/components/tour/tourSteps.ts) (~417 lines)
+- [frontend/src/components/tour/tourSteps.ts](../../frontend/src/components/tour/tourSteps.ts) (~396 lines)
 - [frontend/src/components/tour/ProductTour.tsx](../../frontend/src/components/tour/ProductTour.tsx) (~366 lines)
 
-**Lines:** ~875 total across three files
+**Lines:** ~853 total across three files
 
 **Depends on:** React 19 hooks, `lucide-react` icons (`HelpCircle`, `X`), `.confirm-overlay` / `.confirm-dialog` / `.btn` CSS classes from [index.css](../../frontend/src/index.css), CSS variables `--accent` / `--bg-1` / `--text` / `--muted`, the `data-tour="<id>"` attributes scattered across [MapStage.tsx](../../frontend/src/components/map/MapStage.tsx), [LayerPanel.tsx](../../frontend/src/components/map/LayerPanel.tsx), [SelectionPanel.tsx](../../frontend/src/components/map/SelectionPanel.tsx) and [TimeMachineBar.tsx](../../frontend/src/components/map/TimeMachineBar.tsx).
 
@@ -15,7 +15,7 @@ In-app guided onboarding for the Map workspace, aimed at defence analysts seeing
 
 1. **Auto-welcome on first visit.** When the operator opens the map page and `localStorage[sentinel:tour-completed]` is unset, a welcome modal pops with three actions: *Take the tour*, *Maybe later* (dismiss without setting the flag — re-pops next visit), *Don't show again* (sets the flag).
 2. **Manual re-launch.** A **Product Tour** button in the top-center toolbar of `MapStage` re-opens the welcome modal any time.
-3. **Step-by-step tooltip walkthrough.** 52 declarative steps (one per interactive control on the page) covering — left rail (basemap, opacity, layer toggles, GEOM modes, PRITHVI overlays, detection classes, imagery passes, imagery delete, analytics-tools layer toggles), top action bar (Draw / Range-ring / Product Tour), zoom cluster (zoom-in/out, recenter, focus mode, tactical visual mode), Time-machine deep (play, recenter, ranges, CONF threshold, passes count, sensor legend), bottom chrome (restored-hidden filter banner, SHOWING N/M suppression chip, event timeline + window buttons + in-window counter), and SelectionPanel deep (header status chip, collapse, six tabs incl. the `tab-satellites` overpass-planning tab and the `tab-provenance` detection-lineage tab, five Analytics tools — viewshed / LOS / routes / `analytics-isochrone` / `analytics-odflows` — + capabilities footer, Track Object button). Each step body is a two-sentence what-it-does + when-an-analyst-reaches-for-it explanation.
+3. **Step-by-step tooltip walkthrough.** 49 declarative steps (one per interactive control on the page) covering — left rail (basemap, opacity, layer toggles, GEOM modes, detection classes, imagery passes, imagery delete, analytics-tools layer toggles), top action bar (Draw / Range-ring / Product Tour), zoom cluster (zoom-in/out, recenter, focus mode, tactical visual mode), Time-machine deep (play, recenter, ranges, CONF threshold, passes count, sensor legend), bottom chrome (restored-hidden filter banner, SHOWING N/M suppression chip, event timeline + window buttons + in-window counter), and SelectionPanel deep (header status chip, collapse, six tabs incl. the `tab-satellites` overpass-planning tab and the `tab-provenance` detection-lineage tab, five Analytics tools — viewshed / LOS / routes / `analytics-isochrone` / `analytics-odflows` — + capabilities footer, Track Object button). Each step body is a two-sentence what-it-does + when-an-analyst-reaches-for-it explanation.
 
 ## Why this design
 
@@ -34,9 +34,9 @@ In-app guided onboarding for the Map workspace, aimed at defence analysts seeing
 - `dismissWelcome` ≠ `skip`: *dismiss* closes the modal without setting the LS flag (re-pops next session); *skip* persists the flag.
 
 ### `tourSteps.ts`
-- `TOUR_STEPS: TourStep[]` ([tourSteps.ts#L29-L417](../../frontend/src/components/tour/tourSteps.ts#L29-L417)) — 52 steps in display order, incl. `analytics-isochrone` ([tourSteps.ts#L361-L367](../../frontend/src/components/tour/tourSteps.ts#L361-L367)) and `analytics-odflows` ([tourSteps.ts#L368-L374](../../frontend/src/components/tour/tourSteps.ts#L368-L374)). Selectors are `[data-tour="..."]` matches.
+- `TOUR_STEPS: TourStep[]` ([tourSteps.ts#L29-L396](../../frontend/src/components/tour/tourSteps.ts#L29-L396)) — 49 steps in display order, incl. `analytics-isochrone` ([tourSteps.ts#L340-L346](../../frontend/src/components/tour/tourSteps.ts#L340-L346)) and `analytics-odflows` ([tourSteps.ts#L347-L353](../../frontend/src/components/tour/tourSteps.ts#L347-L353)). Selectors are `[data-tour="..."]` matches.
 - **`onStepChange` callback** ([ProductTour.tsx](../../frontend/src/components/tour/ProductTour.tsx)) — optional prop the engine fires whenever the resolved step changes (or with `null` when the tour is not running). [GaiaMap.tsx](../../frontend/src/components/GaiaMap.tsx) implements it to open the SelectionPanel + switch to the right tab before a Details/Analytics/**Satellites**/Similar/**Provenance**/Tracks step is spotlighted, and to open the timeline panel before any `tm-*` / `event-*` step. Each `tab-<k>` step needs its own `setRightTab('<k>')` case here, or the spotlight lands on an empty pane (the `tab-satellites` case was missing). This is what lets steps that live inside a panel/tab the analyst hasn't visited still resolve cleanly: the parent satisfies prerequisite state, then the deferred existence sampler re-queries `document.querySelector` after the prep has committed (see below) before the auto-skip effect is allowed to advance.
-- `Placement` ([tourSteps.ts#L11](../../frontend/src/components/tour/tourSteps.ts#L11)) — `'top' | 'bottom' | 'left' | 'right'`, the *preferred* tooltip placement (falls back automatically if the card would clip the viewport).
+- `Placement` ([tourSteps.ts#L19](../../frontend/src/components/tour/tourSteps.ts#L19)) — `'top' | 'bottom' | 'left' | 'right'`, the *preferred* tooltip placement (falls back automatically if the card would clip the viewport).
 
 ### `ProductTour.tsx`
 - `pickPlacement(rect, preferred)` ([ProductTour.tsx#L39-L64](../../frontend/src/components/tour/ProductTour.tsx#L39-L64)) — tries the preferred placement, then the other three; clamps into the viewport as a last resort.

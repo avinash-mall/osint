@@ -100,11 +100,11 @@ export function isHighResolutionOnly(obj: DefenceObject): boolean {
 }
 
 /**
- * Sentinel prompts (e.g. `__prithvi_burn__`, `__prithvi_crop_corn__`) live in
+ * Sentinel prompts (e.g. `__aux_burn__`, `__aux_crop_corn__`) live in
  * the ontology so the Aux Layers branch shows up in the picker / legend, but
  * they are NOT real text prompts for SAM 3 — they're marker strings that the
- * specialist heads (Prithvi burn/flood/crop) emit independently. Strip them
- * before sending the prompt list to the inference service.
+ * specialist heads emit independently. Strip them before sending the prompt
+ * list to the inference service.
  */
 export function isSentinelPrompt(prompt: string): boolean {
   return prompt.startsWith('__') && prompt.endsWith('__');
@@ -136,10 +136,12 @@ export function uploadSensorToTag(uploadSensor: string): Sensor {
  *   - optical  → SAM3 + DOTA_OBB (mAP 0.05→0.61) + DINOV3_SAT (re-ID embedding,
  *                only fires when SAM3_EMBED_DETECTIONS=1). GROUNDING_DINO is
  *                loaded but auto-gated server-side for in-vocab prompts.
- *   - multispectral → SAM3 + PRITHVI (flood / burn-scar / crop heads, +20ms).
- *   - hyperspectral → SAM3 only. PRITHVI's heads were trained on HLS 6-band
- *                multispectral, not hyperspectral; we surface this as a UI
- *                warning so callers know quality may be lower.
+ *   - multispectral → SAM3 + DINOV3_SAT (re-ID embedding on the multispectral
+ *                preview).
+ *   - hyperspectral → SAM3 only. The multispectral specialist heads were
+ *                trained on HLS 6-band multispectral, not hyperspectral; we
+ *                surface this as a UI warning so callers know quality may be
+ *                lower.
  *   - sar      → SAM3 + TERRAMIND (S1→RGB preview + embedding pool).
  */
 export interface SensorPipeline {
@@ -156,18 +158,18 @@ export interface SensorPipeline {
 const SENSOR_PIPELINE: Record<string, SensorPipeline> = {
   optical: {
     modality: 'rgb',
-    enabledLayers: ['sam3', 'dota_obb', 'grounding_dino', 'dinov3_sat'],
-    models: ['SAM3', 'DOTA-OBB', 'GroundingDINO (auto-gated)', 'DINOV3_SAT'],
+    enabledLayers: ['sam3', 'dota_obb', 'grounding_dino', 'dinov3_sat', 'mvrsd'],
+    models: ['SAM3', 'DOTA-OBB', 'GroundingDINO (auto-gated)', 'DINOV3_SAT', 'MVRSD (military vehicles)'],
   },
   multispectral: {
     modality: 'multispectral',
-    enabledLayers: ['sam3', 'prithvi', 'dinov3_sat'],
-    models: ['SAM3', 'PRITHVI (flood/burn/crop)', 'DINOV3_SAT'],
+    enabledLayers: ['sam3', 'dinov3_sat'],
+    models: ['SAM3', 'DINOV3_SAT'],
   },
   hyperspectral: {
     modality: 'multispectral',
-    enabledLayers: ['sam3', 'prithvi', 'dinov3_sat'],
-    models: ['SAM3', 'PRITHVI (HLS-trained, may underperform)', 'DINOV3_SAT'],
+    enabledLayers: ['sam3', 'dinov3_sat'],
+    models: ['SAM3', 'DINOV3_SAT'],
     warning:
       'Native hyperspectral support is experimental — the request is forwarded to the multispectral pipeline. Quality on >6-band data is not validated.',
   },

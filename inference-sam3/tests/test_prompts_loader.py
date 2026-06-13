@@ -79,12 +79,12 @@ def test_sar_modality_maps_to_sar_sensor(monkeypatch):
 
     def fake_fetch(sensor, branch=None, timeout=5.0):
         seen["sensor"] = sensor
-        return ["__prithvi_flood__"]
+        return ["__sar_sentinel__"]
 
     monkeypatch.setattr(main, "_fetch_default_prompts", fake_fetch)
     prompts = main.resolve_prompts({"modality": "sar"})
     assert seen["sensor"] == "sar"
-    assert prompts == ["__prithvi_flood__"]
+    assert prompts == ["__sar_sentinel__"]
 
 
 def test_backend_unavailable_raises_typed_error(monkeypatch):
