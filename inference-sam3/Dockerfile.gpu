@@ -81,12 +81,28 @@ ARG MVRSD_WEIGHTS_URL=""
 ARG GITHUB_TOKEN=""
 ENV HF_TOKEN=${HF_TOKEN} \
     YOLO_CONFIG_DIR=/models/torch/ultralytics
-RUN mkdir -p /models/hf/hub /models/torch/ultralytics && \
+RUN --mount=type=bind,from=model_cache,target=/model-cache,ro \
+    mkdir -p /models/hf/hub /models/torch/ultralytics && \
     set -u; \
+    : "--- Offline reuse: seed /models from a local cache when provided ---"; \
+    : "  The model_cache build context (compose additional_contexts, default"; \
+    : "  ./model-cache) may hold a previously-baked /models tree. When it"; \
+    : "  carries an HF hub, copy it in and switch HF offline so the downloads"; \
+    : "  below become cache-only no-ops — lets air-gapped / cache-pruned hosts"; \
+    : "  rebuild without re-fetching ~16 GB. Empty/.gitkeep-only context (the"; \
+    : "  default on a fresh clone or connected host) = normal online bake."; \
+    : "  See docs/deployment/offline-airgap-deployment.md."; \
+    if [ -n "$(ls -A /model-cache/hf/hub 2>/dev/null)" ]; then \
+        echo "[bake] seeding /models from local model_cache (offline reuse)"; \
+        cp -a /model-cache/. /models/; \
+        export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1; \
+    else \
+        echo "[bake] model_cache empty — fetching model weights online"; \
+    fi; \
     : "--- SAM3 (gated) ---"; \
     huggingface-cli download facebook/sam3 || echo "[bake] facebook/sam3 skipped (no HF_TOKEN?)"; \
     : "--- SAM3 mirror (non-gated fallback) ---"; \
-    huggingface-cli download 1038lab/sam3 sam3.safetensors; \
+    huggingface-cli download 1038lab/sam3 sam3.safetensors || echo "[bake] 1038lab/sam3 skipped (offline reuse?)"; \
     : "--- DINOv3-SAT (gated) ---"; \
     huggingface-cli download facebook/dinov3-vitl16-pretrain-sat493m || echo "[bake] dinov3-sat skipped"; \
     : "--- no open-vocab GDINO/LAE-DINO bake: that layer was removed ---"; \
@@ -104,7 +120,9 @@ RUN mkdir -p /models/hf/hub /models/torch/ultralytics && \
     : "  succeeds; the layer then loads-but-empty (honour-gate, model=None,"; \
     : "  zero candidates). Grep the build log for '[bake] mvrsd weight'."; \
     mkdir -p /models/mvrsd && \
-    if [ -n "$MVRSD_WEIGHTS_URL" ]; then \
+    if [ -s /models/mvrsd/mvrsd_yolo11m.pt ]; then \
+        echo "[bake] mvrsd weight present (seeded reuse) — skipping fetch"; \
+    elif [ -n "$MVRSD_WEIGHTS_URL" ]; then \
         curl -fsSL \
             -H "Authorization: Bearer $GITHUB_TOKEN" \
             -H "Accept: application/octet-stream" \

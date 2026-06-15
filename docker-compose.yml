@@ -213,6 +213,14 @@ services:
     build:
       context: ./inference-sam3
       dockerfile: Dockerfile.gpu
+      # Offline model reuse: a previously-baked /models tree (16 GB) staged into
+      # ./model-cache lets the build seed weights locally instead of re-fetching
+      # from HF — required to rebuild on an air-gapped / cache-pruned host. Empty
+      # (.gitkeep-only) on a fresh clone → normal online bake. Stage with:
+      #   docker cp <inference-container>:/models/. ./model-cache/
+      # See docs/deployment/offline-airgap-deployment.md.
+      additional_contexts:
+        model_cache: ${SAM3_MODEL_CACHE_DIR:-./model-cache}
       args:
         CUDA_VERSION: ${SAM3_CUDA_VERSION:?Run python scripts/configure_host.py first}
         UBUNTU_VERSION: ${SAM3_UBUNTU_VERSION:?Run python scripts/configure_host.py first}

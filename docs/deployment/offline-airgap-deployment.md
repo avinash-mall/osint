@@ -47,6 +47,21 @@ docker compose up -d
 
 `./assets` is read-only at runtime — the stack never attempts outbound network access. Remote HTTP(S) imagery ingest is disabled by default (`ALLOW_REMOTE_IMAGERY_URLS=0`) so disconnected deployments process staged local files under `/data/imagery`.
 
+## Rebuilding the inference image offline
+
+`docker compose build` normally downloads ~16 GB of model weights from Hugging Face — impossible on a disconnected host, and re-incurred whenever the BuildKit cache is pruned (step 5 above). To rebuild **without** re-fetching, stage a previously-baked `/models` tree into `./model-cache`; the build seeds `/models` from it and runs the bake HF-offline:
+
+```bash
+# One-time: copy the baked models out of a working inference image/container
+docker cp osint-inference-sam3-1:/models/. ./model-cache/
+
+# Rebuild — the model_cache build context seeds /models locally, no downloads.
+# Point elsewhere with SAM3_MODEL_CACHE_DIR=/path/to/cache.
+docker compose build inference-sam3 && docker compose up -d inference-sam3
+```
+
+`./model-cache` is gitignored (tracked only via `.gitkeep`) so the 16 GB never enters source control but the build-context path always exists. An empty `./model-cache` (fresh clone / connected build host) falls through to the normal online bake. Seed step: [inference-gpu-dockerfile.md](inference-gpu-dockerfile.md); context wiring: `docker-compose.yml` `inference-sam3.build.additional_contexts`.
+
 ## What's baked in
 
 **Application images (baked at `docker compose build`):**

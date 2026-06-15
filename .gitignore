@@ -127,6 +127,14 @@ inference/models/*
 /reference-corpora-input/*
 !/reference-corpora-input/.gitkeep
 
+# Offline-build model cache (~16 GB): a previously-baked /models tree staged via
+# `docker cp <inference-container>:/models/. ./model-cache/` so the inference
+# image can rebuild on an air-gapped / cache-pruned host without re-downloading
+# from HF (compose additional_contexts → Dockerfile.gpu seed step). Track only
+# the .gitkeep so the build-context path exists on a fresh clone.
+/model-cache/*
+!/model-cache/.gitkeep
+
 # FAIR1M-OBB weights are operator-baked, not source-controlled (~80 MB).
 # Drop-in lives at assets/static/inference-weights/fair1m/. See
 # docs/operations/fair1m-bake.md.
