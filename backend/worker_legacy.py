@@ -153,12 +153,15 @@ _INFERENCE_PROFILE_DEFAULTS = INFERENCE_SPEED_PROFILES[INFERENCE_SPEED_PROFILE]
 MAX_INFERENCE_CHIPS = env_int("MAX_INFERENCE_CHIPS", _INFERENCE_PROFILE_DEFAULTS["max_chips"])
 DEFAULT_INFERENCE_CHIP_SIZE = env_int("INFERENCE_CHIP_SIZE", _INFERENCE_PROFILE_DEFAULTS["chip_size"])
 DEFAULT_INFERENCE_OVERLAP = env_int("INFERENCE_CHIP_OVERLAP", _INFERENCE_PROFILE_DEFAULTS["overlap"])
-# Phase 1.3: optional second-scale chip pass at a smaller window so the model
-# gets a higher pixel-per-object budget on small targets (TELs, fuel bowsers,
-# light armour, etc.). When > 0 and != DEFAULT_INFERENCE_CHIP_SIZE,
-# slice_and_infer runs the second pass after the main pass; both passes share
-# the dedupe index so duplicates across scales are suppressed by NMS.
-INFERENCE_SMALL_OBJECT_CHIP_SIZE = env_int("INFERENCE_SMALL_OBJECT_CHIP_SIZE", 0)
+# Phase 1.3: second-scale chip pass at a smaller window so the model gets a
+# higher pixel-per-object budget on small targets (TELs, fuel bowsers, light
+# armour, etc.). When > 0 and != DEFAULT_INFERENCE_CHIP_SIZE, slice_and_infer
+# runs the second pass after the main pass; both passes share the dedupe index
+# so duplicates across scales are suppressed by NMS. Default 504 (= half the
+# 1008 main chip): ON for dense-scene small-object recall — this is the
+# highest-cost recall knob (~+1 inference pass per scene). Set 0 to opt out on
+# throughput-bound hosts. See docs/decisions/dense-scene-recall-defaults.md.
+INFERENCE_SMALL_OBJECT_CHIP_SIZE = env_int("INFERENCE_SMALL_OBJECT_CHIP_SIZE", 504)
 INFERENCE_SMALL_OBJECT_OVERLAP = env_int("INFERENCE_SMALL_OBJECT_OVERLAP", 128)
 INFERENCE_SMALL_OBJECT_MAX_CHIPS = env_int(
     "INFERENCE_SMALL_OBJECT_MAX_CHIPS", _INFERENCE_PROFILE_DEFAULTS["max_chips"] or 0
@@ -178,8 +181,11 @@ INFERENCE_FULL_SCENE_PASS = env_bool("INFERENCE_FULL_SCENE_PASS", False)
 # EVERY chip hit the same compiled graph (~6x faster). The padded region is black
 # and is marked invalid in the chip's valid_mask, so any detection landing there
 # is clipped — georef is unaffected (the window origin/transform are unchanged;
-# only the normalization basis grows to chip_size). RGB/optical only; default OFF.
-INFERENCE_PAD_CHIPS_TO_SIZE = env_bool("INFERENCE_PAD_CHIPS_TO_SIZE", False)
+# only the normalization basis grows to chip_size). RGB/optical only; default ON
+# to pair with SAM3_COMPILE_IMAGE=1 (the compiled graph specialises on shape, so
+# unpadded edge chips would recompile / fall back to eager). Set 0 if compile is
+# off. See docs/decisions/sam3-compile-and-chip-padding-2026-06-14.md.
+INFERENCE_PAD_CHIPS_TO_SIZE = env_bool("INFERENCE_PAD_CHIPS_TO_SIZE", True)
 def _default_reader_pool_size() -> int:
     """Default for the Phase 3 reader thread pool.
 

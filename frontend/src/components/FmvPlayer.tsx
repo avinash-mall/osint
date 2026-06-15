@@ -478,6 +478,11 @@ export default function FmvPlayer({
       .post(`${API_URL}/api/inference/load`, null, { params: { profile: 'fmv' }, timeout: 600_000 })
       .catch((err) => {
         if (cancelled) return;
+        const status = err?.response?.status;
+        // 401/403 are expected for non-admin analysts: profile-load is admin-gated,
+        // but the FMV worker auto-loads the profile via _ensure_fmv_profile() before
+        // detection, so this warm-up POST is best-effort. Don't surface the gate as an error.
+        if (status === 401 || status === 403) return;
         setTrackingError(
           err?.response?.data?.detail || err?.message || 'inference profile load failed',
         );

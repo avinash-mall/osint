@@ -9,7 +9,7 @@ Single entry point for getting data into the platform. Combines sensor-aware ima
 
 ## Sections
 
-1. **Imagery upload** — sensor dropdown (Optical / Multispectral / Hyperspectral / SAR / FMV) drives `modality` + `enabled_layers` for the SAM3 sensor pipeline — see [architecture/data-flow-imagery.md#modality-dispatch](../architecture/data-flow-imagery.md#modality-dispatch). YOLOE is not exposed for still imagery.
+1. **Imagery upload** — sensor dropdown (Optical / Multispectral / Hyperspectral / SAR / FMV) drives `modality` + `enabled_layers` for the SAM3 sensor pipeline — see [architecture/data-flow-imagery.md#modality-dispatch](../architecture/data-flow-imagery.md#modality-dispatch). YOLOE is not exposed for still imagery. The file picker's `accept` list now includes `.nitf,.ntf` alongside the standard raster formats, mirroring the backend `classify_upload`; the format hint ends with "/ NITF".
 2. **Vocabulary scope selector** — three-mode chip group above the Detection Objects tree, **defaulting to `Mission branch`** (see [decisions/why-branch-scoped-default.md](../decisions/why-branch-scoped-default.md)):
    - **Mission branch** — single-select dropdown of top-level ontology branches; auto-defaults to the first branch when the tree loads. Sends `ontology_branch` and a deduplicated `text_prompts` list derived client-side from the branch (and its descendants) via [`promptsForBranch`](../../frontend/src/utils/promptsForBranch.ts). The Detection Objects tree below stays visible, filtered to the chosen branch, so the operator can further narrow the slice.
    - **Cherry-pick objects** — legacy hand-pick UX; the operator's tree selection becomes `text_prompts` verbatim.

@@ -43,3 +43,4 @@ No response-schema change. The `inference_summary` gains `multi_scale: bool` and
 - [architecture/data-flow-imagery.md](../architecture/data-flow-imagery.md) — chipping step
 - [deployment/environment-variables-reference.md](../deployment/environment-variables-reference.md) — the four knobs
 - [decisions/why-wbf-over-nms.md](why-wbf-over-nms.md) — the shared dedupe fuser
+- [decisions/dense-scene-recall-defaults.md](dense-scene-recall-defaults.md) — flipped the small-object pass default **on** (`504`); this doc's mechanism is unchanged, only the shipped default

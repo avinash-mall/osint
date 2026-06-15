@@ -1,7 +1,7 @@
 # `inference-sam3/mvrsd.py` — MVRSD Military-Vehicle Specialist
 
 **Path:** [inference-sam3/mvrsd.py](../../inference-sam3/mvrsd.py)
-**Lines:** ~185
+**Lines:** ~210
 **Depends on:** `ultralytics`, `inference_utils` (`safe_predict`, `cuda_cleanup`, `device_ctx`, `apply_yolo_optimizations`), env `SAM3_LOAD_MVRSD`, `MVRSD_WEIGHTS_PATH`, `MVRSD_CONF`, `MVRSD_IOU`, `MVRSD_IMGSZ`, build ARG `MVRSD_WEIGHTS_URL`
 
 ## Purpose
@@ -27,7 +27,7 @@ The 5 classes are registered in the ontology under the `Military_Vehicles_MVRSD`
 
 ## Failure modes
 
-Missing weight file (empty build URL) / missing Ultralytics → unloaded bundle; layer contributes zero candidates and `/health` shows `loaded: false`. Inference errors are logged and return an empty list for that chip. fp16/bf16 dtype mismatch is avoided by forcing fp32 (`MVRSD_HALF=False`).
+Missing weight file (empty build URL) / missing Ultralytics → unloaded bundle; layer contributes zero candidates and `/health` shows `loaded: false`. A missing weight file now prints a **loud multi-line WARNING banner** at load (was a single terse line) so a degraded deployment is unmissable in the container logs; `load()` still honour-gates (returns the unloaded bundle, no fail-fast). Because `model_versions.mvrsd` reports `loaded:false` + an `error`, the layer also surfaces in the `/health` top-level `degraded_layers` list (see [main-app-entrypoint.md](main-app-entrypoint.md)). Inference errors are logged and return an empty list for that chip. fp16/bf16 dtype mismatch is avoided by forcing fp32 (`MVRSD_HALF=False`).
 
 ## Cross-references
 

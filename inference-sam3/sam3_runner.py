@@ -22,7 +22,11 @@ SAM3_WEIGHTS_SOURCE = os.getenv("SAM3_WEIGHTS_SOURCE", "official").strip().lower
 SAM3_MIRROR_REPO_ID = os.getenv("SAM3_MIRROR_REPO_ID", "1038lab/sam3")
 SAM3_MIRROR_FILENAME = os.getenv("SAM3_MIRROR_FILENAME", "sam3.safetensors")
 SAM3_USE_MULTIPLEX = os.getenv("SAM3_USE_MULTIPLEX", "1").strip().lower() in {"1", "true", "yes", "on"}
-SAM3_COMPILE_IMAGE = os.getenv("SAM3_COMPILE_IMAGE", "0").strip().lower() in {"1", "true", "yes", "on"}
+# Default ON: one-time ~30-40s compile on the first /detect, then a large
+# steady-state speedup with zero quality change. Pairs with the worker's
+# INFERENCE_PAD_CHIPS_TO_SIZE=1. Set 0 if the GPU/torch stack can't compile.
+# See docs/decisions/sam3-compile-and-chip-padding-2026-06-14.md.
+SAM3_COMPILE_IMAGE = os.getenv("SAM3_COMPILE_IMAGE", "1").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _default_compile_video() -> str:

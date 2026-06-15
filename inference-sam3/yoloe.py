@@ -23,7 +23,11 @@ YOLOE_PF_MODEL_ID = os.getenv("YOLOE_PF_MODEL_ID", "yoloe-26x-seg-pf.pt")
 YOLOE_SEG_MODEL_ID = os.getenv("YOLOE_SEG_MODEL_ID", "yoloe-26x-seg.pt")
 YOLOE_THRESHOLD = float(os.getenv("YOLOE_THRESHOLD", "0.25"))
 YOLOE_IOU = float(os.getenv("YOLOE_IOU", "0.50"))
-YOLOE_IMGSZ = int(os.getenv("YOLOE_IMGSZ", "640"))
+# Default 896 (was 640): a larger inference resolution recovers far / small /
+# densely-packed targets in FMV + aerial specialist paths at some throughput
+# cost. /32-aligned; tunable to 960/1024 for very dense scenes, or back to 640
+# for speed. See docs/decisions/dense-scene-recall-defaults.md.
+YOLOE_IMGSZ = int(os.getenv("YOLOE_IMGSZ", "896"))
 
 # GPU optimization flags emitted by scripts/gpu_profiles.py:runtime_env.
 # - fuse: Conv+BN folding, safe everywhere

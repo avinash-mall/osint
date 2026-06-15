@@ -69,7 +69,7 @@ type ScopeMode = 'branch' | 'cherry-pick' | 'all';
 // feeds arrive as .mpg/.mpeg; .mkv is NOT supported server-side.
 const FMV_FILE_ACCEPT = '.mp4,.mov,.m4v,.ts,.mpeg,.mpg';
 const FMV_SIDECAR_ACCEPT = '.srt,.klv,.csv';
-const IMAGERY_FILE_ACCEPT = '.tif,.tiff,.jp2,.j2k,.nc,.netcdf,.png,.jpg,.jpeg';
+const IMAGERY_FILE_ACCEPT = '.tif,.tiff,.jp2,.j2k,.nc,.netcdf,.png,.jpg,.jpeg,.nitf,.ntf';
 
 export default function IngestConnect() {
   const [mediaType, setMediaType] = useState<MediaType>('imagery');
@@ -561,7 +561,7 @@ export default function IngestConnect() {
             {file ? file.name : mediaType === 'fmv' ? 'Select FMV clip' : 'Select raster'}
           </div>
           <div className="font-mono text-xs text-slate-500 mt-2">
-            {mediaType === 'fmv' ? 'MP4 / MOV / M4V / TS / MPEG / MPG' : 'TIF / JP2 / NetCDF / PNG / JPG'}
+            {mediaType === 'fmv' ? 'MP4 / MOV / M4V / TS / MPEG / MPG' : 'TIF / JP2 / NetCDF / PNG / JPG / NITF'}
           </div>
           <input
             type="file"

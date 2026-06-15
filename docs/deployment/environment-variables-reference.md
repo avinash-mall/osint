@@ -73,10 +73,10 @@ enable + benchmark the small-object boost.
 |---|---|---|
 | `INFERENCE_SPEED_PROFILE` | `recall_review` | Worker preset for chip geometry + coverage. `recall_review` = FULL raster coverage (no chip sub-sampling); `fast_review` historically sampled but the cap knobs were removed |
 | `INFERENCE_CHIP_SIZE` / `INFERENCE_CHIP_OVERLAP` | `1008` / `252` | SAM3 chip geometry (25% overlap) |
-| `INFERENCE_SMALL_OBJECT_CHIP_SIZE` | `0` | When `>0` and `!= INFERENCE_CHIP_SIZE`, runs a second finer chip pass (e.g. `504`) giving small targets more pixels-per-object — the SAHI-style small-object boost. `0` = off. Shares the main dedupe index. See [inference/sahi-equivalence.md](../inference/sahi-equivalence.md) |
+| `INFERENCE_SMALL_OBJECT_CHIP_SIZE` | `504` | When `>0` and `!= INFERENCE_CHIP_SIZE`, runs a second finer chip pass (`504`) giving small targets more pixels-per-object — the SAHI-style small-object boost. **Now on by default** (was `0`); `0` = off. Shares the main dedupe index. See [inference/sahi-equivalence.md](../inference/sahi-equivalence.md), [decisions/dense-scene-recall-defaults.md](../decisions/dense-scene-recall-defaults.md) |
 | `INFERENCE_SMALL_OBJECT_OVERLAP` | `128` | Overlap for the small-object second pass |
 | `INFERENCE_FULL_SCENE_PASS` | `0` | When `1`, appends ONE extra pass over the whole image read decimated (COG overviews) to catch objects larger than a chip (runways, piers). Shares the dedupe index; adds exactly 1 window to progress. `0` = off |
-| `INFERENCE_PAD_CHIPS_TO_SIZE` | `0` | When `1`, pads variable-size edge RGB chips up to `chip_size²` so `torch.compile`'s shape-specialised SAM3 graph applies to every chip (not just full-size interior ones). Padded region is invalid in `valid_mask` (detections there clipped); georef unaffected. Pair with `SAM3_COMPILE_IMAGE=1`. See [decisions/sam3-compile-and-chip-padding-2026-06-14.md](../decisions/sam3-compile-and-chip-padding-2026-06-14.md) |
+| `INFERENCE_PAD_CHIPS_TO_SIZE` | `1` | When `1`, pads variable-size edge RGB chips up to `chip_size²` so `torch.compile`'s shape-specialised SAM3 graph applies to every chip (not just full-size interior ones). Padded region is invalid in `valid_mask` (detections there clipped); georef unaffected. **Now on by default** (was `0`) to pair with the now-default `SAM3_COMPILE_IMAGE=1`. See [decisions/sam3-compile-and-chip-padding-2026-06-14.md](../decisions/sam3-compile-and-chip-padding-2026-06-14.md), [decisions/dense-scene-recall-defaults.md](../decisions/dense-scene-recall-defaults.md) |
 | `DEDUPE_METHOD` | `nms` | Cross-chip dedupe in overlap zones: `nms` (keep best box) or `wbf` (weighted box fusion). NMS is default — see `docs/benchmarks/chip-dedupe-nms-vs-wbf-2026-06-12.md` |
 | `WBF_IOU_THRESHOLD` | `0.55` | IoU cluster threshold for the WBF fuser (only when `DEDUPE_METHOD=wbf`) |
 | `WBF_EXPECTED_MODELS` | `2` | Expected detector count for WBF score weighting (only when `DEDUPE_METHOD=wbf`) |
@@ -121,7 +121,7 @@ Tuning for the city2graph-inherited beat builders. See [operations/celery-beat-s
 | `SAM3_PRELOAD_MODELS` / `SAM3_PRELOAD_PROFILE` | `0` / empty | Preload at startup |
 | `SAM3_LOAD_POLICY` | `hot` (dynamic on <24 GiB) | VRAM-gated loading policy written by `configure_host.py`. `dynamic` loads one per-modality profile at a time + drops dead-weight detectors. See [why-dynamic-modality-loading-on-tight-vram.md](../decisions/why-dynamic-modality-loading-on-tight-vram.md) |
 | `SAM3_RESTING_PROFILE` | `imagery` (`imagery_rgb` on dynamic) | Profile the lifespan loads at startup for the healthcheck |
-| `SAM3_COMPILE_IMAGE` / `SAM3_COMPILE_VIDEO` | `0` | Enable `torch.compile`. On Blackwell/cu130, `SAM3_COMPILE_IMAGE=1` cuts per-chip latency ~6× at zero quality change (one-time ~38s warmup at startup; pair with `INFERENCE_PAD_CHIPS_TO_SIZE=1`). See [decisions/sam3-compile-and-chip-padding-2026-06-14.md](../decisions/sam3-compile-and-chip-padding-2026-06-14.md) |
+| `SAM3_COMPILE_IMAGE` / `SAM3_COMPILE_VIDEO` | `1` / `0` | Enable `torch.compile`. `SAM3_COMPILE_IMAGE` is **now on by default** (was `0`); on Blackwell/cu130 it cuts per-chip latency ~6× at zero quality change (one-time ~38s warmup at startup; pairs with the now-default `INFERENCE_PAD_CHIPS_TO_SIZE=1`). `SAM3_COMPILE_VIDEO` stays `0`. See [decisions/sam3-compile-and-chip-padding-2026-06-14.md](../decisions/sam3-compile-and-chip-padding-2026-06-14.md), [decisions/dense-scene-recall-defaults.md](../decisions/dense-scene-recall-defaults.md) |
 | `SAM3_WARM_UP_VIDEO` | `1` | One-frame priming after video load |
 | `SAM3_TEXT_THRESHOLD` | `0.50` | Min score for text-prompt detections |
 | `SAM3_BOX_THRESHOLD` | `0.25` | Min score for box-prompt detections |
@@ -137,6 +137,8 @@ Tuning for the city2graph-inherited beat builders. See [operations/celery-beat-s
 | `SAM3_WBF_WEIGHTS` | empty | JSON `{source_layer: float}` overriding the per-detector trust weights (defaults: sam3=0.5, dota_obb=1.0, yoloe=0.5, sar_cfar=0.7, mvrsd=1.0) |
 | `SAM3_WBF_IOU` | `0.55` | IoU threshold for WBF cluster matching (also reused as the fallback NMS IoU) |
 | `SAM3_WBF_SKIP_THRESHOLD` | `0.05` | Per-input minimum confidence before WBF; below-threshold detections are dropped pre-fusion |
+| `SAM3_NMS_AGNOSTIC` | `0` | Cross-tile NMS mode: `0` = **per-class** (boxes of different classes never cross-suppress), `1` = class-agnostic. Flipped `1→0` for dense-scene recall. See [decisions/dense-scene-recall-defaults.md](../decisions/dense-scene-recall-defaults.md) |
+| `SAM3_NMS_SOFT` | `1` | Cross-tile NMS decay: `1` = **soft** (decay overlaps by `(1 − mask_iou)` via `mask_aware_nms`), `0` = hard drop. Flipped `0→1` for dense-scene recall. See [decisions/dense-scene-recall-defaults.md](../decisions/dense-scene-recall-defaults.md) |
 | `SAM3_DEFAULT_PROMPT_SOURCE` | `precision` | `precision` = bounded built-ins; `ontology`/`backend` = `/api/ontology/default-prompts` fan-out |
 | `SAM3_PRECISION_DEFAULT_PROMPTS` | empty | Optional JSON override for bounded defaults, e.g. `{"optical":["vehicle","ship"]}` |
 | `SAM3_BATCHED_TEXT` / `SAM3_BATCHED_TEXT_CHUNK_SIZE` | `1` / `8` | Batched text decode. Larger chunk = better GPU use (measured 8→17.6, 32→13.3, 128→10.9 ms/prompt); deployments here use `64`. Prompt count is uncapped — full vocab runs (see [decisions/removed-sam3-prompt-cap-2026-06-14.md](../decisions/removed-sam3-prompt-cap-2026-06-14.md), [decisions/sam3-compile-and-chip-padding-2026-06-14.md](../decisions/sam3-compile-and-chip-padding-2026-06-14.md)) |
@@ -155,6 +157,7 @@ Tuning for the city2graph-inherited beat builders. See [operations/celery-beat-s
 | `DOTA_OBB_MODEL_ID` | `yolo26m-obb.pt` | Default OBB checkpoint; `yolo11n-obb.pt` for low-VRAM fallback |
 | `EVIDENCE_MAX_ASPECT_RATIO` | `35` | Backend physical validator aspect-ratio ceiling |
 | `EVIDENCE_MIN_MASK_COMPACTNESS` / `EVIDENCE_MIN_VALID_FRACTION` | `0.015` / `0.20` | Backend evidence validator floors |
+| `YOLOE_IMGSZ` | `896` | YOLOE FMV tracker inference image size (was `640`). /32-aligned; ~1.96× pixels-per-object for distant / densely-packed targets; raise to 960/1024 for very dense scenes or lower to 640 for speed. See [inference/yoloe-tracker.md](../inference/yoloe-tracker.md), [decisions/dense-scene-recall-defaults.md](../decisions/dense-scene-recall-defaults.md) |
 | `FMV_DEFAULT_PROMPTS` | `vehicle,person,building` | Backend worker PCS fallback when an FMV upload omits prompts |
 | `FMV_PROBE_TIMEOUT_S` | `30` | `ffprobe` timeout during synchronous FMV upload cataloging |
 | `FMV_TRANSCODE_TIMEOUT_S` | `900` | `ffmpeg` HLS stream-copy timeout before falling back to the raw clip |
@@ -186,4 +189,5 @@ See [gpu-profile-detection.md](gpu-profile-detection.md).
 - [.env.offline.example](../../.env.offline.example) — air-gap variant
 - [decisions/disable-addmm-cuda-lt.md](../decisions/disable-addmm-cuda-lt.md)
 - [decisions/why-category-presence-gate.md](../decisions/why-category-presence-gate.md)
+- [decisions/dense-scene-recall-defaults.md](../decisions/dense-scene-recall-defaults.md) — NMS mode, YOLOE imgsz, small-object/pad/compile default flips
 - [decisions/why-security-hardening-2026-05-31.md](../decisions/why-security-hardening-2026-05-31.md)

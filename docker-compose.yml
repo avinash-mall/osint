@@ -261,7 +261,7 @@ services:
       WEB_CONCURRENCY: "1"
       SAM3_IMAGE_MODEL_ID: ${SAM3_IMAGE_MODEL_ID:-facebook/sam3}
       SAM3_USE_MULTIPLEX: ${SAM3_USE_MULTIPLEX:-1}
-      SAM3_COMPILE_IMAGE: ${SAM3_COMPILE_IMAGE:-0}
+      SAM3_COMPILE_IMAGE: ${SAM3_COMPILE_IMAGE:-1}
       SAM3_COMPILE_VIDEO: ${SAM3_COMPILE_VIDEO:-0}
       SAM3_WARM_UP_VIDEO: ${SAM3_WARM_UP_VIDEO:-1}
       SAM3_PRELOAD_MODELS: ${SAM3_PRELOAD_MODELS:-0}
@@ -278,8 +278,10 @@ services:
       SAM3_YOLO_CHANNELS_LAST: ${SAM3_YOLO_CHANNELS_LAST:-0}
       SAM3_CUDNN_BENCHMARK: ${SAM3_CUDNN_BENCHMARK:-0}
       # Cross-tile NMS dedup options consumed by fusion.mask_aware_nms.
-      SAM3_NMS_AGNOSTIC: ${SAM3_NMS_AGNOSTIC:-1}
-      SAM3_NMS_SOFT: ${SAM3_NMS_SOFT:-0}
+      # Dense-scene recall defaults (per-class suppression + soft decay); see
+      # docs/decisions/dense-scene-recall-defaults.md.
+      SAM3_NMS_AGNOSTIC: ${SAM3_NMS_AGNOSTIC:-0}
+      SAM3_NMS_SOFT: ${SAM3_NMS_SOFT:-1}
       # SAM3 precision + attention backend (sam3_runner + cached patch).
       # Defaults are conservative; per-GPU values come from
       # scripts/gpu_profiles.GpuBuildProfile.runtime_env via configure_host.

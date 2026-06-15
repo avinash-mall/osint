@@ -106,6 +106,7 @@ decisions/audit-fixes-inference-2026-06-12.md|decision,inference|forwards brough
 decisions/audit-fixes-map-workspace-2026-06-11.md|decision,frontend|map sweep: SwipeControl crash, time-machine loops, crossNav, fetch races, tile filter parity
 decisions/audit-fixes-ui-correctness-2026-06-08.md|decision,frontend|page-by-page UI audit fixes: processing status, ontology dropdown, graph edge scores, FMV keys, geotime sub, pan-on-jump
 decisions/audit-fixes-worker-2026-06-11.md|decision|worker sweep: chip-grid coverage, LABEL_OF no-op, NDJSON retry, savepoints, cleanup beat task
+decisions/blackwell-sm120-proven-defaults.md|decision,gpu,inference|bake measured RTX 5070 Ti values into the sm_120 profile (cu130 not cu132, compile=1, recall_review, chunk 64) so configure_host regen stops clobbering the tuned .env
 decisions/borders-vs-graticule-split.md|decision,frontend|LayerPanel "Tactical Grid" split into Borders (admin GeoJSON) and Graticule (coordinate grid)
 decisions/cached-forward-device-normalise.md|decision,sam3|multi-GPU _get_img_feats crash: pin image-model build device so vis_pos_enc lands on replica GPU
 decisions/centralized-filter-surface.md|decision,frontend|confidence floor + recent-activity window moved from time-machine/event-strip into one left-rail Filters section
@@ -114,6 +115,7 @@ decisions/completed-dead-ui-controls.md|decision,frontend|wired FMV fullscreen +
 decisions/completed-deferred-items-2026-06-09.md|decision|deferred audit batch: CFAR variance, time-machine playback, change-detection mount + overlay, AI target-resolve, bake OOM/idempotency
 decisions/completed-stubbed-graph-ui.md|decision,frontend|real co-occurrence histogram, site-rollup FMV/reports render, ProvenancePanel wired as SelectionPanel Prov tab
 decisions/defer-embedding-to-post-fusion-2026-06-15.md|decision,inference|DINOv3 embedding moved after WBF/NMS, embeds survivors only (~35% fewer crops, byte-identical vectors); WBF survivor keeps member box
+decisions/dense-scene-recall-defaults.md|decision,inference,imagery|NMS per-class+soft, YOLOE imgsz 640→896, small-object pass on by default; dense-scene recall; serialize-forwards/valid-fraction unchanged
 decisions/disable-addmm-cuda-lt.md|decision,gpu|routes nn.Linear off cuBLAS-Lt to dodge A100/cu130 corruption bug
 decisions/fmv-default-sidetab-clips.md|decision,frontend,fmv|FMV right panel opens on Clips when no cross-nav; Tracks default hid uploaded clip
 decisions/imagery-source-selection.md|decision,imagery|download_city_cog --source sentinel2|esri; 10m vs sub-meter Esri tile mosaic, kept both

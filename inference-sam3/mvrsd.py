@@ -66,7 +66,25 @@ def load(device: str) -> dict[str, Any]:
     build time, so the bake step skipped), return an unloaded bundle instead
     of raising — the layer then contributes zero candidates."""
     if not os.path.isfile(MVRSD_WEIGHTS_PATH):
-        print(f"[mvrsd] weights not found at {MVRSD_WEIGHTS_PATH}; layer disabled")
+        # Loud, unmissable banner: reaching here means MVRSD was requested
+        # (SAM3_LOAD_MVRSD on) but the weight is absent, so the layer silently
+        # contributes zero detections. The image build swallows a failed/
+        # unauthenticated GitHub-release fetch (needs a valid GITHUB_TOKEN +
+        # MVRSD_WEIGHTS_URL), so a bake can "succeed" with an empty /models/mvrsd/.
+        bar = "!" * 72
+        print(
+            f"\n{bar}\n"
+            f"[mvrsd] WARNING: weights NOT FOUND at {MVRSD_WEIGHTS_PATH}\n"
+            "[mvrsd] The MVRSD military-vehicle specialist is DISABLED and will\n"
+            "[mvrsd] contribute ZERO detections (silent degradation). The image\n"
+            "[mvrsd] build swallows an unauthenticated GitHub-release fetch, so a\n"
+            "[mvrsd] bake can succeed with an empty /models/mvrsd/. Rebuild with a\n"
+            "[mvrsd] valid GITHUB_TOKEN + MVRSD_WEIGHTS_URL, or set SAM3_LOAD_MVRSD=0\n"
+            "[mvrsd] to opt out intentionally. Surfaced in /health degraded_layers.\n"
+            "[mvrsd] See docs/inference/mvrsd-specialist.md.\n"
+            f"{bar}",
+            flush=True,
+        )
         return {"model": None, "device": device, "model_id": MVRSD_WEIGHTS_PATH, "error": "weights_missing"}
     try:
         from ultralytics import YOLO

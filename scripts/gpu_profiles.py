@@ -245,12 +245,15 @@ class GpuBuildProfile:
             "SAM3_YOLO_HALF": "1" if self.yolo_half else "0",
             "SAM3_YOLO_CHANNELS_LAST": "1" if self.yolo_channels_last else "0",
             "SAM3_CUDNN_BENCHMARK": "1" if self.cudnn_benchmark else "0",
-            # Cross-tile NMS dedup defaults. agnostic=1 collapses cases where
-            # SAM3 and DOTA-OBB label the same object differently; soft=0
-            # keeps the dropped-detection behaviour. Operators flip
-            # SAM3_NMS_SOFT=1 for crowded scenes (ports, parking lots).
-            "SAM3_NMS_AGNOSTIC": "1",
-            "SAM3_NMS_SOFT": "0",
+            # Cross-tile NMS dedup defaults, tuned for dense-scene recall
+            # (see docs/decisions/dense-scene-recall-defaults.md). agnostic=0
+            # keeps suppression per-class so adjacent objects SAM3 and DOTA-OBB
+            # label differently aren't cross-dropped; soft=1 decays overlapping
+            # detections instead of dropping them outright, raising recall in
+            # crowded scenes (ports, parking lots). Operators flip back to
+            # agnostic=1 / soft=0 for sparse wide-area imagery if precision dips.
+            "SAM3_NMS_AGNOSTIC": "0",
+            "SAM3_NMS_SOFT": "1",
             # SAM3 precision + attention backend (consumed by sam3_runner).
             "SAM3_NATIVE_BF16": "1" if self.sam3_native_bf16 else "0",
             "SAM3_SDPA_BACKEND": self.sam3_sdpa_backend,
@@ -609,38 +612,42 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
     ),
     "blackwell_sm120": GpuBuildProfile(
         name="blackwell_sm120",
-        # Consumer Blackwell (RTX 50-series) is the only profile pinned AHEAD of
-        # the shared cu130/torch-2.10 baseline: it builds on the *latest* line,
-        # torch 2.12 on CUDA 13.2 (cu132), to pick up the newest sm_120 kernels
-        # for this brand-new silicon. cu132 is PyTorch's experimental build
-        # channel — VERIFY a full image build + inference pass on real Blackwell
-        # hardware before production. The base image stays CUDA 13.2.0 (already
-        # used by every cu130 profile); the cu132 wheels bundle their own CUDA
-        # 13.2 runtime. Driver floor unchanged: CUDA 13.x minor-version
-        # compatibility runs 13.2 wheels on the cu130 driver baseline. Note the
-        # cu13x concurrent-forward poison is version-independent (reproduced on
-        # cu128/cu130/cu132 — see why-serialize-forwards-on-a100-cu13x.md), so
-        # SAM3_SERIALIZE_FORWARDS stays governed by its compose default; this
-        # bump is purely about kernel currency, not the poison.
+        # Consumer Blackwell (RTX 50-series). Builds on the proven cu130 /
+        # torch-2.10 stack shared with every other CUDA-13.x profile (Ampere /
+        # Hopper / datacenter Blackwell), validated on real sm_120 hardware (RTX
+        # 5070 Ti): the 12.0+PTX arch entry JIT-compiles sm_120 kernels and runs
+        # measurably well (image torch.compile gives ~5.6x/chip here). This was
+        # previously pinned to the experimental cu132 channel for "newest
+        # kernels"; cu130 is the stable, measured choice and keeps the consumer
+        # profile on the same wheel set as the rest of the matrix. Base image
+        # stays CUDA 13.2.0 (cu130 wheels run under CUDA 13.x minor-version
+        # compat). The cu13x concurrent-forward poison is version-independent
+        # (cu128/cu130/cu132 — see why-serialize-forwards-on-a100-cu13x.md), so
+        # SAM3_SERIALIZE_FORWARDS stays governed by its compose default.
+        # See docs/decisions/blackwell-sm120-proven-defaults.md.
         cuda_version="13.2.0",
-        torch_index_url="https://download.pytorch.org/whl/cu132",
-        torch_version="2.12.0+cu132",
-        torchvision_version="0.27.0+cu132",
-        torchaudio_version="2.12.0+cu132",
+        torch_index_url="https://download.pytorch.org/whl/cu130",
+        torch_version="2.10.0+cu130",
+        torchvision_version="0.25.0+cu130",
+        torchaudio_version="2.10.0+cu130",
         torch_cuda_arch_list="8.0;8.6;8.9;9.0;12.0+PTX",
         compute_capability="12.0",
         min_driver_version="575.51",
         ubuntu_version="24.04",
-        # flash-attn-3 has no cu132 wheel, and FA3 doesn't run on sm_120 anyway
-        # (Hopper-only today — see SDPA note below), so skip the fast-deps build
-        # step; the runtime uses the torch SDPA fallback. Without this the
-        # Dockerfile's `pip install flash-attn-3 --index-url …/cu132` step fails.
+        # FA3 doesn't run on sm_120 (Hopper-only today — see SDPA note below), so
+        # skip building flash-attn-3 / cc_torch: on cu130 the build would succeed
+        # but only bloat the image while the runtime uses the torch SDPA fallback
+        # anyway. (Under the old cu132 pin the fa3 wheel was also simply missing.)
+        # Operators who specifically want cc_torch can set SAM3_INSTALL_FAST_DEPS=1.
         install_fast_deps=False,
         # Consumer Blackwell (RTX 5060/5070/5080/5090). TF32 = yes. Multiplex
         # permitted at profile level; the runtime VRAM gate gates it off on
         # 16 GiB cards (RTX 5070 Ti: 15.9 GiB < 20 GiB threshold) and on for
-        # 24+ GiB cards (RTX 5090: 32 GiB). compile_video stays off —
-        # SAM3's branchy paths still trip the compiler on this arch.
+        # 24+ GiB cards (RTX 5090: 32 GiB). compile_image is ON — measured
+        # ~5.6x/chip on the RTX 5070 Ti with zero quality change (see
+        # docs/decisions/sam3-compile-and-chip-padding-2026-06-14.md); pair with
+        # the worker's INFERENCE_PAD_CHIPS_TO_SIZE=1. compile_video stays off —
+        # SAM3's branchy text/box paths still trip the compiler on this arch.
         # Loading on 16 GiB consumer Blackwell (RTX 5070 Ti, 5080) is the
         # *dynamic* policy: the runtime VRAM gate (< sam3_hot_load_min_vram_mib)
         # makes inference-sam3 load one modality profile at a time
@@ -652,7 +659,7 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         # consumer Blackwells (RTX 5090 32 GiB) cross the hot-load threshold and
         # keep everything resident.
         enable_tf32=True,
-        compile_image=False,
+        compile_image=True,
         compile_video=False,
         fmv_track_height=540,
         fmv_track_frames_per_window=48,
@@ -662,9 +669,16 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_load_terramind=True,
         sam3_load_dota_obb=True,
         sam3_embed_detections=True,
-        sam3_batched_text_chunk_size=8,
+        # Decoder batch 64: measured 8→17.6 / 32→13.3 / 128→10.9 ms/prompt on the
+        # RTX 5070 Ti (zero quality change); 64 captures most of the win with VRAM
+        # headroom. 8 GiB cards (RTX 5060) should drop to 8 via .env if decode OOMs.
+        sam3_batched_text_chunk_size=64,
         sam3_preload_profile="",
-        inference_speed_profile="fast_review",
+        # Full raster coverage (recall_review) — this is a recall-first GEOINT
+        # tool and the chip sweep is serialized, so coverage costs latency, not
+        # VRAM. Small cards on very large scenes can fall back to fast_review
+        # (256-chip cap) via .env.
+        inference_speed_profile="recall_review",
         inference_chip_concurrency=1,
         # Consumer Blackwell (RTX 5060/5070/5080/5090, 8-32 GiB).
         # On sm_120 today FA3 wheels are dead (Hopper-only) and FA4 is

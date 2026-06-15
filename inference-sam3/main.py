@@ -945,16 +945,28 @@ def _version_snapshot(bundle: dict[str, Any] | None = None) -> dict[str, Any]:
 def health() -> dict[str, Any]:
     vram_used_gib, vram_total_gib = _vram_stats_gib()
     sample_bundle = _pool[0] if _pool else None
+    versions = _version_snapshot(sample_bundle)
+    # Requested-but-unloaded specialist layers (e.g. MVRSD when its weight is
+    # missing because the build swallowed an unauthenticated GitHub-release
+    # fetch). model_versions[layer].error is set by the layer's load()/honour-gate,
+    # so a degraded deployment is explicit here instead of silently dropping a
+    # layer. Empty when the current profile simply doesn't include the layer.
+    degraded_layers = [
+        name
+        for name in ("mvrsd", "dota_obb")
+        if isinstance(versions.get(name), dict) and versions[name].get("error")
+    ]
     return {
         "status": "ok",
         "model_loaded": bool(_pool),
         "current_profile": _current_profile,
         "available_profiles": list(PROFILE_COMPONENTS.keys()),
         "model_error": _model_error,
+        "degraded_layers": degraded_layers,
         "device": os.getenv("DEVICE", "auto"),
         "pool_size": len(_pool),
         "replicas": [{"device": b["device"], "components": _bundle_components(b)} for b in _pool],
-        "model_versions": _version_snapshot(sample_bundle),
+        "model_versions": versions,
         "model_version": MODEL_VERSION,
         "gpu_model": GPU_MODEL,
         "vram_used_gib": vram_used_gib,
@@ -1243,8 +1255,8 @@ async def _detect_pipeline(
             det["terramind_embedding"] = sar_scene_embedding
         detections.append(det)
     t0 = mark("postprocess", t0)
-    _nms_agnostic = os.getenv("SAM3_NMS_AGNOSTIC", "1").strip().lower() in {"1", "true", "yes", "on"}
-    _nms_soft = os.getenv("SAM3_NMS_SOFT", "0").strip().lower() in {"1", "true", "yes", "on"}
+    _nms_agnostic = os.getenv("SAM3_NMS_AGNOSTIC", "0").strip().lower() in {"1", "true", "yes", "on"}
+    _nms_soft = os.getenv("SAM3_NMS_SOFT", "1").strip().lower() in {"1", "true", "yes", "on"}
     pre_nms_count = len(detections)
     # Soft-NMS is an NMS-mode-only knob — WBF averages instead of decaying,
     # so the soft path is meaningless when SAM3_FUSION_MODE=wbf. When the

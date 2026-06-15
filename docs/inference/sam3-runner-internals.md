@@ -10,7 +10,8 @@ Loads SAM 3 / SAM 3.1 image weights, runs text- and box-prompted detection paths
 
 ## Key symbols (loaders)
 
-- [`build_image`](../../inference-sam3/sam3_runner.py#L222) — public entry, builds an image bundle on a single device.
+- [`build_image`](../../inference-sam3/sam3_runner.py#L222) — public entry, builds an image bundle on a single device; passes `compile=SAM3_COMPILE_IMAGE` into the build.
+- [`SAM3_COMPILE_IMAGE`](../../inference-sam3/sam3_runner.py#L29) — gates `torch.compile` on the image model. Default is now **`1` (ON)** (was `0`); the one-time ~38s warmup is paid at startup via `main.py`'s `_warmup_image_compile`. See [decisions/sam3-compile-and-chip-padding-2026-06-14.md](../decisions/sam3-compile-and-chip-padding-2026-06-14.md), [decisions/dense-scene-recall-defaults.md](../decisions/dense-scene-recall-defaults.md).
 - [`_default_compile_video`](../../inference-sam3/sam3_runner.py#L28) — choose `torch.compile` strategy.
 - [`_patch_pkg_resources_py312`](../../inference-sam3/sam3_runner.py#L149) — workaround for `pkg_resources` deprecation in newer Python.
 - [`_cuda_unsupported_arch_policy`](../../inference-sam3/sam3_runner.py#L166), [`_auto_cuda_devices`](../../inference-sam3/sam3_runner.py#L171), [`normalize_device_list`](../../inference-sam3/sam3_runner.py#L197), [`resolve_devices`](../../inference-sam3/sam3_runner.py#L206) — device-selection ladder (`DEVICE=auto` expands to a per-GPU list).
@@ -71,6 +72,7 @@ A *poisoned* CUDA context (illegal memory access, e.g. from two concurrent forwa
 - [fusion-and-nms.md](fusion-and-nms.md)
 - [sam3-perf-profiling.md](sam3-perf-profiling.md)
 - [decisions/why-sam3-as-foundation.md](../decisions/why-sam3-as-foundation.md)
+- [decisions/sam3-compile-and-chip-padding-2026-06-14.md](../decisions/sam3-compile-and-chip-padding-2026-06-14.md) — `SAM3_COMPILE_IMAGE` (now default ON)
 - [decisions/why-category-presence-gate.md](../decisions/why-category-presence-gate.md)
 - [decisions/why-segearth-presence-filter.md](../decisions/why-segearth-presence-filter.md)
 - [decisions/cached-forward-device-normalise.md](../decisions/cached-forward-device-normalise.md)

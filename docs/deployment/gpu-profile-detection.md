@@ -18,21 +18,23 @@ Read `nvidia-smi`, resolve the matching CUDA / PyTorch / TorchVision / arch-list
 | Ada (RTX 40 / L40, sm_89) | `ada_sm89` | cu126 | 2.7.1 | 0.22.1 |
 | Hopper (H100/H200, sm_90) | `hopper_sm90` | cu130 | 2.10.0 | 0.25.0 |
 | Blackwell datacenter (B200, sm_100) | `blackwell_sm100` | cu130 | 2.10.0 | 0.25.0 |
-| **Blackwell consumer (RTX 50, sm_120)** | `blackwell_sm120` | **cu132** | **2.12.0** | **0.27.0** |
+| Blackwell consumer (RTX 50, sm_120) | `blackwell_sm120` | cu130 | 2.10.0 | 0.25.0 |
 
-Per-architecture build lines are deliberate. Most cards ride the cu130/torch-2.10
-baseline; **consumer Blackwell (sm_120) is pinned to the latest line — torch 2.12
-on CUDA 13.2 (cu132)** — to get the newest kernels for that silicon. cu132 is
-PyTorch's experimental channel: verify a build + inference pass on real Blackwell
-hardware before production. Note the cu13x concurrent-forward CUDA-context poison
-is **version-independent** (reproduced on cu128/cu130/cu132 — see
-[decisions/why-serialize-forwards-on-a100-cu13x.md](../decisions/why-serialize-forwards-on-a100-cu13x.md));
-the sm_120 bump is about kernel currency, not that bug.
+Per-architecture build lines are deliberate. Every CUDA-13.x card — including
+consumer Blackwell (sm_120) — rides the **proven cu130 / torch-2.10** baseline;
+the `12.0+PTX` arch entry JIT-compiles sm_120 kernels and is validated on real
+RTX 5070 Ti hardware. (`blackwell_sm120` previously used the experimental cu132
+channel for "newest kernels"; cu130 is the measured-stable choice and keeps the
+consumer profile on the same wheel set as the rest of the matrix — see
+[decisions/blackwell-sm120-proven-defaults.md](../decisions/blackwell-sm120-proven-defaults.md).)
+Note the cu13x concurrent-forward CUDA-context poison is **version-independent**
+(reproduced on cu128/cu130/cu132 — see
+[decisions/why-serialize-forwards-on-a100-cu13x.md](../decisions/why-serialize-forwards-on-a100-cu13x.md)).
 
 ## Build args written to .env
 
 - `SAM3_CUDA_VERSION`, `SAM3_TORCH_INDEX_URL`, `SAM3_TORCH_VERSION`, `SAM3_TORCHVISION_VERSION`, `SAM3_TORCH_CUDA_ARCH_LIST`, `SAM3_GPU_PROFILE`, `SAM3_UBUNTU_VERSION`
-- `SAM3_INSTALL_FAST_DEPS` — profile-driven (`build_env()`), default `1` (build flash-attn-3 + cc_torch). **`0` on `blackwell_sm120`**: the cu132 index has no flash-attn-3 wheel, and FA3 doesn't run on sm_120 anyway → SDPA fallback. Verified: `resolve_gpu_profile("RTX 5090")` → `0`; A100/H100/Ada → `1`.
+- `SAM3_INSTALL_FAST_DEPS` — profile-driven (`build_env()`), default `1` (build flash-attn-3 + cc_torch). **`0` on `blackwell_sm120`**: FA3 doesn't run on sm_120 (Hopper-only today), so building it only bloats the image → runtime SDPA fallback. Verified: `resolve_gpu_profile("RTX 5090")` → `0`; A100/H100/Ada → `1`.
 - `SAM3_ENABLE_TF32` (sm_80+ only)
 - `SAM3_CUDNN_BENCHMARK` (off on Turing; cu126 re-searches kernels)
 

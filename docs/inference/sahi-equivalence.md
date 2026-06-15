@@ -41,8 +41,9 @@ duplicates are fused/suppressed instead of double-emitted (see
 [multi-scale-and-full-scene-chip-passes.md](../decisions/multi-scale-and-full-scene-chip-passes.md)):
 
 - **Small-object pass** — `INFERENCE_SMALL_OBJECT_CHIP_SIZE` (+ `_OVERLAP`, `_MAX_CHIPS`): a finer
-  grid (e.g. 504) giving small targets ~2× pixels-per-object. **This is the direct SAHI-style
-  small/low-res boost.**
+  grid (default **504**) giving small targets ~2× pixels-per-object. **This is the direct SAHI-style
+  small/low-res boost**, and it now ships **on by default** (was opt-in / off) for dense-scene recall —
+  see [dense-scene-recall-defaults.md](../decisions/dense-scene-recall-defaults.md).
 - **Full-scene pass** — `INFERENCE_FULL_SCENE_PASS`: one whole-image decimated inference (from COG
   overviews) for objects larger than a chip (runways, piers).
 - **Edge reconciliation** — `reconcile_edge_truncated()` stitches objects split across chip
@@ -50,13 +51,15 @@ duplicates are fused/suppressed instead of double-emitted (see
 - **Georeferencing + block-aligned reads** — pixel boxes warp to WGS84; chip origins snap to the
   COG block grid to cut read cost.
 
-## Enable the small-object boost
+## The small-object boost (on by default)
 
-Off by default to preserve the opt-in contract. To turn it on, set in `.env`
-(read at worker start — `docker compose restart worker` to apply):
+Now **on by default** (`INFERENCE_SMALL_OBJECT_CHIP_SIZE=504`) for dense-scene recall —
+see [dense-scene-recall-defaults.md](../decisions/dense-scene-recall-defaults.md). To tune or
+disable it, set in `.env` (read at worker start — `docker compose restart worker` to apply;
+`INFERENCE_SMALL_OBJECT_CHIP_SIZE=0` turns it off):
 
 ```
-INFERENCE_SMALL_OBJECT_CHIP_SIZE=504   # half the 1008 main chip
+INFERENCE_SMALL_OBJECT_CHIP_SIZE=504   # half the 1008 main chip (default)
 INFERENCE_SMALL_OBJECT_OVERLAP=128
 INFERENCE_SMALL_OBJECT_MAX_CHIPS=256
 ```
@@ -87,6 +90,7 @@ Record the result as a dated `docs/benchmarks/small-object-pass-uplift-YYYY-MM-D
 
 - [architecture/data-flow-imagery.md](../architecture/data-flow-imagery.md) — the chipping step in context
 - [decisions/multi-scale-and-full-scene-chip-passes.md](../decisions/multi-scale-and-full-scene-chip-passes.md) — why the extra passes exist
+- [decisions/dense-scene-recall-defaults.md](../decisions/dense-scene-recall-defaults.md) — small-object pass default flipped on (504)
 - [decisions/chip-aligned-training-tiles.md](../decisions/chip-aligned-training-tiles.md) — the SAHI-style training-tile rule
 - [inference/fusion-and-nms.md](fusion-and-nms.md) — the mask-aware cross-tile dedupe
 - [deployment/environment-variables-reference.md](../deployment/environment-variables-reference.md) — every chip-pass knob

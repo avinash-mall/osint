@@ -13,6 +13,7 @@ Standalone FMV tracker. Replaces the removed SAM3 AMG path — see [decisions/wh
 - [`_patch_mobileclip_asset_path`](../../inference-sam3/yoloe.py#L50) — Ultralytics looks for MobileCLIP2 at a path that doesn't exist on the container; patches the lookup.
 - [`load`](../../inference-sam3/yoloe.py#L87) — builds the YOLOE bundle on a device (loads `-seg` if text-prompted, `-pf` for prompt-free, both if both will be used).
 - [`run`](../../inference-sam3/yoloe.py#L148) — `(image, text_prompts) -> [(mask, bbox, score, label), ...]`. When the `-pf` checkpoint is unavailable and there are **no** prompts, the seg fallback runs with the model's baked vocabulary instead of calling `set_classes([], get_text_pe([]))` (which raised / left a zero-class vocab, so the fallback always emitted nothing). Both except blocks re-raise when `sam3_runner._cuda_context_poisoned(exc)` matches, instead of returning `[]`, so the caller's `os._exit(1)` self-heal fires — see [decisions/audit-fixes-inference-2026-06-12.md](../decisions/audit-fixes-inference-2026-06-12.md).
+- [`YOLOE_IMGSZ`](../../inference-sam3/yoloe.py#L30) — inference image size passed to `predict()`. Default is now **896** (was 640) — ~1.96× pixels-per-object for distant / densely-packed FMV targets; /32-aligned, tunable to 960/1024 for very dense scenes or back to 640 for speed. See [decisions/dense-scene-recall-defaults.md](../decisions/dense-scene-recall-defaults.md).
 - [`_resize_mask`](../../inference-sam3/yoloe.py#L268), [`_bbox_from_mask_fallback`](../../inference-sam3/yoloe.py#L283), [`_bbox_mask`](../../inference-sam3/yoloe.py#L299).
 - [`model_versions`](../../inference-sam3/yoloe.py#L308).
 
@@ -36,6 +37,7 @@ The `boxes`/`masks` tensors returned by `predict()` can still be bf16 (autocast 
 ## Cross-references
 
 - [decisions/why-yoloe-replaced-amg.md](../decisions/why-yoloe-replaced-amg.md)
+- [decisions/dense-scene-recall-defaults.md](../decisions/dense-scene-recall-defaults.md) — `YOLOE_IMGSZ` 640→896 default
 - [sam3-pcs-multiplex-video.md](sam3-pcs-multiplex-video.md) — the alternative tracker
 - [architecture/data-flow-fmv.md](../architecture/data-flow-fmv.md)
 - [decisions/removed-yoloe-imagery.md](../decisions/removed-yoloe-imagery.md)
