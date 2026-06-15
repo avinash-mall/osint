@@ -223,8 +223,12 @@ services:
         SAM3_INSTALL_FAST_DEPS: ${SAM3_INSTALL_FAST_DEPS:-1}
         HF_TOKEN: ${HF_TOKEN:-}
         # MVRSD military-vehicle specialist weight (GitHub release asset, v1).
-        # Defaults to the private-repo API asset endpoint; GITHUB_TOKEN
-        # authenticates the fetch. Override/empty to skip the bake (no-op).
+        # Defaults to the PRIVATE-repo API asset endpoint, so GITHUB_TOKEN
+        # (a valid Bearer token) MUST be set for the bake to authenticate the
+        # fetch. Override/empty MVRSD_WEIGHTS_URL to skip the bake (no-op). A
+        # missing/wrong GITHUB_TOKEN makes the authenticated curl 404; the
+        # Dockerfile.gpu fallback swallows it and the build still succeeds, but
+        # /models/mvrsd/ stays empty and mvrsd.load() honour-gates at runtime.
         MVRSD_WEIGHTS_URL: ${MVRSD_WEIGHTS_URL:-https://api.github.com/repos/avinash-mall/osint/releases/assets/446271599}
         GITHUB_TOKEN: ${GITHUB_TOKEN:-}
     image: sentinel-inference-sam3:gpu
@@ -266,7 +270,7 @@ services:
       # (defaults below are safe fallbacks; the .env block overrides on
       # any machine where configure_host.py has run).
       SAM3_ENABLE_TF32: ${SAM3_ENABLE_TF32:-1}
-      # YOLO specialist optimization knobs (yoloe, dota_obb, grounding_dino).
+      # YOLO specialist optimization knobs (yoloe, dota_obb).
       # Defaults are conservative; values per GPU profile come from
       # scripts/gpu_profiles.GpuBuildProfile.runtime_env via configure_host.
       SAM3_YOLO_FUSE: ${SAM3_YOLO_FUSE:-1}
@@ -343,7 +347,6 @@ services:
       # DEFENCE_YOLO removed — produced 1297 false positives across DOTA val
       # with zero true positives (see docs/inference_layer_comparison.md).
       SAM3_LOAD_DOTA_OBB:        ${SAM3_LOAD_DOTA_OBB:-1}
-      SAM3_LOAD_GROUNDING_DINO:  ${SAM3_LOAD_GROUNDING_DINO:-1}
       # MVRSD military-vehicle specialist. Default-ON in the RGB imagery
       # profile; opt out globally or by omitting "mvrsd" from enabled_layers.
       # See docs/inference/mvrsd-specialist.md.
@@ -356,14 +359,6 @@ services:
       SAM3_RESTING_PROFILE:      ${SAM3_RESTING_PROFILE:-imagery}
       SAM3_LOAD_POLICY:          ${SAM3_LOAD_POLICY:-hot}
       DOTA_OBB_MODEL_ID:         ${DOTA_OBB_MODEL_ID:-yolo26m-obb.pt}
-      # The grounding_dino layer is now backed by the LAE-DINO remote-sensing
-      # detector running in the inference-lae sidecar (below). Bring it up with
-      # `docker compose --profile lae up` when SAM3_LOAD_GROUNDING_DINO=1; if the
-      # sidecar is absent the layer degrades to a no-op. The 0.30/0.25 floors
-      # are LAE-DINO's, not the old IDEA-Research weights'.
-      LAE_DINO_URL:              ${LAE_DINO_URL:-http://inference-lae:8010}
-      GROUNDING_DINO_THRESHOLD:  ${GROUNDING_DINO_THRESHOLD:-0.30}
-      GROUNDING_DINO_TEXT_THRESHOLD: ${GROUNDING_DINO_TEXT_THRESHOLD:-0.25}
       # Category-level presence gate (SegEarth-OV-3 idea). 0.0 disables.
       # 0.40 suppresses prompts whose best mask still has weak presence,
       # which is what produces hallucinated detections on absent concepts.
@@ -373,7 +368,7 @@ services:
       SAM3_WEIGHTS_SOURCE:  ${SAM3_WEIGHTS_SOURCE:-official}
       SAM3_MIRROR_REPO_ID:  ${SAM3_MIRROR_REPO_ID:-1038lab/sam3}
       SAM3_MIRROR_FILENAME: ${SAM3_MIRROR_FILENAME:-sam3.safetensors}
-      MODEL_VERSION: ${SAM3_MODEL_VERSION:-sam3-image+sam3.1-video+dinov3-sat-l+terramind+dota-obb+grounding-dino}
+      MODEL_VERSION: ${SAM3_MODEL_VERSION:-sam3-image+sam3.1-video+dinov3-sat-l+terramind+dota-obb}
       HF_HOME: /models/hf
       HUGGINGFACE_HUB_CACHE: /models/hf/hub
       TORCH_HOME: /models/torch
@@ -412,56 +407,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 420s
-
-  # LAE-DINO open-vocabulary remote-sensing detector. Backs the `grounding_dino`
-  # layer in inference-sam3 (which calls it over HTTP). Kept in its own service
-  # because LAE-DINO is a forked mmdetection (mmcv/mmengine) whose deps conflict
-  # with the SAM 3 / TerraMind stack. Opt-in via the `lae` profile so
-  # the heavy mmcv build only runs when the layer is enabled
-  # (SAM3_LOAD_GROUNDING_DINO=1). See docs/inference/lae-dino-sidecar.md.
-  inference-lae:
-    profiles: ["lae"]
-    build:
-      context: ./inference-lae
-      dockerfile: Dockerfile
-      args:
-        # Pinned to torch 2.1/cu121 (prebuilt mmcv wheels; mmdet-3.3 fork's
-        # validated stack) — intentionally NOT the host's cu130 SAM3_* profile,
-        # which mmcv has no wheels for. cu121 runs on A100/H100 via the newer
-        # driver. Override LAE_* only if you must retarget.
-        CUDA_VERSION: ${LAE_CUDA_VERSION:-12.1.1}
-        UBUNTU_VERSION: ${LAE_UBUNTU_VERSION:-22.04}
-        TORCH_INDEX_URL: ${LAE_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}
-        TORCH_VERSION: ${LAE_TORCH_VERSION:-2.1.0}
-        TORCHVISION_VERSION: ${LAE_TORCHVISION_VERSION:-0.16.0}
-        HF_TOKEN: ${HF_TOKEN:-}
-    image: sentinel-inference-lae:gpu
-    runtime: nvidia
-    restart: unless-stopped
-    environment:
-      PYTHONDONTWRITEBYTECODE: "1"
-      # LAE-DINO is single-GPU. By default it co-locates on the SAME card(s) the
-      # operator dedicated to inference-sam3 (SAM3_VISIBLE_DEVICES) — it's small
-      # (~2-4 GB) and those are the GEOINT cards, never a co-tenant's (e.g. vLLM
-      # on other GPUs). Set LAE_VISIBLE_DEVICES to pin a specific card. The
-      # container remaps the first visible card to cuda:0 (LAE_DEVICE).
-      NVIDIA_VISIBLE_DEVICES: ${LAE_VISIBLE_DEVICES:-${SAM3_VISIBLE_DEVICES:-all}}
-      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
-      LAE_DEVICE: ${LAE_DEVICE:-cuda:0}
-      LAE_DINO_THRESHOLD: ${GROUNDING_DINO_THRESHOLD:-0.30}
-      # 0 = disabled; the fork's chunked predict path is broken (client chunks).
-      LAE_CHUNKED_SIZE: ${LAE_CHUNKED_SIZE:-0}
-      # Weights are baked into the image; never reach the network at runtime.
-      HF_HOME: /models/hf
-      HUGGINGFACE_HUB_CACHE: /models/hf/hub
-      HF_HUB_OFFLINE: ${LAE_HF_HUB_OFFLINE:-1}
-      TRANSFORMERS_OFFLINE: ${LAE_TRANSFORMERS_OFFLINE:-1}
-    healthcheck:
-      test: ["CMD-SHELL", "python -c 'import json, urllib.request; d=json.load(urllib.request.urlopen(\"http://127.0.0.1:8010/health\", timeout=5)); raise SystemExit(0 if d.get(\"model_loaded\") and not d.get(\"model_error\") else 1)' || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 300s
 
   redis:
     # Pinned for reproducible air-gap shipping.
@@ -502,10 +447,9 @@ services:
       - GLOBAL_CONFIDENCE_FLOOR=${GLOBAL_CONFIDENCE_FLOOR:-0.0}
       - HIGH_CONFIDENCE_THRESHOLD=${HIGH_CONFIDENCE_THRESHOLD:-0.8}
       - MODEL_VERSION=${MODEL_VERSION:-sam3-open-vocab}
-      - INFERENCE_SPEED_PROFILE=${INFERENCE_SPEED_PROFILE:-fast_review}
+      - INFERENCE_SPEED_PROFILE=${INFERENCE_SPEED_PROFILE:-recall_review}
       - INFERENCE_CHIP_SIZE=${INFERENCE_CHIP_SIZE:-1008}
       - INFERENCE_CHIP_OVERLAP=${INFERENCE_CHIP_OVERLAP:-252}
-      - MAX_INFERENCE_CHIPS=${MAX_INFERENCE_CHIPS:-256}
       - INFERENCE_CHIP_CONCURRENCY=${INFERENCE_CHIP_CONCURRENCY:-1}
       - INFERENCE_MAX_PENDING_CHIPS=${INFERENCE_MAX_PENDING_CHIPS:-}
       - INFERENCE_MIN_PENDING_CHIPS=${INFERENCE_MIN_PENDING_CHIPS:-4}

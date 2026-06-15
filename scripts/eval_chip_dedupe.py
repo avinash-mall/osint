@@ -1,26 +1,35 @@
 #!/usr/bin/env python3
-"""Worker-level cross-chip dedupe evaluation: NMS vs WBF.
+"""Worker-level chip-pass evaluation: cross-chip dedupe (NMS vs WBF) and the
+SAHI-style small-object pass A/B.
 
-Compares the worker's two cross-chip deduplication strategies — the default
-greedy-NMS ``_DetectionDedupeIndex`` and the opt-in confidence-averaging
-``_WeightedBoxFusionIndex`` (``DEDUPE_METHOD=wbf``) — on a labelled DOTA-v1.0
-val slice. Both paths consume the SAME global-coord detection stream so the
-only variable is the reconciliation algorithm.
+Two axes on a labelled DOTA-v1.0 val slice:
+  * Dedupe — the default greedy-NMS ``_DetectionDedupeIndex`` vs the opt-in
+    confidence-averaging ``_WeightedBoxFusionIndex`` (``DEDUPE_METHOD=wbf``).
+  * Chip passes — ``main_only`` (the single 1008px grid) vs ``main_plus_small``
+    (main grid + a finer ``--small-object-chip-size`` grid fed into the SAME
+    stateful dedupe index, exactly as slice_and_infer stacks its passes). The
+    small-object axis is OFF unless ``--small-object-chip-size > 0``; the run
+    then reports per-class recall/precision/F1/AP deltas so the uplift from the
+    small-object pass on small classes (small-vehicle, large-vehicle) is explicit.
+
+Both paths consume the SAME global-coord detection stream, so the only variables
+are the reconciliation algorithm and which chip passes feed it.
 
 Pipeline (mirrors backend/worker_legacy.py:slice_and_infer):
   1. Load DOTA val images + GT boxes (image-pixel coords).
   2. plan_inference_grid(width, height, chip_size, overlap, max_chips) — the
-     real worker planner, with the worker's default chip_size/overlap.
+     real worker planner — for the main pass and, when enabled, the small pass.
   3. For each chip window: crop, POST to /detect (cached on disk), and map
      each detection's normalized bbox/obb to GLOBAL image-pixel coords exactly
      as _apply_chip_response does (x_offset + local*win*scale, scale=1.0).
-  4. Stream the per-chip global detections through BOTH dedupe indices via
-     .add() — matching the streaming worker — then read out survivors
-     (NMS: accumulated survivors; WBF: .heads()). reconcile_edge_truncated()
-     is run on both (NMS does real edge stitching; WBF is a documented no-op).
+  4. Stream each configuration's per-chip global detections through BOTH dedupe
+     indices via .add() — matching the streaming worker — then read out
+     survivors (NMS: accumulated survivors; WBF: .heads()).
+     reconcile_edge_truncated() is run on both (NMS does real edge stitching;
+     WBF is a documented no-op).
   5. Score each survivor set against GT at a fixed IoU (default 0.50) with
      greedy confidence-ordered matching: per-class + overall P/R/F1, plus a
-     per-class AP@IoU (11-point-free, all-points interpolation) and mAP.
+     per-class AP@IoU (all-points interpolation) and mAP.
 
 The DOTA labels are open-set; we map the inference open-vocab labels onto the
 DOTA class vocabulary via scripts/eval_metrics/label_normalizer when available,
@@ -311,6 +320,42 @@ def run_wbf(per_chip: list[list[dict]], iou_thr: float, expected_models: int):
 
 
 # ---------------------------------------------------------------------------
+# Chip-pass collection (one pass of the worker's slice_and_infer planner)
+# ---------------------------------------------------------------------------
+def collect_pass(img: Image.Image, rec: dict, chip_path: Path,
+                 chip_size: int, overlap: int, max_chips: int, args) -> tuple[list[list[dict]], int]:
+    """Plan one chip grid, detect each chip, map detections to global coords.
+
+    Mirrors a single pass of backend/worker_legacy.py:slice_and_infer. Returns
+    (per_chip_global, n_chips). Distinct chip geometries cache under distinct
+    keys (the window x/y/w/h are in the key), so the main and small-object
+    passes never collide in --cache-dir.
+    """
+    W, H = img.size
+    grid = plan_inference_grid(W, H, chip_size, overlap, max_chips)
+    step = grid["step"]
+    x_offsets = grid.get("x_offsets") or [i * step for i in grid["x_indices"]]
+    y_offsets = grid.get("y_offsets") or [i * step for i in grid["y_indices"]]
+    x_sizes = grid.get("x_window_sizes") or [chip_size] * len(x_offsets)
+    y_sizes = grid.get("y_window_sizes") or [chip_size] * len(y_offsets)
+    img_bytes_sha = hashlib.sha1(chip_path.read_bytes()).hexdigest()[:12]
+    per_chip_global: list[list[dict]] = []
+    for xo, xw in zip(x_offsets, x_sizes):
+        for yo, yw in zip(y_offsets, y_sizes):
+            xo, yo, xw, yw = int(xo), int(yo), int(xw), int(yw)
+            crop = img.crop((xo, yo, min(xo + xw, W), min(yo + yw, H)))
+            ck = f"{Path(rec['chip_file']).stem}_{img_bytes_sha}_x{xo}_y{yo}_w{xw}_h{yw}"
+            raw_dets = detect_chip(crop, args.endpoint, args.cache_dir, ck)
+            mapped = []
+            for d in raw_dets:
+                m = map_to_global(d, xo, yo, crop.width, crop.height, W, H)
+                if m is not None:
+                    mapped.append(m)
+            per_chip_global.append(mapped)
+    return per_chip_global, len(x_offsets) * len(y_offsets)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main() -> int:
@@ -325,21 +370,29 @@ def main() -> int:
     ap.add_argument("--wbf-iou", type=float, default=0.55)
     ap.add_argument("--wbf-expected-models", type=int, default=2)
     ap.add_argument("--num-images", type=int, default=30)
+    ap.add_argument("--small-object-chip-size", type=int, default=0,
+                    help="Finer second-pass chip size (e.g. 504). 0 = off (main pass only). "
+                         "When >0 and != --chip-size, adds a 'main_plus_small' configuration.")
+    ap.add_argument("--small-object-overlap", type=int, default=128)
+    ap.add_argument("--small-object-max-chips", type=int, default=256)
     ap.add_argument("--out-json", type=Path, default=_REPO_ROOT / "bench" / "chip_dedupe_nms_vs_wbf.json")
     args = ap.parse_args()
+
+    small_enabled = args.small_object_chip_size > 0 and args.small_object_chip_size != args.chip_size
+    configs = ["main_only"] + (["main_plus_small"] if small_enabled else [])
+    methods = ("nms", "wbf")
+    SMALL_OBJECT_CLASSES = ["small-vehicle", "large-vehicle"]
 
     labels = json.loads((args.dota_dir / "labels.json").read_text())
     labels = labels[: args.num_images]
 
-    nms_pc = defaultdict(lambda: [0, 0, 0])
-    wbf_pc = defaultdict(lambda: [0, 0, 0])
-    nms_ap = defaultdict(list)
-    wbf_ap = defaultdict(list)
+    # Accumulators keyed by (config, method); plus per-config sample stats.
+    pc = {(c, m): defaultdict(lambda: [0, 0, 0]) for c in configs for m in methods}
+    ap_rec = {(c, m): defaultdict(list) for c in configs for m in methods}
+    kept = {(c, m): 0 for c in configs for m in methods}
+    sample = {c: {"total_chips": 0, "raw_detections": 0, "multichip_images": 0,
+                  "edge_merges_nms": 0} for c in configs}
     gt_counts = defaultdict(int)
-    nms_total_dets = wbf_total_dets = raw_total = 0
-    multichip_images = 0
-    total_chips = 0
-    edge_merges_total = 0
     examples = []
 
     for rec in labels:
@@ -353,58 +406,54 @@ def main() -> int:
         for g in gts:
             gt_counts[normalize_gt_label(g["label"])] += 1
 
-        grid = plan_inference_grid(W, H, args.chip_size, args.overlap, args.max_chips)
-        step = grid["step"]
-        x_offsets = grid.get("x_offsets") or [i * step for i in grid["x_indices"]]
-        y_offsets = grid.get("y_offsets") or [i * step for i in grid["y_indices"]]
-        x_sizes = grid.get("x_window_sizes") or [args.chip_size] * len(x_offsets)
-        y_sizes = grid.get("y_window_sizes") or [args.chip_size] * len(y_offsets)
-        n_chips = len(x_offsets) * len(y_offsets)
-        total_chips += n_chips
-        if n_chips > 1:
-            multichip_images += 1
+        main_chips, n_main = collect_pass(
+            img, rec, chip_path, args.chip_size, args.overlap, args.max_chips, args)
+        small_chips, n_small = ([], 0)
+        if small_enabled:
+            small_chips, n_small = collect_pass(
+                img, rec, chip_path, args.small_object_chip_size,
+                args.small_object_overlap, args.small_object_max_chips, args)
 
-        per_chip_global: list[list[dict]] = []
-        img_bytes_sha = hashlib.sha1(chip_path.read_bytes()).hexdigest()[:12]
-        for xi, (xo, xw) in enumerate(zip(x_offsets, x_sizes)):
-            for yi, (yo, yw) in enumerate(zip(y_offsets, y_sizes)):
-                xo, yo, xw, yw = int(xo), int(yo), int(xw), int(yw)
-                crop = img.crop((xo, yo, min(xo + xw, W), min(yo + yw, H)))
-                ck = f"{Path(rec['chip_file']).stem}_{img_bytes_sha}_x{xo}_y{yo}_w{xw}_h{yw}"
-                raw_dets = detect_chip(crop, args.endpoint, args.cache_dir, ck)
-                mapped = []
-                for d in raw_dets:
-                    m = map_to_global(d, xo, yo, crop.width, crop.height, W, H)
-                    if m is not None:
-                        mapped.append(m)
-                per_chip_global.append(mapped)
+        # main_only sees only the main grid; main_plus_small feeds main then the
+        # finer grid into the SAME stateful dedupe index — mirrors slice_and_infer.
+        chips_by_config = {
+            "main_only": main_chips,
+            "main_plus_small": main_chips + small_chips,
+        }
+        nchips_by_config = {"main_only": n_main, "main_plus_small": n_main + n_small}
 
-        nms_surv, nms_meta = run_nms([list(c) for c in per_chip_global])
-        wbf_surv, wbf_meta = run_wbf([list(c) for c in per_chip_global],
-                                     args.wbf_iou, args.wbf_expected_models)
-        raw_total += sum(len(c) for c in per_chip_global)
-        nms_total_dets += len(nms_surv)
-        wbf_total_dets += len(wbf_surv)
-        edge_merges_total += nms_meta["edge_merges"]
+        nms_survivors: dict[str, list] = {}
+        for c in configs:
+            chips = chips_by_config[c]
+            sample[c]["total_chips"] += nchips_by_config[c]
+            sample[c]["raw_detections"] += sum(len(x) for x in chips)
+            if nchips_by_config[c] > 1:
+                sample[c]["multichip_images"] += 1
 
-        n_pc, n_ap = score_image(nms_surv, gts, args.iou_match)
-        w_pc, w_ap = score_image(wbf_surv, gts, args.iou_match)
-        for cls, (tp, fp, fn) in n_pc.items():
-            nms_pc[cls][0] += tp; nms_pc[cls][1] += fp; nms_pc[cls][2] += fn
-        for cls, (tp, fp, fn) in w_pc.items():
-            wbf_pc[cls][0] += tp; wbf_pc[cls][1] += fp; wbf_pc[cls][2] += fn
-        for cls, conf, is_tp in n_ap:
-            nms_ap[cls].append((conf, is_tp))
-        for cls, conf, is_tp in w_ap:
-            wbf_ap[cls].append((conf, is_tp))
+            nms_surv, nms_meta = run_nms([list(x) for x in chips])
+            sample[c]["edge_merges_nms"] += nms_meta["edge_merges"]
+            kept[(c, "nms")] += len(nms_surv)
+            nms_survivors[c] = nms_surv
+            wbf_surv, _ = run_wbf([list(x) for x in chips],
+                                  args.wbf_iou, args.wbf_expected_models)
+            kept[(c, "wbf")] += len(wbf_surv)
 
-        # qualitative: did the two methods produce different counts on this image?
-        if abs(len(nms_surv) - len(wbf_surv)) > 0:
+            for method, surv in (("nms", nms_surv), ("wbf", wbf_surv)):
+                s_pc, s_ap = score_image(surv, gts, args.iou_match)
+                for cls, (tp, fp, fn) in s_pc.items():
+                    pc[(c, method)][cls][0] += tp
+                    pc[(c, method)][cls][1] += fp
+                    pc[(c, method)][cls][2] += fn
+                for cls, conf, is_tp in s_ap:
+                    ap_rec[(c, method)][cls].append((conf, is_tp))
+
+        # qualitative: which images did the small-object pass change (NMS kept count)?
+        if small_enabled and len(nms_survivors["main_only"]) != len(nms_survivors["main_plus_small"]):
             examples.append({
-                "image": rec["chip_file"], "size": [W, H], "chips": n_chips,
-                "raw": sum(len(c) for c in per_chip_global),
-                "nms_kept": len(nms_surv), "wbf_kept": len(wbf_surv),
-                "edge_merges_nms": nms_meta["edge_merges"],
+                "image": rec["chip_file"], "size": [W, H],
+                "chips_main": n_main, "chips_small": n_small,
+                "nms_kept_main_only": len(nms_survivors["main_only"]),
+                "nms_kept_main_plus_small": len(nms_survivors["main_plus_small"]),
             })
 
     def prf(pc):
@@ -434,10 +483,43 @@ def main() -> int:
         valid = [v for v in aps.values() if v == v]  # drop nan
         return aps, (round(sum(valid) / len(valid), 4) if valid else 0.0)
 
-    nms_prf = prf(nms_pc)
-    wbf_prf = prf(wbf_pc)
-    nms_ap_per, nms_map = map_at(nms_ap)
-    wbf_ap_per, wbf_map = map_at(wbf_ap)
+    mkey = "mAP@%.2f" % args.iou_match
+    out_configs = {}
+    for c in configs:
+        block = {
+            "sample": {
+                "total_chips": sample[c]["total_chips"],
+                "multichip_images": sample[c]["multichip_images"],
+                "raw_detections": sample[c]["raw_detections"],
+                "nms_kept": kept[(c, "nms")],
+                "wbf_kept": kept[(c, "wbf")],
+                "nms_edge_merges": sample[c]["edge_merges_nms"],
+            },
+        }
+        for m in methods:
+            m_prf = prf(pc[(c, m)])
+            m_ap_per, m_map = map_at(ap_rec[(c, m)])
+            block[m] = {"per_class": m_prf, "ap": m_ap_per, mkey: m_map}
+        out_configs[c] = block
+
+    # Uplift deltas: main_plus_small - main_only, per method, per class + overall + mAP.
+    deltas = {}
+    if small_enabled:
+        for m in methods:
+            a = out_configs["main_only"][m]["per_class"]
+            b = out_configs["main_plus_small"][m]["per_class"]
+            dm = {}
+            for cls in set(a) | set(b):
+                av = a.get(cls) or {"precision": 0, "recall": 0, "f1": 0}
+                bv = b.get(cls) or {"precision": 0, "recall": 0, "f1": 0}
+                dm[cls] = {
+                    "recall_delta": round(bv["recall"] - av["recall"], 4),
+                    "precision_delta": round(bv["precision"] - av["precision"], 4),
+                    "f1_delta": round(bv["f1"] - av["f1"], 4),
+                }
+            dm["__mAP_delta__"] = round(
+                out_configs["main_plus_small"][m][mkey] - out_configs["main_only"][m][mkey], 4)
+            deltas[m] = dm
 
     result = {
         "parameters": {
@@ -445,43 +527,43 @@ def main() -> int:
             "max_chips": args.max_chips, "iou_match": args.iou_match,
             "wbf_iou": args.wbf_iou, "wbf_expected_models": args.wbf_expected_models,
             "num_images": len(labels),
+            "small_object_enabled": small_enabled,
+            "small_object_chip_size": args.small_object_chip_size,
+            "small_object_overlap": args.small_object_overlap,
+            "small_object_max_chips": args.small_object_max_chips,
         },
-        "sample": {
-            "images_evaluated": len(labels), "total_chips": total_chips,
-            "multichip_images": multichip_images, "total_gt_boxes": int(sum(gt_counts.values())),
-            "raw_detections": raw_total, "nms_kept": nms_total_dets, "wbf_kept": wbf_total_dets,
-            "nms_edge_merges": edge_merges_total,
-        },
+        "images_evaluated": len(labels),
+        "total_gt_boxes": int(sum(gt_counts.values())),
         "gt_counts": dict(sorted(gt_counts.items())),
-        "nms": {"per_class": nms_prf, "ap": nms_ap_per, "mAP@%.2f" % args.iou_match: nms_map},
-        "wbf": {"per_class": wbf_prf, "ap": wbf_ap_per, "mAP@%.2f" % args.iou_match: wbf_map},
+        "small_object_classes": SMALL_OBJECT_CLASSES,
+        "configurations": out_configs,
+        "deltas": deltas,
         "qualitative_count_diffs": examples,
     }
     args.out_json.parent.mkdir(parents=True, exist_ok=True)
     args.out_json.write_text(json.dumps(result, indent=2))
 
     # Console summary
-    print(f"\n=== Sample ===")
-    for k, v in result["sample"].items():
-        print(f"  {k}: {v}")
+    print(f"\n=== Sample (images={len(labels)}, GT boxes={int(sum(gt_counts.values()))}) ===")
+    for c in configs:
+        s = out_configs[c]["sample"]
+        print(f"  [{c}] chips={s['total_chips']} raw={s['raw_detections']} "
+              f"nms_kept={s['nms_kept']} wbf_kept={s['wbf_kept']} "
+              f"edge_merges={s['nms_edge_merges']}")
     print(f"\n=== Overall (IoU={args.iou_match}) ===")
-    print(f"  NMS  P/R/F1 = {nms_prf['__overall__']['precision']} / "
-          f"{nms_prf['__overall__']['recall']} / {nms_prf['__overall__']['f1']}   "
-          f"mAP@{args.iou_match} = {nms_map}")
-    print(f"  WBF  P/R/F1 = {wbf_prf['__overall__']['precision']} / "
-          f"{wbf_prf['__overall__']['recall']} / {wbf_prf['__overall__']['f1']}   "
-          f"mAP@{args.iou_match} = {wbf_map}")
-    print(f"\n=== Per-class (only DOTA-annotated, sorted) ===")
-    print(f"  {'class':<20} {'GT':>5} | {'NMS P/R/F1':>22} | {'WBF P/R/F1':>22}")
-    for cls in sorted(gt_counts):
-        n = nms_prf.get(cls); w = wbf_prf.get(cls)
-        if not n and not w:
-            continue
-        nn = n or {"precision": 0, "recall": 0, "f1": 0}
-        ww = w or {"precision": 0, "recall": 0, "f1": 0}
-        print(f"  {cls:<20} {gt_counts[cls]:>5} | "
-              f"{nn['precision']:.2f}/{nn['recall']:.2f}/{nn['f1']:.2f}".rjust(22) + " | "
-              f"{ww['precision']:.2f}/{ww['recall']:.2f}/{ww['f1']:.2f}".rjust(22))
+    for c in configs:
+        for m in methods:
+            o = out_configs[c][m]["per_class"]["__overall__"]
+            print(f"  [{c:<16}] {m.upper():<3} P/R/F1 = "
+                  f"{o['precision']}/{o['recall']}/{o['f1']}   {mkey} = {out_configs[c][m][mkey]}")
+    if small_enabled:
+        print(f"\n=== Uplift (main_plus_small - main_only, NMS) ===")
+        for cls in SMALL_OBJECT_CLASSES + ["__overall__"]:
+            d = deltas["nms"].get(cls)
+            if d:
+                print(f"  {cls:<16} Δrecall={d['recall_delta']:+.4f} "
+                      f"Δprecision={d['precision_delta']:+.4f} Δf1={d['f1_delta']:+.4f}")
+        print(f"  {'mAP':<16} Δ={deltas['nms']['__mAP_delta__']:+.4f}")
     print(f"\nWrote {args.out_json}")
     return 0
 

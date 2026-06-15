@@ -123,6 +123,22 @@
               "prompt": "military vehicle convoy"
             }
           ]
+        },
+        {
+          "id": "Military_Vehicles_MVRSD",
+          "label": "Military Vehicles (MVRSD)",
+          "color": "#ff3b30",
+          "short": "MVR",
+          "iconKey": "military",
+          "matchers": [],
+          "_comment": "MVRSD closed-vocab detector classes. Object labels MUST stay the short codes (SMV/LMV/AFV/CV/MCV): ontology.normalize derives parent_class from the canonical object label, and that key drives per-class confidence floors in detection_policy.py. Long forms live in prompt. RGB/optical-only detector.",
+          "objects": [
+            { "id": "MVRSD_SMV", "label": "SMV", "prompt": "small military vehicle" },
+            { "id": "MVRSD_LMV", "label": "LMV", "prompt": "large military vehicle" },
+            { "id": "MVRSD_AFV", "label": "AFV", "prompt": "armored fighting vehicle" },
+            { "id": "MVRSD_CV", "label": "CV", "prompt": "cargo vehicle" },
+            { "id": "MVRSD_MCV", "label": "MCV", "prompt": "military combat vehicle" }
+          ]
         }
       ]
     },

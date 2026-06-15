@@ -6,11 +6,11 @@
 
 ## Purpose
 
-Closed-vocabulary oriented-bounding-box detector for DOTA-style overhead objects. Emits SAM3-shaped candidates so the shared fusion path can combine OBB specialist detections with SAM3/GDINO masks.
+Closed-vocabulary oriented-bounding-box detector for DOTA-style overhead objects. Emits SAM3-shaped candidates so the shared fusion path can combine OBB specialist detections with SAM3 masks.
 
 ## Why this design
 
-Default checkpoint `yolo26m-obb.pt`, with `yolo11n-obb.pt` still selectable via `DOTA_OBB_MODEL_ID` for low-VRAM hosts. OBB detection stays relevance-gated — prior benchmarks showed indiscriminate specialist competition can damage mAP; see [why-grounding-dino-auto-gated.md](../decisions/why-grounding-dino-auto-gated.md), [why-evidence-ranked-detections.md](../decisions/why-evidence-ranked-detections.md).
+Default checkpoint `yolo26m-obb.pt`, with `yolo11n-obb.pt` still selectable via `DOTA_OBB_MODEL_ID` for low-VRAM hosts. OBB detection stays relevance-gated — prior benchmarks showed indiscriminate specialist competition can damage mAP; see [why-evidence-ranked-detections.md](../decisions/why-evidence-ranked-detections.md).
 
 ## Key symbols
 

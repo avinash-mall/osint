@@ -55,7 +55,6 @@ def setup_function():
         "dinov3_sat": None,
         "terramind": None,
         "dota_obb": {"model": object()},
-        "grounding_dino": {"model": object()},
     })
 
 
@@ -106,9 +105,7 @@ def test_enabled_layers_sam3_only(monkeypatch):
     monkeypatch.setattr(main.sam3_runner, "run_text_prompts", fake_text)
 
     mock_dota = MagicMock(return_value=[])
-    mock_gdino = MagicMock(return_value=[])
     monkeypatch.setattr(main.dota_obb, "run", mock_dota)
-    monkeypatch.setattr(main.grounding_dino, "run", mock_gdino)
 
     img = Image.new("RGB", (16, 16), color=(10, 20, 30))
     buf = io.BytesIO()
@@ -242,43 +239,3 @@ def test_dota_obb_runs_for_relevant_prompt(monkeypatch):
 
     assert resp.status_code == 200
     assert mock_dota.call_count == 1
-
-
-def test_grounding_dino_requires_explicit_enable_for_uncommon_prompt(monkeypatch):
-    def fake_text(bundle, chip, prompts, threshold, timings=None):
-        return []
-
-    monkeypatch.setattr(main.sam3_runner, "run_text_prompts", fake_text)
-    monkeypatch.setattr(main.grounding_dino_gate, "should_run_grounding_dino", lambda prompts, force=False: (True, None))
-    mock_gdino = MagicMock(return_value=[])
-    monkeypatch.setattr(main.grounding_dino, "run", mock_gdino)
-
-    img = Image.new("RGB", (16, 16), color=(10, 20, 30))
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-
-    client = TestClient(main.app)
-    resp = client.post(
-        "/detect",
-        files={"image": ("chip.png", buf.getvalue(), "image/png")},
-        data={"metadata": '{"modality":"rgb","text_prompts":["zxqkk_unknown_thing"]}'},
-    )
-
-    assert resp.status_code == 200
-    assert mock_gdino.call_count == 0
-
-    buf2 = io.BytesIO()
-    img.save(buf2, format="PNG")
-    resp2 = client.post(
-        "/detect",
-        files={"image": ("chip.png", buf2.getvalue(), "image/png")},
-        data={
-            "metadata": (
-                '{"modality":"rgb","text_prompts":["zxqkk_unknown_thing"],'
-                '"enabled_layers":["sam3","grounding_dino"]}'
-            )
-        },
-    )
-
-    assert resp2.status_code == 200
-    assert mock_gdino.call_count == 1

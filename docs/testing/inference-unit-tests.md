@@ -14,7 +14,6 @@
 | [test_sam3_perf.py](../../inference-sam3/tests/test_sam3_perf.py) | `stage_timer` accumulation, backend selection |
 | [test_main_stubbed.py](../../inference-sam3/tests/test_main_stubbed.py) | `/detect` request validation, image YOLOE-layer rejection, precision prompt defaults, source-layer tags, specialist gates, semantic-verifier metadata absence after RemoteCLIP removal |
 | [test_precision_benchmark.py](../../inference-sam3/tests/test_precision_benchmark.py) | Live-service precision benchmark; skipped when `INFERENCE_URL` unreachable |
-| [test_grounding_dino_gate.py](../../inference-sam3/tests/test_grounding_dino_gate.py) | `is_common` + `should_run_grounding_dino` |
 | [test_inference_utils.py](../../inference-sam3/tests/test_inference_utils.py) | YOLO optimization helpers, memory guard |
 | [test_chip_prep_perf.py](../../inference-sam3/tests/test_chip_prep_perf.py) | `backend/chip_prep_profiler.py` no-op-when-disabled, stage accumulation, CSV side-channel |
 
@@ -30,5 +29,4 @@ The full inference image requires CUDA. `test_main_stubbed.py` seeds the in-memo
 
 - [inference/sam3-runner-internals.md](../inference/sam3-runner-internals.md)
 - [inference/fusion-and-nms.md](../inference/fusion-and-nms.md)
-- [inference/grounding-dino-gate.md](../inference/grounding-dino-gate.md)
 - [inference/sam3-perf-profiling.md](../inference/sam3-perf-profiling.md)

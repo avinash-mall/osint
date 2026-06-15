@@ -6,8 +6,8 @@
 
 ## Purpose
 
-Merge raw image candidates from SAM3 + DOTA-OBB + LAE-DINO (`grounding_dino`
-layer) + MVRSD + YOLOE + SAR-CFAR into one deduplicated detection list. Builds
+Merge raw image candidates from SAM3 + DOTA-OBB + MVRSD + YOLOE + SAR-CFAR into
+one deduplicated detection list. Builds
 the canonical per-detection record (OBB extraction, COCO RLE encoding), then
 runs cross-detector fusion — Weighted Boxes Fusion by default, classic
 mask-aware NMS as the A/B alternative.
@@ -15,8 +15,8 @@ mask-aware NMS as the A/B alternative.
 ## Why this design
 
 - **Mask IoU, not box IoU (NMS path)** — closely spaced objects can have ≥0.5 box IoU but ~0 mask IoU (overlap geometrically, cover different pixels). Mask-aware NMS keeps both.
-- **WBF by default (T2.8)** — NMS-based ensembles destroy mAP when overlapping detectors disagree (see [why-wbf-over-nms.md](../decisions/why-wbf-over-nms.md) and the GDINO+DOTA collapse in [why-grounding-dino-auto-gated.md](../decisions/why-grounding-dino-auto-gated.md)). WBF averages overlapping boxes weighted by per-source trust instead of suppressing the loser.
-- **Per-source trust weights tuned on triage set** — DOTA-OBB and MVRSD (closed-vocab specialists) at 1.0; SAM3 and YOLOE at 0.5; GDINO at 0.3 because its text-derived boxes drift; SAR-CFAR at 0.7. Operators override via `SAM3_WBF_WEIGHTS` JSON env. (The MVRSD military-vehicle specialist is default-on in the RGB profile; see [mvrsd-specialist.md](mvrsd-specialist.md).)
+- **WBF by default (T2.8)** — NMS-based ensembles destroy mAP when overlapping detectors disagree (see [why-wbf-over-nms.md](../decisions/why-wbf-over-nms.md)). WBF averages overlapping boxes weighted by per-source trust instead of suppressing the loser.
+- **Per-source trust weights tuned on triage set** — DOTA-OBB and MVRSD (closed-vocab specialists) at 1.0; SAM3 and YOLOE at 0.5; SAR-CFAR at 0.7. Operators override via `SAM3_WBF_WEIGHTS` JSON env. (The MVRSD military-vehicle specialist is default-on in the RGB profile; see [mvrsd-specialist.md](mvrsd-specialist.md).)
 - **Defence-in-depth fallback** — if `ensemble_boxes` import fails, `wbf_fusion` logs a warning and falls back to `mask_aware_nms`. Runner never crashes.
 - **Edge-touch detection** — a mask touching the chip edge is marked `edge_truncated=true`; downstream the worker re-stitches at chip boundaries.
 - **OBB extraction from mask contour** via `cv2.minAreaRect`. Falls back to HBB when contour area tiny. The `np.where` / `cv2.morphologyEx` / `findContours` work runs on the mask's **own bounding-box ROI** (derived from cheap 1-D `any(axis)` reductions, padded by the morph kernel), not the full 1008×1008 frame, so per-detection cost is O(object) not O(image); `minAreaRect` points are offset back to full-image coords before normalising, so output is byte-identical. This is the postprocess hot path (~51 ms × N detections before the change). See [decisions/optical-inference-throughput.md](../decisions/optical-inference-throughput.md).
@@ -63,6 +63,5 @@ Each input detection must carry `bbox` (normalized cxcywh), `mask_rle`, `confide
 
 - [sam3-runner-internals.md](sam3-runner-internals.md)
 - [why-wbf-over-nms.md](../decisions/why-wbf-over-nms.md) — decision context for WBF default
-- [why-grounding-dino-auto-gated.md](../decisions/why-grounding-dino-auto-gated.md) — NMS-collapse measurement that motivated this
 - [deployment/environment-variables-reference.md](../deployment/environment-variables-reference.md)
 - Tests: [inference-sam3/tests/test_fusion.py](../../inference-sam3/tests/test_fusion.py), [inference-sam3/tests/test_fusion_wbf.py](../../inference-sam3/tests/test_fusion_wbf.py)

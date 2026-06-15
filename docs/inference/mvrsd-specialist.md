@@ -6,11 +6,11 @@
 
 ## Purpose
 
-Closed-vocabulary, axis-aligned (HBB) YOLO **detect** specialist for sub-meter (~0.3 m GSD) optical-RGB military vehicles, fine-tuned from `yolo11m` on the Military Vehicle Remote Sensing Dataset (MVRSD). Five fixed classes: `0=SMV`, `1=LMV`, `2=AFV`, `3=CV`, `4=MCV`. Emits SAM3-shaped candidates `(mask, bbox_xyxy, score, label)` so the shared [fusion.py](../../inference-sam3/fusion.py) path combines its detections with SAM3 / DOTA-OBB / Grounding-DINO.
+Closed-vocabulary, axis-aligned (HBB) YOLO **detect** specialist for sub-meter (~0.3 m GSD) optical-RGB military vehicles, fine-tuned from `yolo11m` on the Military Vehicle Remote Sensing Dataset (MVRSD). Five fixed classes: `0=SMV`, `1=LMV`, `2=AFV`, `3=CV`, `4=MCV`. Emits SAM3-shaped candidates `(mask, bbox_xyxy, score, label)` so the shared [fusion.py](../../inference-sam3/fusion.py) path combines its detections with SAM3 / DOTA-OBB.
 
 ## Why this design
 
-It ships **default-ON** in the `imagery_rgb` profile, treated exactly like DOTA-OBB: `SAM3_LOAD_MVRSD` defaults to `_DEFAULT` (= `"1"` when `SAM3_LOAD_OPTIONAL_MODELS=1`), and once loaded it runs on every RGB `/detect` via the normal default-True `_layer_active("mvrsd")` filter (an unfiltered request triggers it; a non-empty `enabled_layers` runs it only if `mvrsd` is included). The known tradeoff — a fine-grained military classifier can assign military sub-types to civilian vehicles on arbitrary scenes — is accepted and gated by the confidence policy (`GLOBAL_CONFIDENCE_FLOOR` + `MVRSD_CONF`), RGB-only scoping, and per-request opt-out. It mirrors `dota_obb.py` exactly (fp32 forced, `device_ctx` pinning, `safe_predict` OOM retry) — the only structural difference is the detect head returns `boxes.xyxy` instead of an OBB polygon, so the mask is a filled axis-aligned rectangle and the downstream OBB record uses `fusion._hbb_fallback`. See [decisions/why-mvrsd-military-vehicle-specialist.md](../decisions/why-mvrsd-military-vehicle-specialist.md).
+It ships **default-ON** in the `imagery_rgb` profile, treated exactly like DOTA-OBB: `SAM3_LOAD_MVRSD` defaults to `_DEFAULT` (= `"1"` when `SAM3_LOAD_OPTIONAL_MODELS=1`), and once loaded it runs on every RGB `/detect` via the normal default-True `_layer_active("mvrsd")` filter (an unfiltered request triggers it; a non-empty `enabled_layers` runs it only if `mvrsd` is included). The known tradeoff — a fine-grained military classifier can assign military sub-types to civilian vehicles on arbitrary scenes — is accepted and gated by the confidence policy (`GLOBAL_CONFIDENCE_FLOOR` + `MVRSD_CONF`), RGB-only scoping, and per-request opt-out. It mirrors `dota_obb.py` exactly (fp32 forced, `device_ctx` pinning, `safe_predict` OOM retry) — the only structural difference is the detect head returns `boxes.xyxy` instead of an OBB polygon, so the mask is a filled axis-aligned rectangle. The downstream OBB record runs `fusion.mask_to_obb_record` (`cv2.minAreaRect` on the rectangle's contour), which recovers the same axis-aligned box (angle ~0); only a degenerate mask falls back to `fusion._hbb_fallback`. See [decisions/why-mvrsd-military-vehicle-specialist.md](../decisions/why-mvrsd-military-vehicle-specialist.md).
 
 ## Key symbols
 
@@ -22,6 +22,8 @@ It ships **default-ON** in the `imagery_rgb` profile, treated exactly like DOTA-
 ## Inputs / Outputs
 
 Input: RGB uint8 chip + the per-request `enabled_layers` (default-True via `_layer_active`, like DOTA-OBB). Output candidates are tagged by `main.py` with `source_layer="mvrsd"` before WBF/NMS fusion, verifier scoring, backend calibration, and evidence ranking — identical to every other detector. WBF trust weight `1.0` (parity with DOTA-OBB) in `fusion._DEFAULT_WBF_WEIGHTS`.
+
+The 5 classes are registered in the ontology under the `Military_Vehicles_MVRSD` branch — object `label` = the short code (SMV/LMV/AFV/CV/MCV) so [`ontology.normalize`](../backend/ontology-system.md) yields `parent_class` ∈ {smv,lmv,afv,cv,mcv} (no more `Other`/triage spam). That key stability is what lets a measured per-class confidence floor (currently a gentle uniform `0.40` via the `inference_config` DB overrides) trim civilian false positives — the floor reduces FP volume but does **not** separate civilian from military vehicles. See [decisions/why-mvrsd-confidence-floors.md](../decisions/why-mvrsd-confidence-floors.md).
 
 ## Failure modes
 
@@ -35,4 +37,5 @@ Missing weight file (empty build URL) / missing Ultralytics → unloaded bundle;
 - [model-manifest.md](model-manifest.md) — weight entry + bake
 - [dota-obb-specialist.md](dota-obb-specialist.md) — the analog this mirrors
 - [decisions/why-mvrsd-military-vehicle-specialist.md](../decisions/why-mvrsd-military-vehicle-specialist.md)
+- [decisions/why-mvrsd-confidence-floors.md](../decisions/why-mvrsd-confidence-floors.md) — ontology registration + measured FP floors
 - [deployment/environment-variables-reference.md](../deployment/environment-variables-reference.md)

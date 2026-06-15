@@ -159,10 +159,9 @@ def test_fuse_detections_mode_wbf_is_default(monkeypatch):
 
 def test_wbf_per_model_weights_env_override(monkeypatch):
     """SAM3_WBF_WEIGHTS JSON overrides merge on top of defaults."""
-    monkeypatch.setenv("SAM3_WBF_WEIGHTS", '{"grounding_dino": 0.9, "novel_layer": 0.42}')
+    monkeypatch.setenv("SAM3_WBF_WEIGHTS", '{"novel_layer": 0.42}')
 
     merged = fusion._wbf_weights()
-    assert merged["grounding_dino"] == pytest.approx(0.9)
     assert merged["novel_layer"] == pytest.approx(0.42)
     # Defaults for un-overridden layers stay intact.
     assert merged["dota_obb"] == pytest.approx(1.0)
@@ -174,3 +173,57 @@ def test_wbf_per_model_weights_env_invalid_json_falls_back(monkeypatch):
     merged = fusion._wbf_weights()
     # Returns clean default copy when JSON is malformed.
     assert merged == fusion._DEFAULT_WBF_WEIGHTS
+
+
+def _int_box(box):
+    """Round to int px the way embedding.embed_crop does before cropping."""
+    return [int(round(v)) for v in box]
+
+
+def test_deferred_embed_box_is_member_box_not_fused_box():
+    """Embedding is now computed AFTER fusion (main._detect_pipeline), over the
+    survivors only. This is only equivalent to the old pre-fusion embedding if a
+    survivor's box is its highest-confidence *member's* box — not the WBF
+    averaged box. Prove that invariant: the box the deferred pass would crop
+    (``_xyxy_from_detection(survivor)``) equals the winning input's box, and is
+    NOT the averaged geometry WBF emits internally.
+    """
+    # IoU(a,b) = 324/476 = 0.68 >= SAM3_WBF_IOU (0.55), so the two merge, but the
+    # boxes are offset enough that the member box, a's box, and the WBF averaged
+    # box all round to distinct int pixels — letting us tell which one survived.
+    a = _det(10, 10, 30, 30, 0.70, "ship", "sam3")       # lower conf
+    b = _det(12, 12, 32, 32, 0.95, "ship", "dota_obb")   # higher conf -> survivor
+
+    fused = fusion.wbf_fusion([a, b], 64, 64, agnostic=False)
+    assert len(fused) == 1
+    survivor = fused[0]
+    assert survivor["wbf_member_count"] == 2
+
+    # The deferred embed pass crops at this reconstructed pixel box.
+    embed_box = _int_box(fusion._xyxy_from_detection(survivor))
+    # It must equal the higher-confidence member b — i.e. exactly the box the
+    # OLD pre-fusion path embedded for the detection that survives.
+    assert embed_box == _int_box(fusion._xyxy_from_detection(b))
+    # And it must NOT be the lower-confidence member's box...
+    assert embed_box != _int_box(fusion._xyxy_from_detection(a))
+    # ...nor the WBF averaged box (midpoint of a and b = (11,11,31,31)),
+    # confirming the survivor carries its member geometry unchanged.
+    averaged = [(10 + 12) / 2, (10 + 12) / 2, (30 + 32) / 2, (30 + 32) / 2]
+    assert embed_box != _int_box(averaged)
+
+
+def test_deferred_embed_box_matches_nms_survivor_box():
+    """Same invariant for the hard-NMS path (SAM3_FUSION_MODE=nms / soft off):
+    survivors are the unmodified input dicts, so the deferred embed box is
+    bit-for-bit the pre-fusion box.
+    """
+    a = _det(10, 10, 30, 30, 0.70, "ship", "sam3")
+    b = _det(12, 12, 32, 32, 0.95, "ship", "sam3")  # higher conf, heavy overlap
+
+    kept = fusion.mask_aware_nms([a, b], iou=0.50, agnostic=True)
+    assert len(kept) == 1
+    survivor = kept[0]
+    # NMS keeps the original dict object — embed box is identical to source.
+    assert _int_box(fusion._xyxy_from_detection(survivor)) == _int_box(
+        fusion._xyxy_from_detection(b)
+    )

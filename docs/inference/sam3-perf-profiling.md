@@ -6,7 +6,7 @@
 
 ## Purpose
 
-CUDA-synchronous per-stage timing helper breaking down `/detect` latency into named stages (encode, sam3, dota, gdino, dinov3, fusion, etc.). Also chooses the most efficient `torch.nn.functional.scaled_dot_product_attention` backend per GPU generation.
+CUDA-synchronous per-stage timing helper breaking down `/detect` latency into named stages (encode, sam3, dota, dinov3, fusion, etc.). Also chooses the most efficient `torch.nn.functional.scaled_dot_product_attention` backend per GPU generation.
 
 ## Key symbols
 

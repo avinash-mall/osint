@@ -127,8 +127,6 @@ class GpuBuildProfile:
     # --- Specialist open-set detectors (run alongside SAM3 on every chip) ---
     # DOTA-OBB: oriented-bbox aerial vehicle detector (yolo11n ≈ 0.1 GiB, +50 ms/chip).
     sam3_load_dota_obb: bool = True
-    # Grounding-DINO: open-vocab text-to-box detector (tiny ≈ 0.6 GiB, +241 ms/chip).
-    sam3_load_grounding_dino: bool = True
     # YOLOE-26x open-vocab instance segmentation (pf + seg, ~1 GiB combined).
     # Powers the standalone YOLO 26 FMV tracker that bypasses SAM 3.1 multiplex.
     sam3_load_yoloe: bool = True
@@ -195,10 +193,7 @@ class GpuBuildProfile:
         # Loading-policy gate (see sam3_hot_load_min_vram_mib). Roomy cards run
         # "hot" (everything the profile permits resident, honouring its own
         # preload choice). Tight cards run "dynamic": no preload, per-modality
-        # profiles. Grounding-DINO stays available on all cards — it is
-        # runtime auto-gated (only fires on novel-vocab prompts) so it costs
-        # nothing on the common path. See
-        # docs/decisions/why-grounding-dino-auto-gated.md.
+        # profiles.
         hot_load = vram_mib is None or vram_mib >= self.sam3_hot_load_min_vram_mib
         if hot_load:
             preload_models = self.sam3_preload_models
@@ -225,7 +220,6 @@ class GpuBuildProfile:
             "SAM3_LOAD_TERRAMIND": "1" if self.sam3_load_terramind else "0",
             # Specialist detectors.
             "SAM3_LOAD_DOTA_OBB": "1" if self.sam3_load_dota_obb else "0",
-            "SAM3_LOAD_GROUNDING_DINO": "1" if self.sam3_load_grounding_dino else "0",
             "SAM3_LOAD_YOLOE": "1" if self.sam3_load_yoloe else "0",
             # Embedding & batching
             "SAM3_EMBED_DETECTIONS": "1" if self.sam3_embed_detections else "0",
@@ -246,7 +240,7 @@ class GpuBuildProfile:
             # Keep both for backward compat across the 2.7→2.10 transition.
             "PYTORCH_ALLOC_CONF": self.pytorch_cuda_alloc_conf,
             # YOLO optimization knobs (consumed by inference_utils +
-            # yoloe / dota_obb / grounding_dino loaders).
+            # yoloe / dota_obb loaders).
             "SAM3_YOLO_FUSE": "1" if self.yolo_fuse else "0",
             "SAM3_YOLO_HALF": "1" if self.yolo_half else "0",
             "SAM3_YOLO_CHANNELS_LAST": "1" if self.yolo_channels_last else "0",
@@ -318,14 +312,13 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         fmv_track_frames_per_window=24,
         use_multiplex=False,
         # Optional satellite models disabled: SAM3 base (~8 GiB) + DOTA-OBB
-        # + GD-tiny leaves only ~7 GiB headroom on a 16 GiB T4, which is
+        # leaves only ~7 GiB headroom on a 16 GiB T4, which is
         # consumed by video session activations. Enable per-model overrides
         # in .env once VRAM budget is measured on the specific workload.
         sam3_load_optional_models=False,
         sam3_load_dinov3_sat=False,
         sam3_load_terramind=False,
         sam3_load_dota_obb=True,
-        sam3_load_grounding_dino=True,
         sam3_embed_detections=False,
         sam3_batched_text_chunk_size=4,
         sam3_embed_batch_size=16,
@@ -371,7 +364,6 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         # SAM3_LOAD_TERRAMIND=1 in .env after configure_host.py.
         sam3_load_terramind=False,
         sam3_load_dota_obb=True,
-        sam3_load_grounding_dino=True,
         sam3_embed_detections=True,
         sam3_batched_text_chunk_size=8,
         sam3_preload_profile="",
@@ -436,7 +428,6 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_load_dinov3_sat=True,
         sam3_load_terramind=True,
         sam3_load_dota_obb=True,
-        sam3_load_grounding_dino=True,
         sam3_embed_detections=True,
         # Larger batch fits comfortably in 40-80 GiB HBM.
         sam3_batched_text_chunk_size=16,
@@ -495,7 +486,6 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         # in .env after configure_host.py.
         sam3_load_terramind=False,
         sam3_load_dota_obb=True,
-        sam3_load_grounding_dino=True,
         sam3_embed_detections=True,
         sam3_batched_text_chunk_size=8,
         sam3_preload_profile="",
@@ -544,7 +534,6 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_load_dinov3_sat=True,
         sam3_load_terramind=True,
         sam3_load_dota_obb=True,
-        sam3_load_grounding_dino=True,
         sam3_embed_detections=True,
         # Batched text chunk = 32 on H100/H200: each chunk's decoder
         # activations are ~6-7 GiB at chunk=32 (200 queries × 1008² masks
@@ -595,7 +584,6 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_load_dinov3_sat=True,
         sam3_load_terramind=True,
         sam3_load_dota_obb=True,
-        sam3_load_grounding_dino=True,
         sam3_embed_detections=True,
         # Datacenter Blackwell chunk=32 mirrors Hopper. HBM3e at 192 GiB
         # (B200) makes decoder-output VRAM essentially free; doubling
@@ -673,7 +661,6 @@ GPU_BUILD_PROFILES: dict[str, GpuBuildProfile] = {
         sam3_load_dinov3_sat=True,
         sam3_load_terramind=True,
         sam3_load_dota_obb=True,
-        sam3_load_grounding_dino=True,
         sam3_embed_detections=True,
         sam3_batched_text_chunk_size=8,
         sam3_preload_profile="",

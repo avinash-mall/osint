@@ -8,8 +8,8 @@ rasters. 32,626 labelled instances across 5 vehicle classes:
     0 SMV   small military vehicle
     1 LMV   large military vehicle
     2 AFV   armoured fighting vehicle
-    3 CV    civilian vehicle
-    4 MCV   military construction vehicle
+    3 CV    cargo vehicle
+    4 MCV   military combat vehicle
 
 The full imagery is account-locked (Baidu Cloud / SciDB) and CANNOT be fetched
 programmatically — see scripts/manifests/mvrsd.json and the operator runbook.

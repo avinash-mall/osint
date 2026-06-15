@@ -7,7 +7,7 @@
 
 ## Why
 
-- **AMG required a second model** — AMG produces masks but no labels. Getting class names meant re-classifying every mask by Grounding-DINO: two model invocations per chip, one of them (GDINO) unstable at scale — see [why-grounding-dino-auto-gated.md](why-grounding-dino-auto-gated.md).
+- **AMG required a second model** — AMG produces masks but no labels. Getting class names meant re-classifying every mask by Grounding-DINO: two model invocations per chip, one of them (GDINO) unstable at scale — see [removed-grounding-dino-lae.md](removed-grounding-dino-lae.md).
 - **YOLOE emits labels directly** — the `-pf` head ships a baked-in prompt-free vocabulary; the `-seg` head accepts text prompts and emits `(mask, bbox, label, score)` in one forward pass.
 - **Latency** — YOLOE is comparable to SAM 3.1 PCS but eliminates the GDINO labeling pass. Per-frame cost roughly halves.
 
@@ -37,4 +37,4 @@ worker's `yoloe` mode and sends inference `prompt_mode=yoloe`.
 
 - [inference/yoloe-tracker.md](../inference/yoloe-tracker.md)
 - [inference/sam3-pcs-multiplex-video.md](../inference/sam3-pcs-multiplex-video.md)
-- [why-grounding-dino-auto-gated.md](why-grounding-dino-auto-gated.md)
+- [removed-grounding-dino-lae.md](removed-grounding-dino-lae.md)

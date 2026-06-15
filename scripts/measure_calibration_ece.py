@@ -181,7 +181,7 @@ def _collect_predictions(
             else:
                 payload = _post_detect(
                     inference_url, chip_bytes, prompts, layers,
-                    modality=modality, force_grounding_dino=False,
+                    modality=modality,
                 )
         except Exception as exc:
             print(f"[ece] chip {chip_count} failed: {exc}")

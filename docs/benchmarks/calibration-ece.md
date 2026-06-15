@@ -5,7 +5,7 @@
 
 ## What it measures
 
-For each detector (SAM3, DOTA-OBB, Grounding-DINO): bin predictions by confidence (e.g. 0-10%, 10-20%, …), measure the gap between mean confidence in the bin and empirical accuracy in the bin. Lower ECE = calibrated confidence; high ECE = over/underconfident.
+For each detector (SAM3, DOTA-OBB): bin predictions by confidence (e.g. 0-10%, 10-20%, …), measure the gap between mean confidence in the bin and empirical accuracy in the bin. Lower ECE = calibrated confidence; high ECE = over/underconfident.
 
 ## Output
 

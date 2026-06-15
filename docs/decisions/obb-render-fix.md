@@ -65,6 +65,32 @@ always scans a DB where `detections_mvt` already exists.
   start_period). Acceptable — serving detection tiles before the schema exists
   is pointless anyway.
 
+## Update (2026-06-14) — `depends_on` was necessary but NOT sufficient
+
+The symptom recurred on a healthy stack: Martin started at 05:43:06 (correctly
+**after** backend health at 05:43:03 — the `depends_on` worked), yet
+`detections_mvt` was still absent from its catalog while present in `pg_proc`.
+
+The premise above — "the function source is **created by the backend at
+startup** (platform_schema.py)" — was wrong. `detections_mvt` is created by
+`ensure_tile_sources()`, which runs **only** at the tail of
+`ensure_platform_tables()` ([platform_schema.py#L673](../../backend/platform_schema.py#L673)),
+and `ensure_platform_tables()` was called **lazily from API endpoints**, never
+from the `main.py` lifespan. So "backend healthy" did **not** imply the function
+existed — it was created later, on the first request that hit a lazy
+`ensure_platform_tables()`, which is **after** Martin's one-and-only scan. Same
+gap caused the startup `relation "reference_platforms" does not exist` traceback
+(`auto_enqueue_reference_seed_if_empty()` queries a lazily-created table).
+
+**Completing fix:** call `ensure_platform_tables()` **first** in the lifespan
+([main.py#L62](../../backend/main.py#L62)) so the tables, `reference_platforms`,
+and `detections_mvt` are committed **before** the backend reports healthy.
+Combined with the `depends_on` change, Martin now always scans a DB where
+`detections_mvt` already exists. Verified: after the fix a backend restart logs
+`reference auto-seed: 0 platforms` (query succeeds, no traceback) and Martin's
+catalog lists `detections_mvt`. `depends_on` is still required — it orders the
+scan after health; the eager init guarantees the function exists by then.
+
 ## Consequences
 
 - Cold `docker compose up` (fresh or existing volume) now renders detection

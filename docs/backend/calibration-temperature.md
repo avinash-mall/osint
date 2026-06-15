@@ -6,7 +6,7 @@
 
 ## Purpose
 
-Single-parameter temperature scaling for detector confidence scores. SAM3, DOTA-OBB, Grounding-DINO score on different distributions — uncalibrated, a 0.6 from one ≠ 0.6 from another. Rescales each model's logits into a common Platt-style probability space.
+Single-parameter temperature scaling for detector confidence scores. SAM3, DOTA-OBB score on different distributions — uncalibrated, a 0.6 from one ≠ 0.6 from another. Rescales each model's logits into a common Platt-style probability space.
 
 ## Why this design
 

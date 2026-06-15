@@ -33,7 +33,7 @@ backend/aircraft-class.md|backend|offline ICAO type-code -> coarse airframe clas
 backend/api-routes-appendix.md|backend|Generated compact appendix of FastAPI and WebSocket decorators found under `backend/`.
 backend/api-routes-reference.md|backend,router|route table by tag: auth/graph/detections/fmv/ontology/analytics/ai
 backend/auth-and-sessions.md|backend,auth|itsdangerous signed cookies, env-bootstrap admin, optional LDAP via auth_config row
-backend/calibration-temperature.md|backend|single-parameter temperature scaling for SAM3/DOTA/GDINO scores
+backend/calibration-temperature.md|backend|single-parameter temperature scaling for SAM3/DOTA scores
 backend/candidate-linking.md|backend|pure scorer: 30% spatial + 30% compat + 30% confidence + 10% history
 backend/cascade-delete.md|backend|orphan-free delete helpers: purge object_details/empty tracks/oet + Neo4j across all delete paths
 backend/change-detection-raster.md|backend,imagery|two-pass COG change: optical diff + SAR dB log-ratio preset, shared polygonizer
@@ -113,6 +113,7 @@ decisions/chip-aligned-training-tiles.md|decision,backend|opt-in training tiler 
 decisions/completed-dead-ui-controls.md|decision,frontend|wired FMV fullscreen + export-clip (source_url); removed action-less admin "More" buttons
 decisions/completed-deferred-items-2026-06-09.md|decision|deferred audit batch: CFAR variance, time-machine playback, change-detection mount + overlay, AI target-resolve, bake OOM/idempotency
 decisions/completed-stubbed-graph-ui.md|decision,frontend|real co-occurrence histogram, site-rollup FMV/reports render, ProvenancePanel wired as SelectionPanel Prov tab
+decisions/defer-embedding-to-post-fusion-2026-06-15.md|decision,inference|DINOv3 embedding moved after WBF/NMS, embeds survivors only (~35% fewer crops, byte-identical vectors); WBF survivor keeps member box
 decisions/disable-addmm-cuda-lt.md|decision,gpu|routes nn.Linear off cuBLAS-Lt to dodge A100/cu130 corruption bug
 decisions/fmv-default-sidetab-clips.md|decision,frontend,fmv|FMV right panel opens on Clips when no cross-nav; Tracks default hid uploaded clip
 decisions/imagery-source-selection.md|decision,imagery|download_city_cog --source sentinel2|esri; 10m vs sub-meter Esri tile mosaic, kept both
@@ -123,7 +124,7 @@ decisions/manual-draw-modal-replaces-prompt.md|decision,frontend|in-app ManualDe
 decisions/merged-additions-responsive-css.md|decision,frontend|additions.responsive.css folded into index.css to kill duplicate/drifting rules
 decisions/multi-scale-and-full-scene-chip-passes.md|decision,backend,imagery|small-object 2nd pass + opt-in full-scene pass; shared dedupe, scale_x/y georef
 decisions/obb-render-fix.md|decision,deployment|martin depends_on backend so detections_mvt source exists before Martin's one-shot scan; fixes 404 boxes
-decisions/optical-inference-throughput.md|decision,inference,sam3|batch embeddings, ROI-crop postprocess, multi-GPU back-off floor, non-blocking GD gate
+decisions/optical-inference-throughput.md|decision,inference,sam3|batch embeddings, ROI-crop postprocess, multi-GPU back-off floor
 decisions/panel-reflow-token-system.md|decision,frontend|map chrome reflows around panels via shared --reserve-* bands; map stays full-bleed, never overlaps
 decisions/pgvector-adapter-on-pool.md|decision,backend|connection_factory registers pgvector adapter on every pooled connection so list/numpy/Vector inserts work
 decisions/prompt-profile-demote-via-upsert.md|decision,backend,ontology|UPSERT no longer ORs current with existing; make_current=FALSE actually demotes
@@ -132,12 +133,15 @@ decisions/removed-battle-damage-and-aux-ontology-branches.md|decision,ontology|B
 decisions/removed-defence-yolo.md|decision|DEFENCE_YOLO emitted 1297 FPs / 0 TPs on DOTA val
 decisions/removed-dinov3-lvd.md|decision|DINOV3_LVD emitted NaN embeddings on drone-video crops
 decisions/removed-empty-inference-detection-policy.md|decision,inference|deleted empty 0-byte inference-sam3/detection_policy.py; fusion loads backend/detection_policy.py by path
-decisions/removed-fair1m-and-remoteclip.md|decision,inference|permanently removed FAIR1M-OBB (no-op stub) + RemoteCLIP verifier; kept Grounding-DINO + FAIR1M dataset
+decisions/removed-fair1m-and-remoteclip.md|decision,inference|permanently removed FAIR1M-OBB (no-op stub) + RemoteCLIP verifier; kept FAIR1M dataset
+decisions/removed-grounding-dino-lae.md|decision,inference|removed grounding_dino layer + inference-lae/LAE-DINO sidecar entirely; can't run on sm_120 (mmcv/cu121), gated off, 0 candidates, generic OVD poor on aerial
 decisions/removed-legacy-detection-geojson-path.md|decision,backend,frontend|fat /api/detections/geojson + VITE_DETECTION_TILES flag + halos + detection_points sublayer removed; MVT is the only path
 decisions/removed-prithvi-battle-damage.md|decision,inference|Prithvi flood/burn/multitemporal + overlays endpoint + UI removed; noisy FPs, burn IoU~0; decode_hls6 kept
 decisions/removed-sam3-amg.md|decision,fmv|SAM3 AMG path removed in favor of YOLOE
+decisions/removed-sam3-prompt-cap-2026-06-14.md|decision,inference|removed SAM3_MAX_PROMPTS_PER_REQUEST (64) cap + _prompt_limit; full ~133-class vocab runs (silently dropped 69); per-chip decode scales linearly
 decisions/removed-yoloe-imagery.md|decision,imagery,inference|YOLOE removed from still-image inference; FMV YOLOE remains
 decisions/reset-db-pool-after-fork.md|decision|worker_process_init resets PostGIS pool so prefork children don't share libpq sockets
+decisions/sam3-compile-and-chip-padding-2026-06-14.md|decision,inference|torch.compile (SAM3_COMPILE_IMAGE) + decoder-batch 64 + fixed-size edge-chip padding + startup warmup → ~6x/chip, zero quality change on Blackwell/cu130
 decisions/selection-panel-tab-consolidation.md|decision,frontend|Selection panel 6→4 tabs; Provenance folded into Details disclosure; Satellites gated to header affordance
 decisions/temporal-swipe-comparator.md|decision,frontend|side-by-side imagery comparator via custom Leaflet pane + clip-path; no plugin dependency
 decisions/tracker-gate-physical-ceiling.md|decision,backend|gate capped at physical travel; static categories AND static class names pinned stationary; kills track streak fans
@@ -147,7 +151,7 @@ decisions/why-503-on-unloaded-component.md|decision,inference|/detect guards a m
 decisions/why-admin-mutators-require-admin.md|decision,auth|global config/model/ontology/inference mutators require admin sessions
 decisions/why-amg-detection-classes-use-llm-labels.md|decision,frontend|superseded: YOLOE-PF imagery labels no longer promoted after image YOLOE removal
 decisions/why-analyst-username-from-session.md|decision|capture reviewed_by from SessionUser, not request-body analyst field
-decisions/why-auto-gpu-division.md|decision,gpu,deployment|configure_host partitions GPUs across services; protects SAM3 replicas, dedicates LAE card only at >=3 free
+decisions/why-auto-gpu-division.md|decision,gpu,deployment|configure_host assigns every free GPU to inference-sam3 (one replica per card), honouring reserved GPUs
 decisions/why-auto-identify-in-backend-not-inference.md|decision|reference-DB auto-identify runs in the backend worker, not inference-sam3
 decisions/why-auto-write-with-threshold.md|decision|auto-write platform_* to object_details when top-1 cosine ≥ 0.85; below threshold land as pending
 decisions/why-bake-reference-corpora-into-assets.md|decision,deployment|reference chips baked into assets image; shared volume RW assets / RO backend+worker; rsync-on-startup
@@ -177,12 +181,9 @@ decisions/why-fmv-track-consolidation.md|decision,fmv|post-inference pass stitch
 decisions/why-generic-labels-when-unverified.md|decision,backend,ontology|generic DOTA-OBB labels render as "(generic)" until verifier confirms; kills fabricated defence labels
 decisions/why-glo30-as-default-dem.md|decision,deployment|Copernicus GLO-30 (30 m, ~150 GB) chosen for tactical worldwide viewshed/LOS
 decisions/why-gnn-link-prediction.md|decision,backend|vendored city2graph PyG bridge + GraphSAGE link predictor; torch optional, advisory GNN_SUGGESTED_LINK edges
-decisions/why-grounding-dino-auto-gated.md|decision|forcing GDINO drops mAP via NMS suppression of DOTA detections
 decisions/why-imagery-dedup-is-hash-only.md|decision,backend,imagery|satellite_passes dedup on source_hash alone; footprint+acq_time+filename branches collapsed distinct uploads
 decisions/why-imagery-yoloe-mirrors-fmv.md|decision,imagery,inference|superseded: older image YOLOE routing experiment replaced by FMV-only YOLOE
 decisions/why-isochrone-reachability.md|decision,backend|driving-time isochrone polygon via OSRM /table matrix probes; reuses routing sidecar, offline
-decisions/why-lae-cross-chip-batching.md|decision,inference|cross-chip LAE batching evaluated + rejected; ~2x slower on serialize-forwards A100 hosts
-decisions/why-lae-dino-replaces-grounding-dino.md|decision,inference|RS-tuned LAE-DINO replaces generic Grounding-DINO; runs as inference-lae sidecar (dep conflict)
 decisions/why-layerpanel-dot-toggle.md|decision,frontend|eye-toggle column removed; 10px coloured dot is the visibility signal, locked analytics subgroup
 decisions/why-link-graph-uses-graph-analytics.md|decision,frontend|Link Graph wires Phase 6 metrics card+centrality sizing, co-location lens, status-gated GNN overlay
 decisions/why-live-streaming-detections.md|decision,backend,frontend|detections render per-chip live via detections_partial features; preview-then-reconcile
@@ -190,7 +191,8 @@ decisions/why-live-test-tier.md|decision,testing|third test tier vs real nginx:3
 decisions/why-llm-proposed-entities.md|decision,backend|operational entities are analyst-asserted; LLM/heuristic only proposes via entity_candidates queue
 decisions/why-llm-replaces-heuristic-proposer.md|decision,backend|tick_propose_entities tries LLM first, falls back to heuristic; both feed entity_candidates
 decisions/why-memoize-ontology-normalize.md|decision,ontology|result-memoize normalize() per (canon,layer); kills 24s geojson per-row regex/upsert; throttle version probe
-decisions/why-mvrsd-military-vehicle-specialist.md|decision,inference|fine-grained sub-meter military-vehicle detector, default-on in RGB; tradeoff mitigated by conf floor; weights baked
+decisions/why-mvrsd-confidence-floors.md|decision,inference,ontology|MVRSD classes registered in ontology (short-code labels) + measured FP eval (civilian vs military); per-class conf floors trim but can't separate
+decisions/why-mvrsd-military-vehicle-specialist.md|decision,inference|fine-grained sub-meter military-vehicle detector, default-on in RGB; tradeoff trimmed (not separated) by conf floor; weights baked
 decisions/why-od-flow-graphs.md|decision,backend|vendored city2graph OD flow graphs from track points; movement corridors as weighted lines, zero new dep
 decisions/why-offline-area-dossier.md|decision,backend|right-click area dossier from baked ne_countries (point-in-polygon), no Wikipedia/online
 decisions/why-offline-tle-import.md|decision,backend|TLEs imported over air-gap into PostGIS, never fetched at runtime; SGP4 maths is offline
@@ -279,21 +281,19 @@ frontend/workspace-link-graph.md|frontend|GraphExplorer.tsx force-directed Neo4j
 inference/dinov3-embeddings.md|inference|DINOv3 ViT-L SAT-493M re-ID embedding head
 inference/dota-obb-specialist.md|inference|Ultralytics YOLO26m-obb default with YOLO11n low-VRAM fallback
 inference/embed-endpoint.md|inference|POST /embed for standalone DINOv3-SAT vectors; used by reference DB baker
-inference/fusion-and-nms.md|inference|mask-aware fusion across SAM3/DOTA/GDINO/YOLOE detections
-inference/grounding-dino-detector.md|inference|grounding_dino layer = HTTP client for the LAE-DINO sidecar
-inference/grounding-dino-gate.md|inference|server-side gate skips GDINO on common-vocab prompts
-inference/lae-dino-sidecar.md|inference|LAE-DINO RS open-vocab detector sidecar (mmdet fork) behind grounding_dino layer
+inference/fusion-and-nms.md|inference|mask-aware fusion across SAM3/DOTA/MVRSD/YOLOE detections
 inference/main-app-entrypoint.md|inference,sam3|/detect precision defaults, source_layer/debug_counts, RemoteCLIP verifier, /detect_video
 inference/model-manifest.md|inference|MODEL_MANIFEST.json: HF repos, revisions, gating, file lists
 inference/multispectral-bands.md|inference,imagery|HLS-6 band decoder: Blue/Green/Red/Narrow-NIR/SWIR-1/SWIR-2
 inference/mvrsd-specialist.md|inference|MVRSD yolo11m detect specialist (5 military-vehicle classes); default-on in RGB profile like DOTA-OBB
 inference/profile-pool-lifecycle.md|inference|imagery/fmv/all profiles with per-GPU replication
 inference/python-requirements.md|inference|inference-sam3 pip dependencies after PyTorch/SAM3 install
+inference/sahi-equivalence.md|inference|SAHI<->chip-pass env mapping; slice_and_infer/plan_inference_grid is a homegrown SAHI superset (multi-scale, no sahi dep); small-object boost knob + uplift harness
 inference/sam3-pcs-multiplex-video.md|inference,sam3,fmv|SAM3.1 multiplex one-prompt-per-session video tracker
 inference/sam3-perf-profiling.md|inference,sam3|stage_timer CUDA-sync per-stage latency accumulator
 inference/sam3-runner-internals.md|inference,sam3|build_image_bundle, run_text_prompts, run_box_prompts pipelines
 inference/sar-bands.md|inference,imagery|Sentinel-1 GRD VV/VH dB clip and linear stretch
-inference/service-overview.md|inference,sam3|FastAPI service: SAM3+SAM3.1+YOLOE+DINOv3+TerraMind+DOTA+GDINO
+inference/service-overview.md|inference,sam3|FastAPI service: SAM3+SAM3.1+YOLOE+DINOv3+TerraMind+DOTA
 inference/terramind-sar-synthesis.md|inference,imagery|TerraMind v1 S1->S2 synthetic optical RGB for SAR
 inference/yoloe-tracker.md|inference,fmv|YOLOE-26x-seg(-pf) prompt-free + text-promptable, replaces SAM3 AMG
 operations/auth-and-ldap-setup.md|operations,auth|env-bootstrap admin, Admin->Auth LDAP form, test bind workflows

@@ -11,7 +11,7 @@ The old hybrid stack allowed single-source open-vocabulary detections and specia
 Evidence ranking keeps the open-vocabulary policy intact while making confirmation harder:
 
 - closed-set OBB and CFAR detections get source trust, but still pass physical validators;
-- SAM3/GDINO novel labels stay visible as `discovery` unless corroborated;
+- SAM3 novel labels stay visible as `discovery` unless corroborated;
 - semantic-verifier metadata can promote, but never creates detections; no active verifier emits it after RemoteCLIP removal;
 - SAR synthetic-preview labels stay conservative unless CFAR or other evidence supports them.
 

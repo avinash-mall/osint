@@ -14,7 +14,7 @@ PyTorch pinned by GPU profile, installed before this file. Domain libraries then
 
 ## Key symbols
 
-- `transformers` — Grounding-DINO + DINOv3-SAT loader dependency.
+- `transformers` — DINOv3-SAT loader dependency.
 - `ultralytics` — DOTA-OBB + YOLOE runtime.
 
 ## Inputs / Outputs

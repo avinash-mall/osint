@@ -15,7 +15,7 @@ Add MVRSD as a **default-ON** specialist detector — modelled on and treated ex
 - **Runs on every RGB `/detect`** via the normal default-True `_layer_active("mvrsd")` filter — exactly like DOTA-OBB, not the old explicit-opt-in `"mvrsd" in _enabled` path. An unfiltered request triggers it; when a request supplies a non-empty `enabled_layers` list it runs only if `mvrsd` is included (same rule as every other layer). The frontend `optical` sensor profile lists `mvrsd` in its `enabledLayers`.
 - **`imagery_rgb` only** (it is RGB-specific; no MSI/SAR/FMV value).
 - **Standard fusion.** Its HBB detections feed the same WBF/NMS path and policy floor as every other layer, with trust weight `1.0` (DOTA-OBB parity) in `fusion._DEFAULT_WBF_WEIGHTS`.
-- **Tradeoff accepted + mitigated.** A fine-grained military classifier can assign military sub-types to civilian vehicles on arbitrary imagery. This is now accepted and mitigated by: the confidence-policy floor (`GLOBAL_CONFIDENCE_FLOOR` + `MVRSD_CONF`), RGB-only scoping (it loads only in the optical/RGB profile, never MSI/SAR), and a per-request opt-out (exclude it from `enabled_layers`, or `SAM3_LOAD_MVRSD=0`). Unlike [removed-defence-yolo.md](removed-defence-yolo.md) (1297 FPs / 0 TPs), MVRSD is a *trained* fine-grained detector whose output is subject to the precision-policy floor, not an indiscriminate one — so it earns its place in the default RGB stack.
+- **Tradeoff accepted + mitigated.** A fine-grained military classifier can assign military sub-types to civilian vehicles on arbitrary imagery. This is now accepted and mitigated by: the confidence-policy floor (`GLOBAL_CONFIDENCE_FLOOR` + `MVRSD_CONF`), RGB-only scoping (it loads only in the optical/RGB profile, never MSI/SAR), and a per-request opt-out (exclude it from `enabled_layers`, or `SAM3_LOAD_MVRSD=0`). Unlike [removed-defence-yolo.md](removed-defence-yolo.md) (1297 FPs / 0 TPs), MVRSD is a *trained* fine-grained detector whose output is subject to the precision-policy floor, not an indiscriminate one — so it earns its place in the default RGB stack. **Measured 2026-06-14** ([why-mvrsd-confidence-floors.md](why-mvrsd-confidence-floors.md)): on a civilian control scene every MVRSD detection is a false positive, and its confidence *overlaps* the military distribution (civilian FPs reach 0.58, occasionally 0.75; military TPs ≤0.64). So the confidence floor *trims* FP volume (≈65% at a uniform 0.40 per-class floor) but does **not** separate civilian from military — full precision needs AOI gating or hard-negative retraining. The 5 classes are now ontology-registered under `Military_Vehicles_MVRSD`.
 
 ## Weights / offline
 
@@ -29,6 +29,7 @@ Trained weights are hosted as a **GitHub release asset** (the project ships no M
 
 ## Cross-references
 
+- [decisions/why-mvrsd-confidence-floors.md](why-mvrsd-confidence-floors.md) — measured FP evaluation, the per-class floors applied, and the ontology registration
 - [inference/mvrsd-specialist.md](../inference/mvrsd-specialist.md)
 - [inference/dota-obb-specialist.md](../inference/dota-obb-specialist.md)
 - [decisions/removed-defence-yolo.md](removed-defence-yolo.md)

@@ -20,7 +20,7 @@ DINOv3 model is resident, **regardless of a request's `enabled_layers` filter**.
 `enabled_layers` is a **detector** allow-list. The embedding is re-ID
 *enrichment* — it feeds the backend's reference-platform auto-identify and the
 similarity DB — not a detector. Gating it behind the detector filter meant a
-request that scoped layers to detectors (e.g. `["sam3","dota_obb","grounding_dino"]`)
+request that scoped layers to detectors (e.g. `["sam3","dota_obb","mvrsd"]`)
 left every detection with the placeholder `{"model":"disabled","dim":0,...}`.
 
 That placeholder is a truthy dict with an empty vector, so the backend's

@@ -59,6 +59,7 @@ untouched for audit and future re-promotion.
 - [decisions/why-open-vocabulary.md](../decisions/why-open-vocabulary.md)
 - [decisions/why-precision-first-inference-defaults.md](../decisions/why-precision-first-inference-defaults.md)
 - [decisions/why-transportation-floor-raised.md](../decisions/why-transportation-floor-raised.md)
+- [decisions/why-mvrsd-confidence-floors.md](../decisions/why-mvrsd-confidence-floors.md) — per-class floors for the MVRSD classes (DB-applied), measured FP eval
 - [decisions/why-generic-labels-when-unverified.md](../decisions/why-generic-labels-when-unverified.md)
 - [backend-routers/inference-router.md](../backend-routers/inference-router.md) — PUT confidence overrides
 - [frontend/admin-conf-overrides.md](../frontend/admin-conf-overrides.md)

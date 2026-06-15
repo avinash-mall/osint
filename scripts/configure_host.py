@@ -109,36 +109,21 @@ def parse_reserved_gpus(existing_env: str, gpu_count: int) -> frozenset[int]:
     return frozenset(reserved)
 
 
-def partition_gpus(gpu_count: int, reserved: frozenset[int]) -> tuple[list[int], list[int]]:
-    """Divide the non-reserved GPUs between inference-sam3 and inference-lae.
+def partition_gpus(gpu_count: int, reserved: frozenset[int]) -> list[int]:
+    """Return the non-reserved GPUs allocated to inference-sam3.
 
     inference-sam3 is the throughput-critical service — it runs one model replica
     per visible GPU, so its speed scales with card count (even under the
-    serialize-forwards lock, the non-forward work overlaps across replicas).
-    inference-lae is small (~2-4 GB) and single-GPU. The division therefore
-    protects SAM3's replicas:
-
-    - ``>= 3`` free: dedicate the LAST card to inference-lae; SAM3 gets the rest
-      (still >= 2 replicas) — LAE fully isolated, no VRAM contention.
-    - ``== 2`` free: SAM3 keeps BOTH cards (2 replicas); inference-lae SHARES the
-      last card. Carving a whole 80 GB A100 out for the tiny LAE model would
-      drop SAM3 to a single replica, which benchmarked *slower* than sharing —
-      multi-replica SAM3 is the dominant lever on a 2-GPU host.
-    - ``== 1`` free: both share the one card.
+    serialize-forwards lock, the non-forward work overlaps across replicas). It
+    therefore takes every free card.
 
     The intra-SAM3 CUDA-poison race is handled separately by
     SAM3_SERIALIZE_FORWARDS (emitted when SAM3 gets >1 replica).
 
-    Returns ``(sam3_indices, lae_indices)``. ``([], [])`` when no GPU is free
-    (all reserved / none present) — caller falls back to "all".
+    Returns ``sam3_indices``. ``[]`` when no GPU is free (all reserved / none
+    present) — caller falls back to "all".
     """
-    available = [i for i in range(gpu_count) if i not in reserved]
-    if len(available) >= 3:
-        return available[:-1], [available[-1]]
-    if len(available) >= 1:
-        # SAM3 keeps every free card (max replicas); LAE shares the last one.
-        return available, [available[-1]]
-    return [], []
+    return [i for i in range(gpu_count) if i not in reserved]
 
 
 def detect_host_gpu_info() -> HostGpuInfo:
@@ -207,16 +192,13 @@ def generated_env_values(info: HostGpuInfo, reserved: frozenset[int] = frozenset
 
     gpu_count = len(info.gpus)
 
-    # Automated GPU division across services. Non-reserved GPUs are split:
-    # inference-sam3 gets the bulk (one replica per card) and inference-lae gets
-    # a dedicated card when >=2 are free, so the LAE detector stops sharing VRAM
-    # with the SAM3 stack. SENTINEL_RESERVED_GPUS (operator input, preserved)
-    # carves out co-tenants like vLLM. These device keys are GENERATED here, so
-    # any prior hand-set SAM3_VISIBLE_DEVICES is migrated/replaced.
-    sam3_idx, lae_idx = partition_gpus(gpu_count, reserved)
+    # Automated GPU allocation for inference-sam3. It gets every non-reserved
+    # GPU (one replica per card). SENTINEL_RESERVED_GPUS (operator input,
+    # preserved) carves out co-tenants like vLLM. The device key is GENERATED
+    # here, so any prior hand-set SAM3_VISIBLE_DEVICES is migrated/replaced.
+    sam3_idx = partition_gpus(gpu_count, reserved)
     if sam3_idx:
         values["SAM3_VISIBLE_DEVICES"] = ",".join(str(i) for i in sam3_idx)
-        values["LAE_VISIBLE_DEVICES"] = ",".join(str(i) for i in lae_idx)
         sam3_gpu_count = len(sam3_idx)
         # Multi-replica SAM3 on A100+cu13x races a shared driver workspace; pin
         # the serialize-forwards fix ON. We do NOT emit 0 for single-replica:

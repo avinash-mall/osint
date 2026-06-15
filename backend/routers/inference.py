@@ -153,7 +153,6 @@ _COMPONENT_ROWS: tuple[dict, ...] = (
     {"slug": "dinov3_sat",     "name": "DINOv3-SAT",       "flag": "dinov3_sat",     "version_from": "model_versions.dinov3_sat"},
     {"slug": "terramind",      "name": "TerraMind",        "flag": "terramind",      "version_from": "model_versions.terramind"},
     {"slug": "dota_obb",       "name": "DOTA-OBB",         "flag": "dota_obb",       "version_from": None},
-    {"slug": "grounding_dino", "name": "Grounding-DINO",   "flag": "grounding_dino", "version_from": None},
     {"slug": "yoloe",          "name": "YOLOE-26x",        "flag": "yoloe",          "version_from": None,
      "subslugs": ("yoloe_pf", "yoloe_seg")},
     {"slug": "mvrsd",          "name": "MVRSD",            "flag": "mvrsd",          "version_from": "model_versions.mvrsd"},

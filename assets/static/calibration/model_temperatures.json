@@ -5,7 +5,6 @@
   "temperatures": {
     "sam3": 1.0,
     "dota_obb": 1.0,
-    "grounding_dino": 1.0,
     "yoloe": 1.0,
     "sar_cfar": 1.0
   }

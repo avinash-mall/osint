@@ -30,8 +30,8 @@ A small explicit allowlist (`_PUBLIC_READ_PREFIXES`) stays session-free:
 - `/api/system/deployment-mode` — the login screen renders the deployment
   banner before any session exists.
 - `/api/ontology/default-prompts` — fetched **service-to-service** by
-  inference-sam3 (`ONTOLOGY_BACKEND_URL`, see inference `main.py` and
-  `grounding_dino_gate.py`); the inference container has no session.
+  inference-sam3 (`ONTOLOGY_BACKEND_URL`, see inference `main.py`); the
+  inference container has no session.
 
 Anything new that must be public (pre-auth UI or service-to-service) is added
 to the allowlist deliberately — the default for a new route is gated, both

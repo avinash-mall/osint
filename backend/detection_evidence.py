@@ -7,7 +7,7 @@ from typing import Any
 
 
 SPECIALIST_SOURCES = {"dota_obb", "sar_cfar"}
-OPEN_VOCAB_SOURCES = {"sam3", "grounding_dino", "yoloe"}
+OPEN_VOCAB_SOURCES = {"sam3", "yoloe"}
 
 DEFAULT_SIZE_LIMITS_M: dict[str, tuple[float, float]] = {
     "aircraft": (3.0, 90.0),

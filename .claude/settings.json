@@ -1,0 +1,29 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/forbidden_paths_guard.py\"",
+            "timeout": 15,
+            "statusMessage": "Checking forbidden write paths"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/repo_guardrails.py\" --stop-hook",
+            "timeout": 60,
+            "statusMessage": "Auditing docs + stale-term drift"
+          }
+        ]
+      }
+    ]
+  }
+}

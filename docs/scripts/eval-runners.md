@@ -25,7 +25,7 @@ python scripts/eval_sar_cfar.py --dataset scripts/eval_datasets/sar_synth
 
 ## measure_calibration_ece.py
 
-For each detector (SAM3, DOTA-OBB, GDINO), bin detections by confidence and measure ECE. Fits per-detector temperatures via minimization. Writes `model_temperatures.json` consumed by [backend/calibration-temperature.md](../backend/calibration-temperature.md).
+For each detector (SAM3, DOTA-OBB), bin detections by confidence and measure ECE. Fits per-detector temperatures via minimization. Writes `model_temperatures.json` consumed by [backend/calibration-temperature.md](../backend/calibration-temperature.md).
 
 ```bash
 python scripts/measure_calibration_ece.py \

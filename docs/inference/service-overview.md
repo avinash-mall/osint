@@ -7,8 +7,7 @@
 
 ## Purpose
 
-FastAPI service for the main inference pool. LAE-DINO runs in its own sidecar,
-but is exposed through the `grounding_dino` layer in this service:
+FastAPI service for the main inference pool:
 
 | Component | Repo / source | Module |
 |---|---|---|
@@ -18,7 +17,6 @@ but is exposed through the `grounding_dino` layer in this service:
 | DINOv3-SAT-L | `facebook/dinov3-vitl16-pretrain-sat493m` (gated) | [embedding.py](../../inference-sam3/embedding.py) |
 | TerraMind v1 (S1→S2) | IBM TerraMind | [terramind.py](../../inference-sam3/terramind.py) |
 | DOTA-OBB | Ultralytics `yolo26m-obb.pt` (`yolo11n-obb.pt` fallback) | [dota_obb.py](../../inference-sam3/dota_obb.py) |
-| LAE-DINO sidecar client (`grounding_dino` layer) | `inference-lae` HTTP service | [grounding_dino.py](../../inference-sam3/grounding_dino.py), [lae-dino-sidecar.md](lae-dino-sidecar.md) |
 | MVRSD military-vehicle (default-on, RGB profile) | `yolo11m` fine-tuned on MVRSD (GitHub release asset) | [mvrsd.py](../../inference-sam3/mvrsd.py) |
 
 Runtime memory pool holds one **profile** at a time, swappable via `/load?profile=`. Profiles
@@ -48,7 +46,7 @@ Full per-modality request contract: [main-app-entrypoint.md](main-app-entrypoint
 
 | Components | Steady-state VRAM |
 |---|---|
-| SAM 3 + SAM 3.1 video + DINOv3-SAT-L + DOTA-OBB + YOLOE + MVRSD (FMV/all profile; LAE sidecar separate) | ~12 GB |
+| SAM 3 + SAM 3.1 video + DINOv3-SAT-L + DOTA-OBB + YOLOE + MVRSD (FMV/all profile) | ~12 GB |
 | + TerraMind | ~16 GB (24 GB+ card recommended) |
 
 Per-component flags: [main-app-entrypoint.md](main-app-entrypoint.md) and the env table in [deployment/environment-variables-reference.md](../deployment/environment-variables-reference.md).

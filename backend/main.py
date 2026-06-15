@@ -63,6 +63,21 @@ async def lifespan(app: FastAPI):
     # Forward references resolve at call time, not definition time — the
     # imports below this point (e.g. _auto_seed_ontology_if_empty) are bound
     # by the time the ASGI server runs startup.
+    #
+    # Eagerly materialise the platform schema FIRST. ensure_platform_tables()
+    # creates every detection/platform table AND, at its tail, reference_platforms
+    # (ensure_reference_platform_tables) and the detections_mvt tile-source function
+    # (ensure_tile_sources). It is otherwise only called lazily from API endpoints,
+    # which leaves two startup consumers reading schema that doesn't exist yet:
+    #   1. Martin auto-discovers tile sources exactly once, after the backend is
+    #      healthy (martin.depends_on, see docs/decisions/obb-render-fix.md). If
+    #      detections_mvt isn't committed before health, Martin's one scan misses
+    #      it and every /maps/detections_mvt box tile 404s forever (OBB/HBB/MASK
+    #      never render) until Martin is restarted.
+    #   2. _auto_enqueue_reference_seed_if_empty() below queries reference_platforms.
+    # Idempotent (CREATE ... IF NOT EXISTS / CREATE OR REPLACE under an advisory
+    # lock), so this is safe and matches the lazy call sites.
+    ensure_platform_tables()
     _auto_seed_ontology_if_empty()
     # Reference Embedding DB: if empty, enqueue worker.seed_reference_db so
     # the worker can bake from the baked corpora at /opt/reference-corpora/

@@ -17,7 +17,7 @@ Holds the FastAPI application object. Mounts the 19 routers (including `referenc
 
 ## Key symbols
 
-- [`lifespan`](../../backend/main.py#L62-L72) — async contextmanager: `_auto_seed_ontology_if_empty()` on startup, `db.close()` on shutdown. Passed to `FastAPI(lifespan=...)`; replaces deprecated `@app.on_event(...)`.
+- [`lifespan`](../../backend/main.py#L62-L94) — async contextmanager. On startup, in order: `ensure_platform_tables()` (eager schema materialisation — creates the detection/platform tables, `reference_platforms`, and the `detections_mvt` tile-source function **before** the backend reports healthy, so Martin's one-shot tile-source scan finds `detections_mvt` and `_auto_enqueue_reference_seed_if_empty()` finds `reference_platforms`; see [decisions/obb-render-fix.md](../decisions/obb-render-fix.md)), then `_auto_seed_ontology_if_empty()`, `_auto_enqueue_reference_seed_if_empty()`, `ensure_graph_schema()`. `db.close()` on shutdown. Passed to `FastAPI(lifespan=...)`; replaces deprecated `@app.on_event(...)`.
 - [`get_cors_origins`](../../backend/main.py#L90-L92) — parses `CORS_ORIGINS` for `CORSMiddleware`.
 - [`require_session_on_requests`](../../backend/main.py#L121-L142) — the middleware (mutation gate + read gate with public allowlist).
 - [`app.include_router(...)`](../../backend/main.py#L197-L216) — router mount block; **add new routers here**.

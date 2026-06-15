@@ -16,9 +16,9 @@ carrying code, config, model-bake, and VRAM/latency cost:
   boxes; weights were frequently absent (`loaded:false`) and its `semantic_margin` signal was
   measured at 0 contribution on the validated runs.
 
-**Kept:** Grounding-DINO — it is runtime auto-gated (only fires on novel-vocab prompts outside
-SAM3+DOTA+ontology) and is the open-vocabulary fallback detector, so it stays first-class per
-CLAUDE.md hard-rule #5. See [why-grounding-dino-auto-gated.md](why-grounding-dino-auto-gated.md).
+**Scope:** this decision covered FAIR1M-OBB and the RemoteCLIP verifier only. The open-vocabulary
+Grounding-DINO / LAE-DINO layers were left in place at the time but were later removed as well —
+see [removed-grounding-dino-lae.md](removed-grounding-dino-lae.md).
 
 ## What this touched
 

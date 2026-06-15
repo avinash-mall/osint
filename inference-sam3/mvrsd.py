@@ -11,8 +11,14 @@ Categories (5, fixed indices, sub-meter ~0.3 m GSD optical RGB):
   2=AFV (Armored Fighting Vehicle), 3=CV (Cargo Vehicle),
   4=MCV (Military Combat Vehicle).
 
-Gated default-OFF specialist (``SAM3_LOAD_MVRSD``): it must not fire on
-arbitrary imagery — operators enable it for sub-meter military scenes only.
+Default-ON specialist (``SAM3_LOAD_MVRSD`` defaults to ``_DEFAULT`` = "1" when
+``SAM3_LOAD_OPTIONAL_MODELS=1``, exactly like DOTA-OBB and DINOv3-SAT). It loads
+with the ``imagery_rgb`` profile and runs on every RGB ``/detect`` via the normal
+default-True ``_layer_active("mvrsd")`` filter — an unfiltered request triggers
+it; a non-empty ``enabled_layers`` runs it only if ``mvrsd`` is included. The
+civilian-misclassification tradeoff is accepted and mitigated by the
+confidence-policy floor (``GLOBAL_CONFIDENCE_FLOOR`` + ``MVRSD_CONF``), RGB-only
+scoping, and per-request opt-out (or ``SAM3_LOAD_MVRSD=0``).
 See docs/decisions/why-mvrsd-military-vehicle-specialist.md.
 """
 from __future__ import annotations
@@ -159,9 +165,12 @@ def run(
 def _box_mask(x1: float, y1: float, x2: float, y2: float, height: int, width: int) -> np.ndarray:
     """Rasterise an axis-aligned box into a boolean mask matching the chip size.
 
-    MVRSD is a detect (HBB) model — no polygon. The downstream OBB record falls
-    back to the box corners via fusion._hbb_fallback when the mask is a clean
-    rectangle, so a filled-box mask is the faithful representation."""
+    MVRSD is a detect (HBB) model — no polygon. The filled-box mask is the
+    faithful representation: downstream, fusion.mask_to_obb_record runs
+    cv2.minAreaRect on the rectangle's contour and recovers the same
+    axis-aligned box (angle ~0). Only a degenerate mask (empty, no contour, or
+    contour area < OBB_MIN_AREA_PX) routes through fusion._hbb_fallback to the
+    raw box corners."""
     mask = np.zeros((height, width), dtype=bool)
     ix1 = max(0, int(round(x1))); ix2 = min(width, int(round(x2)))
     iy1 = max(0, int(round(y1))); iy2 = min(height, int(round(y2)))

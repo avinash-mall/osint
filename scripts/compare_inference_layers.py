@@ -77,14 +77,6 @@ LAYER_CONFIGS: list[dict] = [
         "config_name": "sam3+dota_obb",
         "enabled_layers": ["sam3", "dota_obb"],
     },
-    {
-        "config_name": "sam3+grounding_dino",
-        "enabled_layers": ["sam3", "grounding_dino"],
-    },
-    {
-        "config_name": "sam3+dota_obb+grounding_dino",
-        "enabled_layers": ["sam3", "dota_obb", "grounding_dino"],
-    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -120,7 +112,6 @@ def _post_detect(
     enabled_layers: list[str],
     modality: str = "rgb",
     timeout: int = 120,
-    force_grounding_dino: bool = False,
 ) -> dict:
     """POST chip to /detect and return the parsed JSON response + elapsed_ms."""
     started = time.perf_counter()
@@ -133,8 +124,6 @@ def _post_detect(
         "max_prompts": len(prompts),
         "enabled_layers": enabled_layers,
     }
-    if force_grounding_dino and "grounding_dino" in enabled_layers:
-        metadata["force_grounding_dino"] = True
     resp = requests.post(
         f"{url.rstrip('/')}/detect",
         files={"image": (filename, io.BytesIO(chip_bytes), mime_type)},
@@ -300,7 +289,6 @@ def _evaluate_chip(
     repeats: int,
     dry_run: bool,
     modality: str = "rgb",
-    force_grounding_dino: bool = False,
 ) -> dict | None:
     """Run N repeats for a single chip+config. Returns chip result dict or None on failure."""
 
@@ -316,7 +304,6 @@ def _evaluate_chip(
                 payload = _post_detect(
                     url, chip_bytes, prompts, enabled_layers,
                     modality=modality,
-                    force_grounding_dino=force_grounding_dino,
                 )
         except requests.exceptions.RequestException as exc:
             log.warning("HTTP error on repeat %d: %s", attempt + 1, exc)
@@ -704,7 +691,7 @@ def _build_markdown(
 
         # Per-class tables for baseline and full config
         for result in all_results:
-            if result["config_name"] not in ("sam3_only", "sam3+dota_obb+grounding_dino"):
+            if result["config_name"] not in ("sam3_only", "sam3+dota_obb"):
                 continue
             cfg_label = (
                 "SAM3 baseline"
@@ -818,7 +805,7 @@ def _build_markdown(
         # Box layer latencies
         sam3_ms_cp     = _med(all_results, "sam3_only")
         dota_ms_cp     = _med(all_results, "sam3+dota_obb")
-        full_box_ms_cp = _med(all_results, "sam3+dota_obb+grounding_dino")
+        full_box_ms_cp = dota_ms_cp
 
         # Embedding latency deltas vs embedding baseline
         def _emb_delta_cp(name):
@@ -831,15 +818,13 @@ def _build_markdown(
         # Detection counts (box layers only; embedding doesn't change det count)
         det_sam3_cp = _det_count(all_results, "sam3_only")
         det_dota_cp = _det_count(all_results, "sam3+dota_obb")
-        det_full_cp = _det_count(all_results, "sam3+dota_obb+grounding_dino")
+        det_full_cp = det_dota_cp
 
         # Rows: (label, median_total_ms, delta_vs_prev, cumulative_delta, det_avg, det_delta)
         cum_pipeline_rows = [
             ("SAM3 (base)",      sam3_ms_cp, None, None, det_sam3_cp, None),
             ("+ DOTA_OBB",       dota_ms_cp, dota_ms_cp - sam3_ms_cp,
              dota_ms_cp - sam3_ms_cp, det_dota_cp, det_dota_cp - det_sam3_cp),
-            ("+ GROUNDING_DINO", full_box_ms_cp, full_box_ms_cp - dota_ms_cp,
-             full_box_ms_cp - sam3_ms_cp, det_full_cp, det_full_cp - det_dota_cp),
         ]
 
         cum_ds = full_box_ms_cp - sam3_ms_cp + dinov3_sat_delta_cp
@@ -916,16 +901,12 @@ def _build_markdown(
     dota_lat_rec = _box_lat_delta_rec("sam3+dota_obb")
 
     dota_r_rec = next((r for r in all_results if r.get("config_name") == "sam3+dota_obb"), None)
-    dino_map_rec       = _box_map_delta_rec("sam3+dota_obb+grounding_dino") or "+N.NN mAP"
-    dino_lat_rec       = _box_lat_delta_rec("sam3+dota_obb+grounding_dino")
     dinov3_sat_lat_rec = _emb_lat_rec("sam3+dinov3_sat")
     terramind_lat_rec  = _emb_lat_rec("sam3+terramind")
 
     rec_rows = [
         ("DOTA_OBB",       "\u2705 Keep",               dota_map_rec,              dota_lat_rec,
          "Adds aerial vehicle/plane classes not in SAM3 vocab"),
-        ("GROUNDING_DINO", "\u2705 Keep (auto-gated)",  dino_map_rec,              dino_lat_rec,
-         "Open-vocab recall; auto-gated when all prompts are in SAM3+DOTA common vocab"),
         ("DINOV3_SAT",     "\u2705 Keep for tracking",  "\u2014 (embedding)",     dinov3_sat_lat_rec,
          "Embedding for cross-image object re-ID; see video_tracking_stability.md"),
         ("TERRAMIND",      "\u26a0\ufe0f SAR-only",     "\u2014 (embedding)",     terramind_lat_rec,
@@ -1030,7 +1011,6 @@ def run(args: argparse.Namespace) -> int:
     dry_run: bool = args.dry_run
     restart_cmd: str | None = getattr(args, "restart_cmd", None)
     restart_wait: int = getattr(args, "restart_wait_timeout", 180)
-    force_gd: bool = getattr(args, "force_grounding_dino", False)
     if dry_run:
         restart_cmd = None  # never restart in dry-run mode
 
@@ -1093,7 +1073,6 @@ def run(args: argparse.Namespace) -> int:
                     url=url, chip_bytes=chip_bytes_sl, prompts=prompts_sl,
                     ground_truth=gt_sl, enabled_layers=enabled_layers,
                     repeats=repeats, dry_run=dry_run, modality=modality_sl,
-                    force_grounding_dino=force_gd,
                 )
                 if result_sl is not None:
                     chip_results_box_sl.append(result_sl)
@@ -1146,8 +1125,8 @@ def run(args: argparse.Namespace) -> int:
                 log.warning(
                     "Config %s evaluated 0 chips — likely GPU OOM with %d "
                     "embedding model(s) active. Consider testing each "
-                    "embedding layer in isolation, or freeing one of the "
-                    "image-only layers (DOTA_OBB / GROUNDING_DINO) "
+                    "embedding layer in isolation, or freeing the "
+                    "image-only DOTA_OBB layer "
                     "for this config.",
                     config_name, len([l for l in enabled_layers if l != "sam3"]),
                 )
@@ -1511,17 +1490,6 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=180,
         help="Seconds to wait for /health after a restart (default: 180)",
-    )
-    parser.add_argument(
-        "--force-grounding-dino",
-        dest="force_grounding_dino",
-        action="store_true",
-        help=(
-            "Set force_grounding_dino=true in metadata for configs that include "
-            "grounding_dino in enabled_layers. Bypasses the common-vocab gate so "
-            "GROUNDING_DINO's contribution can actually be measured on common "
-            "prompts (otherwise it auto-skips and the config is identical to baseline)."
-        ),
     )
     # Phase 9.47: per-class regression gate. When ``--regression-baseline`` is
     # passed, the script compares this run's per-class recall against the JSON

@@ -89,7 +89,7 @@ RUN mkdir -p /models/hf/hub /models/torch/ultralytics && \
     huggingface-cli download 1038lab/sam3 sam3.safetensors; \
     : "--- DINOv3-SAT (gated) ---"; \
     huggingface-cli download facebook/dinov3-vitl16-pretrain-sat493m || echo "[bake] dinov3-sat skipped"; \
-    : "--- LAE-DINO lives in the inference-lae sidecar; no generic GDINO bake here ---"; \
+    : "--- no open-vocab GDINO/LAE-DINO bake: that layer was removed ---"; \
     : "--- DOTA-OBB (Ultralytics auto-fetch into YOLO_CONFIG_DIR) ---"; \
     cd /models/torch/ultralytics && \
     python -c "from ultralytics import YOLO; YOLO('yolo26m-obb.pt'); YOLO('yolo11n-obb.pt')" || echo "[bake] dota-obb skipped"; \
@@ -97,6 +97,12 @@ RUN mkdir -p /models/hf/hub /models/torch/ultralytics && \
     : "  Default-ON gated specialist. Baked from MVRSD_WEIGHTS_URL so the"; \
     : "  weight is present offline at runtime (hard rule #8: no runtime"; \
     : "  downloads). Empty URL = no-op; mvrsd.load() then honour-gates."; \
+    : "  The repo is PRIVATE, so MVRSD_WEIGHTS_URL is the GitHub API asset"; \
+    : "  endpoint and GITHUB_TOKEN must be a valid Bearer token. The curl"; \
+    : "  failure (e.g. empty/wrong token -> 404 on the private asset) is"; \
+    : "  swallowed by the '|| echo ... failed' fallback so the build still"; \
+    : "  succeeds; the layer then loads-but-empty (honour-gate, model=None,"; \
+    : "  zero candidates). Grep the build log for '[bake] mvrsd weight'."; \
     mkdir -p /models/mvrsd && \
     if [ -n "$MVRSD_WEIGHTS_URL" ]; then \
         curl -fsSL \

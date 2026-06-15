@@ -32,7 +32,6 @@ PLACEHOLDER_PATH = REPO_ROOT / "assets" / "static" / "calibration" / "model_temp
 EXPECTED_DETECTORS = {
     "sam3",
     "dota_obb",
-    "grounding_dino",
     "yoloe",
     "sar_cfar",
 }
@@ -55,13 +54,13 @@ def test_load_temperatures_reads_wrapped_shape(monkeypatch, tmp_path):
         {
             "_README": "comment",
             "_measured_at": "2026-05-28",
-            "temperatures": {"sam3": 0.8, "dota_obb": 1.1, "grounding_dino": 0.95},
+            "temperatures": {"sam3": 0.8, "dota_obb": 1.1},
         },
     )
 
     out, _meta = calibration._load_temperatures()
 
-    assert out == {"sam3": 0.8, "dota_obb": 1.1, "grounding_dino": 0.95}
+    assert out == {"sam3": 0.8, "dota_obb": 1.1}
     # Metadata keys must NOT leak into the lookup.
     assert "_readme" not in out
     assert "_measured_at" not in out

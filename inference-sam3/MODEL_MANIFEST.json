@@ -1,6 +1,6 @@
 {
   "service": "inference-sam3",
-  "note": "SHA256 of LFS binaries (sam3.pt, sam3.1_multiplex.pt) is recorded during the offline packaging step that runs `huggingface-cli download` with HF_TOKEN. Until then, integrity is anchored on the HF revision SHA below. Removed heads stay out of this manifest: Prithvi, RemoteCLIP, FAIR1M-OBB detector, and generic IDEA Grounding-DINO. The grounding_dino runtime layer calls the separate inference-lae sidecar.",
+  "note": "SHA256 of LFS binaries (sam3.pt, sam3.1_multiplex.pt) is recorded during the offline packaging step that runs `huggingface-cli download` with HF_TOKEN. Until then, integrity is anchored on the HF revision SHA below. Removed heads stay out of this manifest: Prithvi, RemoteCLIP, FAIR1M-OBB detector, and the Grounding-DINO / LAE-DINO open-vocab detector (removed entirely).",
   "sources": {
     "facebookresearch/sam3": {
       "url": "https://github.com/facebookresearch/sam3",
@@ -52,7 +52,7 @@
       "gated": true,
       "license": "Operator-supplied fine-tune of Ultralytics yolo11m on the Military Vehicle Remote Sensing Dataset (MVRSD). 5 classes: SMV, LMV, AFV, CV, MCV.",
       "url": "${MVRSD_WEIGHTS_URL}",
-      "note": "Axis-aligned YOLO detect specialist for sub-meter (~0.3 m GSD) optical RGB military scenes. Default-ON in the imagery_rgb profile when SAM3_LOAD_MVRSD=1 and only skipped when enabled_layers is a non-empty list that omits mvrsd. Trained weights are hosted as a GitHub release asset; the orchestrator sets the MVRSD_WEIGHTS_URL build ARG to that asset URL. The Dockerfile.gpu bake step curls it to /models/mvrsd/mvrsd_yolo11m.pt at build time (project hard rule #8: no runtime downloads). When MVRSD_WEIGHTS_URL is empty the bake step is a no-op and mvrsd.load() honour-gates (returns model=None), so existing builds do not break. Runtime path overridable via MVRSD_WEIGHTS_PATH.",
+      "note": "Axis-aligned YOLO detect specialist for sub-meter (~0.3 m GSD) optical RGB military scenes. Default-ON in the imagery_rgb profile when SAM3_LOAD_MVRSD=1 and only skipped when enabled_layers is a non-empty list that omits mvrsd. Trained weights are hosted as a GitHub release asset; the orchestrator sets the MVRSD_WEIGHTS_URL build ARG to that asset URL. The repo is PRIVATE, so the URL is the GitHub API asset endpoint and the GITHUB_TOKEN build ARG (a valid Bearer token) must authenticate the octet-stream fetch — an empty/wrong token 404s and is silently swallowed by the bake fallback, leaving the layer loaded-but-empty. The Dockerfile.gpu bake step curls it to /models/mvrsd/mvrsd_yolo11m.pt at build time (project hard rule #8: no runtime downloads). When MVRSD_WEIGHTS_URL is empty the bake step is a no-op and mvrsd.load() honour-gates (returns model=None), so existing builds do not break. Runtime path overridable via MVRSD_WEIGHTS_PATH.",
       "files": [
         {"path": "/models/mvrsd/mvrsd_yolo11m.pt", "lfs": false, "sha256": null}
       ]

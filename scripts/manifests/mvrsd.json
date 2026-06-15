@@ -16,8 +16,8 @@
     "SMV": "small military vehicle",
     "LMV": "large military vehicle",
     "AFV": "armoured fighting vehicle",
-    "CV": "civilian vehicle",
-    "MCV": "military construction vehicle"
+    "CV": "cargo vehicle",
+    "MCV": "military combat vehicle"
   },
   "annotation_format": "YOLO bbox (normalised cx,cy,w,h) per image; original is Pascal-VOC XML. Class index order follows MVRSD classes.txt: SMV=0, LMV=1, AFV=2, CV=3, MCV=4. The community repo data.yaml `names` list is in a different order and is INCONSISTENT with its own label indices — do not use it.",
   "dropin": {

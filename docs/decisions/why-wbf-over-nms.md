@@ -3,11 +3,10 @@
 ## Problem
 
 Sentinel runs multiple box-emitting detectors against the same chip: SAM3,
-DOTA-OBB, LAE-DINO through the `grounding_dino` layer, MVRSD, YOLOE, and SAR
-CFAR. They disagree. NMS resolves disagreement by *suppressing* the loser; when
+DOTA-OBB, MVRSD, YOLOE, and SAR CFAR. They disagree. NMS resolves disagreement by *suppressing* the loser; when
 the loser had the better geometry but a slightly lower score, mAP collapses.
 
-We measured this in [why-grounding-dino-auto-gated.md](why-grounding-dino-auto-gated.md): forcing GDINO alongside DOTA-OBB on DOTA-v1.0 val dropped mAP from **0.61 → 0.11**. NMS kept GDINO's lower-confidence box and discarded DOTA-OBB's correct one. The fix at the time was a *gate* (skip GDINO on common-vocab prompts). That's a workaround. The real problem is the fusion primitive.
+We measured this in [removed-grounding-dino-lae.md](removed-grounding-dino-lae.md): forcing GDINO alongside DOTA-OBB on DOTA-v1.0 val dropped mAP from **0.61 → 0.11**. NMS kept GDINO's lower-confidence box and discarded DOTA-OBB's correct one. The fix at the time was a *gate* (skip GDINO on common-vocab prompts). That's a workaround. The real problem is the fusion primitive.
 
 ## Research
 
@@ -29,18 +28,16 @@ Adopt WBF as the default cross-detector fusion primitive. Keep NMS as an A/B kno
 |---|---|
 | `sam3` (open-vocab masks) | 0.5 |
 | `dota_obb` (closed-vocab common) | 1.0 |
-| `grounding_dino` (LAE-DINO open-vocab text-to-box) | 0.3 |
 | `yoloe` (FMV prompt-free) | 0.5 |
 | `sar_cfar` (SAR ship detector) | 0.7 |
 | `mvrsd` (military-vehicle RGB specialist) | 1.0 |
 
-Operators override via `SAM3_WBF_WEIGHTS='{"grounding_dino": 0.9}'`.
+Operators override via `SAM3_WBF_WEIGHTS='{"dota_obb": 0.9}'`.
 
 The intuition: DOTA-OBB and MVRSD are closed-vocab specialists trained on
 rigorously labelled benchmarks; their box geometry is the most trustworthy
-signal we have. SAM3 is broader but its masks are coarser. LAE-DINO's
-text-derived boxes can still drift; weight 0.3 keeps them as a *vote*, not a
-*veto*.
+signal we have. SAM3 is broader but its masks are coarser; weight 0.5 keeps it
+as a *vote*, not a *veto*.
 
 ## What is NOT done
 
@@ -59,6 +56,6 @@ If `ensemble_boxes` import fails for any reason (bake glitch, transient FS issue
 ## Cross-references
 
 - [inference/fusion-and-nms.md](../inference/fusion-and-nms.md) — module doc with current API
-- [why-grounding-dino-auto-gated.md](why-grounding-dino-auto-gated.md) — the NMS-collapse evidence that motivated this
+- [removed-grounding-dino-lae.md](removed-grounding-dino-lae.md) — the NMS-collapse evidence that motivated this
 - [benchmarks/detection-quality-eval-2026-05-22.md](../benchmarks/detection-quality-eval-2026-05-22.md) — pre-WBF baseline
 - [deployment/environment-variables-reference.md](../deployment/environment-variables-reference.md) — `SAM3_FUSION_MODE`, `SAM3_WBF_WEIGHTS`, `SAM3_WBF_IOU`, `SAM3_WBF_SKIP_THRESHOLD`

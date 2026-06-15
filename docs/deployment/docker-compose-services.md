@@ -12,7 +12,6 @@
 | `worker` | `sentinel-backend:latest` | — | Celery worker (queues: imagery, default) |
 | `worker_beat` | `sentinel-backend:latest` | — | Celery beat scheduler |
 | `inference-sam3` | `sentinel-inference-sam3:gpu` | internal 8001 | GPU container |
-| `inference-lae` *(profile `lae`)* | `sentinel-inference-lae:gpu` | internal 8010 | GPU container; LAE-DINO RS detector backing the `grounding_dino` layer; opt-in build ([lae-dino-sidecar.md](../inference/lae-dino-sidecar.md)) |
 | `neo4j` | `neo4j:5.26.26-community-ubi10` | internal 7687/7474 | APOC enabled |
 | `postgis` | `postgis/postgis:18-3.6` | internal 5432 | `max_connections=${POSTGIS_MAX_CONNECTIONS:-300}` (concurrent imagery+FMV pools; see [decisions/why-postgis-max-connections-300.md](../decisions/why-postgis-max-connections-300.md)) |
 | `redis` | `redis:8-alpine` | internal 6379 | Celery broker |

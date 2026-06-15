@@ -5,7 +5,7 @@
 **Depends on:** `embedding.dinov3_pool()`, the `dinov3_sat` layer in the active profile (auto-loaded via `_ensure_profile("imagery_rgb")` on first call).
 
 ## Purpose
-Compute a DINOv3-SAT 1024-d embedding of a single image. Lightweight alternative to `POST /detect` for callers that only need the embedding, not the full SAM3/DOTA/GDINO pipeline.
+Compute a DINOv3-SAT 1024-d embedding of a single image. Lightweight alternative to `POST /detect` for callers that only need the embedding, not the full SAM3/DOTA pipeline.
 
 ## Why this design
 See [why-standalone-embed-endpoint.md](../decisions/why-standalone-embed-endpoint.md). The bake script (Plan B) and the analyst lookup (Plan D) both want fast embeddings of arbitrary images without paying the full detection-pipeline cost. The shared `dinov3_pool()` is already in the inference image; this route is a thin wrapper.

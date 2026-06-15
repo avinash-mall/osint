@@ -16,7 +16,7 @@ There is **no closed taxonomy**. Every label SAM3 emits from explicit prompts, p
   1. `metadata.text_prompts` — explicit list per request; explicit empty list → HTTP 400 unless box prompts supplied
   2. Bounded precision defaults for the sensor mapped from `metadata.modality`
   3. Backend ontology defaults only when `SAM3_DEFAULT_PROMPT_SOURCE=ontology` or `backend`
-- **All prompts** pass through: trim → lowercase → dedupe-preserve-order → cap at `SAM3_MAX_PROMPTS_PER_REQUEST` (default 64).
+- **All prompts** pass through: trim → lowercase → dedupe-preserve-order. No cap — the full resolved vocabulary runs (the `SAM3_MAX_PROMPTS_PER_REQUEST` truncation was removed; see [removed-sam3-prompt-cap-2026-06-14.md](removed-sam3-prompt-cap-2026-06-14.md)).
 - **Confidence floors only.** `DETECTION_THRESHOLD_PROFILE=defence_precision` defaults to `GLOBAL_CONFIDENCE_FLOOR=0.35`; `PER_CLASS_CONFIDENCE_OVERRIDES={}` can lower/raise class-specific floors. Do not delete labels from ontology merely to suppress noise — that also excludes them from the unknown-label workflow.
 
 ## Trade-offs accepted

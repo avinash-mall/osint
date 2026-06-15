@@ -46,14 +46,14 @@ def test_multi_source_and_verifier_promote_open_vocab_candidate():
     det = apply_evidence_ranking(
         _det(
             source_layer="sam3",
-            wbf_member_sources=["sam3", "grounding_dino"],
+            wbf_member_sources=["sam3", "dota_obb"],
             semantic_verifier={"enabled": True, "passed": True, "semantic_margin": 0.2},
         ),
         ontology_unknown=True,
     )
     assert det["evidence_tier"] == "confirmed"
     assert det["semantic_margin"] == 0.2
-    assert det["member_sources"] == ["grounding_dino", "sam3"]
+    assert det["member_sources"] == ["dota_obb", "sam3"]
 
 
 def test_sar_proxy_cannot_confirm_without_cfar():

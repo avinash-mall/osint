@@ -37,8 +37,7 @@ python scripts/compare_inference_layers.py \
   --output docs/benchmarks/inference-layer-comparison.md \
   --json-output docs/benchmarks/inference-layer-comparison.json \
   --restart-cmd "docker restart osint-inference-sam3-1" \
-  --restart-wait-timeout 180 \
-  --force-grounding-dino
+  --restart-wait-timeout 180
 
 # 3. Augmentation re-ID
 python scripts/embedding_stability.py \

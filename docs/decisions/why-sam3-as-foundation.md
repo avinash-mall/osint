@@ -14,7 +14,7 @@ The inference stack is built around **SAM 3** (image) and **SAM 3.1** (multiplex
 ## Trade-offs accepted
 
 - **Gated weights** — SAM3 weights live under `facebook/sam3` and `facebook/sam3.1` (gated; requires `HF_TOKEN` with approved access). A mirror at `1038lab/sam3` is supported via `SAM3_WEIGHTS_SOURCE=mirror`.
-- **VRAM cost** — SAM3 image + SAM3.1 video is ~5-7 GB FP16; feasible on a 16 GB card (RTX 5070 Ti), but optional specialists such as TerraMind, DOTA-OBB, MVRSD, and the LAE-DINO sidecar still need profile/gating discipline. See VRAM budget in [inference/service-overview.md](../inference/service-overview.md).
+- **VRAM cost** — SAM3 image + SAM3.1 video is ~5-7 GB FP16; feasible on a 16 GB card (RTX 5070 Ti), but optional specialists such as TerraMind, DOTA-OBB, and MVRSD still need profile/gating discipline. See VRAM budget in [inference/service-overview.md](../inference/service-overview.md).
 - **Cannot free without process restart** — the architectural reason inference runs as a separate container, see [component-boundaries.md](../architecture/component-boundaries.md) §2.
 
 ## Cross-references

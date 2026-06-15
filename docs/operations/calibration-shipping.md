@@ -2,8 +2,8 @@
 
 ## Purpose
 
-Ship per-detector temperature scalars (SAM3, DOTA-OBB, LAE-DINO via the
-`grounding_dino` layer, YOLOE, SAR-CFAR, MVRSD) so [backend/calibration.py](../../backend/calibration.py)
+Ship per-detector temperature scalars (SAM3, DOTA-OBB, YOLOE, SAR-CFAR,
+MVRSD) so [backend/calibration.py](../../backend/calibration.py)
 can rescale raw confidence scores onto a common probability axis before NMS
 sorts and the per-class floor filters. Without calibration, SAM3's loud
 wide-tailed score distribution systematically out-votes DOTA-OBB's tighter

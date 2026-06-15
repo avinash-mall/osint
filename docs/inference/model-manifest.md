@@ -6,8 +6,7 @@
 
 Single JSON file listing every model weight the `inference-sam3` image bakes:
 HuggingFace repo IDs, pinned revisions, file lists, gating flags, and local
-asset paths. The LAE-DINO model is owned by the separate `inference-lae`
-sidecar and is intentionally absent from this manifest.
+asset paths.
 
 ## Shape
 
@@ -32,9 +31,6 @@ sidecar and is intentionally absent from this manifest.
 - **`url` + build-ARG entries** — the MVRSD military-vehicle specialist weight is a GitHub release asset baked from `${MVRSD_WEIGHTS_URL}` at build time (empty default = skip-if-empty no-op; the runner honour-gates). See [mvrsd-specialist.md](mvrsd-specialist.md).
 - The FAIR1M-OBB detector and RemoteCLIP verifier were removed (2026-05-31)
   — see [decisions/removed-fair1m-and-remoteclip.md](../decisions/removed-fair1m-and-remoteclip.md).
-- Generic IDEA-Research Grounding-DINO was replaced by the LAE-DINO sidecar;
-  the `grounding_dino` runtime key now names the client layer, not an in-process
-  baked checkpoint.
 
 ## Cross-references
 

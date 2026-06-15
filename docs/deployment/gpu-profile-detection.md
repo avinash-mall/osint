@@ -51,15 +51,13 @@ loaded every model at once and OOMed on every SAM3 forward — see
   `inference-sam3/main.py` `PROFILE_COMPONENTS`, routed by `_profile_for_modality`). No preload
   (`SAM3_PRELOAD_MODELS=0`). All four modalities stay available — nothing is permanently lost.
 
-On dynamic cards the optional LAE-DINO client layer is gated off by default
-(`SAM3_LOAD_GROUNDING_DINO=0`) unless the operator explicitly brings up the
-sidecar and enables it. `SAM3_LOAD_DINOV3_SAT`, `SAM3_LOAD_TERRAMIND`,
+On dynamic cards `SAM3_LOAD_DINOV3_SAT`, `SAM3_LOAD_TERRAMIND`,
 `SAM3_LOAD_DOTA_OBB`, and `SAM3_LOAD_MVRSD` stay available; the per-modality
 split keeps TerraMind out of the RGB working set instead of dropping it.
 
-New flags written to `.env`: `SAM3_LOAD_POLICY`, `SAM3_RESTING_PROFILE`, and
-`SAM3_LOAD_GROUNDING_DINO`. The docker-compose `inference-sam3` `environment:`
-block must pass each through for it to reach the container.
+New flags written to `.env`: `SAM3_LOAD_POLICY` and `SAM3_RESTING_PROFILE`. The
+docker-compose `inference-sam3` `environment:` block must pass each through for
+it to reach the container.
 
 ## Throughput knobs (VRAM- and GPU-count-derived)
 
@@ -70,11 +68,10 @@ Two optical-throughput optimisations are sized to the host automatically (see
   embedding path. VRAM-tiered via the profile field `sam3_embed_batch_size`: Turing 16;
   consumer Ampere / Ada / consumer Blackwell 32; datacenter Ampere (A100) 64; Hopper and
   datacenter Blackwell 96.
-- **`SAM3_VISIBLE_DEVICES` / `LAE_VISIBLE_DEVICES`** — `configure_host` **auto-divides** the GPUs
-  across services (`partition_gpus`): with ≥3 free cards it dedicates the last to inference-lae and
-  gives SAM3 the rest; with ≤2 free SAM3 keeps every card (max replicas) and inference-lae shares the
-  last. Set **`SENTINEL_RESERVED_GPUS`** (a preserved, non-generated operator line, e.g. `0,1` for a
-  vLLM co-tenant) to carve cards away from Sentinel. These device keys are generated, so a hand-set
+- **`SAM3_VISIBLE_DEVICES`** — `configure_host` **assigns** the free GPUs to SAM3
+  (`partition_gpus`): SAM3 gets every free card, one replica per card. Set
+  **`SENTINEL_RESERVED_GPUS`** (a preserved, non-generated operator line, e.g. `0,1` for a
+  vLLM co-tenant) to carve cards away from Sentinel. This device key is generated, so a hand-set
   `SAM3_VISIBLE_DEVICES` is migrated/replaced — use `SENTINEL_RESERVED_GPUS` instead. See
   [decisions/why-auto-gpu-division.md](../decisions/why-auto-gpu-division.md).
 - **`SAM3_SERIALIZE_FORWARDS`** — emitted `=1` only when SAM3 gets >1 replica (the A100+cu13x
@@ -87,8 +84,7 @@ Two optical-throughput optimisations are sized to the host automatically (see
   host keeps the profile baseline (concurrency 1, floor 1).
 
 The docker-compose `inference-sam3` block must pass `SAM3_EMBED_BATCH_SIZE` + `SAM3_VISIBLE_DEVICES`,
-the `inference-lae` block `LAE_VISIBLE_DEVICES`, and the `worker` block `INFERENCE_MIN_PENDING_CHIPS`,
-for these to reach the containers.
+and the `worker` block `INFERENCE_MIN_PENDING_CHIPS`, for these to reach the containers.
 
 ## Per-process VRAM ceiling (manual only)
 

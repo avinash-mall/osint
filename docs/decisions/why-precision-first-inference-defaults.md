@@ -8,7 +8,7 @@ Keep open-vocabulary labels, but make the default inference path precision-first
 - Explicit empty `metadata.text_prompts: []` → 400 unless box prompts supplied.
 - Omitted `/detect` prompts use bounded per-sensor defaults, not the full backend ontology prompt list.
 - Full ontology fan-out remains available with `SAM3_DEFAULT_PROMPT_SOURCE=ontology` or `backend`.
-- DOTA-OBB and Grounding-DINO are relevance/intent gated; request metadata can force them for experiments.
+- DOTA-OBB is relevance/intent gated; request metadata can force it for experiments.
 - Backend policy default is `DETECTION_THRESHOLD_PROFILE=defence_precision` with `GLOBAL_CONFIDENCE_FLOOR=0.35`.
 - FMV PCS requests without user prompts use `vehicle,person,building`; YOLOE prompt-free tracking unchanged.
 
@@ -34,7 +34,6 @@ The new default favors usable analyst review over broad recall. Rare/novel targe
 ## Trade-offs Accepted
 
 - Some rare targets require explicit prompts or ontology fan-out mode.
-- Grounding-DINO no longer runs just because it is loaded; callers must enable or force it for uncommon-prompt coverage.
 - Default persisted detections are fewer, but the retained set is easier to review and calibrate.
 
 ## Cross-references
@@ -43,5 +42,4 @@ The new default favors usable analyst review over broad recall. Rare/novel targe
 - [backend/detection-policy.md](../backend/detection-policy.md)
 - [backend/worker-legacy-monolith.md](../backend/worker-legacy-monolith.md)
 - [inference/dota-obb-specialist.md](../inference/dota-obb-specialist.md)
-- [inference/grounding-dino-detector.md](../inference/grounding-dino-detector.md)
 - [why-open-vocabulary.md](why-open-vocabulary.md)

@@ -1,6 +1,6 @@
 """Shared inference utilities: OOM-aware retry, YOLO knobs, memory guard.
 
-Imported by yoloe.py, dota_obb.py, grounding_dino.py, sam3_runner.py.
+Imported by yoloe.py, dota_obb.py, mvrsd.py, sam3_runner.py.
 
 Design notes:
   * ``safe_predict`` is the *only* place we catch OutOfMemoryError. Every

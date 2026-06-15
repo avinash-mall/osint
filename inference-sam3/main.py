@@ -30,8 +30,6 @@ import torch
 import dota_obb
 import embedding
 import fusion
-import grounding_dino
-import grounding_dino_gate
 import multispectral
 import mvrsd
 import sam3_runner
@@ -138,6 +136,10 @@ async def lifespan(app: FastAPI):
                 _ensure_profile(resting)
             except Exception as exc:  # noqa: BLE001 — startup must not crash
                 logger.error("lifespan %s preload failed: %s", resting, exc)
+    # Pre-compile the SAM3 image graph once models are resident (via preload OR the
+    # resting-profile ensure above) so the first /detect doesn't pay the ~38s
+    # torch.compile cost. Gated on SAM3_COMPILE_IMAGE; best-effort.
+    _warmup_image_compile()
     yield
 
 
@@ -158,9 +160,11 @@ if not (0.0 < SAM3_SAR_CONF_CAP <= 0.95):
         f"SAM3_SAR_CONF_CAP={SAM3_SAR_CONF_CAP} is out of range (0, 0.95]; "
         "SAR is a synthetic-optical proxy and must remain below the optical ceiling"
     )
-SAM3_MAX_PROMPTS = int(os.getenv("SAM3_MAX_PROMPTS_PER_REQUEST", "64"))
-SAM3_MAX_IMAGE_PROMPTS = int(os.getenv("SAM3_MAX_IMAGE_PROMPTS", str(SAM3_MAX_PROMPTS)))
-SAM3_MAX_VIDEO_PROMPTS = int(os.getenv("SAM3_MAX_VIDEO_PROMPTS", "128"))
+# The per-request prompt cap (SAM3_MAX_PROMPTS_PER_REQUEST, default 64) was removed:
+# it silently truncated the worker's full ontology vocabulary (~133 classes) to 64,
+# so ~half the classes were never evaluated per chip. The full resolved vocabulary now
+# runs. See docs/decisions/removed-sam3-prompt-cap-2026-06-14.md. Video stays
+# single-prompt via its own explicit guard in /detect_video, not via any cap here.
 SAM3_EMBED_DETECTIONS = os.getenv("SAM3_EMBED_DETECTIONS", "0").strip().lower() in {"1", "true", "yes", "on"}
 # Per-process VRAM ceiling, as a fraction of each GPU's total memory. Set by
 # scripts/configure_host.py when it detects a GPU co-tenant (e.g. a vLLM server
@@ -199,12 +203,6 @@ SAM3_LOAD_TERRAMIND  = _flag("SAM3_LOAD_TERRAMIND",  _DEFAULT)
 # DEFENCE_YOLO was removed: produced 1297 false positives across 26 DOTA val
 # chips with no true positives (see docs/inference_layer_comparison*).
 SAM3_LOAD_DOTA_OBB        = _flag("SAM3_LOAD_DOTA_OBB",        _DEFAULT)
-# Phase 8.38: Grounding-DINO default-OFF. Only +0.0144 mAP improvement on
-# DOTA-v1.0 for +241 ms cumulative cost (see docs/inference_layer_comparison.md).
-# The auto-gate in grounding_dino_gate.py keeps it from loading when prompts
-# are already covered by SAM3+DOTA-OBB. Operators wanting open-vocab recall on
-# truly novel labels can re-enable with SAM3_LOAD_GROUNDING_DINO=1.
-SAM3_LOAD_GROUNDING_DINO  = _flag("SAM3_LOAD_GROUNDING_DINO",  "0")
 # YOLOE-26x open-vocabulary segmentation specialist used by the standalone
 # FMV tracker. Bundles both -pf (prompt-free) and -seg (text-prompted)
 # checkpoints; intentionally not loaded by the imagery profile.
@@ -250,7 +248,6 @@ PROFILE_COMPONENTS: dict[str, tuple[str, ...]] = {
         "sam3_image",
         "dinov3_sat" if SAM3_LOAD_DINOV3_SAT else None,
         "dota_obb" if SAM3_LOAD_DOTA_OBB else None,
-        "grounding_dino" if SAM3_LOAD_GROUNDING_DINO else None,
         "mvrsd" if SAM3_LOAD_MVRSD else None,
     ) if c),
     "imagery_msi": tuple(c for c in (
@@ -333,7 +330,7 @@ psutil.cpu_percent(interval=None)
 
 _HEALTH_COMPONENT_SLUGS = (
     "sam3_image", "sam3_video", "dinov3_sat", "terramind",
-    "dota_obb", "grounding_dino", "yoloe_pf", "yoloe_seg", "mvrsd",
+    "dota_obb", "yoloe_pf", "yoloe_seg", "mvrsd",
 )
 _METRIC_WINDOW = int(os.getenv("SAM3_METRIC_WINDOW", "200"))
 _metrics_lock = threading.Lock()
@@ -558,16 +555,9 @@ def resolve_prompts(meta: dict[str, Any] | None) -> list[str]:
     if isinstance(explicit, list):
         out = _dedupe_prompt_list(explicit)
         if out:
-            # Cap the explicit branch too — it is the production path from the
-            # worker, and without this SAM3_MAX_PROMPTS_PER_REQUEST /
-            # metadata.max_prompts only applied to the default/ontology branches.
-            limit = _prompt_limit(meta, str(meta.get("modality") or "rgb"))
-            if len(out) > limit:
-                logger.warning(
-                    "text_prompts truncated from %d to %d (max_prompts/SAM3_MAX_PROMPTS_PER_REQUEST cap)",
-                    len(out), limit,
-                )
-                out = out[:limit]
+            # No prompt cap: the full resolved vocabulary runs (the worker's ~133
+            # classes are all evaluated). Per-chip decode scales linearly with the
+            # prompt count.
             return out
         raise ValueError("text_prompts was provided but empty; provide at least one prompt or use prompt_boxes")
 
@@ -575,7 +565,7 @@ def resolve_prompts(meta: dict[str, Any] | None) -> list[str]:
     if (os.getenv("SAM3_DEFAULT_PROMPT_SOURCE", "precision") or "precision").strip().lower() not in {
         "ontology", "backend",
     }:
-        return _precision_default_prompts(sensor)[: _prompt_limit(meta, str(meta.get("modality") or "rgb"))]
+        return _precision_default_prompts(sensor)
 
     # Optional scene scope: when the request names an ontology branch, fetch
     # only that branch's (much smaller) vocabulary. Running a scene-relevant
@@ -597,7 +587,7 @@ def resolve_prompts(meta: dict[str, Any] | None) -> list[str]:
             f"No labels available for SAM3 (sensor={sensor}): backend returned "
             f"no prompts and no text_prompts were supplied"
         )
-    return out2[: _prompt_limit(meta, str(meta.get("modality") or "rgb"))]
+    return out2
 
 
 _DOTA_RELEVANT_TERMS = frozenset({
@@ -637,6 +627,28 @@ def preload_models_on_startup() -> None:
         logger.error("SAM3 preload failed in %.3fs: %s", elapsed, _model_error or "unknown error")
 
 
+def _warmup_image_compile() -> None:
+    """Pre-compile the SAM3 image graph at startup when SAM3_COMPILE_IMAGE is on.
+
+    torch.compile traces+compiles the 1008x1008 forward graph on the FIRST
+    inference (~38s on this Blackwell/cu130 stack). Running one dummy 1008x1008
+    inference here moves that cost to startup — when no request is in flight — so
+    the first real /detect is already fast. No-op when compile is off (nothing to
+    warm) and best-effort (a warmup failure must never block startup). The fixed
+    1008x1008 shape matches the worker's padded chips so the cached graph is reused.
+    """
+    if not sam3_runner.SAM3_COMPILE_IMAGE or not _pool:
+        return
+    try:
+        t0 = time.perf_counter()
+        sam3_runner.run_text_prompts(
+            _pool[0], np.zeros((1008, 1008, 3), dtype=np.uint8), ["warmup"], 0.0, {},
+        )
+        logger.info("SAM3 image compile warmup done in %.1fs", time.perf_counter() - t0)
+    except Exception as exc:  # noqa: BLE001 — warmup must not crash startup
+        logger.warning("SAM3 image compile warmup failed (non-fatal): %s", exc)
+
+
 def _build_component(name: str, device: str) -> Any:
     """Build a single component on the given device. Centralised so the
     profile loader and any future hot-add code share one path."""
@@ -650,8 +662,6 @@ def _build_component(name: str, device: str) -> Any:
         return terramind.load(device)
     if name == "dota_obb":
         return dota_obb.load(device)
-    if name == "grounding_dino":
-        return grounding_dino.load(device)
     if name == "yoloe":
         return yoloe.load(device)
     if name == "mvrsd":
@@ -677,7 +687,6 @@ def _empty_bundle(device: str) -> dict[str, Any]:
         "dinov3_sat": None,
         "terramind": None,
         "dota_obb": None,
-        "grounding_dino": None,
         "yoloe": None,
         "mvrsd": None,
     }
@@ -962,7 +971,6 @@ def health() -> dict[str, Any]:
             "dinov3_sat": SAM3_LOAD_DINOV3_SAT,
             "terramind": SAM3_LOAD_TERRAMIND,
             "dota_obb": SAM3_LOAD_DOTA_OBB,
-            "grounding_dino": SAM3_LOAD_GROUNDING_DINO,
             "yoloe": SAM3_LOAD_YOLOE,
             "mvrsd": SAM3_LOAD_MVRSD,
         },
@@ -1159,16 +1167,24 @@ async def _detect_pipeline(
         with _bundle_lock:
             return fn(*args)
 
+    # Per-detector specialist timings — each overwritten below when that detector
+    # actually runs (reported individually in timings_ms alongside the combined
+    # "specialists" total, so the breakdown is per component).
+    timings["dota_obb"] = 0.0
+    timings["mvrsd"] = 0.0
+
     force_dota = bool(meta.get("force_dota_obb", False))
     dota_allowed = (
         force_dota
         or (not isinstance(prompt_boxes, list) and _prompts_relevant_to_dota(prompts))
     )
     if bundle.get("dota_obb") and (force_dota or _layer_active("dota_obb")) and dota_allowed:
+        _d0 = time.perf_counter()
         with _track("dota_obb"):
             dota_candidates = await run_in_threadpool(
                 _locked, dota_obb.run, bundle["dota_obb"], chip3, dota_obb.DOTA_OBB_THRESHOLD,
             )
+        timings["dota_obb"] = round((time.perf_counter() - _d0) * 1000, 3)
         layer_candidates.extend(_tag_candidates("dota_obb", dota_candidates))
         candidates_by_layer["dota_obb"] = len(dota_candidates)
     else:
@@ -1180,43 +1196,17 @@ async def _detect_pipeline(
     # as DOTA-OBB above. Its HBB detections feed the same WBF/NMS fusion +
     # confidence-policy floor as every other layer.
     if bundle.get("mvrsd") and _layer_active("mvrsd"):
+        _m0 = time.perf_counter()
         with _track("mvrsd"):
             mvrsd_candidates = await run_in_threadpool(
                 _locked, mvrsd.run, bundle["mvrsd"], chip3, mvrsd.MVRSD_CONF,
             )
+        timings["mvrsd"] = round((time.perf_counter() - _m0) * 1000, 3)
         layer_candidates.extend(_tag_candidates("mvrsd", mvrsd_candidates))
         candidates_by_layer["mvrsd"] = len(mvrsd_candidates)
     else:
         candidates_by_layer.setdefault("mvrsd", 0)
 
-    gd_force = bool(meta.get("force_grounding_dino", False))
-    gd_explicit = "grounding_dino" in _enabled
-    gd_should_run, gd_gated_reason = grounding_dino_gate.should_run_grounding_dino(
-        prompts, force=gd_force,
-    )
-    if (
-        bundle.get("grounding_dino")
-        and prompts
-        and (gd_force or _layer_active("grounding_dino"))
-        and gd_should_run
-        and (gd_force or gd_explicit)
-    ):
-        with _track("grounding_dino"):
-            gd_candidates = await run_in_threadpool(
-                _locked,
-                grounding_dino.run,
-                bundle["grounding_dino"],
-                chip3,
-                prompts,
-                grounding_dino.GROUNDING_DINO_THR,
-            )
-        layer_candidates.extend(_tag_candidates("grounding_dino", gd_candidates))
-        candidates_by_layer["grounding_dino"] = len(gd_candidates)
-    elif _layer_active("grounding_dino") and gd_gated_reason:
-        logger.debug(
-            "grounding_dino auto-gated: reason=%s n_prompts=%d", gd_gated_reason, len(prompts),
-        )
-    candidates_by_layer.setdefault("grounding_dino", 0)
     t0 = mark("specialists", t0)
 
     # SAR scene embedding: TerraMind pools patch tokens over the WHOLE chip, so
@@ -1232,7 +1222,6 @@ async def _detect_pipeline(
             )
 
     detections = []
-    embed_bboxes: list[list[float]] = []
     for source_layer, (mask, bbox_xyxy, score, label) in layer_candidates:
         det = fusion.candidate_to_detection(
             mask,
@@ -1247,7 +1236,6 @@ async def _detect_pipeline(
         if meta.get("geo"):
             det["geo"] = {**meta["geo"], "obb_map_crs": None, "obb_map_geojson": None}
         det["embedding"] = {"model": "disabled", "dim": 0, "fp16_b64": ""}
-        embed_bboxes.append(bbox_xyxy)
         if modality == "sar":
             det["confidence"] = float(min(det["confidence"], SAM3_SAR_CONF_CAP))
             det["sar_proxy"] = True
@@ -1255,29 +1243,6 @@ async def _detect_pipeline(
             det["terramind_embedding"] = sar_scene_embedding
         detections.append(det)
     t0 = mark("postprocess", t0)
-    # DINOv3-SAT crop embeddings: one batched encoder pass over all detections
-    # (was one forward + host transfer per detection). Same per-crop output.
-    #
-    # NOT gated by _layer_active("dinov3_sat"): the per-detection embedding is
-    # re-ID *enrichment* (it feeds the backend's reference-platform auto-identify
-    # and the similarity DB), not a detector layer. Gating it behind a request's
-    # enabled_layers filter meant a request that scoped layers to detectors only
-    # left every detection with the `{"model":"disabled"}` placeholder, which
-    # then made the backend's auto-identify error once per detection. Embeddings
-    # run whenever SAM3_EMBED_DETECTIONS is on and the model is resident.
-    if SAM3_EMBED_DETECTIONS and bundle.get("dinov3_sat") and detections:
-        emb_start = time.perf_counter()
-        embeddings = await run_in_threadpool(
-            _locked, embedding.embed_crops_batched, bundle.get("dinov3_sat"), chip3, embed_bboxes,
-        )
-        for det, emb in zip(detections, embeddings):
-            det["embedding"] = emb
-        embedding_ms = (time.perf_counter() - emb_start) * 1000
-        _record_metric("dinov3_sat", embedding_ms)
-        timings["embedding"] = round(embedding_ms, 3)
-    else:
-        timings["embedding"] = 0.0
-    t0 = time.perf_counter()  # reset so the nms timer below excludes embedding
     _nms_agnostic = os.getenv("SAM3_NMS_AGNOSTIC", "1").strip().lower() in {"1", "true", "yes", "on"}
     _nms_soft = os.getenv("SAM3_NMS_SOFT", "0").strip().lower() in {"1", "true", "yes", "on"}
     pre_nms_count = len(detections)
@@ -1295,6 +1260,40 @@ async def _detect_pipeline(
         )
     suppressed_by_nms = max(0, pre_nms_count - len(detections))
     mark("nms", t0)
+    # DINOv3-SAT crop embeddings: one batched encoder pass — DEFERRED to AFTER
+    # fusion so only the surviving detections are embedded. Previously every
+    # pre-NMS candidate was embedded and the ~39% that WBF/NMS then discarded
+    # had their embeddings thrown away (measured: 35454/91485 candidates on the
+    # al_udeid scene). A WBF survivor is a copy of its highest-confidence member
+    # with only `confidence` overridden (fusion.wbf_fusion: `survivor =
+    # dict(member)`); hard-NMS keeps the member dict unchanged — so each
+    # survivor's box is identical to the pre-fusion path, and the embedded crop
+    # and vector are byte-identical. `fusion._xyxy_from_detection` is the same
+    # det->pixel-box inverse NMS uses for IoU, reproducing the original
+    # `bbox_xyxy` (embed_crop re-rounds to int px). Net effect: skip the wasted
+    # embeddings only. Soft-NMS keeps every detection, so it embeds the same set
+    # as before — no change there.
+    #
+    # NOT gated by _layer_active("dinov3_sat"): the per-detection embedding is
+    # re-ID *enrichment* (it feeds the backend's reference-platform auto-identify
+    # and the similarity DB), not a detector layer. Gating it behind a request's
+    # enabled_layers filter meant a request that scoped layers to detectors only
+    # left every detection with the `{"model":"disabled"}` placeholder, which
+    # then made the backend's auto-identify error once per detection. Embeddings
+    # run whenever SAM3_EMBED_DETECTIONS is on and the model is resident.
+    if SAM3_EMBED_DETECTIONS and bundle.get("dinov3_sat") and detections:
+        emb_start = time.perf_counter()
+        embed_bboxes = [fusion._xyxy_from_detection(det) for det in detections]
+        embeddings = await run_in_threadpool(
+            _locked, embedding.embed_crops_batched, bundle.get("dinov3_sat"), chip3, embed_bboxes,
+        )
+        for det, emb in zip(detections, embeddings):
+            det["embedding"] = emb
+        embedding_ms = (time.perf_counter() - emb_start) * 1000
+        _record_metric("dinov3_sat", embedding_ms)
+        timings["embedding"] = round(embedding_ms, 3)
+    else:
+        timings["embedding"] = 0.0
     if _peak_dev is not None:
         try:
             import torch as _torch_peak2
@@ -1330,7 +1329,6 @@ async def _detect_pipeline(
         "queue_depth": queue_depth,
         "input_metadata": meta,
         "enabled_layers_unavailable": _unavailable,
-        "grounding_dino_gated": gd_gated_reason,
     }
 
 
@@ -1932,22 +1930,11 @@ def _bundle_components(bundle: dict[str, Any]) -> dict[str, Any]:
         "dinov3_sat": bundle.get("dinov3_sat") is not None,
         "terramind": bundle.get("terramind") is not None,
         "dota_obb": _model_loaded(bundle.get("dota_obb")),
-        "grounding_dino": _model_loaded(bundle.get("grounding_dino")),
         "mvrsd": _model_loaded(bundle.get("mvrsd")),
         "yoloe": bool(yoloe_bundle.get("pf") or yoloe_bundle.get("seg")),
         "yoloe_pf": yoloe_bundle.get("pf") is not None,
         "yoloe_seg": yoloe_bundle.get("seg") is not None,
     }
-
-
-def _prompt_limit(meta: dict[str, Any], modality: str) -> int:
-    default = SAM3_MAX_VIDEO_PROMPTS if (modality or "").lower() == "fmv" else SAM3_MAX_IMAGE_PROMPTS
-    override = meta.get("max_prompts")
-    try:
-        requested = int(override)
-    except (TypeError, ValueError):
-        requested = default
-    return max(1, min(requested, default))
 
 
 def _decode_valid_mask(payload: Any, expected_hw: tuple[int, int]) -> np.ndarray | None:

@@ -72,7 +72,7 @@ display-friendly primary name plus any fusion partners.
 The `+N` suffix shows the partner count; full partner names live in the
 ProvenancePanel "Detector ensemble" block — see
 [map-review-similar-provenance.md](map-review-similar-provenance.md). Layer-id
-to display-name mapping (`sam3`, `dota_obb`, `grounding_dino`, `yoloe`,
+to display-name mapping (`sam3`, `dota_obb`, `yoloe`,
 `sar_cfar`) lives in `SOURCE_LAYER_LABELS` inside `_helpers.ts`.
 
 ## Failure modes

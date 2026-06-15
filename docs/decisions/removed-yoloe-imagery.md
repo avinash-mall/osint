@@ -16,7 +16,7 @@ Sentinel already has a better validated image path: SAM3 with DOTA-OBB and gated
 
 ## Consequences
 
-- Imagery stays on the SAM3 sensor pipeline plus DOTA-OBB, MVRSD, optional LAE-DINO (`grounding_dino` layer), and TerraMind as configured.
+- Imagery stays on the SAM3 sensor pipeline plus DOTA-OBB, MVRSD, and TerraMind as configured.
 - Hand-crafted image requests that name YOLOE layers fail loudly with HTTP 400.
 - The old YOLOE-PF imagery LLM display-label workaround is obsolete.
 - Existing historical YOLOE image rows are not migrated; deployments that need a clean slate can rebuild volumes.

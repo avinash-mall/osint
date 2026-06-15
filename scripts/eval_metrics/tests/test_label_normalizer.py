@@ -95,7 +95,7 @@ def test_dota_unknown_class_maps_to_other():
 
 
 # ---------------------------------------------------------------------------
-# Open-vocab (SAM3 / GROUNDING_DINO) tests
+# Open-vocab (SAM3) tests
 # ---------------------------------------------------------------------------
 
 def test_open_vocab_tank_maps_to_armored():

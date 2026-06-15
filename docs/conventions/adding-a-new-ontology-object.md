@@ -40,7 +40,7 @@ For a green-field deployment or a wholesale taxonomy revision:
 After saving:
 
 1. Check `GET /api/ontology/default-prompts?sensor=optical` includes the new prompts.
-2. Wait 30 s (or SIGHUP inference), then `/health.gates.grounding_dino` should reflect the larger vocab.
+2. Wait 30 s (or SIGHUP inference) so the service refreshes its cached default-prompt vocabulary with the new object.
 3. Run a `/detect` with no `text_prompts` in `metadata` — inference uses the ontology default and the new prompts should fire.
 
 ## Cross-references

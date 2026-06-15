@@ -2,9 +2,10 @@
 
 Covers the CPU-testable fixes:
 
-* resolve_prompts caps the explicit ``text_prompts`` branch (the production
-  path from the worker) — SAM3_MAX_PROMPTS_PER_REQUEST / metadata.max_prompts
-  were dead knobs on that branch.
+* resolve_prompts no longer caps the prompt list — the
+  SAM3_MAX_PROMPTS_PER_REQUEST cap was removed (it silently dropped classes);
+  the full resolved vocabulary passes through. See
+  docs/decisions/removed-sam3-prompt-cap-2026-06-14.md.
 * sar.decode_s1grd neutralises NaN nodata (S1 GRD swath edges) instead of
   letting it smear through clip/resize/percentile into a garbage black chip.
 * fusion's detection-policy loader rejects empty / symbol-less candidates
@@ -27,24 +28,19 @@ import fusion
 
 
 # ---------------------------------------------------------------------------
-# Finding 9: explicit text_prompts branch is capped.
+# Prompt cap removed: resolve_prompts no longer truncates the prompt list.
 # ---------------------------------------------------------------------------
 
 
-def test_explicit_text_prompts_capped_by_max_prompts_override():
-    prompts = [f"class {i}" for i in range(40)]
-    out = main.resolve_prompts({"text_prompts": prompts, "max_prompts": 5})
-    assert out == prompts[:5]
-
-
-def test_explicit_text_prompts_capped_by_env_default():
-    prompts = [f"class {i}" for i in range(main.SAM3_MAX_IMAGE_PROMPTS + 20)]
+def test_explicit_text_prompts_not_capped():
+    # The full vocabulary passes through — the old 64-prompt cap is gone, so a
+    # large prompt list (e.g. the worker's ~133-class ontology) is not truncated.
+    prompts = [f"class {i}" for i in range(200)]
     out = main.resolve_prompts({"text_prompts": prompts})
-    assert len(out) == main.SAM3_MAX_IMAGE_PROMPTS
-    assert out == prompts[: main.SAM3_MAX_IMAGE_PROMPTS]
+    assert out == prompts
 
 
-def test_explicit_text_prompts_under_cap_unchanged():
+def test_explicit_text_prompts_unchanged():
     out = main.resolve_prompts({"text_prompts": ["ship", "vehicle"]})
     assert out == ["ship", "vehicle"]
 

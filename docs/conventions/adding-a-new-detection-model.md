@@ -37,7 +37,7 @@ You want to add another detector (e.g. a specialist for ships, oriented-box vari
 
 ## Common pitfalls
 
-- **Forgetting the gate** — if the new model competes with DOTA-OBB or SAM3 on common-vocab prompts, you may need a gate similar to [grounding-dino-gate.md](../inference/grounding-dino-gate.md). Otherwise NMS silently degrades the better detector — see [decisions/why-grounding-dino-auto-gated.md](../decisions/why-grounding-dino-auto-gated.md).
+- **Forgetting the gate** — if the new model competes with DOTA-OBB or SAM3 on common-vocab prompts, you may need a gate that suppresses it where a stronger detector already covers the vocabulary. Otherwise NMS silently degrades the better detector.
 - **Loading by default** — set `SAM3_LOAD_<NAME>=1` only if the model is universally net-positive. Otherwise default `0` and document the tradeoff.
 
 ## Cross-references

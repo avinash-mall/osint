@@ -106,8 +106,6 @@ def test_dry_run_all_configs_present(tmp_path: Path) -> None:
     expected = [
         "sam3_only",
         "sam3+dota_obb",
-        "sam3+grounding_dino",
-        "sam3+dota_obb+grounding_dino",
     ]
     for name in expected:
         assert name in config_names, f"Config '{name}' missing from results"

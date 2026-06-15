@@ -53,7 +53,12 @@ from threat_assessment import (
 from ontology import normalize as ontology_normalize
 from reference_platform_db import attach_identification_candidates
 import provider_lifecycle
-from chip_prep_profiler import stage_timer as _chip_stage_timer, record as _chip_record
+from chip_prep_profiler import (
+    stage_timer as _chip_stage_timer,
+    record as _chip_record,
+    snapshot as _chip_snapshot,
+    is_enabled as _chip_profile_enabled,
+)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 INFERENCE_SAM3_URL = os.getenv("INFERENCE_SAM3_URL", "http://inference-sam3:8001")
@@ -166,6 +171,15 @@ INFERENCE_SMALL_OBJECT_MAX_CHIPS = env_int(
 # whole (full-scene) and fragmented (main pass) is fused/suppressed. Default OFF
 # so the standard grid behaviour is unchanged.
 INFERENCE_FULL_SCENE_PASS = env_bool("INFERENCE_FULL_SCENE_PASS", False)
+# Pad edge RGB chips up to the full chip_size square before sending to SAM3.
+# torch.compile (SAM3_COMPILE_IMAGE) specialises on input shape, so variable-size
+# edge chips (the last row/col of the grid) would miss the compiled graph (fall
+# back to eager / recompile). Padding them to a fixed chip_size x chip_size makes
+# EVERY chip hit the same compiled graph (~6x faster). The padded region is black
+# and is marked invalid in the chip's valid_mask, so any detection landing there
+# is clipped — georef is unaffected (the window origin/transform are unchanged;
+# only the normalization basis grows to chip_size). RGB/optical only; default OFF.
+INFERENCE_PAD_CHIPS_TO_SIZE = env_bool("INFERENCE_PAD_CHIPS_TO_SIZE", False)
 def _default_reader_pool_size() -> int:
     """Default for the Phase 3 reader thread pool.
 
@@ -2298,6 +2312,24 @@ def slice_and_infer(
                     chip = src_t.read(window=window, out_shape=read_out_shape)
                 if np.all(chip == 0) or (src_t.nodata is not None and np.all(chip == src_t.nodata)):
                     return None
+                # Pad edge RGB chips to a fixed chip_size square so torch.compile's
+                # shape-specialised SAM3 graph applies to every chip (not just the
+                # full-size interior ones). out_w/out_h grow to chip_size (the new
+                # normalization basis); scale stays 1.0; the padded region is marked
+                # invalid in valid_mask so detections there are clipped. RGB only —
+                # MSI/SAR keep their GeoTIFF band path untouched.
+                if (
+                    INFERENCE_PAD_CHIPS_TO_SIZE
+                    and out_shape is None
+                    and (inference_metadata.get("modality") or "rgb") == "rgb"
+                    and (chip.shape[-2] < chip_h or chip.shape[-1] < chip_w)
+                ):
+                    pad_h = max(0, chip_h - chip.shape[-2])
+                    pad_w = max(0, chip_w - chip.shape[-1])
+                    chip = np.pad(chip, ((0, 0), (0, pad_h), (0, pad_w)))
+                    if valid_mask is not None:
+                        valid_mask = np.pad(valid_mask, ((0, pad_h), (0, pad_w)))
+                    out_h, out_w = chip_h, chip_w
                 with _chip_stage_timer("encode"):
                     chip_file, chip_meta = _emit_chip_payload(
                         window, src_t, valid_mask=valid_mask, chip=chip,
@@ -2617,6 +2649,26 @@ def slice_and_infer(
         if final_heads:
             on_chip_store(final_heads, completed_chip_count)
         all_kept = []
+    # Worker-side per-chip stage breakdown (gated by CHIP_PREP_PROFILE=1). The
+    # chip-prep stages (valid_mask, read_probe, encode[_png/_geotiff],
+    # post_roundtrip = HTTP+server inference, apply_response = georef, dedupe) are
+    # already timed via _chip_stage_timer; surface the aggregate here so a normal
+    # ingest logs the full per-component breakdown without writing to bench/.
+    if _chip_profile_enabled():
+        prof_stages: dict[str, dict] = {}
+        for stage, samples in _chip_snapshot().items():
+            if not samples:
+                continue
+            ordered = sorted(samples)
+            n = len(ordered)
+            prof_stages[stage] = {
+                "n": n,
+                "total_ms": round(sum(ordered), 1),
+                "mean_ms": round(sum(ordered) / n, 2),
+                "p50_ms": round(ordered[n // 2], 2),
+                "p95_ms": round(ordered[min(n - 1, int(n * 0.95))], 2),
+            }
+        logger.info("[WORKER] chip_prep_profile pass=%s stages=%s", pass_id, prof_stages)
     return {"detections": all_kept, "summary": inference_summary}
 
 
@@ -5201,7 +5253,7 @@ def process_satellite_imagery(
     Full pipeline: download/validate -> COG conversion -> catalog -> inference -> store.
 
     enabled_layers: optional list of inference layer names to forward to
-        /detect (e.g. ["sam3", "dota_obb", "grounding_dino", "dinov3_sat"]).
+        /detect (e.g. ["sam3", "dota_obb", "dinov3_sat"]).
         When None the inference service runs all loaded layers.
     """
     try:

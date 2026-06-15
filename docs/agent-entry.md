@@ -18,14 +18,12 @@ It is a single Docker Compose stack:
 - `backend/worker/`: Celery imagery, FMV, graph, bake, and maintenance tasks.
 - `inference-sam3/`: SAM 3 image, SAM 3.1 video, DINOv3-SAT embeddings,
   TerraMind SAR synthesis, DOTA-OBB, MVRSD, and YOLOE FMV tracking.
-- `inference-lae/`: optional LAE-DINO sidecar used by the `grounding_dino`
-  inference layer.
 - `frontend/`: React 19 + Vite 8 analyst workspaces.
 - `assets/` and `/data/*`: baked/offline assets and runtime data.
 
 Current inference truth: Prithvi heads, FAIR1M-OBB detector, RemoteCLIP verifier,
-and SAM3 AMG were removed. Generic IDEA Grounding-DINO is replaced by the
-LAE-DINO sidecar. Keep FAIR1M reference-dataset mentions; that corpus still feeds
+SAM3 AMG, and the Grounding-DINO / LAE-DINO open-vocab detector layer were
+removed. Keep FAIR1M reference-dataset mentions; that corpus still feeds
 reference-platform embedding workflows.
 
 ## Mandatory Workflow
@@ -97,4 +95,3 @@ of constraints for safe code/doc changes.
 - [decisions/removed-prithvi-battle-damage.md](decisions/removed-prithvi-battle-damage.md)
 - [decisions/removed-fair1m-and-remoteclip.md](decisions/removed-fair1m-and-remoteclip.md)
 - [decisions/removed-sam3-amg.md](decisions/removed-sam3-amg.md)
-- [decisions/why-lae-dino-replaces-grounding-dino.md](decisions/why-lae-dino-replaces-grounding-dino.md)

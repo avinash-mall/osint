@@ -41,12 +41,11 @@ sed -i \
     -e 's/^SAM3_LOAD_DINOV3_SAT=.*/SAM3_LOAD_DINOV3_SAT=1/' \
     -e 's/^SAM3_LOAD_TERRAMIND=.*/SAM3_LOAD_TERRAMIND=0/' \
     "$ENV_FILE"
-# DOTA_OBB / GROUNDING_DINO use compose default 1; force them off via .env entry.
+# DOTA_OBB uses compose default 1; force it off via .env entry.
 {
     echo ""
     echo "# video-profile overrides (auto-cleaned by run_video_profile.sh)"
     echo "SAM3_LOAD_DOTA_OBB=0"
-    echo "SAM3_LOAD_GROUNDING_DINO=0"
     echo "SAM3_USE_MULTIPLEX=1"
 } >> "$ENV_FILE"
 

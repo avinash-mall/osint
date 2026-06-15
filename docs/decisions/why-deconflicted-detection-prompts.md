@@ -1,7 +1,7 @@
 # Why detection prompts were deconflicted (one object per unique prompt)
 
 **Date:** 2026-05-22
-**Affects:** [backend/scripts/seeds/defenceOntology.seed.json](../../backend/scripts/seeds/defenceOntology.seed.json), [backend/ontology.py](../../backend/ontology.py), [backend/scripts/seed_ontology.py](../../backend/scripts/seed_ontology.py), [inference-sam3/grounding_dino.py](../../inference-sam3/grounding_dino.py), [backend/detection_policy.py](../../backend/detection_policy.py)
+**Affects:** [backend/scripts/seeds/defenceOntology.seed.json](../../backend/scripts/seeds/defenceOntology.seed.json), [backend/ontology.py](../../backend/ontology.py), [backend/scripts/seed_ontology.py](../../backend/scripts/seed_ontology.py), [backend/detection_policy.py](../../backend/detection_policy.py)
 
 ## Problem
 
@@ -53,8 +53,6 @@ Independent sources converge (web research, May 2026):
   form field that the imagery worker threads into the inference request. An
   operator scoping a run to its mission branch detects against ~15–25 prompts
   instead of ~130.
-- **Grounding-DINO** chunks the vocabulary (`GROUNDING_DINO_MAX_PHRASES_PER_QUERY`,
-  default 10) and uses firmer thresholds (box 0.30, text 0.25).
 - **`GLOBAL_CONFIDENCE_FLOOR`** raised 0.35 → 0.40. SAM 3 is calibrated, so this is
   a secondary lever; the prompt deconfliction is the primary fix.
 
@@ -84,7 +82,6 @@ This is why scoping — not threshold tuning — is the headline fix.
 ## Cross-references
 
 - [backend/ontology-system.md](../backend/ontology-system.md)
-- [inference/grounding-dino-detector.md](../inference/grounding-dino-detector.md)
 - [backend/detection-policy.md](../backend/detection-policy.md)
 - [decisions/why-open-vocabulary.md](why-open-vocabulary.md)
 - [decisions/why-category-presence-gate.md](why-category-presence-gate.md)

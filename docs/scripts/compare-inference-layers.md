@@ -4,7 +4,7 @@
 
 ## Purpose
 
-The main quality + latency benchmark. Sweeps a defined set of layer configurations (e.g. `sam3-only`, `sam3+dota`, `sam3+dota+gdino`, etc.) across one or more dataset slices; reports mAP + per-class P/R/F1 + latency tables.
+The main quality + latency benchmark. Sweeps a defined set of layer configurations (e.g. `sam3-only`, `sam3+dota`, etc.) across one or more dataset slices; reports mAP + per-class P/R/F1 + latency tables.
 
 ## Usage
 
@@ -16,14 +16,12 @@ python scripts/compare_inference_layers.py \
   --output docs/benchmarks/inference-layer-comparison.md \
   --json-output docs/benchmarks/inference-layer-comparison.json \
   --restart-cmd "docker restart osint-inference-sam3-1" \
-  --restart-wait-timeout 180 \
-  --force-grounding-dino                            # disable the GDINO gate for the run
+  --restart-wait-timeout 180
 ```
 
 ## Key flags
 
 - `--restart-cmd` + `--restart-wait-timeout` — between configs, restart the inference container to free SAM3 VRAM cleanly. Required when switching profiles.
-- `--force-grounding-dino` — disables [the gate](../inference/grounding-dino-gate.md) so the harness can measure GDINO's impact on common-vocab prompts.
 - `--ontology-mode` (+ `--ontology-url`, `--ontology-branch`) — for the `dota` slice, replaces each chip's ground-truth class names (an oracle the operator never has) with the live ontology default-prompt vocabulary fetched from the backend. Measures detection quality the way an analyst actually sees it. `--ontology-branch` takes a comma-separated list of branch ids; the union of those branches' scoped subsets is used, modelling a scene-relevant vocabulary.
 - `--triage-set <DIR>` — production-image benchmark: load chips from an analyst-curated triage set built by [`scripts/build_triage_set.py`](build-triage-set.md). Implies `--slice triage`. Add `--include-non-rgb` to evaluate SAR / multispectral chips too (default is RGB only).
 - `--dry-run` — verify report generation without a live service.
@@ -38,10 +36,9 @@ By default each DOTA chip is fed `text_prompts` = the exact GT class names prese
 
 ## Wrapper
 
-[scripts/_eval_runner.py](../../scripts/_eval_runner.py) is a wrapper that filters out historically broken configurations (e.g. the Grounding-DINO instability workaround). Use it for the curated set.
+[scripts/_eval_runner.py](../../scripts/_eval_runner.py) is a wrapper that filters out historically broken configurations. Use it for the curated set.
 
 ## Cross-references
 
 - [testing/benchmark-harness.md](../testing/benchmark-harness.md)
 - [benchmarks/inference-layer-comparison.md](../benchmarks/inference-layer-comparison.md)
-- [decisions/why-grounding-dino-auto-gated.md](../decisions/why-grounding-dino-auto-gated.md)

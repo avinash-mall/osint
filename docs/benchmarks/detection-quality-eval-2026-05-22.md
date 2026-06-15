@@ -42,7 +42,7 @@ Based on the comparative analysis above.
 | Layer | Verdict | Quality impact | Latency cost | Notes |
 |---|---|---|---|---|
 | DOTA_OBB | ✅ Keep | +0.20 mAP | +264 ms | Adds aerial vehicle/plane classes not in SAM3 vocab |
-| GROUNDING_DINO | ✅ Keep (auto-gated) | +0.10 mAP | +213 ms | Open-vocab recall; auto-gated when all prompts are in SAM3+DOTA common vocab |
+| ~~GROUNDING_DINO~~ | ❌ Removed (was auto-gated) | +0.10 mAP | +213 ms | Open-vocab recall; was auto-gated when all prompts are in SAM3+DOTA common vocab. Layer since removed. |
 | ~~PRITHVI~~ | ❌ Removed 2026-06-12 | — (segmentation) | ? | Flood/burn heads removed — noisy false detections, burn-head chip IoU ≈ 0. See [decisions/removed-prithvi-battle-damage.md](../decisions/removed-prithvi-battle-damage.md) |
 | DINOV3_SAT | ✅ Keep for tracking | — (embedding) | ? | Embedding for cross-image object re-ID; see video_tracking_stability.md |
 | TERRAMIND | ⚠️ SAR-only | — (embedding) | ? | SAR-only; no impact on RGB/multispectral; enable only for SAR pipelines |

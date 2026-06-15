@@ -37,7 +37,7 @@ Only port **3000** is exposed to the host. Every other service runs on the inter
 | Backend | Python 3.11 · FastAPI · Uvicorn · Celery |
 | Tile server | TiTiler 2.0.2 |
 | Vector tiles | Martin 1.9.1 |
-| AI inference | SAM 3 + SAM 3.1 PCS · YOLOE-26x-seg(-pf) · DINOv3 ViT-L SAT-493M · Prithvi-EO-2.0 · TerraMind v1 · DOTA-OBB · Grounding DINO (auto-gated) |
+| AI inference | SAM 3 + SAM 3.1 PCS · YOLOE-26x-seg(-pf) · DINOv3 ViT-L SAT-493M · TerraMind v1 · DOTA-OBB · MVRSD military-vehicle specialist |
 | Frontend | React 19 · TypeScript · Vite 8 · Tailwind · lucide-react |
 | Map | react-leaflet (2D) · CesiumJS (optional 3D) |
 | Auth | Signed session cookies (itsdangerous) · env-bootstrap admin · optional LDAP |
@@ -172,8 +172,6 @@ For day-to-day inference iteration, layer a `docker-compose.dev.yml` with a writ
 | SAM 3 / SAM 3.1 code + weights | [Meta SAM License](https://github.com/facebookresearch/sam3/blob/main/LICENSE) | **Gated** (or use the `1038lab/sam3` mirror) |
 | DINOv3 weights | [Meta DINOv3 License](https://ai.meta.com/resources/models-and-libraries/dinov3-license/) | **Gated** |
 | YOLOE weights | AGPL-3.0 | Open |
-| Prithvi-EO-2.0 weights | Apache 2.0 | Open |
 | TerraMind v1 weights | Apache 2.0 | Open |
-| Grounding-DINO weights | Apache 2.0 | Open |
 | Carto basemap tiles | © OpenStreetMap contributors · © CARTO (CC-BY) | Attribution required |
 | IBM Plex fonts | SIL OFL 1.1 | Served at `/assets/LICENSE.txt` |
