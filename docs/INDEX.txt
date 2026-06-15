@@ -322,6 +322,7 @@ scripts/docs-audit.md|scripts|Check and regenerate the agent-facing documentatio
 scripts/download-city-cog.md|scripts,imagery|geocodes any city/country; --source sentinel2 (10m COG) or esri (sub-meter tile mosaic)
 scripts/eval-runners.md|scripts,benchmark|eval_candidate_links + eval_sar_cfar + measure_calibration_ece
 scripts/fetch-eval-datasets.md|scripts,benchmark|DOTA-v1.0 val slice from HF with idempotent gating + synthetic fallback
+scripts/repo-guardrail-automations.md|scripts|repo_guardrails + stale_terms_audit + forbidden_paths_guard: drift gates and baked-path write guard behind Claude Code hooks + pre-push
 scripts/smoke-test-live-api.md|scripts,testing|live API smoke test vs nginx:3000: 164-route catalog coverage, tagged+torn-down mutations, idle-gated inference
 testing/backend-unit-tests.md|testing,backend|pytest layout, fixtures, ontology/auth/size/object_details/precision-policy coverage
 testing/benchmark-harness.md|testing,benchmark|compare_inference_layers + restart, fetch_eval_datasets gating
