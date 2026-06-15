@@ -25,21 +25,22 @@ The platform ships as a self-contained Docker Compose stack that can run fully a
 └──────────┴───────────────┴──────────┴──────────┴───────────┴──────────┘
 ```
 
-Only port **3000** is exposed to the host. Every other service runs on the internal compose network. Full service breakdown: [docs/architecture/system-overview.md](docs/architecture/system-overview.md).
+Only port **3000** is exposed to the host. Every other service — including the **OSRM** routing engine, the **TiTiler** COG server, and the **Martin** vector-tile server — runs on the internal compose network; the worldwide GLO-30 DEM and planet OSRM datasets are read from host bind mounts under `./assets/`. Full service breakdown: [docs/architecture/system-overview.md](docs/architecture/system-overview.md).
 
 ## Tech Stack
 
 | Layer | Technology |
 |---|---|
 | Graph DB | Neo4j 5.26 + APOC |
-| Spatial DB | PostGIS 18-3.6 |
+| Spatial DB | PostGIS 18-3.6 + pgvector (HNSW embeddings) |
 | Cache / broker | Redis 8 alpine |
 | Backend | Python 3.11 · FastAPI · Uvicorn · Celery |
 | Tile server | TiTiler 2.0.2 |
 | Vector tiles | Martin 1.9.1 |
 | AI inference | SAM 3 + SAM 3.1 PCS · YOLOE-26x-seg(-pf) · DINOv3 ViT-L SAT-493M · TerraMind v1 · DOTA-OBB · MVRSD military-vehicle specialist |
-| Frontend | React 19 · TypeScript · Vite 8 · Tailwind · lucide-react |
-| Map | react-leaflet (2D) · CesiumJS (optional 3D) |
+| Frontend | React 19 · TypeScript · Vite 8 · Tailwind 4 · lucide-react |
+| Map / 3D | react-leaflet 5 (2D) · CesiumJS · react-globe.gl (3D) |
+| Link graph | react-force-graph-2d analyst canvas |
 | Auth | Signed session cookies (itsdangerous) · env-bootstrap admin · optional LDAP |
 | Reverse proxy | Nginx alpine — TLS, tile cache (24 h TTL), HLS |
 | Air-gap assets | nginx alpine + baked Carto Dark basemap (z=0..10) + IBM Plex; DEM + OSRM data on host bind mounts under `./assets/` |
@@ -115,7 +116,7 @@ Full reference: [docs/deployment/dem-glo30-bake.md](docs/deployment/dem-glo30-ba
 
 This README is intentionally short. **All detailed reference lives under [docs/](docs/).**
 
-- **One-line index of every doc:** [docs/INDEX.txt](docs/INDEX.txt) (pipe-delimited, ~125 entries)
+- **One-line index of every doc:** [docs/INDEX.txt](docs/INDEX.txt) (pipe-delimited, ~330 entries)
 - **Docs landing page:** [docs/README.md](docs/README.md)
 - **For coding agents:** [AGENTS.md](AGENTS.md), [CLAUDE.md](CLAUDE.md), [.cursor/rules](.cursor/rules)
 
@@ -124,7 +125,7 @@ This README is intentionally short. **All detailed reference lives under [docs/]
 | Topic | Doc |
 |---|---|
 | System topology | [docs/architecture/system-overview.md](docs/architecture/system-overview.md) |
-| Full API reference (~100 routes) | [docs/backend/api-routes-reference.md](docs/backend/api-routes-reference.md) |
+| Full API reference (~170 routes) | [docs/backend/api-routes-reference.md](docs/backend/api-routes-reference.md) |
 | Imagery ingest pipeline | [docs/architecture/data-flow-imagery.md](docs/architecture/data-flow-imagery.md) |
 | FMV ingest pipeline | [docs/architecture/data-flow-fmv.md](docs/architecture/data-flow-fmv.md) |
 | Inference service overview | [docs/inference/service-overview.md](docs/inference/service-overview.md) |
@@ -173,5 +174,6 @@ For day-to-day inference iteration, layer a `docker-compose.dev.yml` with a writ
 | DINOv3 weights | [Meta DINOv3 License](https://ai.meta.com/resources/models-and-libraries/dinov3-license/) | **Gated** |
 | YOLOE weights | AGPL-3.0 | Open |
 | TerraMind v1 weights | Apache 2.0 | Open |
+| MVRSD weights | private release (`mvrsd-v1`) | **Gated** — `GITHUB_TOKEN` at build |
 | Carto basemap tiles | © OpenStreetMap contributors · © CARTO (CC-BY) | Attribution required |
 | IBM Plex fonts | SIL OFL 1.1 | Served at `/assets/LICENSE.txt` |
