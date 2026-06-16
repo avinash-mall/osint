@@ -44,18 +44,24 @@ class _VectorAwareConnection(Psycopg2Connection):
                 logger.debug("pgvector adapter registration deferred: %s", e)
         return super().cursor(*args, **kwargs)
 
-# Neo4j Configuration
+# Neo4j Configuration.
+# Production credentials come from the environment: docker-compose injects
+# NEO4J_PASSWORD (fail-closed `${NEO4J_PASSWORD:?...}`) from .env. The literal
+# fallbacks below are NON-PRODUCTION dev/test conveniences that only fire when
+# the env is unset (i.e. outside compose); `change-me` will not authenticate
+# against a real instance. See docs/decisions/why-env-driven-db-credentials-2026-06-16.md.
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://neo4j:7687")
 NEO4J_AUTH = (
     os.getenv("NEO4J_USERNAME", "neo4j"),
     os.getenv("NEO4J_PASSWORD", os.getenv("NEO4J_AUTH_PASSWORD", "change-me")),
 )
 
-# PostGIS Configuration
-# Default URI uses the docker-compose service name `postgis`, which resolves
-# via docker DNS inside the compose network. The hardcoded IP `172.18.0.11`
-# previously here was unstable across compose recreations; tests run outside
-# docker should override POSTGIS_URI explicitly.
+# PostGIS Configuration.
+# Production builds POSTGIS_URI in docker-compose from POSTGRES_USER/PASSWORD/DB
+# (POSTGRES_PASSWORD is fail-closed). The default below is a NON-PRODUCTION
+# dev/test fallback: it targets the compose service name `postgis` (only
+# resolvable inside the compose network), so it is inert in real deployments.
+# Tests run outside docker override POSTGIS_URI explicitly (see backend/tests).
 POSTGIS_URI = os.getenv("POSTGIS_URI", "postgresql://sentinel:sentinel@postgis:5432/sentinel")
 ASYNC_POSTGIS_URI = POSTGIS_URI.replace("postgresql://", "postgresql+asyncpg://", 1)
 

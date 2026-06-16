@@ -14,9 +14,14 @@ python scripts/configure_host.py
 #    Never commit real tokens to .env.example or docs.
 echo "HF_TOKEN=<huggingface-token>" >> .env
 
-# 3. Session secret + admin password
+# 3. Session secret + admin password + database passwords (all fail-closed).
+#    Set DB passwords BEFORE the first `up` so the neo4j_data / pg_data volumes
+#    initialize with them — they only apply on first boot (see
+#    decisions/why-env-driven-db-credentials-2026-06-16.md for in-place rotation).
 echo "SESSION_SECRET=$(openssl rand -hex 32)" >> .env
 echo "ADMIN_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=')" >> .env
+echo "NEO4J_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=')" >> .env
+echo "POSTGRES_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=')" >> .env
 
 # 4. Set region for OSRM (pick a Geofabrik extract that fits your host RAM;
 #    full-planet/all-Asia OOMs on 30 GB hosts — see osrm-planet-bake.md)

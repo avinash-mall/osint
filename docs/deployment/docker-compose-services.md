@@ -12,8 +12,8 @@
 | `worker` | `sentinel-backend:latest` | — | Celery worker (queues: imagery, default) |
 | `worker_beat` | `sentinel-backend:latest` | — | Celery beat scheduler |
 | `inference-sam3` | `sentinel-inference-sam3:gpu` | internal 8001 | GPU container |
-| `neo4j` | `neo4j:5.26.26-community-ubi10` | internal 7687/7474 | APOC enabled |
-| `postgis` | `postgis/postgis:18-3.6` | internal 5432 | `max_connections=${POSTGIS_MAX_CONNECTIONS:-300}` (concurrent imagery+FMV pools; see [decisions/why-postgis-max-connections-300.md](../decisions/why-postgis-max-connections-300.md)) |
+| `neo4j` | `neo4j:5.26.26-community-ubi10` | internal 7687/7474 | APOC enabled; `NEO4J_AUTH` password fail-closed from `.env` ([decisions/why-env-driven-db-credentials-2026-06-16.md](../decisions/why-env-driven-db-credentials-2026-06-16.md)) |
+| `postgis` | `postgis/postgis:18-3.6` | internal 5432 | `POSTGRES_PASSWORD` fail-closed from `.env`; `max_connections=${POSTGIS_MAX_CONNECTIONS:-300}` (concurrent imagery+FMV pools; see [decisions/why-postgis-max-connections-300.md](../decisions/why-postgis-max-connections-300.md)) |
 | `redis` | `redis:8-alpine` | internal 6379 | Celery broker |
 | `titiler` | `ghcr.io/developmentseed/titiler:2.0.2` | internal 8080 | COG tile server |
 | `martin` | `ghcr.io/maplibre/martin:1.9.1` | internal 3000 | PostGIS → MVT; `depends_on: postgis + backend` (service_healthy) so `detections_mvt` exists before Martin's one-shot scan ([decisions/obb-render-fix.md](../decisions/obb-render-fix.md)) |

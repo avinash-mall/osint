@@ -9,8 +9,9 @@ Variables below grouped by subsystem. Defaults = the values in `.env.example`.
 | Variable | Default | Description |
 |---|---|---|
 | `NEO4J_URI` | `bolt://neo4j:7687` | Graph database URL |
-| `NEO4J_USERNAME` / `NEO4J_PASSWORD` | `neo4j` / `password` | Bolt credentials |
-| `POSTGIS_URI` | `postgresql://sentinel:sentinel@postgis:5432/sentinel` | Spatial database |
+| `NEO4J_USERNAME` / `NEO4J_PASSWORD` | `neo4j` / required | Bolt credentials; Compose fails fast when `NEO4J_PASSWORD` is unset/empty. Applied to `neo4j_data` on first boot only — rotate with `cypher-shell ALTER CURRENT USER SET PASSWORD` ([decisions/why-env-driven-db-credentials-2026-06-16.md](../decisions/why-env-driven-db-credentials-2026-06-16.md)) |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `sentinel` / required / `sentinel` | PostGIS credentials; `POSTGRES_PASSWORD` is fail-closed. Compose composes `POSTGIS_URI` (backend/worker) and Martin's `DATABASE_URL` from these |
+| `POSTGIS_URI` | composed from `POSTGRES_*` | Spatial database DSN; set explicitly only when running the backend outside Compose |
 | `POSTGIS_POOL_MIN` / `POSTGIS_POOL_MAX` | `1` / `10` | Per-process pool sizes |
 | `REDIS_URL` | `redis://redis:6379/0` | Celery broker + pubsub |
 
