@@ -26,7 +26,7 @@ def _stub_db(monkeypatch, *, neo4j_records):
     session.run = MagicMock(side_effect=lambda *a, **k: _Result(neo4j_records))
     cm = MagicMock(); cm.__enter__ = MagicMock(return_value=session); cm.__exit__ = MagicMock(return_value=False)
     db = MagicMock(); db.get_session = MagicMock(return_value=cm)
-    import worker_legacy
+    import worker.graph as worker_legacy
     monkeypatch.setattr(worker_legacy, "db", db)
     return session
 
@@ -38,7 +38,7 @@ def _stub_db(monkeypatch, *, neo4j_records):
 
 def test_tick_repeat_detector_writes_representative_edges(monkeypatch):
     _ensure_envs()
-    import worker_legacy
+    import worker.graph as worker_legacy
     importlib.reload(worker_legacy)
     # Neo4j returns one cluster row above the threshold.
     cluster_rows = [
@@ -59,7 +59,7 @@ def test_tick_repeat_detector_writes_representative_edges(monkeypatch):
 
 def test_tick_repeat_detector_returns_zero_when_no_clusters(monkeypatch):
     _ensure_envs()
-    import worker_legacy
+    import worker.graph as worker_legacy
     importlib.reload(worker_legacy)
     _stub_db(monkeypatch, neo4j_records=[])
     result = worker_legacy.tick_repeat_detector()

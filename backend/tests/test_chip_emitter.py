@@ -61,13 +61,13 @@ def test_emit_chip_payload_sar_for_sam3(tmp_path):
 
 
 def _reimport_worker():
-    """Re-execute worker_legacy.py module-level init so env-driven constants
-    pick up the current INFERENCE_SPEED_PROFILE. ``importlib.reload(worker)``
-    only re-runs the facade ``__init__.py``; the underlying worker_legacy
-    module is already cached and its constants are baked at first import.
+    """Re-execute the worker package's module-level init so env-driven constants
+    pick up the current INFERENCE_SPEED_PROFILE. The constants now live in
+    ``worker.config``; popping only ``worker`` would leave ``worker.config``
+    cached (constants baked at first import), so drop every ``worker*`` module.
     """
-    sys.modules.pop("worker", None)
-    sys.modules.pop("worker_legacy", None)
+    for _name in [m for m in sys.modules if m == "worker" or m.startswith("worker.") or m == "worker_legacy"]:
+        sys.modules.pop(_name, None)
     import worker as _worker
     return _worker
 

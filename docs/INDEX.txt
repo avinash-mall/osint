@@ -72,8 +72,8 @@ backend/terrain-viewshed-los.md|backend|DEM ray-cast with k=0.13 refraction; rea
 backend/threat-assessment.md|backend|open-vocab neutral binning into category buckets
 backend/tracker-satellite.md|backend|satellite-pass Hungarian tracker, V_MAX state gates, 14-day age cap, 3-miss timeout
 backend/video-metadata-klv.md|backend,fmv|MISB ST 0601 KLV + MP4 GPMD + SRT sidecar parsers
-backend/worker-legacy-monolith.md|backend|4110-line worker_legacy.py: imagery/FMV tasks, chip planner, evidence persistence
-backend/worker-package-facade.md|backend|worker/__init__.py namespace re-exports preserving Celery task names
+backend/worker-legacy-monolith.md|backend|worker tasks runtime-behavior reference (imagery/FMV/graph tasks, fork safety, failure modes); code now in the worker package
+backend/worker-package-facade.md|backend|worker/ package module map (config/app/dispatch/postprocess/graph/fmv/maintenance/imagery) + parity harness; split from worker_legacy
 benchmarks/calibration-ece.md|benchmark|expected calibration error per detector pre/post temperature scaling
 benchmarks/chip-dedupe-nms-vs-wbf-2026-06-12.md|benchmark|DOTA val 30img/216chips: cross-chip NMS vs WBF; NMS F1 0.104 > WBF 0.089, keep NMS default
 benchmarks/detection-quality-eval-2026-05-22.md|benchmark|DOTA-v1.0 box-quality snapshot: sam3+dota_obb best at 0.60 mAP; GD hurts the DOTA stack
@@ -232,7 +232,8 @@ decisions/why-three-graph-modes.md|decision,frontend|Link Graph splits into Inve
 decisions/why-tle-history-for-maneuvers.md|decision,backend|separate satellite_tle_history table enables maneuver/decay detection without breaking latest-wins overpass
 decisions/why-transportation-floor-raised.md|decision,backend,ontology|per-class floor defaults (transportation=0.55, other=0.50) lift precision on noisy buckets; operator overrides via admin matrix
 decisions/why-wbf-over-nms.md|decision,inference|cross-detector fuser default WBF; NMS suppresses winners (DOTA->GDINO mAP collapse); SAM3_FUSION_MODE=wbf|nms knob
-decisions/why-worker-legacy-monolith-kept.md|decision|3500 tested lines preserved; thin facade package avoids breakage
+decisions/why-worker-legacy-monolith-kept.md|decision|SUPERSEDED by why-worker-package-split-2026-06-16; original reasoning for keeping the monolith
+decisions/why-worker-package-split-2026-06-16.md|decision,backend|split the 6.2k-line monolith into the worker package; verified via parity harness + LOAD_GLOBAL scan; routing keys preserved
 decisions/why-ws-auth-now-required.md|decision|/ws now requires session cookie; PII over the socket forced the fix
 decisions/why-ws-session-heartbeat.md|decision,backend|/ws re-decodes the session cookie every 60s; closes with 1008 on TTL expiry or key rotation
 decisions/why-yoloe-fp32-and-bf16-cast.md|decision,fmv,inference|YOLOE pinned fp32 + .float() before numpy(); silent zero-detection regression on Blackwell+cu130

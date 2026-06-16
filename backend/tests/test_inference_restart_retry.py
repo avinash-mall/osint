@@ -21,7 +21,7 @@ BACKEND_DIR = REPO_ROOT / "backend"
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-import worker_legacy as worker  # noqa: E402
+import worker.dispatch as worker  # noqa: E402  (restart-retry helpers live here now)
 
 
 class _Resp:

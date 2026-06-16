@@ -23,7 +23,7 @@ def _ensure_envs():
 
 def test_tick_near_builder_no_aois_returns_zero(monkeypatch):
     _ensure_envs()
-    import worker_legacy
+    import worker.graph as worker_legacy
     importlib.reload(worker_legacy)
 
     # Stub postgis: AOI fetch returns nothing.
@@ -40,7 +40,7 @@ def test_tick_near_builder_no_aois_returns_zero(monkeypatch):
 
 def test_tick_near_builder_skips_unknown_kind(monkeypatch):
     _ensure_envs()
-    import worker_legacy
+    import worker.graph as worker_legacy
     importlib.reload(worker_legacy)
 
     aoi_rows = [{"id": 1, "metadata": {"aoi_kind": "warehouse"}}]  # not in radius dict
@@ -59,7 +59,7 @@ def test_tick_near_builder_skips_unknown_kind(monkeypatch):
 
 def test_near_radius_for_kind_falls_back_to_env(monkeypatch):
     _ensure_envs()
-    import worker_legacy
+    import worker.graph as worker_legacy
     importlib.reload(worker_legacy)
     # No admin override → uses _NEAR_RADIUS_M dict.
     assert worker_legacy._near_radius_for_kind("base") == 5000.0

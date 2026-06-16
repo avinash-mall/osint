@@ -1,5 +1,7 @@
 # Why `worker_legacy.py` Stays Monolithic (For Now)
 
+**Status:** SUPERSEDED (2026-06-16) by [why-worker-package-split-2026-06-16.md](why-worker-package-split-2026-06-16.md) — the monolith was split into the `worker` package. The original reasoning is kept below for history.
+
 ## Decision
 
 [backend/worker_legacy.py](../../backend/worker_legacy.py) is ~3650 lines, the largest single file in the repo. **Not** being split incrementally. Instead, a thin package [backend/worker/](../../backend/worker/) re-exports it.

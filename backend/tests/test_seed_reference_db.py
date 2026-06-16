@@ -117,7 +117,7 @@ def test_seed_reference_db_short_circuits_when_rows_present(tmp_path: Path, monk
         )
 
     try:
-        import worker_legacy
+        import worker.maintenance as worker_legacy
         result = worker_legacy.seed_reference_db(force=False)  # bind=True wrapper accepts no-self call in test
     except TypeError:
         # bind=True means the celery wrapper expects self; call the underlying.
@@ -141,7 +141,7 @@ def test_seed_reference_db_runs_full_bake_when_empty(tmp_path: Path, monkeypatch
     monkeypatch.setenv("REFERENCE_SEED_PATH", str(SEED_PATH))
 
     # We need the module-level constants to re-read env. Easiest: monkey-patch.
-    import worker_legacy
+    import worker.maintenance as worker_legacy
     monkeypatch.setattr(worker_legacy, "_REFERENCE_CORPORA_ROOT", corpora_root)
     monkeypatch.setattr(worker_legacy, "_REFERENCE_CHIPS_RUNTIME_ROOT", runtime_root)
     monkeypatch.setattr(worker_legacy, "_REFERENCE_SEED_PATH", SEED_PATH)

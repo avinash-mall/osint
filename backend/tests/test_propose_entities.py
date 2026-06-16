@@ -31,7 +31,7 @@ def _stub_postgis(monkeypatch, *, fetchone=None):
 
 def test_llm_proposer_used_when_get_llm_json_returns_proposals(monkeypatch):
     _ensure_envs()
-    import worker_legacy
+    import worker.graph as worker_legacy
     importlib.reload(worker_legacy)
 
     monkeypatch.setattr(worker_legacy, "_fetch_repeated_at_clusters", lambda: [
@@ -69,7 +69,7 @@ def test_llm_proposer_used_when_get_llm_json_returns_proposals(monkeypatch):
 
 def test_falls_back_to_heuristic_when_llm_unavailable(monkeypatch):
     _ensure_envs()
-    import worker_legacy
+    import worker.graph as worker_legacy
     importlib.reload(worker_legacy)
 
     monkeypatch.setattr(worker_legacy, "_fetch_repeated_at_clusters", lambda: [
@@ -92,7 +92,7 @@ def test_falls_back_to_heuristic_when_llm_unavailable(monkeypatch):
 
 def test_returns_zero_when_no_clusters(monkeypatch):
     _ensure_envs()
-    import worker_legacy
+    import worker.graph as worker_legacy
     importlib.reload(worker_legacy)
 
     monkeypatch.setattr(worker_legacy, "_fetch_repeated_at_clusters", lambda: [])
@@ -103,7 +103,7 @@ def test_returns_zero_when_no_clusters(monkeypatch):
 
 def test_llm_filters_unknown_kinds(monkeypatch):
     _ensure_envs()
-    import worker_legacy
+    import worker.graph as worker_legacy
     importlib.reload(worker_legacy)
 
     monkeypatch.setattr(worker_legacy, "_fetch_repeated_at_clusters", lambda: [

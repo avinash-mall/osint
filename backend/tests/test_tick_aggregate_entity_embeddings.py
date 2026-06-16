@@ -21,14 +21,14 @@ def _stub_postgis(monkeypatch, *, fetchall_side_effect=None):
     cursor.fetchall = MagicMock(side_effect=fetchall_side_effect or [])
     cm = MagicMock(); cm.__enter__ = MagicMock(return_value=cursor); cm.__exit__ = MagicMock(return_value=False)
     pg = MagicMock(); pg.get_cursor = MagicMock(return_value=cm)
-    import worker_legacy
+    import worker.graph as worker_legacy
     monkeypatch.setattr(worker_legacy, "postgis_db", pg)
     return cursor
 
 
 def test_aggregator_averages_embeddings_per_entity(monkeypatch):
     _ensure_envs()
-    import worker_legacy
+    import worker.graph as worker_legacy
     importlib.reload(worker_legacy)
     # Sequence of fetchall calls:
     #   1. all entity ids
@@ -47,7 +47,7 @@ def test_aggregator_averages_embeddings_per_entity(monkeypatch):
 
 def test_aggregator_skips_entity_without_anchors(monkeypatch):
     _ensure_envs()
-    import worker_legacy
+    import worker.graph as worker_legacy
     importlib.reload(worker_legacy)
     fetchall_side_effect = [
         [{"id": "v1"}],
@@ -61,7 +61,7 @@ def test_aggregator_skips_entity_without_anchors(monkeypatch):
 
 def test_aggregator_skips_dim_mismatch(monkeypatch):
     _ensure_envs()
-    import worker_legacy
+    import worker.graph as worker_legacy
     importlib.reload(worker_legacy)
     fetchall_side_effect = [
         [{"id": "v1"}],
