@@ -1,35 +1,40 @@
-fastapi
-uvicorn[standard]
-neo4j
-langchain
-langchain-openai
-langchain-community
-python-dotenv
-pydantic
-python-multipart
-celery
-redis
-psycopg2-binary
-asyncpg
-geoalchemy2
-shapely
-rasterio
-rioxarray
-pillow
-numpy
-requests
-scipy>=1.11
-pyproj>=3.6
-docker>=7.0
-klvdata
-construct>=2.10
-ldap3>=2.9
-itsdangerous>=2.1
-reportlab>=4.0
-mgrs>=1.4
-pgvector>=0.3
-sgp4>=2.23
-rustworkx>=0.14
+# Pinned (==) to the exact versions resolved in the running backend container
+# (`pip freeze`) — a known-good set, not a fresh re-resolution. Bump deliberately
+# and re-freeze rather than letting unpinned/ranged deps drift on rebuild (which
+# also breaks reproducibility on air-gapped / cache-pruned rebuilds). torch is
+# handled separately below. See docs/inference/python-requirements.md.
+fastapi==0.136.3
+uvicorn[standard]==0.49.0
+neo4j==6.2.0
+langchain==1.3.9
+langchain-openai==1.3.2
+langchain-community==0.4.2
+python-dotenv==1.2.2
+pydantic==2.13.4
+python-multipart==0.0.32
+celery==5.6.3
+redis==8.0.0
+psycopg2-binary==2.9.12
+asyncpg==0.31.0
+geoalchemy2==0.20.0
+shapely==2.1.2
+rasterio==1.4.4
+rioxarray==0.19.0
+pillow==12.2.0
+numpy==2.4.6
+requests==2.34.2
+scipy==1.17.1
+pyproj==3.7.2
+docker==7.1.0
+klvdata==0.0.3
+construct==2.10.70
+ldap3==2.9.1
+itsdangerous==2.2.0
+reportlab==4.5.1
+mgrs==1.5.4
+pgvector==0.4.2
+sgp4==2.25
+rustworkx==0.17.1
 # GNN link prediction (graph_pyg.py) — CPU-only torch from the PyTorch CPU index.
 # The +cpu local version pins pip to the CPU wheel (~190 MB) instead of the
 # default ~2 GB CUDA build; GPU torch lives in the inference-sam3 image, and the

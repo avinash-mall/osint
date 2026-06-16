@@ -1,19 +1,24 @@
-fastapi
-uvicorn[standard]
-python-multipart
-pillow
-numpy
-opencv-python-headless
-requests
-transformers>=4.56,<5
-huggingface_hub>=0.24
-accelerate
-rasterio
-affine
-shapely
-pyproj
-pycocotools
-terratorch>=1.1,<1.5
-ultralytics>=8.3.45
-psutil>=5.9
-ensemble-boxes>=1.0.9  # WBF fusion across detector source layers (T2.8)
+# Pinned (==) to the exact versions resolved in the running inference container
+# (`pip freeze`) — a known-good set, not a fresh re-resolution. Bump deliberately
+# and re-freeze. torch/torchvision/torchaudio are intentionally NOT here: they are
+# GPU-profile-injected as Dockerfile.gpu build ARGs from scripts/gpu_profiles.py
+# (installed before this file). See docs/inference/python-requirements.md.
+fastapi==0.136.3
+uvicorn[standard]==0.48.0
+python-multipart==0.0.29
+pillow==12.2.0
+numpy==2.4.6
+opencv-python-headless==4.13.0.92
+requests==2.34.2
+transformers==4.57.6
+huggingface_hub==0.36.2
+accelerate==1.13.0
+rasterio==1.5.0
+affine==2.4.0
+shapely==2.1.2
+pyproj==3.7.2
+pycocotools==2.0.11
+terratorch==1.2.8
+ultralytics==8.4.58
+psutil==7.2.2
+ensemble-boxes==1.0.9  # WBF fusion across detector source layers (T2.8)

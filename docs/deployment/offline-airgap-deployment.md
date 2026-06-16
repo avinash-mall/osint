@@ -67,6 +67,14 @@ docker compose build inference-sam3 && docker compose up -d inference-sam3
 
 `./model-cache` is gitignored (tracked only via `.gitkeep`) so the 16 GB never enters source control but the build-context path always exists. An empty `./model-cache` (fresh clone / connected build host) falls through to the normal online bake. Seed step: [inference-gpu-dockerfile.md](inference-gpu-dockerfile.md); context wiring: `docker-compose.yml` `inference-sam3.build.additional_contexts`.
 
+**Dependency reproducibility:** `backend/requirements.txt` and `inference-sam3/requirements.txt`
+pin every direct dependency with `==` to a known-good `pip freeze` set, and `frontend/`
+commits `package-lock.json` (installed via `npm ci`), so a connected-host rebuild resolves
+the same versions rather than drifting. PyTorch is GPU-profile-injected (see
+[python-requirements.md](../inference/python-requirements.md)). The model weights, not the
+wheels, are what `./model-cache` seeds — an offline pip rebuild still needs the pinned wheels
+reachable, so rebuild on a connected host (the supported path) unless a local wheelhouse is staged.
+
 ## What's baked in
 
 **Application images (baked at `docker compose build`):**

@@ -1,9 +1,12 @@
-FROM node:22-alpine
+# Pinned to the 22.22 minor (matches the committed package-lock.json toolchain).
+# `npm ci` installs exactly from the lockfile and fails if it drifts from
+# package.json — reproducible builds for the air-gap bundle.
+FROM node:22.22-alpine
 
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 
 COPY . .
 
